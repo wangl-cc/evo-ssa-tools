@@ -173,8 +173,6 @@ impl<const N: u32> BlockRMQSteper<N> {
 
 #[cfg(test)]
 mod tests {
-    use crate::mutations::rmq;
-
     use super::*;
 
     #[test]
