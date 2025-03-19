@@ -1,12 +1,12 @@
 use std::{fmt::Debug, num::NonZero};
 
-use rand::distr::Distribution;
+use rand::{SeedableRng, distr::Distribution};
 
 use super::{
     Cell,
     rmq::{BlockRMQ, BlockRMQSteper},
 };
-use crate::util::hashers::NoHashMap;
+use crate::util::{distributions::Poisson, hashers::NoHashMap};
 
 /// A tree structure represents the cell lineage
 ///
@@ -31,16 +31,23 @@ pub struct PhyloTree {
 }
 
 impl PhyloTree {
+    pub fn from_poisson_cells<I: Iterator<Item = Cell>>(cells: I, lambda: f64) -> Option<Self> {
+        let mut rng = rand::rngs::SmallRng::from_os_rng();
+        let dist = Poisson::new(lambda)?;
+
+        Some(Self::from_cells(cells, &mut rng, dist))
+    }
+
     /// Create a new phylogenetic tree from a list of cells.
     ///
     /// # Panics
     ///
-    /// Panics if the iterator does not have an exact size or it's length is smaller than 2.
-    pub fn from_cells<I, G, D>(cells: I, rng: &mut G, dist: &D) -> Self
+    /// Panics if the iterator does not have an exact size.
+    pub fn from_cells<I, G, D>(cells: I, rng: &mut G, dist: D) -> Self
     where
         I: Iterator<Item = Cell>,
         G: rand::Rng,
-        D: Distribution<u16>,
+        D: Distribution<u16> + Copy,
     {
         let (size_lower, size_upper) = cells.size_hint();
         assert_eq!(
