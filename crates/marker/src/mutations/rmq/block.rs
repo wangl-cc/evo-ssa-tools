@@ -334,6 +334,48 @@ mod tests {
         assert_eq!(blk.min_in(3, 9), MinAndPos::new(3, 9));
         assert_eq!(blk.min_in(6, 10), MinAndPos::new(3, 9));
         assert_eq!(blk.min_in(11, 15), MinAndPos::new(0, 14));
+
+        let blk: Block = Block::new(0b000_110_111_000_000, 16, 6);
+        // Indexes:  [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, a, b, c, d, e, f]
+        // Sequance: [1, 2, 3, 4, 5, 6, 7, 6, 5, 4, 5, 4, 3, 4, 5, 6]
+
+        assert_eq!(blk.min_and_pos(), MinAndPosCompat::new(1, 0));
+
+        assert_eq!(blk.min_from_start(15), MinAndPos::new(1, 0));
+        assert_eq!(blk.min_from_start(14), MinAndPos::new(1, 0));
+        assert_eq!(blk.min_from_start(13), MinAndPos::new(1, 0));
+        assert_eq!(blk.min_from_start(12), MinAndPos::new(1, 0));
+        assert_eq!(blk.min_from_start(11), MinAndPos::new(1, 0));
+        assert_eq!(blk.min_from_start(10), MinAndPos::new(1, 0));
+        assert_eq!(blk.min_from_start(9), MinAndPos::new(1, 0));
+        assert_eq!(blk.min_from_start(8), MinAndPos::new(1, 0));
+        assert_eq!(blk.min_from_start(7), MinAndPos::new(1, 0));
+        assert_eq!(blk.min_from_start(6), MinAndPos::new(1, 0));
+        assert_eq!(blk.min_from_start(5), MinAndPos::new(1, 0));
+        assert_eq!(blk.min_from_start(4), MinAndPos::new(1, 0));
+        assert_eq!(blk.min_from_start(3), MinAndPos::new(1, 0));
+        assert_eq!(blk.min_from_start(2), MinAndPos::new(1, 0));
+        assert_eq!(blk.min_from_start(1), MinAndPos::new(1, 0));
+        assert_eq!(blk.min_from_start(0), MinAndPos::new(1, 0));
+
+        assert_eq!(blk.min_to_end(0), MinAndPos::new(1, 0));
+        assert_eq!(blk.min_to_end(1), MinAndPos::new(2, 1));
+        assert_eq!(blk.min_to_end(2), MinAndPos::new(3, 2));
+        assert_eq!(blk.min_to_end(3), MinAndPos::new(3, 12));
+        assert_eq!(blk.min_to_end(4), MinAndPos::new(3, 12));
+        assert_eq!(blk.min_to_end(5), MinAndPos::new(3, 12));
+        assert_eq!(blk.min_to_end(6), MinAndPos::new(3, 12));
+        assert_eq!(blk.min_to_end(7), MinAndPos::new(3, 12));
+        assert_eq!(blk.min_to_end(8), MinAndPos::new(3, 12));
+        assert_eq!(blk.min_to_end(9), MinAndPos::new(3, 12));
+        assert_eq!(blk.min_to_end(10), MinAndPos::new(3, 12));
+        assert_eq!(blk.min_to_end(11), MinAndPos::new(3, 12));
+        assert_eq!(blk.min_to_end(12), MinAndPos::new(3, 12));
+        assert_eq!(blk.min_to_end(13), MinAndPos::new(4, 13));
+        assert_eq!(blk.min_to_end(14), MinAndPos::new(5, 14));
+        assert_eq!(blk.min_to_end(15), MinAndPos::new(6, 15));
+
+        assert_eq!(blk.min_in(4, 10), MinAndPos::new(4, 9));
     }
 
     #[test]
