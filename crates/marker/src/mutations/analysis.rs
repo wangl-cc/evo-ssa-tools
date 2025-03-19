@@ -263,14 +263,35 @@ impl PhyloTree {
 }
 
 impl PhyloTree {
+    pub fn sfs(&self) -> Vec<u32> {
+        let mut sfs = vec![0; self.n_leaves];
+        for (i, &nm) in self.unique_mutations.iter().enumerate() {
+            let freq = self.n_leaves_subtree(i) as usize;
+            sfs[freq] += nm as u32;
+        }
+
+        remove_trailing(&mut sfs, &0);
+
+        sfs
+    }
+
+    pub fn mbd(&self) -> Vec<u16> {
+        let mut mbd = vec![0; self.max_n_mutations as usize];
+        for &nm in &self.total_mutations[1..self.n_leaves + 1] {
+            mbd[nm as usize] += 1;
+        }
+
+        remove_trailing(&mut mbd, &0);
+
+        mbd
+    }
+
     // Calculate the balance value all inner nodes in the tree
     // pub fn balance_by_mutations(&self) -> (Vec<f64>, Vec<f64>) {
-    //     let mut balances_sum =
-    //         Vec::with_capacity(self.max_mutations().unwrap_or(1024) as usize + 1);
-    //     let mut norm_balances_sum =
-    //         Vec::with_capacity(self.max_mutations().unwrap_or(1024) as usize + 1);
-    //     let mut repetitions = Vec::with_capacity(self.max_mutations().unwrap_or(1024) as usize +
-    // 1);     let balance_info = self.balance();
+    //     let mut balances_sum = Vec::with_capacity(self.max_n_mutations as usize + 1);
+    //     let mut norm_balances_sum = Vec::with_capacity(self.max_n_mutations as usize + 1);
+    //     let mut repetitions = Vec::with_capacity(self.max_n_mutations as usize + 1);
+    //     let balance_info = self.balance();
     //     for (node, info) in balance_info {
     //         let node_info = self.nodes.get(&node).unwrap();
     //         let n_mutation = node_info.n_mutation as usize;
@@ -297,29 +318,6 @@ impl PhyloTree {
     //     (average_balances, average_norm_balances)
     // }
 
-    pub fn sfs(&self) -> Vec<u32> {
-        let mut sfs = vec![0; self.n_leaves];
-        for (i, &nm) in self.unique_mutations.iter().enumerate() {
-            let freq = self.n_leaves_subtree(i) as usize;
-            sfs[freq] += nm as u32;
-        }
-
-        remove_trailing(&mut sfs, &0);
-
-        sfs
-    }
-
-    pub fn mbd(&self) -> Vec<u16> {
-        let mut mbd = vec![0; self.max_n_mutations as usize];
-        for &nm in &self.total_mutations[1..self.n_leaves + 1] {
-            mbd[nm as usize] += 1;
-        }
-
-        remove_trailing(&mut mbd, &0);
-
-        mbd
-    }
-
     pub fn distance_dist(&self) -> Vec<u32> {
         let mut dist_dist = vec![0; 2 * self.max_n_mutations as usize];
         for (i, nm_i) in self.total_mutations[1..self.n_leaves + 1]
@@ -340,7 +338,6 @@ impl PhyloTree {
     }
 }
 
-// TODO: test
 fn remove_trailing<T: Eq>(vec: &mut Vec<T>, target: &T) {
     let mut i = vec.len();
     for (j, val) in vec.iter().enumerate().rev() {

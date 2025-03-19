@@ -80,35 +80,35 @@ impl<T: Copy + Ord, I: Copy> Ord for MinAndPos<T, I> {
 
 #[derive(Debug)]
 #[cfg_attr(feature = "bitcode", derive(bitcode::Decode, bitcode::Encode))]
-pub struct BlockRMQ<const N: u8> {
+pub struct BlockRMQ<const N: u32> {
     blocks: Vec<Block>,
-    spare_table: RmqSpareTable<block::MinAndPos>,
+    spare_table: RmqSpareTable<block::MinAndPosCompat>,
 }
 
-impl<const N: u8> BlockRMQ<N> {
+impl<const N: u32> BlockRMQ<N> {
     pub fn min_in(&self, start: u32, end: u32) -> u32 {
         debug_assert!(
             start < end,
             "Start index {start} must be less than or equal to end index {end}"
         );
 
-        let start_block = start / N as u32;
-        let end_block = end / N as u32;
-        let start_in_blk = (start % N as u32) as u8;
-        let end_in_blk = (end % N as u32) as u8;
+        let start_block = start / N;
+        let end_block = end / N;
+        let start_in_blk = start % N;
+        let end_in_blk = end % N;
 
         if start_block == end_block {
             self.blocks[start_block as usize]
                 .min_in(start_in_blk, end_in_blk)
-                .pos() as u32
-                + start_block * N as u32
+                .pos()
+                + start_block * N
         } else {
             let start_block_min = self.blocks[start_block as usize].min_to_end(start_in_blk);
             let end_block_min = self.blocks[end_block as usize].min_from_start(end_in_blk);
             let (min, offset) = if start_block_min < end_block_min {
-                (start_block_min, start_block * N as u32)
+                (start_block_min, start_block * N)
             } else {
-                (end_block_min, end_block * N as u32)
+                (end_block_min, end_block * N)
             };
 
             // If no intermediate blocks, return the minimum of the two blocks
@@ -119,33 +119,34 @@ impl<const N: u8> BlockRMQ<N> {
                 std::cmp::Ordering::Less => {
                     let min_inter = self.spare_table.min_in(start_block + 1, end_block - 1);
                     let min_inter_pos = min_inter.pos();
-                    let min_inter_val = min_inter.val();
+                    let min_inter_val: block::MinAndPos = min_inter.val().into();
                     if min_inter_val < min {
-                        min_inter_val.pos() as u32 + min_inter_pos * N as u32
+                        min_inter_val.pos() + min_inter_pos * N
                     } else {
-                        min.pos() as u32 + offset
+                        min.pos() + offset
                     }
                 }
                 std::cmp::Ordering::Equal => {
                     let min_inter_pos = inter_block_start;
-                    let min_inter_val = self.blocks[min_inter_pos as usize].min_and_pos();
+                    let min_inter_val: block::MinAndPos =
+                        self.blocks[min_inter_pos as usize].min_and_pos().into();
                     if min_inter_val < min {
-                        min_inter_val.pos() as u32 + min_inter_pos * N as u32
+                        min_inter_val.pos() + min_inter_pos * N
                     } else {
-                        min.pos() as u32 + offset
+                        min.pos() + offset
                     }
                 }
-                std::cmp::Ordering::Greater => min.pos() as u32 + start_block * N as u32,
+                std::cmp::Ordering::Greater => min.pos() + start_block * N,
             }
         }
     }
 }
 
-pub struct BlockRMQSteper<const N: u8> {
+pub struct BlockRMQSteper<const N: u32> {
     blocks: BlockSteper<N>,
 }
 
-impl<const N: u8> BlockRMQSteper<N> {
+impl<const N: u32> BlockRMQSteper<N> {
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
             blocks: BlockSteper::with_capacity(capacity),
@@ -172,6 +173,8 @@ impl<const N: u8> BlockRMQSteper<N> {
 
 #[cfg(test)]
 mod tests {
+    use crate::mutations::rmq;
+
     use super::*;
 
     #[test]
@@ -183,6 +186,7 @@ mod tests {
         for &down in &steps {
             builder.step(down == 1);
         }
+
         let rmq = builder.finish();
 
         assert_eq!(rmq.min_in(0, 10), 0);

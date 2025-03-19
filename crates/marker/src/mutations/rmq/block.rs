@@ -2,12 +2,21 @@
 
 use std::num::Wrapping;
 
-pub(super) type MinAndPos = super::MinAndPos<u8, u8>;
+use crate::util::bitop;
+
+pub(super) type MinAndPos = super::MinAndPos<u32, u32>;
+pub(super) type MinAndPosCompat = super::MinAndPos<u8, u8>;
+
+impl From<MinAndPosCompat> for MinAndPos {
+    fn from(value: MinAndPosCompat) -> Self {
+        MinAndPos::new(value.val().into(), value.pos().into())
+    }
+}
 
 /// The maximum length of ±1 RMQ Block
 ///
 /// Any length larger than 16 is not recommended, as it may lead to excessive cache misses.
-pub const MAX_BLOCK_SIZE: u8 = 16;
+pub const MAX_BLOCK_SIZE: u32 = 16;
 
 /// Possible combinations of ±1 RMQ Block
 ///
@@ -53,7 +62,11 @@ pub const fn calc_block_rmq(sig: u16) -> u8 {
             min_i = cur_i;
         }
     }
-    min_i
+    min_i as u8
+}
+
+pub const fn block_rmq_u8(sig: u16) -> u8 {
+    bitop::u4::get(&BLOCK_RMQ_POS_CACHE, sig as usize)
 }
 
 /// Get the position of the minimum value in a block
@@ -61,16 +74,8 @@ pub const fn calc_block_rmq(sig: u16) -> u8 {
 /// This function also works for blocks with length less than 16 as all padding zeros don't
 /// affect the result as zero is treated as increasing value and minimum value is always before
 /// them.
-pub const fn block_rmq(sig: u16) -> u8 {
-    nibble_read(&BLOCK_RMQ_POS_CACHE, sig as usize)
-}
-
-/// Read a niddle from the data
-const fn nibble_read(data: &[u8], index: usize) -> u8 {
-    let i = index >> 1;
-    let packed = data[i];
-    // Always do shift to make avoid branch to make it faster
-    (packed >> ((index & 1) << 2)) & 0xF
+pub const fn block_rmq(sig: u16) -> u32 {
+    block_rmq_u8(sig) as u32
 }
 
 /// RMQ block with length N
@@ -84,30 +89,37 @@ pub struct Block {
 
 impl Block {
     /// Create a block with given length and value at the end of the block.
-    fn new(sig: u16, len: u8, v_block_end: u8) -> Self {
-        let min_p = block_rmq(sig);
-        let min_v = reverse_diff(sig, min_p, len - 1, v_block_end);
+    fn new(sig: u16, len: u32, v_block_end: u32) -> Self {
+        let min_p = block_rmq_u8(sig);
+        let min_p_u32 = min_p as u32;
+        let min_v = if min_p_u32 == len - 1 {
+            v_block_end
+        } else {
+            bitop::u16::reverse_mask(sig, min_p as u32, len - 1, v_block_end)
+        } as u8;
 
         Self { sig, min_v, min_p }
     }
 
     /// Returns the minimum value of the block and its position.
-    pub(crate) fn min_and_pos(self) -> MinAndPos {
-        MinAndPos::new(self.min_v, self.min_p)
+    pub(crate) fn min_and_pos(self) -> MinAndPosCompat {
+        MinAndPosCompat::new(self.min_v, self.min_p)
     }
 
     /// Get the minimum value of the block from start of the block to the given position.
     ///
     /// Returns the minimum value and its position.
-    pub fn min_from_start(self, end: u8) -> MinAndPos {
+    pub fn min_from_start(self, end: u32) -> MinAndPos {
         debug_assert!(
-            end <= MAX_BLOCK_SIZE,
-            "End position must be less than or equal to {MAX_BLOCK_SIZE}"
+            end < MAX_BLOCK_SIZE,
+            "End position must be less than {MAX_BLOCK_SIZE}"
         );
 
+        let min_v = self.min_v as u32;
+        let min_p = self.min_p as u32;
         // If min value in the range of the block, return it
-        if end >= self.min_p {
-            return MinAndPos::new(self.min_v, self.min_p);
+        if end >= min_p {
+            return MinAndPos::new(min_v, min_p);
         }
 
         // Only from given start position to the end should be considered for RMQ
@@ -116,7 +128,7 @@ impl Block {
         let min_pos = block_rmq(sig_from_start);
 
         // Calculate the local minimum value from block minimum
-        let min_value = reverse_diff(self.sig, min_pos, self.min_p, self.min_v);
+        let min_value = bitop::u16::reverse_mask(self.sig, min_pos, min_p, min_v);
 
         MinAndPos::new(min_value, min_pos)
     }
@@ -124,86 +136,74 @@ impl Block {
     /// Get the minimum value of the block from given start position to the end.
     ///
     /// Returns the minimum value and its position.
-    pub fn min_to_end(self, start: u8) -> MinAndPos {
+    pub fn min_to_end(self, start: u32) -> MinAndPos {
         debug_assert!(
-            start <= MAX_BLOCK_SIZE,
-            "Start position must be less than or equal to {MAX_BLOCK_SIZE}"
+            start < MAX_BLOCK_SIZE,
+            "Start position must be less than {MAX_BLOCK_SIZE}"
         );
 
+        let min_p = self.min_p as u32;
+        let min_v = self.min_v as u32;
+
         // If min value in the range of the block, return it
-        if start <= self.min_p {
-            return MinAndPos::new(self.min_v, self.min_p);
+        if start <= min_p {
+            return MinAndPos::new(min_v, min_p);
         }
 
         // Only from given start position to the end should be considered for RMQ
         // so all lower bits are should be shifted out
-        let sig_to_end = self.sig >> start;
-        let min_pos = block_rmq(sig_to_end) + start;
+        let sig = self.sig >> start;
+        let min_pos = block_rmq(sig) + start;
 
         // Calculate the local minimum value from block minimum
-        let min_value = apply_diff(self.sig, self.min_p, min_pos, self.min_v);
+        let min_value = bitop::u16::apply_mask(self.sig, min_p, min_pos, min_v);
 
         MinAndPos::new(min_value, min_pos)
     }
 
-    pub fn min_in(&self, start: u8, end: u8) -> MinAndPos {
+    pub fn min_in(&self, start: u32, end: u32) -> MinAndPos {
         debug_assert!(
             start <= end,
             "Start position must be less than or equal to end position"
         );
         debug_assert!(
-            end <= MAX_BLOCK_SIZE,
-            "End position must be less than or equal to {MAX_BLOCK_SIZE}"
+            end < MAX_BLOCK_SIZE,
+            "End position must be less than {MAX_BLOCK_SIZE}"
         );
 
+        let min_p = self.min_p as u32;
+        let min_v = self.min_v as u32;
+
         // If min value in the range of the block, return it
-        if start <= self.min_p && self.min_p <= end {
-            return MinAndPos::new(self.min_v, self.min_p);
+        if start <= min_p && min_p <= end {
+            return MinAndPos::new(min_v, min_p);
         }
 
         // Only from given start position to the end should be considered for RMQ
         // so all lower bits are should be shifted out
         // and all higher bits are should be masked out
-        let sig = (self.sig >> start) & ((1 << (end - start)) - 1);
+        let sig = bitop::u16::region_and_move(start, end, self.sig);
         let min_pos = block_rmq(sig) + start;
 
         // Calculate the local minimum value from block minimum
-        let min_value = if self.min_p < min_pos {
-            apply_diff(self.sig, self.min_p, min_pos, self.min_v)
+        let min_value = if min_p < min_pos {
+            bitop::u16::apply_mask(self.sig, min_p, min_pos, min_v)
         } else {
-            reverse_diff(self.sig, min_pos, self.min_p, self.min_v)
+            bitop::u16::reverse_mask(self.sig, min_pos, min_p, min_v)
         };
 
         MinAndPos::new(min_value, min_pos)
     }
 }
 
-/// Apply a change of signature to given value
-fn apply_diff(sig: u16, start: u8, end: u8, value: u8) -> u8 {
-    let diff_block_len = end - start;
-    let mask = (1 << diff_block_len) - 1;
-    let diff_sig = (sig >> start) & mask;
-    let n_decrease = diff_sig.count_ones() as u8;
-    value + diff_block_len - 2 * n_decrease
-}
-
-/// Reverse apply a change of signature to given value
-fn reverse_diff(sig: u16, start: u8, end: u8, value: u8) -> u8 {
-    let diff_block_len = end - start;
-    let mask = (1 << diff_block_len) - 1;
-    let diff_sig = (sig >> start) & mask;
-    let n_decrease = diff_sig.count_ones() as u8;
-    value + 2 * n_decrease - diff_block_len
-}
-
-pub struct BlockSteper<const N: u8> {
+pub struct BlockSteper<const N: u32> {
     blocks: Vec<Block>,
     current_block: u16,
     current_position: u32,
-    current_depth: Wrapping<u8>,
+    current_depth: Wrapping<u32>,
 }
 
-impl<const N: u8> BlockSteper<N> {
+impl<const N: u32> BlockSteper<N> {
     pub fn with_capacity(capacity: usize) -> Self {
         debug_assert!(
             0 < N && N <= MAX_BLOCK_SIZE,
@@ -222,7 +222,7 @@ impl<const N: u8> BlockSteper<N> {
         self.current_position += 1;
 
         let current_position = self.current_position;
-        let inblock_index = (current_position % (N as u32)) as u8;
+        let inblock_index = current_position % N;
 
         // Each block has N elements, but their signatures is only N - 1 bits
         // So we ignore first step in each block
@@ -235,11 +235,11 @@ impl<const N: u8> BlockSteper<N> {
         }
 
         // Use overflow to do +1 or -1 for unsigned integers
-        self.current_depth += Wrapping(1) - Wrapping(2 * down as u8);
+        self.current_depth += Wrapping(1) - Wrapping(2 * down as u32);
     }
 
     pub(crate) fn finish(self) -> Vec<Block> {
-        let inblock_index = (self.current_position % (N as u32)) as u8;
+        let inblock_index = self.current_position % N;
         let mut blocks = self.blocks;
 
         // Push the last block
@@ -285,30 +285,12 @@ mod tests {
     }
 
     #[test]
-    fn test_apply_diff() {
-        assert_eq!(apply_diff(0b000_000_000_000_000, 0, 15, 0), 15);
-        assert_eq!(apply_diff(0b000_000_000_000_001, 0, 15, 0), 13);
-        assert_eq!(apply_diff(0b000_000_000_000_101, 0, 15, 0), 11);
-        assert_eq!(apply_diff(0b000_000_000_110_100, 0, 2, 0), 2);
-        assert_eq!(apply_diff(0b000_000_000_110_100, 0, 3, 0), 1);
-    }
-
-    #[test]
-    fn test_reverse_diff() {
-        assert_eq!(reverse_diff(0b000_000_000_000_000, 0, 15, 15), 0);
-        assert_eq!(reverse_diff(0b000_000_000_000_001, 0, 15, 15), 2);
-        assert_eq!(reverse_diff(0b000_000_000_000_101, 0, 15, 15), 4);
-        assert_eq!(reverse_diff(0b000_000_000_110_100, 0, 2, 15), 13);
-        assert_eq!(reverse_diff(0b000_000_000_110_100, 0, 3, 15), 14);
-    }
-
-    #[test]
     fn test_block_min() {
         let blk: Block = Block::new(0b011_110_111_100_111, 16, 1);
         // Indexes:  [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, a, b, c, d, e, f]
         // Sequance: [8, 7, 6, 5, 6, 7, 6, 5, 4, 3, 4, 3, 2, 1, 0, 1]
 
-        assert_eq!(blk.min_and_pos(), MinAndPos::new(0, 14));
+        assert_eq!(blk.min_and_pos(), MinAndPosCompat::new(0, 14));
 
         assert_eq!(blk.min_from_start(15), MinAndPos::new(0, 14));
         assert_eq!(blk.min_from_start(14), MinAndPos::new(0, 14));
@@ -389,15 +371,15 @@ mod tests {
 
         // Verify first block
         assert_eq!(blocks[0].sig, 0b0010);
-        assert_eq!(blocks[0].min_and_pos(), MinAndPos::new(0, 0));
+        assert_eq!(blocks[0].min_and_pos(), MinAndPosCompat::new(0, 0));
 
         // Verify second block
         assert_eq!(blocks[1].sig, 0b1010);
-        assert_eq!(blocks[1].min_and_pos(), MinAndPos::new(3, 0));
+        assert_eq!(blocks[1].min_and_pos(), MinAndPosCompat::new(3, 0));
 
         // Verify third (incomplete) block
         assert_eq!(blocks[2].sig, 0b11);
-        assert_eq!(blocks[2].min_and_pos(), MinAndPos::new(0, 2));
+        assert_eq!(blocks[2].min_and_pos(), MinAndPosCompat::new(0, 2));
 
         let mut builder = BlockSteper::<4>::with_capacity(8);
 
@@ -422,14 +404,14 @@ mod tests {
 
         // Verify first block
         assert_eq!(blocks[0].sig, 0b100);
-        assert_eq!(blocks[0].min_and_pos(), MinAndPos::new(0, 0));
+        assert_eq!(blocks[0].min_and_pos(), MinAndPosCompat::new(0, 0));
 
         // Verify second block
         assert_eq!(blocks[1].sig, 0b101);
-        assert_eq!(blocks[1].min_and_pos(), MinAndPos::new(1, 1));
+        assert_eq!(blocks[1].min_and_pos(), MinAndPosCompat::new(1, 1));
 
         // Verify third block
         assert_eq!(blocks[2].sig, 0b000);
-        assert_eq!(blocks[2].min_and_pos(), MinAndPos::new(0, 0));
+        assert_eq!(blocks[2].min_and_pos(), MinAndPosCompat::new(0, 0));
     }
 }

@@ -8,5 +8,3 @@ license = "MIT OR Apache-2.0"
 # edition 2024 is introduced in Rust 1.85
 rust-version = "1.85"
 edition = "2024"
-
-[workspace.dependencies]
