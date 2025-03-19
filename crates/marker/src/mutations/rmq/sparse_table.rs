@@ -4,6 +4,7 @@ use super::MinAndPos;
 
 /// Sparse table for RMQ
 #[derive(Debug)]
+#[cfg_attr(feature = "bitcode", derive(bitcode::Decode, bitcode::Encode))]
 pub struct RmqSpareTable<T: Clone + Copy + Ord> {
     len: usize,
     tables: Vec<Vec<MinAndPos<T, u32>>>,

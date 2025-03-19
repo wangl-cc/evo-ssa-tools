@@ -38,6 +38,7 @@ use block::{Block, BlockSteper};
 use sparse_table::RmqSpareTable;
 
 #[derive(Debug, Clone, Copy)]
+#[cfg_attr(feature = "bitcode", derive(bitcode::Decode, bitcode::Encode))]
 pub struct MinAndPos<T: Copy + Ord, I: Copy> {
     value: T,
     pos: I,
@@ -78,6 +79,7 @@ impl<T: Copy + Ord, I: Copy> Ord for MinAndPos<T, I> {
 }
 
 #[derive(Debug)]
+#[cfg_attr(feature = "bitcode", derive(bitcode::Decode, bitcode::Encode))]
 pub struct BlockRMQ<const N: u8> {
     blocks: Vec<Block>,
     spare_table: RmqSpareTable<block::MinAndPos>,

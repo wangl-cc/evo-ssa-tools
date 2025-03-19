@@ -75,6 +75,7 @@ const fn nibble_read(data: &[u8], index: usize) -> u8 {
 
 /// RMQ block with length N
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "bitcode", derive(bitcode::Decode, bitcode::Encode))]
 pub struct Block {
     sig: u16,
     min_v: u8,
