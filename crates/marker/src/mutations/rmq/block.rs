@@ -111,7 +111,7 @@ impl Block {
         }
 
         // Only from given start position to the end should be considered for RMQ
-        // so all lower bits are should be ignored
+        // so all lower bits are should be masked out
         let sig_from_start = self.sig & ((1 << end) - 1);
         let min_pos = block_rmq(sig_from_start);
 
@@ -136,7 +136,7 @@ impl Block {
         }
 
         // Only from given start position to the end should be considered for RMQ
-        // so all lower bits are should be ignored
+        // so all lower bits are should be shifted out
         let sig_to_end = self.sig >> start;
         let min_pos = block_rmq(sig_to_end) + start;
 
@@ -157,17 +157,22 @@ impl Block {
         );
 
         // If min value in the range of the block, return it
-        if start <= self.min_p && end >= self.min_p {
+        if start <= self.min_p && self.min_p <= end {
             return MinAndPos::new(self.min_v, self.min_p);
         }
 
         // Only from given start position to the end should be considered for RMQ
-        // so all lower bits are should be ignored
-        let sig_to_end = (self.sig >> start) & ((1 << (end - start)) - 1);
-        let min_pos = block_rmq(sig_to_end) + start;
+        // so all lower bits are should be shifted out
+        // and all higher bits are should be masked out
+        let sig = (self.sig >> start) & ((1 << (end - start)) - 1);
+        let min_pos = block_rmq(sig) + start;
 
         // Calculate the local minimum value from block minimum
-        let min_value = apply_diff(self.sig, self.min_p, min_pos, self.min_v);
+        let min_value = if self.min_p < min_pos {
+            apply_diff(self.sig, self.min_p, min_pos, self.min_v)
+        } else {
+            reverse_diff(self.sig, min_pos, self.min_p, self.min_v)
+        };
 
         MinAndPos::new(min_value, min_pos)
     }
@@ -298,8 +303,10 @@ mod tests {
     }
 
     #[test]
-    fn test_block() {
+    fn test_block_min() {
         let blk: Block = Block::new(0b011_110_111_100_111, 16, 1);
+        // Indexes:  [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, a, b, c, d, e, f]
+        // Sequance: [8, 7, 6, 5, 6, 7, 6, 5, 4, 3, 4, 3, 2, 1, 0, 1]
 
         assert_eq!(blk.min_and_pos(), MinAndPos::new(0, 14));
 
@@ -337,13 +344,19 @@ mod tests {
         assert_eq!(blk.min_to_end(14), MinAndPos::new(0, 14));
         assert_eq!(blk.min_to_end(15), MinAndPos::new(1, 15));
 
-        // TODO: add tests for min_in
+        assert_eq!(blk.min_in(0, 15), MinAndPos::new(0, 14));
+        assert_eq!(blk.min_in(0, 13), MinAndPos::new(1, 13));
+        assert_eq!(blk.min_in(5, 15), MinAndPos::new(0, 14));
+        assert_eq!(blk.min_in(9, 13), MinAndPos::new(1, 13));
+        assert_eq!(blk.min_in(13, 15), MinAndPos::new(0, 14));
+        assert_eq!(blk.min_in(3, 9), MinAndPos::new(3, 9));
+        assert_eq!(blk.min_in(6, 10), MinAndPos::new(3, 9));
+        assert_eq!(blk.min_in(11, 15), MinAndPos::new(0, 14));
     }
 
     #[test]
     fn test_blocks_builder() {
-        const N: u8 = 5;
-        let mut builder = BlockSteper::<N>::with_capacity(12);
+        let mut builder = BlockSteper::<5>::with_capacity(12);
 
         // The first block, Sequance [0, 1, 0, 1, 2], Signature: 0b0010
         builder.step(false); // 0 -> 1
@@ -386,6 +399,37 @@ mod tests {
         assert_eq!(blocks[2].sig, 0b11);
         assert_eq!(blocks[2].min_and_pos(), MinAndPos::new(0, 2));
 
-        // TODO: build block with length is times of N
+        let mut builder = BlockSteper::<4>::with_capacity(8);
+
+        // First block, Sequence [0, 1, 2, 1]
+        builder.step(false); // 0 -> 1
+        builder.step(false); // 1 -> 2
+        builder.step(true); // 2 -> 1
+
+        builder.step(false); //  1 -> 2
+
+        // Second block, Sequence [2, 1, 2, 1]
+        builder.step(true); // 2 -> 1
+        builder.step(false); // 1 -> 2
+        builder.step(true); // 2 -> 1
+
+        builder.step(true); // 1 -> 0
+
+        let blocks = builder.finish();
+
+        // Verify number of blocks
+        assert_eq!(blocks.len(), 3);
+
+        // Verify first block
+        assert_eq!(blocks[0].sig, 0b100);
+        assert_eq!(blocks[0].min_and_pos(), MinAndPos::new(0, 0));
+
+        // Verify second block
+        assert_eq!(blocks[1].sig, 0b101);
+        assert_eq!(blocks[1].min_and_pos(), MinAndPos::new(1, 1));
+
+        // Verify third block
+        assert_eq!(blocks[2].sig, 0b000);
+        assert_eq!(blocks[2].min_and_pos(), MinAndPos::new(0, 0));
     }
 }
