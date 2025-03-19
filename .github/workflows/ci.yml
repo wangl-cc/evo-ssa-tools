@@ -43,7 +43,7 @@ jobs:
         uses: actions/checkout@v4
       - name: Setup Cache
         uses: Swatinem/rust-cache@v2
-      - name: Build (maa-cli)
+      - name: Build
         run: |
           cargo build --locked
       - name: Lint (clippy)

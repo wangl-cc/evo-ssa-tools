@@ -56,19 +56,20 @@ pub(crate) type NoHashMap<K, V> =
 mod tests {
     use super::*;
 
-    #[test]
-    fn hash() {
-        fn hash<T: std::hash::Hash>(t: &T) -> u64 {
-            let mut hasher = NoHashHasher::default();
-            t.hash(&mut hasher);
-            hasher.finish()
-        }
+    fn hash<T: std::hash::Hash>(t: &T) -> u64 {
+        let mut hasher = NoHashHasher::default();
+        t.hash(&mut hasher);
+        hasher.finish()
+    }
 
+    #[test]
+    fn test_integer_hash() {
         // Unsigned integers
         assert_eq!(hash(&1u8), 1);
         assert_eq!(hash(&2u16), 2);
         assert_eq!(hash(&3u32), 3);
         assert_eq!(hash(&4u64), 4);
+        assert_eq!(hash(&4usize), 4);
         assert_eq!(hash(&5u128), 5);
 
         // Signed integers
@@ -76,6 +77,13 @@ mod tests {
         assert_eq!(hash(&2i16), 2);
         assert_eq!(hash(&3i32), 3);
         assert_eq!(hash(&4i64), 4);
+        assert_eq!(hash(&4isize), 4);
         assert_eq!(hash(&5i128), 5);
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_no_integer_hash() {
+        hash(&[1, 2, 3, 4]);
     }
 }

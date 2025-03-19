@@ -39,3 +39,16 @@ impl Marker for NoMarker {
 
 // Use point mutations as marker
 pub mod mutations;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_nomarker() {
+        let mut marker = ();
+        let mut state = ();
+        marker.gen_marker(&mut state);
+        marker.divide(&mut state);
+    }
+}

@@ -6,7 +6,7 @@ use super::{
     Cell,
     rmq::{BlockRMQ, BlockRMQSteper},
 };
-use crate::util::{distributions::Poisson, hashers::NoHashMap};
+use crate::util::{distributions::PoissonKnuth, hashers::NoHashMap};
 
 /// A tree structure represents the cell lineage
 ///
@@ -33,7 +33,7 @@ pub struct PhyloTree {
 impl PhyloTree {
     pub fn from_poisson_cells<I: Iterator<Item = Cell>>(cells: I, lambda: f64) -> Option<Self> {
         let mut rng = rand::rngs::SmallRng::from_os_rng();
-        let dist = Poisson::new(lambda)?;
+        let dist = PoissonKnuth::new(lambda)?;
 
         Some(Self::from_cells(cells, &mut rng, dist))
     }
