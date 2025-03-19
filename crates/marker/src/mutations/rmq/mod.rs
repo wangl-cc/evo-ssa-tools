@@ -115,13 +115,13 @@ impl<const N: u8> BlockRMQ<N> {
             let inter_block_start = start_block + 1;
             let inter_block_end = end_block - 1;
 
-            match inter_block_start.cmp(&inter_block_end) {
+            match Ord::cmp(&inter_block_start, &inter_block_end) {
                 std::cmp::Ordering::Less => {
                     let min_inter = self.spare_table.min_in(start_block + 1, end_block - 1);
                     let min_inter_pos = min_inter.pos();
                     let min_inter_val = min_inter.val();
                     if min_inter_val < min {
-                        min_inter_pos + min_inter_val.pos() as u32
+                        min_inter_val.pos() as u32 + min_inter_pos * N as u32
                     } else {
                         min.pos() as u32 + offset
                     }
@@ -130,7 +130,7 @@ impl<const N: u8> BlockRMQ<N> {
                     let min_inter_pos = inter_block_start;
                     let min_inter_val = self.blocks[min_inter_pos as usize].min_and_pos();
                     if min_inter_val < min {
-                        min_inter_pos + min_inter_val.pos() as u32
+                        min_inter_val.pos() as u32 + min_inter_pos * N as u32
                     } else {
                         min.pos() as u32 + offset
                     }
@@ -176,8 +176,8 @@ mod tests {
 
     #[test]
     fn test_simple_block_rmq() {
-        let steps = [0, 1, 0, 1, 0, 0, 1, 0, 1, 0, 1, 1];
-        // Depthes:         [0, 1, 0, 1, 0, 1, 2, 1, 2, 1, 2, 1, 0];
+        let steps = [0, 1, 0, 1, 0, 0, 1, 0, 1, 0, 1, 1, 0, 0, 1, 1];
+        // Depthes:         [0, 1, 0, 1, 0, 1, 2, 1, 2, 1, 2, 1, 0, 1, 2, 1, 0];
 
         let mut builder = BlockRMQSteper::<2>::with_capacity(steps.len());
         for &down in &steps {
@@ -186,9 +186,14 @@ mod tests {
         let rmq = builder.finish();
 
         assert_eq!(rmq.min_in(0, 10), 0);
+        assert_eq!(rmq.min_in(1, 10), 2);
+        // If there are multiple minima, we don't guarantee which one we get
+        assert!(rmq.min_in(1, 4) == 2 || rmq.min_in(1, 4) == 4);
         assert_eq!(rmq.min_in(6, 8), 7);
         assert_eq!(rmq.min_in(6, 7), 7);
         assert_eq!(rmq.min_in(4, 7), 4);
+        assert_eq!(rmq.min_in(9, 12), 12);
         assert_eq!(rmq.min_in(7, 12), 12);
+        assert_eq!(rmq.min_in(11, 15), 12);
     }
 }
