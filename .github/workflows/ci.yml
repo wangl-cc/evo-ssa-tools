@@ -45,17 +45,17 @@ jobs:
         uses: Swatinem/rust-cache@v2
       - name: Build
         run: |
-          cargo build --locked
+          cargo build --locked --all-features --workspace
       - name: Lint (clippy)
         run: |
-          cargo clippy -- -D warnings
+          cargo clippy --all-features --workspace -- -D warnings
       - name: Lint (rustfmt)
         run: |
           rustup toolchain install nightly --profile minimal --component rustfmt
-          cargo +nightly fmt -- --check
+          cargo +nightly fmt --all-features --workspace -- --check
       - name: Test
         run: |
-          cargo test -- --include-ignored
+          cargo test --all-features --workspace -- --include-ignored
 
   coverage:
     name: Coverage
@@ -73,13 +73,11 @@ jobs:
       - name: Install Cargo tarpaulin
         uses: taiki-e/install-action@v2
         with:
-          tool: cargo-tarpaulin
-      - name: Setup Cache
-        uses: Swatinem/rust-cache@v2
+          tool: cargo-llvm-cov
       - name: Coverage
         run: |
-          cargo tarpaulin --out xml --workspace --timeout 120 \
-            ${{ github.run_attempt == 1 && '--skip-clean' || '' }} \
+          cargo llvm-cov --all-features --workspace \
+            --lcov --output-path lcov.info
             -- --include-ignored
       - name: Upload to Codecov
         uses: codecov/codecov-action@v5
