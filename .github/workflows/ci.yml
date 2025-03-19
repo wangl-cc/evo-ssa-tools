@@ -52,7 +52,7 @@ jobs:
       - name: Lint (rustfmt)
         run: |
           rustup toolchain install nightly --profile minimal --component rustfmt
-          cargo +nightly fmt --all-features --workspace -- --check
+          cargo +nightly fmt -- --check
       - name: Test
         run: |
           cargo test --all-features --workspace -- --include-ignored
