@@ -378,6 +378,16 @@ mod tests {
         assert_eq!(blk.min_in(4, 10), MinAndPos::new(4, 9));
     }
 
+    #[cfg(feature = "bitcode")]
+    #[test]
+    fn encode_decode() {
+        let blk: Block = Block::new(0b000_110_111_000_000, 16, 6);
+
+        let bytes = bitcode::encode(&blk);
+        let decoded: Block = bitcode::decode(&bytes).unwrap();
+        assert_eq!(decoded, blk);
+    }
+
     #[test]
     fn test_blocks_builder() {
         let mut builder = BlockSteper::<5>::with_capacity(12);

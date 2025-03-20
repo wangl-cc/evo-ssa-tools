@@ -198,4 +198,18 @@ mod tests {
         assert_eq!(rmq.min_in(7, 12), 12);
         assert_eq!(rmq.min_in(11, 15), 12);
     }
+
+    #[cfg(feature = "bitcode")]
+    #[test]
+    fn test_encode() {
+        let steps = [0, 1, 0];
+        let mut builder = BlockRMQSteper::<2>::with_capacity(steps.len());
+        for &down in &steps {
+            builder.step(down == 1);
+        }
+        let rmq = builder.finish();
+        let decoded: BlockRMQ<2> = bitcode::decode(&bitcode::encode(&rmq)).unwrap();
+
+        assert_eq!(&rmq.blocks, &decoded.blocks);
+    }
 }
