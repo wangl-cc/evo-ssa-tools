@@ -3,7 +3,7 @@ use std::{fmt::Debug, num::NonZero};
 use rand::{SeedableRng, distr::Distribution};
 
 use super::{
-    Cell,
+    node::LineageNode,
     rmq::{BlockRMQ, BlockRMQSteper},
 };
 use crate::util::{distributions::PoissonKnuth, hashers::NoHashMap};
@@ -16,7 +16,7 @@ use crate::util::{distributions::PoissonKnuth, hashers::NoHashMap};
 /// which is more suitable to serialize and deserialize, and easier to analyze.
 #[derive(Debug)]
 #[cfg_attr(feature = "bitcode", derive(bitcode::Decode, bitcode::Encode))]
-pub struct PhyloTree {
+pub struct PhyloTree<const N: u32> {
     // Basic information
     n_leaves: usize,
     max_n_mutations: u16,
@@ -25,13 +25,16 @@ pub struct PhyloTree {
     total_mutations: Vec<u16>,  // Number of all mutations of each node in the tree
     // Euler tour
     euler_tour: Vec<u32>,        // Euler tour of the tree
-    rmq_table: BlockRMQ<16>,     // Range Minimum Query table, used to find the LCA
+    rmq_table: BlockRMQ<N>,      // Range Minimum Query table, used to find the LCA
     first_occurrences: Vec<u32>, // Position of first occurrence of each node in the Euler tour
     last_occurrences: Vec<u32>,  // Position of last occurrence of each node in the Euler tour
 }
 
-impl PhyloTree {
-    pub fn from_poisson_cells<I: Iterator<Item = Cell>>(cells: I, lambda: f64) -> Option<Self> {
+impl<const N: u32> PhyloTree<N> {
+    pub fn from_poisson_cells<I: Iterator<Item = LineageNode>>(
+        cells: I,
+        lambda: f64,
+    ) -> Option<Self> {
         let mut rng = rand::rngs::SmallRng::from_os_rng();
         let dist = PoissonKnuth::new(lambda)?;
 
@@ -45,7 +48,7 @@ impl PhyloTree {
     /// Panics if the iterator does not have an exact size.
     pub fn from_cells<I, G, D>(cells: I, rng: &mut G, dist: D) -> Self
     where
-        I: Iterator<Item = Cell>,
+        I: Iterator<Item = LineageNode>,
         G: rand::Rng,
         D: Distribution<u16> + Copy,
     {
@@ -112,7 +115,7 @@ impl PhyloTree {
         ///
         /// Return the index of the node and number of unique mutations to be joined
         fn resolve_parent<G: rand::Rng, D: Distribution<u16>>(
-            cell: &Cell,
+            node: &LineageNode,
             id2index: &mut NoHashMap<NonZero<usize>, usize>,
             forward_tree: &mut Vec<Children>,
             unique_mutations: &mut Vec<u16>,
@@ -120,7 +123,7 @@ impl PhyloTree {
             rng: &mut G,
             dist: &D,
         ) -> (usize, u16) {
-            let id = cell.id();
+            let id = node.id();
 
             if let Some(&index) = id2index.get(&id) {
                 // Only node with 2 children will be cached in the index
@@ -128,7 +131,7 @@ impl PhyloTree {
                 return (index, 0);
             }
 
-            if let Some(parent) = cell.parent() {
+            if let Some(parent) = node.parent() {
                 let (pindex, to_join) = resolve_parent(
                     parent,
                     id2index,
@@ -185,11 +188,11 @@ impl PhyloTree {
         );
 
         /// Depth-first search to build the Euler tour and depth arrays.
-        fn dfs(
+        fn dfs<const N: u32>(
             node: u32,
             forward_tree: &[Children],
             euler_tour: &mut Vec<u32>,
-            rmq: &mut BlockRMQSteper<16>,
+            rmq: &mut BlockRMQSteper<N>,
             first_occurrences: &mut Vec<u32>,
             last_occurrences: &mut Vec<u32>,
         ) {
@@ -227,7 +230,7 @@ impl PhyloTree {
 }
 
 // Util methods
-impl PhyloTree {
+impl<const N: u32> PhyloTree<N> {
     /// Get the number of leaves in a subtree rooted at the given node.
     pub fn n_leaves_subtree(&self, i: usize) -> u32 {
         let first_occurrence = self.first_occurrences[i];
@@ -262,7 +265,7 @@ impl PhyloTree {
     }
 }
 
-impl PhyloTree {
+impl<const N: u32> PhyloTree<N> {
     pub fn sfs(&self) -> Vec<u32> {
         let mut sfs = vec![0; self.n_leaves];
         for (i, &nm) in self.unique_mutations.iter().enumerate() {

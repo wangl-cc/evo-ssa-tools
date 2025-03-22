@@ -37,8 +37,8 @@ impl Marker for NoMarker {
     fn gen_marker(&self, _: &mut Self::State) -> Self {}
 }
 
-// Use point mutations as marker
-pub mod mutations;
+// Cell Lineage tracking as a marker
+pub mod lineage;
 
 #[cfg(test)]
 mod tests {

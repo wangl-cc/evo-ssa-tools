@@ -1,17 +1,14 @@
 use std::{num::NonZero, rc::Rc};
 
-use super::Marker;
+use crate::Marker;
 
-mod rmq;
-
-pub mod analysis;
-
+/// A node in the lineage tree.
 #[derive(Debug, Default)]
-pub struct Cell(Rc<Option<Cell>>);
+pub struct LineageNode(Rc<Option<LineageNode>>);
 
-impl Cell {
+impl LineageNode {
     /// Create a new cell with the given parent cell
-    fn new(parent: Cell) -> Self {
+    fn new(parent: LineageNode) -> Self {
         Self(Rc::new(Some(parent)))
     }
 
@@ -31,13 +28,13 @@ impl Cell {
     ///
     /// This should only used to distinguish between different cells,
     /// and a permanent ID will be generated for each cell during preprocessing and serialization.
-    fn id(&self) -> NonZero<usize> {
+    pub(super) fn id(&self) -> NonZero<usize> {
         let addr = Rc::as_ptr(&self.0) as usize;
         // Safety: the address of Rc should not be null so its address is not zero
         unsafe { NonZero::new_unchecked(addr) }
     }
 
-    fn parent(&self) -> Option<&Cell> {
+    pub(super) fn parent(&self) -> Option<&LineageNode> {
         Option::as_ref(&self.0)
     }
 
@@ -45,12 +42,12 @@ impl Cell {
     ///
     /// For inner nodes, only children holding the Rc, so it is equal to the number of children.
     /// For leaf nodes, it is equal to 1, as cell is only hold be
-    fn ref_count(&self) -> usize {
+    pub(super) fn ref_count(&self) -> usize {
         Rc::strong_count(&self.0)
     }
 }
 
-impl Marker for Cell {
+impl Marker for LineageNode {
     type State = ();
 
     fn gen_marker(&self, _: &mut Self::State) -> Self {
@@ -64,9 +61,9 @@ mod tests {
 
     #[test]
     fn cell_division() {
-        let mut cells = vec![Cell::default()];
+        let mut cells = vec![LineageNode::default()];
 
-        fn divide(cells: &mut Vec<Cell>, i: usize) {
+        fn divide(cells: &mut Vec<LineageNode>, i: usize) {
             let new_cell = cells[i].divide(&mut ());
             cells.push(new_cell);
         }
