@@ -1,0 +1,8 @@
+# Rust Analyzer Configuration
+# But it seems broken now
+
+[cargo]
+extraArgs = ["--all-features"]
+
+[rustfmt]
+extraArgs = ["+nightly"]

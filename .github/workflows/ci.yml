@@ -1,0 +1,87 @@
+name: CI
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - "crates/*/src/**"
+      - "crates/*/Cargo.toml"
+      - "crates/*/build.rs"
+      - "Cargo.lock"
+      - ".cargo/config.toml"
+      - ".github/workflows/ci.yml"
+  pull_request:
+    branches: ["main"]
+    paths:
+      - "crates/*/src/**"
+      - "crates/*/Cargo.toml"
+      - "crates/*/build.rs"
+      - "Cargo.lock"
+      - ".cargo/config.toml"
+      - ".github/workflows/ci.yml"
+
+env:
+  RUST_BACKTRACE: full
+  CARGO_TERM_COLOR: always
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build:
+    name: Build and Test
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          # - macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Cache
+        uses: Swatinem/rust-cache@v2
+      - name: Build
+        run: |
+          cargo build --locked --all-features --workspace
+      - name: Lint (clippy)
+        run: |
+          cargo clippy --all-features --workspace -- -D warnings
+      - name: Lint (rustfmt)
+        run: |
+          rustup toolchain install nightly --profile minimal --component rustfmt
+          cargo +nightly fmt -- --check
+      - name: Test
+        run: |
+          cargo test --all-features --workspace -- --include-ignored
+
+  coverage:
+    name: Coverage
+    needs: [build]
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          # - macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Install Cargo tarpaulin
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov
+      - name: Coverage
+        run: |
+          cargo llvm-cov --all-features --workspace \
+            --codecov --output-path codecov.json \
+            -- --include-ignored
+      - name: Upload to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: codecov.json
+          fail_ci_if_error: true
