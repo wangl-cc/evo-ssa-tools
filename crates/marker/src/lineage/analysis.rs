@@ -343,17 +343,6 @@ impl<const N: u32> PhyloTree<N> {
     }
 }
 
-fn remove_trailing<T: PartialEq>(vec: &mut Vec<T>, target: &T) {
-    let mut i = vec.len();
-    for (j, val) in vec.iter().enumerate().rev() {
-        if val != target {
-            i = j + 1;
-            break;
-        }
-    }
-    vec.truncate(i);
-}
-
 #[derive(Clone, Debug, Default)]
 struct Children([Option<NonZero<u32>>; 2]);
 
@@ -398,6 +387,17 @@ impl Iterator for ChildrenIter<'_> {
             None
         }
     }
+}
+
+fn remove_trailing<T: PartialEq>(vec: &mut Vec<T>, target: &T) {
+    let mut i = vec.len();
+    for (j, val) in vec.iter().enumerate().rev() {
+        if val != target {
+            i = j + 1;
+            break;
+        }
+    }
+    vec.truncate(i);
 }
 
 #[cfg(test)]
