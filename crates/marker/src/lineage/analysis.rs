@@ -289,37 +289,39 @@ impl<const N: u32> PhyloTree<N> {
         mbd
     }
 
-    // Calculate the balance value all inner nodes in the tree
-    // pub fn balance_by_mutations(&self) -> (Vec<f64>, Vec<f64>) {
-    //     let mut balances_sum = Vec::with_capacity(self.max_n_mutations as usize + 1);
-    //     let mut norm_balances_sum = Vec::with_capacity(self.max_n_mutations as usize + 1);
-    //     let mut repetitions = Vec::with_capacity(self.max_n_mutations as usize + 1);
-    //     let balance_info = self.balance();
-    //     for (node, info) in balance_info {
-    //         let node_info = self.nodes.get(&node).unwrap();
-    //         let n_mutation = node_info.n_mutation as usize;
-    //         if n_mutation > 0 {
-    //             if balances_sum.len() < n_mutation {
-    //                 balances_sum.resize(n_mutation, 0.0);
-    //                 norm_balances_sum.resize(n_mutation, 0.0);
-    //                 repetitions.resize(n_mutation, 0);
-    //             }
-    //             balances_sum[n_mutation - 1] += info.balance_value;
-    //             norm_balances_sum[n_mutation - 1] += info.norm_balance();
-    //             repetitions[n_mutation - 1] += 1;
-    //         }
-    //     }
-    //     let mut average_balances = vec![0.0; balances_sum.len()];
-    //     let mut average_norm_balances = vec![0.0; norm_balances_sum.len()];
-    //     for (i, &rep) in repetitions.iter().enumerate() {
-    //         if rep > 0 {
-    //             average_balances[i] = balances_sum[i] / rep as f64;
-    //             average_norm_balances[i] = norm_balances_sum[i] / rep as f64;
-    //         }
-    //     }
+    /// Calculate the balance value all inner nodes in the tree
+    pub fn balance_by_mutations(&self) -> (Vec<f64>, Vec<f64>) {
+        let mut balances_sum = vec![0; self.max_n_mutations as usize + 1];
+        let mut norm_balances_sum = vec![0.0; self.max_n_mutations as usize + 1];
+        let mut repetitions = vec![0u32; self.max_n_mutations as usize + 1];
 
-    //     (average_balances, average_norm_balances)
-    // }
+        for (node, &nm) in self.total_mutations.iter().enumerate() {
+            if let Some(children) = self.children(node) {
+                let l_leaves = self.n_leaves_subtree(children[0] as usize);
+                let r_leaves = self.n_leaves_subtree(children[1] as usize);
+                let balance = u32::abs_diff(l_leaves, r_leaves);
+                let normalized_balance = balance as f64 / (l_leaves + r_leaves) as f64;
+                balances_sum[nm as usize] += balance;
+                norm_balances_sum[nm as usize] += normalized_balance;
+                repetitions[nm as usize] += 1;
+            }
+        }
+
+        let (balance_mean, normalized_balance_mean) = repetitions
+            .iter()
+            .zip(balances_sum.iter().zip(norm_balances_sum.iter()))
+            .map(|(&r, (&b, &nb))| {
+                if r > 0 {
+                    let r = r as f64;
+                    (b as f64 / r, nb / r)
+                } else {
+                    (0.0, 0.0)
+                }
+            })
+            .collect();
+
+        (balance_mean, normalized_balance_mean)
+    }
 
     pub fn distance_dist(&self) -> Vec<u32> {
         let mut dist_dist = vec![0; 2 * self.max_n_mutations as usize];
@@ -341,7 +343,7 @@ impl<const N: u32> PhyloTree<N> {
     }
 }
 
-fn remove_trailing<T: Eq>(vec: &mut Vec<T>, target: &T) {
+fn remove_trailing<T: PartialEq>(vec: &mut Vec<T>, target: &T) {
     let mut i = vec.len();
     for (j, val) in vec.iter().enumerate().rev() {
         if val != target {
