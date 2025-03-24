@@ -46,7 +46,6 @@ name = "evo-marker"
 version = "0.1.0"
 dependencies = [
  "bitcode",
- "bytemuck",
  "rand",
 ]
 

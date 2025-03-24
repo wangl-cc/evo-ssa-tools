@@ -11,5 +11,4 @@ bitcode = ["dep:bitcode"]
 
 [dependencies]
 bitcode = { workspace = true, features = ["derive"], optional = true }
-bytemuck = { workspace = true }
 rand = { workspace = true }
