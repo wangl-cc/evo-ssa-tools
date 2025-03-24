@@ -63,15 +63,14 @@ mod tests {
     fn cell_division() {
         let mut cells = vec![LineageNode::default()];
 
-        fn divide(cells: &mut Vec<LineageNode>, i: usize) {
-            let new_cell = cells[i].divide(&mut ());
-            cells.push(new_cell);
+        fn divide_at(cells: &mut Vec<LineageNode>, i: usize) {
+            crate::divide_at(cells, i, &mut ());
         }
 
-        divide(&mut cells, 0); // cell_r divide, [1, 2]
-        divide(&mut cells, 0); // cell_1 divide, [11, 2, 12]
-        divide(&mut cells, 0); // cell_11 divide, [111, 2, 12, 112]
-        divide(&mut cells, 1); // cell_2 divide, [111, 21, 12, 112, 22]
+        divide_at(&mut cells, 0); // cell_r divide, [1, 2]
+        divide_at(&mut cells, 0); // cell_1 divide, [11, 2, 12]
+        divide_at(&mut cells, 0); // cell_11 divide, [111, 2, 12, 112]
+        divide_at(&mut cells, 1); // cell_2 divide, [111, 21, 12, 112, 22]
         cells.remove(0); // cell_111 die  [21, 12, 112, 22]
 
         assert_eq!(cells.len(), 4);

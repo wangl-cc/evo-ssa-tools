@@ -4,7 +4,7 @@ use rand::{SeedableRng, distr::Distribution};
 
 use super::{
     node::LineageNode,
-    rmq::{BlockRMQ, BlockRMQSteper},
+    rmq::{BlockRMQ, BlockRMQBuilder},
 };
 use crate::util::{distributions::PoissonKnuth, hashers::NoHashMap};
 
@@ -12,8 +12,7 @@ use crate::util::{distributions::PoissonKnuth, hashers::NoHashMap};
 ///
 /// The original mutations are in child-parent relationship by `Rc` pointers, which is a tree
 /// structure. `Rc` is not suitable to serialize and deserialize and hard to analyze.
-/// This struct is designed to store the mutations in a flat structure (vector and hashmap),
-/// which is more suitable to serialize and deserialize, and easier to analyze.
+/// Here we use euler tour to represent the tree, which is good for serialization and analysis.
 #[derive(Debug)]
 #[cfg_attr(feature = "bitcode", derive(bitcode::Decode, bitcode::Encode))]
 pub struct PhyloTree<const N: u32> {
@@ -31,6 +30,11 @@ pub struct PhyloTree<const N: u32> {
 }
 
 impl<const N: u32> PhyloTree<N> {
+    /// Construct a new phylogenetic tree from a cells and given lambda of poisson distribution
+    ///
+    /// # Panics
+    ///
+    /// Panics if the iterator does not have an exact size.
     pub fn from_poisson_cells<I: Iterator<Item = LineageNode>>(
         cells: I,
         lambda: f64,
@@ -174,7 +178,7 @@ impl<const N: u32> PhyloTree<N> {
         let len_euler_tour = n_nodes * 2 - 1;
 
         let mut euler_tour = Vec::with_capacity(len_euler_tour);
-        let mut rmq = BlockRMQSteper::with_capacity(len_euler_tour);
+        let mut rmq_builder = BlockRMQBuilder::with_capacity(len_euler_tour);
         let mut first_occurrences = vec![0; n_nodes];
         let mut last_occurrences = vec![0; n_nodes];
 
@@ -182,37 +186,36 @@ impl<const N: u32> PhyloTree<N> {
             0,
             &forward_tree,
             &mut euler_tour,
-            &mut rmq,
+            &mut rmq_builder,
             &mut first_occurrences,
             &mut last_occurrences,
         );
 
-        /// Depth-first search to build the Euler tour and depth arrays.
+        /// Depth-first search to build the Euler tour and rmq table
         fn dfs<const N: u32>(
             node: u32,
             forward_tree: &[Children],
             euler_tour: &mut Vec<u32>,
-            rmq: &mut BlockRMQSteper<N>,
+            rmq_builder: &mut BlockRMQBuilder<N>,
             first_occurrences: &mut Vec<u32>,
             last_occurrences: &mut Vec<u32>,
         ) {
             euler_tour.push(node);
-            rmq.step(false);
             first_occurrences[node as usize] = euler_tour.len() as u32 - 1;
 
             for child in forward_tree[node as usize].iter() {
+                rmq_builder.step(false);
                 dfs(
                     child.get(),
                     forward_tree,
                     euler_tour,
-                    rmq,
+                    rmq_builder,
                     first_occurrences,
                     last_occurrences,
                 );
                 euler_tour.push(node);
-                rmq.step(true);
+                rmq_builder.step(true);
             }
-
             last_occurrences[node as usize] = euler_tour.len() as u32 - 1;
         }
 
@@ -222,7 +225,7 @@ impl<const N: u32> PhyloTree<N> {
             unique_mutations,
             total_mutations,
             euler_tour,
-            rmq_table: rmq.finish(),
+            rmq_table: rmq_builder.finish(),
             first_occurrences,
             last_occurrences,
         }
@@ -232,6 +235,9 @@ impl<const N: u32> PhyloTree<N> {
 // Util methods
 impl<const N: u32> PhyloTree<N> {
     /// Get the number of leaves in a subtree rooted at the given node.
+    ///
+    /// This is based on one fact that for a full binary tree, the length of the Euler tour `E`
+    /// must be `4L - 3`, where `L` is the number of leaves in the tree.
     pub fn n_leaves_subtree(&self, i: usize) -> u32 {
         let first_occurrence = self.first_occurrences[i];
         let last_occurrence = self.last_occurrences[i];
@@ -239,6 +245,9 @@ impl<const N: u32> PhyloTree<N> {
     }
 
     /// Get two children of a node if exists.
+    ///
+    /// For a full binary tree, the children of a node must be occurrences after entering the node,
+    /// and before leaving the node.
     pub fn children(&self, i: usize) -> Option<[u32; 2]> {
         let fi = self.first_occurrences[i];
         let ei = self.last_occurrences[i];
@@ -252,6 +261,9 @@ impl<const N: u32> PhyloTree<N> {
         }
     }
 
+    /// Find the least common ancestor of two nodes
+    ///
+    /// This function uses the RMQ table to find the LCA of two nodes in O(1) time.
     pub fn lca_query(&self, i: usize, j: usize) -> usize {
         let i_first_occurrence = self.first_occurrences[i];
         let j_first_occurrence = self.first_occurrences[j];
@@ -261,16 +273,18 @@ impl<const N: u32> PhyloTree<N> {
         } else {
             (j_first_occurrence, i_first_occurrence)
         };
-        self.rmq_table.min_in(start, end) as usize
+        let lca_in_tour = self.rmq_table.min_in(start, end);
+        self.euler_tour[lca_in_tour as usize] as usize
     }
 }
 
 impl<const N: u32> PhyloTree<N> {
+    /// Calculate the site frequency spectrum of the tree
     pub fn sfs(&self) -> Vec<u32> {
         let mut sfs = vec![0; self.n_leaves];
         for (i, &nm) in self.unique_mutations.iter().enumerate() {
             let freq = self.n_leaves_subtree(i) as usize;
-            sfs[freq] += nm as u32;
+            sfs[freq - 1] += nm as u32;
         }
 
         remove_trailing(&mut sfs, &0);
@@ -278,8 +292,9 @@ impl<const N: u32> PhyloTree<N> {
         sfs
     }
 
+    /// Calculate single cell mutation burden distribution (scMBD) for all leaves
     pub fn mbd(&self) -> Vec<u16> {
-        let mut mbd = vec![0; self.max_n_mutations as usize];
+        let mut mbd = vec![0; self.max_n_mutations as usize + 1];
         for &nm in &self.total_mutations[1..self.n_leaves + 1] {
             mbd[nm as usize] += 1;
         }
@@ -289,8 +304,8 @@ impl<const N: u32> PhyloTree<N> {
         mbd
     }
 
-    /// Calculate the balance value all inner nodes in the tree
-    pub fn balance_by_mutations(&self) -> (Vec<f64>, Vec<f64>) {
+    /// Calculate balance values of all inner nodes grouped by their unique mutation
+    pub fn bbm(&self) -> (Vec<f64>, Vec<f64>) {
         let mut balances_sum = vec![0; self.max_n_mutations as usize + 1];
         let mut norm_balances_sum = vec![0.0; self.max_n_mutations as usize + 1];
         let mut repetitions = vec![0u32; self.max_n_mutations as usize + 1];
@@ -323,16 +338,18 @@ impl<const N: u32> PhyloTree<N> {
         (balance_mean, normalized_balance_mean)
     }
 
+    /// Calculate the pairwise distance distribution for all leaves
     pub fn distance_dist(&self) -> Vec<u32> {
-        let mut dist_dist = vec![0; 2 * self.max_n_mutations as usize];
-        for (i, nm_i) in self.total_mutations[1..self.n_leaves + 1]
-            .iter()
-            .enumerate()
-        {
-            for (j, nm_j) in self.total_mutations[(i + 2)..(self.n_leaves + 1)]
+        let mut dist_dist = vec![0; 2 * self.max_n_mutations as usize + 1];
+        // The leaves are in self.total_mutations[1..self.n_leaves+1]
+        // but in first for loop, the last leaf is not included, as we don't need self distance
+        for (i, nm_i) in self.total_mutations[1..self.n_leaves].iter().enumerate() {
+            let i = i + 1; // offset the root node
+            for (j, nm_j) in self.total_mutations[(i + 1)..(self.n_leaves + 1)]
                 .iter()
                 .enumerate()
             {
+                let j = j + i + 1; // offset the root node and the calculated nodes and self
                 let lca = self.lca_query(i, j);
                 let nm_lca = self.total_mutations[lca];
                 let dist = nm_i + nm_j - 2 * nm_lca;
@@ -389,6 +406,7 @@ impl Iterator for ChildrenIter<'_> {
     }
 }
 
+/// Remove trailing elements from a vector that match a given target
 fn remove_trailing<T: PartialEq>(vec: &mut Vec<T>, target: &T) {
     let mut i = vec.len();
     for (j, val) in vec.iter().enumerate().rev() {
@@ -413,5 +431,55 @@ mod tests {
 
         assert_eq!(remove_trailing_zero(vec![0, 0, 0, 1]), &[0, 0, 0, 1]);
         assert_eq!(remove_trailing_zero(vec![0, 0, 1, 0]), &[0, 0, 1]);
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    struct Const(u16);
+
+    impl Distribution<u16> for Const {
+        fn sample<R: rand::Rng + ?Sized>(&self, _: &mut R) -> u16 {
+            self.0
+        }
+    }
+
+    #[test]
+    fn test_tree() {
+        fn build_tree() -> Vec<LineageNode> {
+            let mut cells = vec![LineageNode::default()];
+
+            {
+                let cells = &mut cells;
+                fn divide_at(cells: &mut Vec<LineageNode>, i: usize) {
+                    crate::divide_at(cells, i, &mut ());
+                }
+
+                divide_at(cells, 0); // cell_r divide, [1, 2]
+                divide_at(cells, 0); // cell_1 divide, [11, 2, 12]
+                divide_at(cells, 1); // cell_2 divide, [11, 21, 12, 22]
+                divide_at(cells, 0); // cell_11 divide, [111, 21, 12, 22, 112]
+                divide_at(cells, 1); // cell_21 divide, [111, 211, 12, 22, 112, 212]
+            }
+
+            cells
+        }
+        let cells = build_tree();
+        let mut rng = rand::rngs::SmallRng::from_os_rng();
+        let dist = Const(1);
+        let phylo: PhyloTree<8> = PhyloTree::from_cells(cells.into_iter(), &mut rng, dist);
+
+        assert_eq!(phylo.sfs(), vec![
+            6, // each cell has one unique mutation
+            2, // mutation of 11 and 21 are shared by [111, 112] and [211, 212] respectively
+            2, // mutation of 1 and 2 are shared by [111, 112, 12] and [211, 212, 22]
+        ]);
+
+        assert_eq!(phylo.mbd(), vec![0, 0, 2, 4]);
+
+        assert_eq!(
+            phylo.bbm(),
+            (vec![0.0, 1.0, 0.0, 0.0], vec![0.0, 1.0 / 3.0, 0.0, 0.0])
+        );
+
+        assert_eq!(phylo.distance_dist(), vec![0, 0, 2, 4, 1, 4, 4]);
     }
 }
