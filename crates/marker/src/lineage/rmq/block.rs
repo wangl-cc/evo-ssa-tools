@@ -79,22 +79,12 @@ pub const fn block_rmq(sig: u16) -> u32 {
 }
 
 /// RMQ block with length N
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "bitcode", derive(bitcode::Decode, bitcode::Encode))]
 pub struct Block {
     sig: u16,
     min_v: u8,
     min_p: u8,
-}
-
-impl std::fmt::Debug for Block {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Block")
-            .field("sig", &format!("{:016b}", self.sig))
-            .field("min_v", &self.min_v)
-            .field("min_p", &self.min_p)
-            .finish()
-    }
 }
 
 impl Block {

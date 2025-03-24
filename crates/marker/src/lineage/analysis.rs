@@ -444,7 +444,7 @@ mod tests {
 
     #[test]
     fn test_tree() {
-        fn build_tree() -> Vec<LineageNode> {
+        fn build_cells() -> Vec<LineageNode> {
             let mut cells = vec![LineageNode::default()];
 
             {
@@ -462,7 +462,7 @@ mod tests {
 
             cells
         }
-        let cells = build_tree();
+        let cells = build_cells();
         let mut rng = rand::rngs::SmallRng::from_os_rng();
         let dist = Const(1);
         let phylo: PhyloTree<8> = PhyloTree::from_cells(cells.into_iter(), &mut rng, dist);
@@ -481,5 +481,31 @@ mod tests {
         );
 
         assert_eq!(phylo.distance_dist(), vec![0, 0, 2, 4, 1, 4, 4]);
+
+        // Test absorbing node with only one child
+        let mut cells = build_cells();
+
+        cells.remove(0); // [211, 12, 22, 112, 212]
+
+        let phylo: PhyloTree<8> = PhyloTree::from_cells(cells.into_iter(), &mut rng, dist);
+        assert_eq!(phylo.sfs(), vec![
+            6, // each cell has one unique mutation
+            2, // mutation of 1, 21 are shared by [112, 12] and [211, 212] respectively
+            1, // mutation of 2 are shared by [211, 212, 22]
+        ]);
+
+        assert_eq!(phylo.mbd(), vec![0, 0, 2, 3]);
+
+        assert_eq!(
+            phylo.bbm(),
+            (vec![1.0, 0.5, 0.0, 0.0], vec![
+                1.0 / 5.0,
+                (1.0 / 3.0 + 0.0) / 2.0,
+                0.0,
+                0.0
+            ])
+        );
+
+        assert_eq!(phylo.distance_dist(), vec![0, 0, 1, 3, 1, 3, 2]);
     }
 }
