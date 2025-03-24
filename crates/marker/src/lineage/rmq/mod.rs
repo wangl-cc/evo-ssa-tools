@@ -34,7 +34,7 @@ pub mod sparse_table;
 
 // use std::fmt::Debug;
 
-use block::{Block, BlockSteper};
+use block::{Block, BlockBuilder};
 use sparse_table::RmqSpareTable;
 
 #[derive(Debug, Clone, Copy)]
@@ -86,6 +86,7 @@ pub struct BlockRMQ<const N: u32> {
 }
 
 impl<const N: u32> BlockRMQ<N> {
+    /// Given a range [start, end], returns the index of the minimum element in the range
     pub fn min_in(&self, start: u32, end: u32) -> u32 {
         debug_assert!(
             start < end,
@@ -136,20 +137,20 @@ impl<const N: u32> BlockRMQ<N> {
                         min.pos() + offset
                     }
                 }
-                std::cmp::Ordering::Greater => min.pos() + start_block * N,
+                std::cmp::Ordering::Greater => min.pos() + offset,
             }
         }
     }
 }
 
-pub struct BlockRMQSteper<const N: u32> {
-    blocks: BlockSteper<N>,
+pub struct BlockRMQBuilder<const N: u32> {
+    blocks: BlockBuilder<N>,
 }
 
-impl<const N: u32> BlockRMQSteper<N> {
+impl<const N: u32> BlockRMQBuilder<N> {
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
-            blocks: BlockSteper::with_capacity(capacity),
+            blocks: BlockBuilder::with_capacity(capacity),
         }
     }
 
@@ -180,7 +181,7 @@ mod tests {
         let steps = [0, 1, 0, 1, 0, 0, 1, 0, 1, 0, 1, 1, 0, 0, 1, 1];
         // Depthes:         [0, 1, 0, 1, 0, 1, 2, 1, 2, 1, 2, 1, 0, 1, 2, 1, 0];
 
-        let mut builder = BlockRMQSteper::<2>::with_capacity(steps.len());
+        let mut builder = BlockRMQBuilder::<2>::with_capacity(steps.len());
         for &down in &steps {
             builder.step(down == 1);
         }
@@ -203,7 +204,7 @@ mod tests {
     #[test]
     fn test_encode() {
         let steps = [0, 1, 0];
-        let mut builder = BlockRMQSteper::<2>::with_capacity(steps.len());
+        let mut builder = BlockRMQBuilder::<2>::with_capacity(steps.len());
         for &down in &steps {
             builder.step(down == 1);
         }

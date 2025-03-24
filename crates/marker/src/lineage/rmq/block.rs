@@ -196,14 +196,14 @@ impl Block {
     }
 }
 
-pub struct BlockSteper<const N: u32> {
+pub struct BlockBuilder<const N: u32> {
     blocks: Vec<Block>,
     current_block: u16,
     current_position: u32,
     current_depth: Wrapping<u32>,
 }
 
-impl<const N: u32> BlockSteper<N> {
+impl<const N: u32> BlockBuilder<N> {
     pub fn with_capacity(capacity: usize) -> Self {
         debug_assert!(
             0 < N && N <= MAX_BLOCK_SIZE,
@@ -390,7 +390,7 @@ mod tests {
 
     #[test]
     fn test_blocks_builder() {
-        let mut builder = BlockSteper::<5>::with_capacity(12);
+        let mut builder = BlockBuilder::<5>::with_capacity(12);
 
         // The first block, Sequance [0, 1, 0, 1, 2], Signature: 0b0010
         builder.step(false); // 0 -> 1
@@ -433,7 +433,7 @@ mod tests {
         assert_eq!(blocks[2].sig, 0b11);
         assert_eq!(blocks[2].min_and_pos(), MinAndPosCompat::new(0, 2));
 
-        let mut builder = BlockSteper::<4>::with_capacity(8);
+        let mut builder = BlockBuilder::<4>::with_capacity(8);
 
         // First block, Sequence [0, 1, 2, 1]
         builder.step(false); // 0 -> 1

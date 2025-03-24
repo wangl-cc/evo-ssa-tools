@@ -1,7 +1,7 @@
 mod util;
 
 /// A trait used to represent a marker that can be used to trace the lineage of cells.
-pub trait Marker: Sized {
+pub trait Marker: Sized + Default {
     /// Global state of the simulation used to generate new markers
     type State;
 
@@ -20,6 +20,11 @@ pub trait Marker: Sized {
     ///
     /// Do not use this method directly. Use the `divide` method instead during cell division.
     fn gen_marker(&self, state: &mut Self::State) -> Self;
+}
+
+pub fn divide_at<M: Marker>(cells: &mut Vec<M>, i: usize, state: &mut M::State) {
+    let daughter = cells[i].divide(state);
+    cells.push(daughter);
 }
 
 /// A placeholder marker that when you don't want to use markers.
