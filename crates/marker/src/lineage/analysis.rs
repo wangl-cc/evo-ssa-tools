@@ -305,6 +305,18 @@ impl<const N: u32> PhyloTree<N> {
         mbd
     }
 
+    /// Calculate unique mutation burden distribution (uMBD) for all leaves
+    pub fn umbd(&self) -> Vec<u16> {
+        let mut mbd = vec![0; self.max_n_mutations as usize + 1];
+        for &nm in &self.unique_mutations {
+            mbd[nm as usize] += 1;
+        }
+
+        remove_trailing(&mut mbd, &0);
+
+        mbd
+    }
+
     /// Calculate balance values of all inner nodes grouped by their unique mutation
     pub fn bbm(&self) -> (Vec<f64>, Vec<f64>) {
         let mut balances_sum = vec![0; self.max_n_mutations as usize + 1];
@@ -474,6 +486,7 @@ mod tests {
             2, // mutation of 1 and 2 are shared by [111, 112, 12] and [211, 212, 22]
         ]);
         assert_eq!(phylo.mbd(), vec![0, 0, 2, 4]);
+        assert_eq!(phylo.umbd(), vec![1, 10]);
         assert_eq!(
             phylo.bbm(),
             (vec![0.0, 1.0, 0.0, 0.0], vec![0.0, 1.0 / 3.0, 0.0, 0.0])
@@ -490,6 +503,7 @@ mod tests {
             1, // mutation of 2 are shared by [211, 212, 22]
         ]);
         assert_eq!(phylo.mbd(), vec![0, 0, 2, 3]);
+        assert_eq!(phylo.umbd(), vec![1, 7, 1]);
         assert_eq!(
             phylo.bbm(),
             (vec![1.0, 0.5, 0.0, 0.0], vec![
