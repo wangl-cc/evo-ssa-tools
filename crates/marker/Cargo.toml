@@ -12,3 +12,6 @@ bitcode = ["dep:bitcode"]
 [dependencies]
 bitcode = { workspace = true, features = ["derive"], optional = true }
 rand = { workspace = true }
+
+[dev-dependencies]
+rand = { workspace = true, features = ["os_rng", "small_rng"] }
