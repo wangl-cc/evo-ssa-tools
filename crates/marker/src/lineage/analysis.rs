@@ -35,10 +35,10 @@ impl<const N: u32> PhyloTree<N> {
     /// # Panics
     ///
     /// Panics if the iterator does not have an exact size.
-    pub fn from_poisson_cells<I: Iterator<Item = LineageNode>>(
-        cells: I,
-        lambda: f64,
-    ) -> Option<Self> {
+    pub fn from_poisson_cells<'a, I>(cells: I, lambda: f64) -> Option<Self>
+    where
+        I: Iterator<Item = &'a LineageNode>,
+    {
         let mut rng = rand::rngs::SmallRng::from_os_rng();
         let dist = PoissonKnuth::new(lambda)?;
 
@@ -50,9 +50,10 @@ impl<const N: u32> PhyloTree<N> {
     /// # Panics
     ///
     /// Panics if the iterator does not have an exact size.
-    pub fn from_cells<I, G, D>(cells: I, rng: &mut G, dist: D) -> Self
+    pub fn from_cells<'a, I, G, D>(cells: I, rng: &mut G, dist: D) -> Self
     where
-        I: Iterator<Item = LineageNode>,
+        // Items must be references to node instead of owned nodes to avoid change of Rc ref_count
+        I: Iterator<Item = &'a LineageNode>,
         G: rand::Rng,
         D: Distribution<u16> + Copy,
     {
@@ -148,7 +149,7 @@ impl<const N: u32> PhyloTree<N> {
 
                 let n_unique_mutation = dist.sample(rng) + to_join;
 
-                match parent.ref_count() {
+                match node.ref_count() {
                     // For node with only 1 child, the unique mutations are joined to the child
                     1 => (pindex, n_unique_mutation),
                     // For node with two children, the unique mutations is its own unique,
@@ -462,40 +463,33 @@ mod tests {
 
             cells
         }
+
         let cells = build_cells();
         let mut rng = rand::rngs::SmallRng::from_os_rng();
         let dist = Const(1);
-        let phylo: PhyloTree<8> = PhyloTree::from_cells(cells.into_iter(), &mut rng, dist);
-
+        let phylo: PhyloTree<8> = PhyloTree::from_cells(cells.iter(), &mut rng, dist);
         assert_eq!(phylo.sfs(), vec![
             6, // each cell has one unique mutation
             2, // mutation of 11 and 21 are shared by [111, 112] and [211, 212] respectively
             2, // mutation of 1 and 2 are shared by [111, 112, 12] and [211, 212, 22]
         ]);
-
         assert_eq!(phylo.mbd(), vec![0, 0, 2, 4]);
-
         assert_eq!(
             phylo.bbm(),
             (vec![0.0, 1.0, 0.0, 0.0], vec![0.0, 1.0 / 3.0, 0.0, 0.0])
         );
-
         assert_eq!(phylo.distance_dist(), vec![0, 0, 2, 4, 1, 4, 4]);
 
         // Test absorbing node with only one child
         let mut cells = build_cells();
-
         cells.remove(0); // [211, 12, 22, 112, 212]
-
-        let phylo: PhyloTree<8> = PhyloTree::from_cells(cells.into_iter(), &mut rng, dist);
+        let phylo: PhyloTree<8> = PhyloTree::from_cells(cells.iter(), &mut rng, dist);
         assert_eq!(phylo.sfs(), vec![
             6, // each cell has one unique mutation
             2, // mutation of 1, 21 are shared by [112, 12] and [211, 212] respectively
             1, // mutation of 2 are shared by [211, 212, 22]
         ]);
-
         assert_eq!(phylo.mbd(), vec![0, 0, 2, 3]);
-
         assert_eq!(
             phylo.bbm(),
             (vec![1.0, 0.5, 0.0, 0.0], vec![
@@ -505,7 +499,6 @@ mod tests {
                 0.0
             ])
         );
-
         assert_eq!(phylo.distance_dist(), vec![0, 0, 1, 3, 1, 3, 2]);
     }
 }
