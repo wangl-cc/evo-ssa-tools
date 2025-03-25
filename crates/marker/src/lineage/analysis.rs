@@ -1,6 +1,6 @@
 use std::{fmt::Debug, num::NonZero};
 
-use rand::{SeedableRng, distr::Distribution};
+use rand::distr::Distribution;
 
 use super::{
     node::LineageNode,
@@ -35,14 +35,14 @@ impl<const N: u32> PhyloTree<N> {
     /// # Panics
     ///
     /// Panics if the iterator does not have an exact size.
-    pub fn from_poisson_cells<'a, I>(cells: I, lambda: f64) -> Option<Self>
+    pub fn from_poisson_cells<'a, I, G>(cells: I, rng: &mut G, lambda: f64) -> Option<Self>
     where
         I: Iterator<Item = &'a LineageNode>,
+        G: rand::Rng,
     {
-        let mut rng = rand::rngs::SmallRng::from_os_rng();
         let dist = PoissonKnuth::new(lambda)?;
 
-        Some(Self::from_cells(cells, &mut rng, dist))
+        Some(Self::from_cells(cells, rng, dist))
     }
 
     /// Create a new phylogenetic tree from a list of cells.
@@ -455,6 +455,8 @@ fn remove_trailing<T: PartialEq>(vec: &mut Vec<T>, target: &T) {
 
 #[cfg(test)]
 mod tests {
+    use rand::{SeedableRng, rngs::SmallRng};
+
     use super::*;
 
     #[test]
@@ -481,8 +483,8 @@ mod tests {
         crate::divide_at(cells, i, &mut ());
     }
 
-    fn rng() -> rand::rngs::SmallRng {
-        rand::rngs::SmallRng::from_os_rng()
+    fn rng() -> SmallRng {
+        SmallRng::from_os_rng()
     }
 
     #[test]
@@ -577,8 +579,53 @@ mod tests {
         assert_eq!(phylo.umbd(), vec![0, 4, 1]);
         assert_eq!(
             phylo.bbm(),
-            (vec![0.0, 1.0, 0.0, 0.00], vec![0.0, 1.0 / 3.0, 0.0, 0.0])
+            (vec![0.0, 1.0, 0.0, 0.0], vec![0.0, 1.0 / 3.0, 0.0, 0.0])
         );
         assert_eq!(phylo.distance_dist(), vec![0, 0, 1, 0, 2]);
+    }
+
+    #[test]
+    fn test_from_poisson() {
+        let mut cells = vec![LineageNode::default()];
+        let cells = &mut cells;
+        divide_at(cells, 0); // cell_r divide, [1, 2]
+        let dist = PoissonKnuth::new(10.0).unwrap();
+        let mut rng = SmallRng::seed_from_u64(0);
+        let m1 = dist.sample(&mut rng) as usize;
+        let m2 = dist.sample(&mut rng) as usize;
+        let mut rng = SmallRng::seed_from_u64(0);
+        let phylo: PhyloTree<2> =
+            PhyloTree::from_poisson_cells(cells.iter(), &mut rng, 10.0).unwrap();
+        assert_eq!(phylo.sfs(), vec![(m1 + m2) as u32]);
+        let mut expect_mbd = vec![0; m1.max(m2) + 1];
+        expect_mbd[m1] += 1;
+        expect_mbd[m2] += 1;
+        assert_eq!(phylo.mbd(), expect_mbd);
+        let mut expect_umbd = expect_mbd.clone();
+        expect_umbd[0] += 1;
+        assert_eq!(phylo.umbd(), expect_umbd);
+        assert_eq!(
+            phylo.bbm(),
+            (vec![0.0; m1.max(m2) + 1], vec![0.0; m1.max(m2) + 1])
+        );
+        let mut expect_dd = vec![0; m1 + m2 + 1];
+        expect_dd[m1 + m2] = 1;
+        assert_eq!(phylo.distance_dist(), expect_dd);
+    }
+
+    #[cfg(feature = "bitcode")]
+    #[test]
+    fn test_bitcode_serialize() {
+        let mut cells = vec![LineageNode::default()];
+        let cells = &mut cells;
+        divide_at(cells, 0); // cell_r divide, [1, 2]
+        let phylo: PhyloTree<2> = PhyloTree::from_cells(cells.iter(), &mut rng(), Const(1));
+        let serialized = bitcode::encode(&phylo);
+        let deserialized: PhyloTree<2> = bitcode::decode(&serialized).unwrap();
+
+        assert_eq!(deserialized.mbd(), phylo.mbd());
+        assert_eq!(deserialized.umbd(), phylo.umbd());
+        assert_eq!(deserialized.bbm(), phylo.bbm());
+        assert_eq!(deserialized.distance_dist(), phylo.distance_dist());
     }
 }
