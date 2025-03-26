@@ -242,6 +242,7 @@ dependencies = [
  "criterion",
  "iai-callgrind",
  "rand",
+ "rayon",
 ]
 
 [[package]]

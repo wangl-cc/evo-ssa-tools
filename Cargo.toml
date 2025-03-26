@@ -13,3 +13,4 @@ edition = "2024"
 bitcode = { version = "0", features = ["derive"], default-features = false }
 criterion = "0.5.1"
 rand = { version = "0.9.0", default-features = false }
+rayon = { version = "1.10.0" }
