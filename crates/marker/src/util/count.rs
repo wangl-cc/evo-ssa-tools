@@ -126,5 +126,16 @@ mod tests {
         let data: Vec<u16> = vec![];
         let result: Vec<u32> = data.into_par_iter().par_count(0);
         assert_eq!(result, [0]);
+
+        let data: Vec<u16> = vec![1, 2, 3, 1, 2, 1];
+        let result: Vec<u64> = data.into_par_iter().par_count(3);
+        assert_eq!(result, [0, 3, 2, 1]);
+    }
+
+    #[test]
+    fn test_par_weighted_count() {
+        let data: Vec<(u32, u32)> = vec![(1, 2), (3, 1), (2, 2), (1, 1)];
+        let result = data.into_par_iter().par_weighted_count(3);
+        assert_eq!(result, [0, 3, 2, 1]);
     }
 }

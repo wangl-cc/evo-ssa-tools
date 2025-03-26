@@ -1,7 +1,7 @@
 use std::{fmt::Debug, num::NonZero};
 
 use rand::distr::Distribution;
-use rayon::iter::{IndexedParallelIterator, IntoParallelRefIterator, ParallelIterator};
+use rayon::prelude::*;
 
 use super::{
     node::LineageNode,
