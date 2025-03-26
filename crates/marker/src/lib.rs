@@ -1,9 +1,19 @@
 mod util;
 
+// Cell Lineage tracking as a marker
+pub mod lineage;
+
+pub mod prelude {
+    pub use super::{
+        Marker, NoMarker, divide_at,
+        lineage::{analysis::PhyloTree, node::LineageNode},
+    };
+}
+
 /// A trait used to represent a marker that can be used to trace the lineage of cells.
 pub trait Marker: Sized + Default {
     /// Global state of the simulation used to generate new markers
-    type State;
+    type State: Default;
 
     /// Called when a cell divides
     ///
@@ -22,8 +32,8 @@ pub trait Marker: Sized + Default {
     fn gen_marker(&self, state: &mut Self::State) -> Self;
 }
 
-pub fn divide_at<M: Marker>(cells: &mut Vec<M>, i: usize, state: &mut M::State) {
-    let daughter = cells[i].divide(state);
+pub fn divide_at<M: Marker>(cells: &mut Vec<M>, index: usize, state: &mut M::State) {
+    let daughter = cells[index].divide(state);
     cells.push(daughter);
 }
 
@@ -31,7 +41,7 @@ pub fn divide_at<M: Marker>(cells: &mut Vec<M>, i: usize, state: &mut M::State) 
 ///
 /// Rust compiler should optimize away the marker and its associated code.
 /// So this is zero overhead, and should work like nothing happened.
-type NoMarker = ();
+pub type NoMarker = ();
 
 impl Marker for NoMarker {
     type State = ();
@@ -41,9 +51,6 @@ impl Marker for NoMarker {
 
     fn gen_marker(&self, _: &mut Self::State) -> Self {}
 }
-
-// Cell Lineage tracking as a marker
-pub mod lineage;
 
 #[cfg(test)]
 mod tests {

@@ -1,6 +1,6 @@
 [package]
 name = "evo-marker"
-version = "0.1.0"
+version = "0.1.1"
 authors.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -14,4 +14,10 @@ bitcode = { workspace = true, features = ["derive"], optional = true }
 rand = { workspace = true }
 
 [dev-dependencies]
+criterion = { workspace = true }
+iai-callgrind = "0.14.0"
 rand = { workspace = true, features = ["os_rng", "small_rng"] }
+
+[[bench]]
+name = "criterion"
+harness = false
