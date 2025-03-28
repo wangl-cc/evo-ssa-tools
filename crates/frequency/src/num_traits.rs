@@ -46,9 +46,9 @@ pub trait Count: std::ops::AddAssign + Sized + Copy + PartialEq {
 }
 
 macro_rules! impl_count_for_int {
-    ($($typ:ty),*) => {
+    ($($int_type:ty),*) => {
         $(
-            impl Count for $typ {
+            impl Count for $int_type {
                 const ZERO: Self = 0;
                 const ONE: Self = 1;
             }
@@ -59,9 +59,9 @@ macro_rules! impl_count_for_int {
 impl_count_for_int!(u8, u16, u32, u64, u128, usize);
 
 macro_rules! impl_count_for_float {
-    ($($typ:ty),*) => {
+    ($($float_type:ty),*) => {
         $(
-            impl Count for $typ {
+            impl Count for $float_type {
                 const ZERO: Self = 0.0;
                 const ONE: Self = 1.0;
             }
