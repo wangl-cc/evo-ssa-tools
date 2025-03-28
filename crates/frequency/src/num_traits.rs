@@ -16,9 +16,9 @@ pub trait ToUsize {
 }
 
 macro_rules! impl_to_usize {
-    ($($typ:ty),*) => {
+    ($($uint_type:ty),*) => {
         $(
-            impl ToUsize for $typ {
+            impl ToUsize for $uint_type {
                 fn to_usize(self) -> usize {
                     self as usize
                 }
