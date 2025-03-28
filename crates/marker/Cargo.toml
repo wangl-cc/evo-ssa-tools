@@ -11,14 +11,14 @@ bitcode = ["dep:bitcode"]
 
 [dependencies]
 bitcode = { workspace = true, features = ["derive"], optional = true }
+frequency = { workspace = true, features = ["parallel"] }
 rand = { workspace = true }
 rayon = { workspace = true }
 
 [dev-dependencies]
 criterion = { workspace = true }
-iai-callgrind = "0.14.0"
 rand = { workspace = true, features = ["os_rng", "small_rng"] }
 
 [[bench]]
-name = "criterion"
+name = "tree_analysis"
 harness = false

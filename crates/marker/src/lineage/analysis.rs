@@ -1,5 +1,6 @@
 use std::{fmt::Debug, num::NonZero};
 
+use frequency::prelude::*;
 use rand::distr::Distribution;
 use rayon::prelude::*;
 
@@ -7,11 +8,7 @@ use super::{
     node::LineageNode,
     rmq::{BlockRMQ, BlockRMQBuilder},
 };
-use crate::util::{
-    count::{ParallelCount, ParallelWeightedCount},
-    distributions::PoissonKnuth,
-    hashers::NoHashMap,
-};
+use crate::util::{distributions::PoissonKnuth, hashers::NoHashMap};
 
 /// A tree structure represents the cell lineage
 ///
@@ -35,11 +32,9 @@ pub struct PhyloTree<const N: u32> {
 }
 
 impl<const N: u32> PhyloTree<N> {
-    /// Construct a new phylogenetic tree from a cells and given lambda of poisson distribution
+    /// Construct a new phylogenetic tree from cells and given lambda of poisson distribution
     ///
-    /// # Panics
-    ///
-    /// Panics if the iterator does not have an exact size.
+    /// See also [`Self::from_cells`]
     pub fn from_poisson_cells<'a, I, G>(cells: I, rng: &mut G, lambda: f64) -> Option<Self>
     where
         I: Iterator<Item = &'a LineageNode>,
@@ -54,8 +49,11 @@ impl<const N: u32> PhyloTree<N> {
     ///
     /// # Panics
     ///
-    /// Panics if the iterator does not have an exact size,
-    /// and if the iterator is empty or has only one element.
+    /// Panics if the iterator does not have an exact size, and if the iterator is empty or has only
+    /// one element.
+    ///
+    /// If you call this function with a downsampled set of cells, please make sure all other cells
+    /// (not being chosen) are dropped.
     ///
     /// # Undefined Behavior
     ///
@@ -307,26 +305,29 @@ impl<const N: u32> PhyloTree<N> {
     /// Calculate the site frequency spectrum of the tree
     pub fn sfs(&self) -> Vec<u32> {
         self.unique_mutations
-            .par_iter()
+            .iter()
             .enumerate()
             .map(|(i, &nm)| (self.n_leaves_subtree(i), nm as u32))
-            .par_weighted_count(self.n_leaves)
+            .into_bounded_iter(self.n_leaves)
+            .weighted_freq()
     }
 
     /// Calculate single cell mutation burden distribution (scMBD) for all leaves
     pub fn mbd(&self) -> Vec<u16> {
         self.total_mutations[1..self.n_leaves + 1]
-            .par_iter()
+            .iter()
             .copied()
-            .par_count(self.max_n_mutations as usize)
+            .into_bounded_iter(self.max_n_mutations as usize)
+            .freq()
     }
 
     /// Calculate unique mutation burden distribution (uMBD) for all leaves
     pub fn umbd(&self) -> Vec<u16> {
         self.unique_mutations
-            .par_iter()
+            .iter()
             .copied()
-            .par_count(self.max_n_mutations as usize)
+            .into_bounded_iter(self.max_n_mutations as usize)
+            .freq()
     }
 
     /// Calculate balance values of all inner nodes grouped by their unique mutation
@@ -386,7 +387,8 @@ impl<const N: u32> PhyloTree<N> {
                         nm_i + nm_j - 2 * nm_lca
                     })
             })
-            .par_count(2 * self.max_n_mutations as usize + 1)
+            .into_bounded_par_iter(2 * self.max_n_mutations as usize)
+            .freq()
     }
 }
 

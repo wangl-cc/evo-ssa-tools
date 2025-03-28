@@ -2,7 +2,11 @@ use criterion::black_box;
 use evo_marker::prelude::*;
 use rand::prelude::*;
 
-fn max_n() -> usize {
+fn max_size() -> usize {
+    black_box(100000)
+}
+
+fn sample_size() -> usize {
     black_box(10000)
 }
 
@@ -18,20 +22,22 @@ fn lambda() -> f64 {
     black_box(10.0)
 }
 
+#[allow(dead_code)]
 #[inline]
 pub fn pure_birth<M: Marker>(rng: &mut impl Rng) -> Vec<M> {
-    birth_death_ssa(b(), d(), max_n(), rng)
+    birth_death_ssa(b(), d(), max_size(), rng)
 }
 
 #[inline]
 pub fn birth_death<M: Marker>(rng: &mut impl Rng) -> Vec<M> {
-    birth_death_ssa(b(), d(), max_n(), rng)
+    birth_death_ssa(b(), d(), max_size(), rng)
 }
 
-pub type BenchPhyloTree = PhyloTree<16>;
-
-pub fn build_tree(cells: &[LineageNode], rng: &mut impl Rng) -> BenchPhyloTree {
-    PhyloTree::from_poisson_cells(cells.iter(), rng, lambda()).unwrap()
+pub fn build_tree<'a, I, const N: u32>(cells: I, rng: &mut impl Rng) -> PhyloTree<N>
+where
+    I: Iterator<Item = &'a LineageNode>,
+{
+    PhyloTree::from_poisson_cells(cells, rng, lambda()).unwrap()
 }
 
 pub fn birth_death_ssa<M: Marker>(b: f64, d: f64, max_n: usize, rng: &mut impl Rng) -> Vec<M> {
@@ -56,6 +62,10 @@ pub fn birth_death_ssa<M: Marker>(b: f64, d: f64, max_n: usize, rng: &mut impl R
     }
 
     cells
+}
+
+pub fn down_sample(cells: Vec<LineageNode>, rng: &mut impl Rng) -> Vec<LineageNode> {
+    cells.choose_multiple(rng, sample_size()).cloned().collect()
 }
 
 /// Find the first n such that `(n + 1) * unit >= r`.
