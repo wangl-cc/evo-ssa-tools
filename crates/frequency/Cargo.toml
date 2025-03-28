@@ -1,0 +1,22 @@
+[package]
+name = "frequency"
+version = "0.1.0"
+authors.workspace = true
+license.workspace = true
+rust-version.workspace = true
+edition.workspace = true
+
+[features]
+parallel = ["dep:rayon"]
+
+[dependencies]
+rayon = { workspace = true, optional = true }
+
+[dev-dependencies]
+criterion = { workspace = true }
+nohash-hasher = "0.2.0"
+rand = { workspace = true, features = ["os_rng", "small_rng"] }
+
+[[bench]]
+name = "bounded_freq"
+harness = false

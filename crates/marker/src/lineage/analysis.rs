@@ -1,6 +1,8 @@
 use std::{fmt::Debug, num::NonZero};
 
+use frequency::prelude::*;
 use rand::distr::Distribution;
+use rayon::prelude::*;
 
 use super::{
     node::LineageNode,
@@ -30,11 +32,9 @@ pub struct PhyloTree<const N: u32> {
 }
 
 impl<const N: u32> PhyloTree<N> {
-    /// Construct a new phylogenetic tree from a cells and given lambda of poisson distribution
+    /// Construct a new phylogenetic tree from cells and given lambda of poisson distribution
     ///
-    /// # Panics
-    ///
-    /// Panics if the iterator does not have an exact size.
+    /// See also [`Self::from_cells`]
     pub fn from_poisson_cells<'a, I, G>(cells: I, rng: &mut G, lambda: f64) -> Option<Self>
     where
         I: Iterator<Item = &'a LineageNode>,
@@ -49,8 +49,11 @@ impl<const N: u32> PhyloTree<N> {
     ///
     /// # Panics
     ///
-    /// Panics if the iterator does not have an exact size,
-    /// and if the iterator is empty or has only one element.
+    /// Panics if the iterator does not have an exact size, and if the iterator is empty or has only
+    /// one element.
+    ///
+    /// If you call this function with a downsampled set of cells, please make sure all other cells
+    /// (not being chosen) are dropped.
     ///
     /// # Undefined Behavior
     ///
@@ -301,39 +304,30 @@ impl<const N: u32> PhyloTree<N> {
 impl<const N: u32> PhyloTree<N> {
     /// Calculate the site frequency spectrum of the tree
     pub fn sfs(&self) -> Vec<u32> {
-        let mut sfs = vec![0; self.n_leaves];
-        for (i, &nm) in self.unique_mutations.iter().enumerate() {
-            let freq = self.n_leaves_subtree(i) as usize;
-            sfs[freq - 1] += nm as u32;
-        }
-
-        remove_trailing(&mut sfs, &0);
-
-        sfs
+        self.unique_mutations
+            .iter()
+            .enumerate()
+            .map(|(i, &nm)| (self.n_leaves_subtree(i), nm as u32))
+            .into_bounded_iter(self.n_leaves)
+            .weighted_freq()
     }
 
     /// Calculate single cell mutation burden distribution (scMBD) for all leaves
     pub fn mbd(&self) -> Vec<u16> {
-        let mut mbd = vec![0; self.max_n_mutations as usize + 1];
-        for &nm in &self.total_mutations[1..self.n_leaves + 1] {
-            mbd[nm as usize] += 1;
-        }
-
-        remove_trailing(&mut mbd, &0);
-
-        mbd
+        self.total_mutations[1..self.n_leaves + 1]
+            .iter()
+            .copied()
+            .into_bounded_iter(self.max_n_mutations as usize)
+            .freq()
     }
 
     /// Calculate unique mutation burden distribution (uMBD) for all leaves
     pub fn umbd(&self) -> Vec<u16> {
-        let mut mbd = vec![0; self.max_n_mutations as usize + 1];
-        for &nm in &self.unique_mutations {
-            mbd[nm as usize] += 1;
-        }
-
-        remove_trailing(&mut mbd, &0);
-
-        mbd
+        self.unique_mutations
+            .iter()
+            .copied()
+            .into_bounded_iter(self.max_n_mutations as usize)
+            .freq()
     }
 
     /// Calculate balance values of all inner nodes grouped by their unique mutation
@@ -371,27 +365,30 @@ impl<const N: u32> PhyloTree<N> {
     }
 
     /// Calculate the pairwise distance distribution for all leaves
-    pub fn distance_dist(&self) -> Vec<u32> {
-        let mut dist_dist = vec![0; 2 * self.max_n_mutations as usize + 1];
+    ///
+    /// Returns a vector of u64 representing the frequency of each distance between leaves.
+    /// As we may have a large number of distances, which could make the frequency larger than u32,
+    /// so we use u64 to represent the frequency.
+    pub fn distance_dist(&self) -> Vec<u64> {
         // The leaves are in self.total_mutations[1..self.n_leaves+1]
-        // but in first for loop, the last leaf is not included, as we don't need self distance
-        for (i, nm_i) in self.total_mutations[1..self.n_leaves].iter().enumerate() {
-            let i = i + 1; // offset the root node
-            for (j, nm_j) in self.total_mutations[(i + 1)..(self.n_leaves + 1)]
-                .iter()
-                .enumerate()
-            {
-                let j = j + i + 1; // offset the root node and the calculated nodes and self
-                let lca = self.lca_query(i, j);
-                let nm_lca = self.total_mutations[lca];
-                let dist = nm_i + nm_j - 2 * nm_lca;
-                dist_dist[dist as usize] += 1;
-            }
-        }
-
-        remove_trailing(&mut dist_dist, &0);
-
-        dist_dist
+        // Calculate a triangle matrix i from 1..self.n_leaves, j from i+1..(self.n_leaves+1)
+        self.total_mutations[1..self.n_leaves]
+            .par_iter()
+            .enumerate()
+            .flat_map(|(i, &nm_i)| {
+                let i = i + 1; // offset the root node
+                self.total_mutations[(i + 1)..(self.n_leaves + 1)]
+                    .par_iter()
+                    .enumerate()
+                    .map(move |(j, &nm_j)| {
+                        let j = j + i + 1;
+                        let lca = self.lca_query(i, j);
+                        let nm_lca = self.total_mutations[lca];
+                        nm_i + nm_j - 2 * nm_lca
+                    })
+            })
+            .into_bounded_par_iter(2 * self.max_n_mutations as usize)
+            .freq()
     }
 }
 
@@ -441,35 +438,11 @@ impl Iterator for ChildrenIter<'_> {
     }
 }
 
-/// Remove trailing elements from a vector that match a given target
-fn remove_trailing<T: PartialEq>(vec: &mut Vec<T>, target: &T) {
-    let mut i = vec.len();
-    for (j, val) in vec.iter().enumerate().rev() {
-        if val != target {
-            i = j + 1;
-            break;
-        }
-    }
-    vec.truncate(i);
-}
-
 #[cfg(test)]
 mod tests {
     use rand::{SeedableRng, rngs::SmallRng};
 
     use super::*;
-
-    #[test]
-    fn test_remove_trailing() {
-        fn remove_trailing_zero(mut vec: Vec<usize>) -> Vec<usize> {
-            remove_trailing(&mut vec, &0);
-            vec
-        }
-
-        assert_eq!(remove_trailing_zero(vec![0, 0, 0, 1]), &[0, 0, 0, 1]);
-        assert_eq!(remove_trailing_zero(vec![0, 0, 1, 0]), &[0, 0, 1]);
-    }
-
     #[derive(Debug, Clone, Copy)]
     struct Const(u16);
 
@@ -498,6 +471,7 @@ mod tests {
         divide_at(cells, 1); // cell_21 divide, [111, 211, 12, 22, 112, 212]
         let phylo: PhyloTree<8> = PhyloTree::from_cells(cells.iter(), &mut rng(), Const(1));
         assert_eq!(phylo.sfs(), vec![
+            0, // mutation shared by no cells, always 0
             6, // each cell has one unique mutation
             2, // mutation of 11 and 21 are shared by [111, 112] and [211, 212] respectively
             2, // mutation of 1 and 2 are shared by [111, 112, 12] and [211, 212, 22]
@@ -523,6 +497,7 @@ mod tests {
         cells.remove(0); // cell_111 died, [211, 12, 22, 112, 212]
         let phylo: PhyloTree<8> = PhyloTree::from_cells(cells.iter(), &mut rng(), Const(1));
         assert_eq!(phylo.sfs(), vec![
+            0, // mutation shared by no cells, always 0
             6, // each cell has one unique mutation
             2, // mutation of 1, 21 are shared by [112, 12] and [211, 212] respectively
             1, // mutation of 2 are shared by [211, 212, 22]
@@ -550,6 +525,7 @@ mod tests {
         cells.remove(1); // cell_2 died, [11, 12]
         let phylo: PhyloTree<2> = PhyloTree::from_cells(cells.iter(), &mut rng(), Const(1));
         assert_eq!(phylo.sfs(), vec![
+            0, // mutation shared by no cells, always 0
             2, // each cell has one unique mutation
             1, // mutation of 1 are shared by [11, 12]
         ]);
@@ -571,6 +547,7 @@ mod tests {
         cells.remove(0); // cell_111 died, [121, 112, 122]
         let phylo: PhyloTree<2> = PhyloTree::from_cells(cells.iter(), &mut rng(), Const(1));
         assert_eq!(phylo.sfs(), vec![
+            0, // mutation shared by no cells, always 0
             4, // each cell has one unique mutation, and 11 is observed in 112
             1, // mutation of 12 is shared by [121, 122]
             1, // mutation if 1 is shared by [112, 112, 122]
@@ -596,7 +573,7 @@ mod tests {
         let mut rng = SmallRng::seed_from_u64(0);
         let phylo: PhyloTree<2> =
             PhyloTree::from_poisson_cells(cells.iter(), &mut rng, 10.0).unwrap();
-        assert_eq!(phylo.sfs(), vec![(m1 + m2) as u32]);
+        assert_eq!(phylo.sfs(), vec![0, (m1 + m2) as u32]);
         let mut expect_mbd = vec![0; m1.max(m2) + 1];
         expect_mbd[m1] += 1;
         expect_mbd[m2] += 1;

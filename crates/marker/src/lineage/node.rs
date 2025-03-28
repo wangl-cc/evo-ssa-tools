@@ -12,14 +12,6 @@ impl LineageNode {
         Self(Rc::new(Some(parent)))
     }
 
-    /// Clone the cell by incrementing the reference count
-    ///
-    /// This is not implemented as Clone trait to avoid cloning cells accidentally.
-    /// This method should be private and only used internally.
-    fn clone(&self) -> Self {
-        Self(Rc::clone(&self.0))
-    }
-
     /// Get the cell's ID.
     ///
     /// The ID is the memory address of the cell, which is unique for each cell.
@@ -44,6 +36,15 @@ impl LineageNode {
     /// For leaf nodes, it is equal to 1, as cell is only hold be
     pub(super) fn ref_count(&self) -> usize {
         Rc::strong_count(&self.0)
+    }
+}
+
+impl Clone for LineageNode {
+    /// Clone the cell by incrementing the reference count
+    ///
+    /// Be careful not to clone cells accidentally, which may make the lineage inconsistent.
+    fn clone(&self) -> Self {
+        Self(Rc::clone(&self.0))
     }
 }
 
