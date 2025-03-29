@@ -63,6 +63,19 @@ assert_eq!(frequencies, vec![0.5, 2.0, 2.5]);
 
 ## Parallel Iterator
 
-When you work with parallel iterators, or your dataset is very large. We have a parallet version of implementations that can be used to efficiently calculate frequencies in parallel.
+When you work with `rayon` parallel iterators, or your dataset is very large. We have a parallel version of implementations that can be used to efficiently calculate frequencies in parallel. To use the parallel version, you need to enable the `parallel` feature and then use replace the `into_*_iter` methods with `into_*_par_iter`.
+
+Example:
+
+```rust
+use frequency::prelude::*;
+use std::collections::HashMap;
+
+let fruits = vec!["apple", "banana", "apple", "orange", "banana"];
+let frequencies: HashMap<&str, usize> = fruits.into_hash_per_iter().freq();
+assert_eq!(frequencies["apple"], 2);
+assert_eq!(frequencies["banana"], 2);
+assert_eq!(frequencies["orange"], 1);
+```
 
 **NOTE**: Due to the overhead of parallelization, this approach may not always be faster than the sequential version. Benchmarking is recommended to determine the optimal approach for your specific use case.
