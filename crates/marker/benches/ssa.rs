@@ -1,4 +1,4 @@
-use criterion::black_box;
+use divan::black_box;
 use evo_marker::prelude::*;
 use rand::prelude::*;
 
@@ -6,7 +6,7 @@ fn max_size() -> usize {
     black_box(100000)
 }
 
-fn sample_size() -> usize {
+pub fn sample_size() -> usize {
     black_box(10000)
 }
 
@@ -62,10 +62,6 @@ pub fn birth_death_ssa<M: Marker>(b: f64, d: f64, max_n: usize, rng: &mut impl R
     }
 
     cells
-}
-
-pub fn down_sample(cells: Vec<LineageNode>, rng: &mut impl Rng) -> Vec<LineageNode> {
-    cells.choose_multiple(rng, sample_size()).cloned().collect()
 }
 
 /// Find the first n such that `(n + 1) * unit >= r`.

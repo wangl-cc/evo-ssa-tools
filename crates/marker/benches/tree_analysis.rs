@@ -1,56 +1,58 @@
-use criterion::{Criterion, criterion_group, criterion_main};
+use divan::Bencher;
 use evo_marker::prelude::*;
 use rand::{SeedableRng, rngs::SmallRng};
 use ssa::*;
 
 mod ssa;
 
-fn bench_birth_death(c: &mut Criterion) {
-    let mut group = c.benchmark_group("SSA");
-    let mut rng = SmallRng::seed_from_u64(42);
-    group.bench_function("SSA no marker", |b| {
-        b.iter(|| birth_death::<NoMarker>(&mut rng))
-    });
-    let mut rng = SmallRng::seed_from_u64(42);
-    group.bench_function("SSA lineage", |b| {
-        b.iter(|| birth_death::<LineageNode>(&mut rng))
-    });
-    group.finish();
-
-    let mut rng = SmallRng::seed_from_u64(42);
-    let cells = birth_death(&mut rng);
-    let cells = down_sample(cells, &mut rng);
-
-    let mut group = c.benchmark_group("Build Phylogenetic Tree");
-    let mut rng = SmallRng::seed_from_u64(42);
-    group.bench_function("N = 8", |b| {
-        b.iter(|| build_tree::<_, 8>(cells.iter(), &mut rng))
-    });
-    let mut rng = SmallRng::seed_from_u64(42);
-    group.bench_function("N = 16", |b| {
-        b.iter(|| build_tree::<_, 16>(cells.iter(), &mut rng))
-    });
-    group.finish();
-
-    let tree_8: PhyloTree<8> = build_tree(cells.iter(), &mut SmallRng::seed_from_u64(42));
-    let tree_16: PhyloTree<16> = build_tree(cells.iter(), &mut SmallRng::seed_from_u64(42));
-
-    let mut group = c.benchmark_group("Calculate SFS");
-    group.bench_function("N = 8", |b| b.iter(|| tree_8.sfs()));
-    group.bench_function("N = 16", |b| b.iter(|| tree_16.sfs()));
-    group.finish();
-
-    let mut group = c.benchmark_group("Calculate MBD");
-    group.bench_function("N = 8", |b| b.iter(|| tree_8.mbd()));
-    group.bench_function("N = 16", |b| b.iter(|| tree_16.mbd()));
-    group.finish();
-
-    let mut group = c.benchmark_group("Calculate Distance Distribution");
-    group.bench_function("N = 8", |b| b.iter(|| tree_8.distance_dist()));
-    group.bench_function("N = 16", |b| b.iter(|| tree_16.distance_dist()));
-    group.finish();
+fn main() {
+    divan::main();
 }
 
-criterion_group!(benches, bench_birth_death);
+const BLOCK_SIZES: [u32; 3] = [8, 12, 16];
 
-criterion_main!(benches);
+fn setup_rng() -> SmallRng {
+    SmallRng::seed_from_u64(42)
+}
+
+fn setup_cells() -> (Vec<LineageNode>, SmallRng) {
+    (birth_death(&mut setup_rng()), setup_rng())
+}
+
+fn setup_tree<const N: u32>() -> PhyloTree<N> {
+    let (cells, mut rng) = setup_cells();
+    build_tree::<_, N>(cells.iter(), &mut rng)
+}
+
+// #[divan::bench(types = [NoMarker, LineageNode])]
+// fn markers<M: Marker>(b: Bencher) {
+//     b.with_inputs(setup_rng)
+//         .bench_local_refs(|rng| birth_death::<M>(rng));
+// }
+
+#[divan::bench(consts = BLOCK_SIZES)]
+fn build_phylo_tree<const N: u32>(b: Bencher) {
+    b.with_inputs(setup_cells)
+        .bench_local_refs(|(cells, rng)| build_tree::<_, N>(cells.iter(), rng));
+}
+
+#[divan::bench(consts = BLOCK_SIZES)]
+fn sfs<const N: u32>(b: Bencher) {
+    let tree = setup_tree::<N>();
+    b.with_inputs(|| tree.clone())
+        .bench_local_refs(|tree| tree.sfs());
+}
+
+#[divan::bench(consts = BLOCK_SIZES)]
+fn mbd<const N: u32>(b: Bencher) {
+    let tree = setup_tree::<N>();
+    b.with_inputs(|| tree.clone())
+        .bench_local_refs(|tree| tree.mbd());
+}
+
+#[divan::bench(consts = BLOCK_SIZES)]
+fn distance_distribution<const N: u32>(b: Bencher) {
+    let tree = setup_tree::<N>();
+    b.with_inputs(|| (tree.clone(), setup_rng(), sample_size()))
+        .bench_local_refs(|(tree, rng, sample_size)| tree.distance_dist(rng, *sample_size));
+}

@@ -1,4 +1,4 @@
-# frequency
+# Frequency
 
 A crate for counting occurrences (frequency) of unique elements in iterators.
 
@@ -36,15 +36,15 @@ assert_eq!(frequencies["banana"], 2);
 assert_eq!(frequencies["orange"], 1);
 ```
 
-## Frequency Trait
+## Frequency type
 
-The crate provides two main traits for frequency calculation:
+The crate provides two types of frequency calculation:
 
-### [`Frequency`]
+### Normal 
 
 Normal frequency calculation where items have the same weight.
 
-### [`WeightedFrequency`]
+### Weighted Frequency
 
 Calculates the frequency where items have different weights.
 
