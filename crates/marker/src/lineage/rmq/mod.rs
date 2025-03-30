@@ -78,7 +78,7 @@ impl<T: Copy + Ord, I: Copy> Ord for MinAndPos<T, I> {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 #[cfg_attr(feature = "bitcode", derive(bitcode::Decode, bitcode::Encode))]
 pub struct BlockRMQ<const N: u32> {
     blocks: Vec<Block>,
