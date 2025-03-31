@@ -29,6 +29,17 @@ defaults:
     shell: bash
 
 jobs:
+  format:
+    name: Format Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Format
+        run: |
+          rustup toolchain install nightly --profile minimal --component rustfmt
+          cargo +nightly fmt -- --check
+
   build:
     name: Build and Test
     runs-on: ${{ matrix.os }}
@@ -49,10 +60,6 @@ jobs:
       - name: Lint (clippy)
         run: |
           cargo clippy --all-features --workspace -- -D warnings
-      - name: Lint (rustfmt)
-        run: |
-          rustup toolchain install nightly --profile minimal --component rustfmt
-          cargo +nightly fmt -- --check
       - name: Test
         run: |
           cargo test --all-features --workspace -- --include-ignored
