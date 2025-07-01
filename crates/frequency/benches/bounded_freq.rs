@@ -14,6 +14,7 @@ use rand::{
 };
 #[cfg(feature = "parallel")]
 use rayon::prelude::*;
+use zerocopy::{FromBytes, Immutable, IntoBytes};
 
 fn main() {
     divan::main();
@@ -23,16 +24,17 @@ const SIZES: &[usize] = &[1 << 16, 1 << 20, 1 << 24];
 
 fn prepare_data<T>(size: usize) -> (Vec<T>, usize)
 where
-    T: num_traits::PrimInt + SampleUniform + bytemuck::AnyBitPattern,
+    T: num_traits::PrimInt + SampleUniform + IntoBytes + FromBytes + Immutable,
 {
     const MAX_VALUE: usize = 4096;
 
     fn cast_vec<A, B>(src: &[A]) -> Vec<B>
     where
-        A: bytemuck::NoUninit,
-        B: bytemuck::AnyBitPattern,
+        A: IntoBytes + Immutable,
+        B: FromBytes + Immutable + Clone,
     {
-        bytemuck::cast_slice(src).to_vec()
+        let transmute: &[B] = zerocopy::transmute_ref!(src);
+        transmute.to_vec()
     }
 
     fn gen_data<T>(size: usize) -> Vec<T>
@@ -81,7 +83,9 @@ mod compare_methods {
                     + std::hash::Hash
                     + nohash_hasher::IsEnabled
                     + num_traits::PrimInt
-                    + bytemuck::AnyBitPattern
+                    + IntoBytes
+                    + FromBytes
+                    + Immutable
                     + Send
                     + Sync,
             {

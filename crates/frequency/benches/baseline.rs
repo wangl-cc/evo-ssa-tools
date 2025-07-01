@@ -61,7 +61,7 @@ where
                         partial_freq[index] += C::ONE;
                     } else {
                         // Panic if value exceeds max_value, consistent with sequential version
-                        panic!("Value {} exceeds max_value {}", index, max_value);
+                        panic!("Value {index} exceeds max_value {max_value}");
                     }
                 }
                 partial_freq // Return partial result
