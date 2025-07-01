@@ -3,7 +3,7 @@ members = ["crates/*"]
 resolver = "3"
 
 [workspace.package]
-authors = ["Long Wang <wangl-cc@outlook.com>"]
+authors = ["Long Wang <git@loonw.cc>"]
 license = "MIT OR Apache-2.0"
 # edition 2024 is introduced in Rust 1.85
 rust-version = "1.85"
@@ -12,9 +12,10 @@ edition = "2024"
 [workspace.dependencies]
 frequency = { path = "crates/frequency" }
 
-bitcode = { version = "0", features = ["derive"], default-features = false }
+bitcode = { version = "0.6", default-features = false }
 bytemuck = "1.22.0"
 divan = "0.1.17"
+fjall = { version = "2.10.0", default-features = false }
 nohash-hasher = "0.2.0"
 num-traits = "0.2.19"
 rand = { version = "0.9.0", default-features = false, features = ["std"] }
