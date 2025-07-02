@@ -364,29 +364,18 @@ impl<const N: u32> PhyloTree<N> {
         (balance_mean, normalized_balance_mean)
     }
 
-    /// Calculate the pairwise distance distribution for `sample_size` leaves
+    /// Calculate the pairwise distance distribution for `nodes`
     ///
-    /// Those leaves are randomly selected from the tree.
     /// Returns a vector of u64 representing the frequency of each distance between leaves.
     /// As we may have a large number of distances, which could make the frequency larger than u32,
     /// so we use u64 to represent the frequency.
-    pub fn distance_dist(&self, rng: &mut impl Rng, sample_size: usize) -> Vec<u64> {
-        let indices = {
-            let mut indices = rand::seq::index::sample(rng, self.n_leaves, sample_size).into_vec();
-            indices.sort_unstable();
-            indices
-        };
-
-        // The leaves are in self.total_mutations[1..self.n_leaves+1]
-        // Calculate a triangle matrix i from 1..self.n_leaves, j from i+1..(self.n_leaves+1)
-        indices[..(indices.len() - 1)]
+    fn distance_dist<T: Count + Sync + Send>(&self, nodes: &[usize]) -> Vec<T> {
+        nodes[..(nodes.len() - 1)] // Avoid calculating distances between the same node
             .par_iter()
             .enumerate()
-            .flat_map(|(i, &node_i_minus_1)| {
-                let node_i = node_i_minus_1 + 1;
+            .flat_map(|(i, &node_i)| {
                 let nm_i = self.total_mutations[node_i];
-                indices[(i + 1)..].par_iter().map(move |node_j_minus_1| {
-                    let node_j = node_j_minus_1 + 1;
+                nodes[(i + 1)..].par_iter().map(move |&node_j| {
                     let nm_j = self.total_mutations[node_j];
                     let lca = self.lca_query(node_i, node_j);
                     let nm_lca = self.total_mutations[lca];
@@ -396,6 +385,65 @@ impl<const N: u32> PhyloTree<N> {
             .into_bounded_par_iter(2 * self.max_n_mutations as usize)
             .freq()
     }
+
+    /// Calculate the pairwise distance distribution for `sample_size` leaves
+    ///
+    /// Those leaves are randomly selected from the tree.
+    pub fn distance_dist_leaves<T: Count + Sync + Send>(
+        &self,
+        rng: &mut impl Rng,
+        sample_size: usize,
+    ) -> Vec<T> {
+        let leaves = {
+            let mut indics = rand_sorted_range(rng, self.n_leaves, sample_size);
+            // The leaves are start from 1 instead of 0 (as 0 is reserved from the root)
+            indics.iter_mut().for_each(|i| *i += 1);
+            indics
+        };
+
+        self.distance_dist(&leaves)
+    }
+
+    pub fn distance_dist_with_ancestors<T: Count + Sync + Send>(
+        &self,
+        rng: &mut impl Rng,
+        sample_size: usize,
+    ) -> Vec<T> {
+        let nodes = rand_sorted_range(rng, self.total_mutations.len(), sample_size);
+
+        self.distance_dist(&nodes)
+    }
+
+    pub fn distance_dist_ancestors_only<T: Count + Sync + Send>(
+        &self,
+        rng: &mut impl Rng,
+        sample_size: usize,
+    ) -> Vec<T> {
+        let ancestors = {
+            let mut indices =
+                rand_sorted_range(rng, self.total_mutations.len() - self.n_leaves, sample_size);
+
+            indices.iter_mut().for_each(|i| {
+                if *i != 0 {
+                    *i += self.n_leaves;
+                }
+            });
+            indices
+        };
+
+        self.distance_dist(&ancestors)
+    }
+}
+
+/// Randomly sample `amount` of indices from `0..length` and return a sorted vector
+///
+/// # Panic
+///
+/// If the amount is greater than the length, `rand::seq::index::sample` will panic.
+fn rand_sorted_range(rng: &mut impl Rng, length: usize, amount: usize) -> Vec<usize> {
+    let mut indices = rand::seq::index::sample(rng, length, amount).into_vec();
+    indices.sort_unstable(); // All indices are unique, so use unstable sort is fine
+    indices
 }
 
 #[derive(Clone, Debug, Default)]
@@ -488,9 +536,12 @@ mod tests {
             phylo.bbm(),
             (vec![0.0, 1.0, 0.0, 0.0], vec![0.0, 1.0 / 3.0, 0.0, 0.0])
         );
-        assert_eq!(phylo.distance_dist(&mut rng(), 6), vec![
-            0, 0, 2, 4, 1, 4, 4
-        ]);
+        let ddl: Vec<u32> = phylo.distance_dist_leaves(&mut rng(), 6);
+        assert_eq!(ddl, vec![0, 0, 2, 4, 1, 4, 4]);
+        let ddwa: Vec<u32> = phylo.distance_dist_with_ancestors(&mut rng(), 11);
+        assert_eq!(ddwa, vec![0, 10, 13, 12, 8, 8, 4]);
+        let dda: Vec<u32> = phylo.distance_dist_ancestors_only(&mut rng(), 5);
+        assert_eq!(dda, vec![0, 4, 3, 2, 1]);
     }
 
     #[test]
@@ -521,9 +572,8 @@ mod tests {
                 0.0
             ])
         );
-        assert_eq!(phylo.distance_dist(&mut rng(), 5), vec![
-            0, 0, 1, 3, 1, 3, 2
-        ]);
+        let ddl: Vec<u32> = phylo.distance_dist_leaves(&mut rng(), 5);
+        assert_eq!(ddl, vec![0, 0, 1, 3, 1, 3, 2]);
     }
 
     #[test]
@@ -542,7 +592,8 @@ mod tests {
         assert_eq!(phylo.mbd(), vec![0, 0, 2]);
         assert_eq!(phylo.umbd(), vec![0, 3]);
         assert_eq!(phylo.bbm(), (vec![0.0, 0.0, 0.00], vec![0.0, 0.0, 0.0]));
-        assert_eq!(phylo.distance_dist(&mut rng(), 2), vec![0, 0, 1]);
+        let ddl: Vec<u32> = phylo.distance_dist_leaves(&mut rng(), 2);
+        assert_eq!(ddl, vec![0, 0, 1]);
     }
 
     #[test]
@@ -568,7 +619,8 @@ mod tests {
             phylo.bbm(),
             (vec![0.0, 1.0, 0.0, 0.0], vec![0.0, 1.0 / 3.0, 0.0, 0.0])
         );
-        assert_eq!(phylo.distance_dist(&mut rng(), 3), vec![0, 0, 1, 0, 2]);
+        let ddl: Vec<u32> = phylo.distance_dist_leaves(&mut rng(), 3);
+        assert_eq!(ddl, vec![0, 0, 1, 0, 2]);
     }
 
     #[test]
@@ -597,7 +649,8 @@ mod tests {
         );
         let mut expect_dd = vec![0; m1 + m2 + 1];
         expect_dd[m1 + m2] = 1;
-        assert_eq!(phylo.distance_dist(&mut rng, 2), expect_dd);
+        let ddl: Vec<u32> = phylo.distance_dist_leaves(&mut rng, 2);
+        assert_eq!(ddl, expect_dd);
     }
 
     #[cfg(feature = "bitcode")]
@@ -613,9 +666,7 @@ mod tests {
         assert_eq!(deserialized.mbd(), phylo.mbd());
         assert_eq!(deserialized.umbd(), phylo.umbd());
         assert_eq!(deserialized.bbm(), phylo.bbm());
-        assert_eq!(
-            deserialized.distance_dist(&mut rng(), 2),
-            phylo.distance_dist(&mut rng(), 2)
-        );
+        let ddl: Vec<u32> = deserialized.distance_dist_leaves(&mut rng(), 2);
+        assert_eq!(ddl, phylo.distance_dist_leaves(&mut rng(), 2));
     }
 }

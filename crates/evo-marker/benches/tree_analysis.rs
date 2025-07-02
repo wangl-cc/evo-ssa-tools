@@ -54,5 +54,7 @@ fn mbd<const N: u32>(b: Bencher) {
 fn distance_distribution<const N: u32>(b: Bencher) {
     let tree = setup_tree::<N>();
     b.with_inputs(|| (tree.clone(), setup_rng(), sample_size()))
-        .bench_local_refs(|(tree, rng, sample_size)| tree.distance_dist(rng, *sample_size));
+        .bench_local_refs(|(tree, rng, sample_size)| {
+            tree.distance_dist_leaves::<u32>(rng, *sample_size)
+        });
 }
