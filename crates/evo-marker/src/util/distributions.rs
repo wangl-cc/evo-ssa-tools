@@ -2,7 +2,7 @@
 ///
 /// This is only suitable for small lambda values (lambda < 30.0).
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) struct PoissonKnuth {
+pub struct PoissonKnuth {
     exp_lambda: f64,
 }
 
@@ -10,7 +10,7 @@ impl PoissonKnuth {
     /// Create a new Poisson distribution with the given lambda.
     ///
     /// Returns None if lambda is not positive or too large (lambda > 30.0).
-    pub(crate) fn new(lambda: f64) -> Option<Self> {
+    pub fn new(lambda: f64) -> Option<Self> {
         if lambda > 0.0 {
             if lambda > 30.0 {
                 return None;

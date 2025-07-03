@@ -33,11 +33,11 @@ pub fn birth_death<M: Marker>(rng: &mut impl Rng) -> Vec<M> {
     birth_death_ssa(b(), d(), max_size(), rng)
 }
 
-pub fn build_tree<'a, I, const N: u32>(cells: I, rng: &mut impl Rng) -> PhyloTree<N>
-where
-    I: Iterator<Item = &'a LineageNode>,
-{
-    PhyloTree::from_poisson_cells(cells, rng, lambda()).unwrap()
+pub fn build_tree<const N: u32>(cells: Vec<LineageNode>, rng: &mut impl Rng) -> PhyloTree<N> {
+    PhyloTree::poisson_builder(cells, lambda())
+        .unwrap()
+        .sample(rng, sample_size())
+        .build(rng)
 }
 
 pub fn birth_death_ssa<M: Marker>(b: f64, d: f64, max_n: usize, rng: &mut impl Rng) -> Vec<M> {

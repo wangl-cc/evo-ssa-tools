@@ -73,7 +73,7 @@ impl_count_for_float!(f32, f64);
 
 /// Remove trailing zeros from a vector to reduce memory usage
 pub(crate) fn remove_trailing_zeros<U: Count>(vec: &mut Vec<U>) {
-    let mut i = vec.len();
+    let mut i = 0;
     for (j, &val) in vec.iter().enumerate().rev() {
         if val != U::ZERO {
             i = j + 1;
@@ -108,5 +108,6 @@ mod tests {
 
         assert_eq!(rtz(vec![0, 0, 0, 1]), &[0, 0, 0, 1]);
         assert_eq!(rtz(vec![0, 0, 1, 0]), &[0, 0, 1]);
+        assert_eq!(rtz(vec![0, 0]), &[]);
     }
 }
