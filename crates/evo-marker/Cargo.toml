@@ -11,7 +11,7 @@ bitcode = ["dep:bitcode"]
 
 [dependencies]
 bitcode = { workspace = true, optional = true, features = ["derive"] }
-frequency = { workspace = true, features = ["parallel"] }
+frequency = { workspace = true }
 rand = { workspace = true }
 rayon = { workspace = true }
 

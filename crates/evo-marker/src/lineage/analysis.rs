@@ -2,7 +2,6 @@ use std::{fmt::Debug, num::NonZero, ops::Range};
 
 use frequency::prelude::*;
 use rand::{Rng, distr::Distribution};
-use rayon::prelude::*;
 
 use super::{
     node::LineageNode,
@@ -376,36 +375,34 @@ impl<const N: u32> PhyloTree<N> {
         (balance_mean, normalized_balance_mean)
     }
 
-    /// Calculate the pairwise distance distribution for `nodes`
+    /// Calculate the pairwise distance distribution between `nodes`
     pub fn distance_dist<T: Count + Sync + Send>(&self, nodes: Range<usize>) -> Vec<T> {
-        (nodes.start..(nodes.end - 1)) // Avoid calculating distances between the same node
-            .into_par_iter()
+        // Avoid calculating distances between the same node, so end at nodes.end - 1
+        (nodes.start..(nodes.end - 1))
             .flat_map(|node_i| {
                 let nm_i = self.total_mutations[node_i];
-                ((node_i + 1)..nodes.end)
-                    .into_par_iter()
-                    .map(move |node_j| {
-                        let nm_j = self.total_mutations[node_j];
-                        let lca = self.lca_query(node_i, node_j);
-                        let nm_lca = self.total_mutations[lca];
-                        nm_i + nm_j - 2 * nm_lca
-                    })
+                ((node_i + 1)..nodes.end).map(move |node_j| {
+                    let nm_j = self.total_mutations[node_j];
+                    let lca = self.lca_query(node_i, node_j);
+                    let nm_lca = self.total_mutations[lca];
+                    nm_i + nm_j - 2 * nm_lca
+                })
             })
-            .into_bounded_par_iter(2 * self.max_n_mutations as usize)
+            .into_bounded_iter(2 * self.max_n_mutations as usize)
             .freq()
     }
 
-    /// Calculate the pairwise distance distribution for leaves
+    /// Calculate the pairwise distance distribution between all leaves
     pub fn distance_dist_leaves<T: Count + Sync + Send>(&self) -> Vec<T> {
         self.distance_dist(1..(self.n_leaves + 1)) // 0 is reserved for the root
     }
 
-    /// Calculate the pairwise distance distribution for all nodes in the tree
+    /// Calculate the pairwise distance distribution between all nodes in the tree
     pub fn distance_dist_with_ancestors<T: Count + Sync + Send>(&self) -> Vec<T> {
         self.distance_dist(0..self.total_mutations.len())
     }
 
-    /// Calculate the pairwise distance distribution for ancestors (inner nodes)
+    /// Calculate the pairwise distance distribution between ancestors only
     pub fn distance_dist_ancestors_only<T: Count + Sync + Send>(&self) -> Vec<T> {
         let offset = self.n_leaves + 1;
         // All non-root inner nodes
