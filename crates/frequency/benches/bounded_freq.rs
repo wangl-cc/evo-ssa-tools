@@ -22,9 +22,27 @@ fn main() {
 
 const SIZES: &[usize] = &[1 << 16, 1 << 20, 1 << 24];
 
+trait Sampleable: SampleUniform + Count {
+    fn from_usize(value: usize) -> Self;
+}
+
+macro_rules! impl_sampleable {
+    ($($ty:ty),*) => {
+        $(
+            impl Sampleable for $ty {
+                fn from_usize(value: usize) -> Self {
+                    value as $ty
+                }
+            }
+        )*
+    };
+}
+
+impl_sampleable!(u8, u16, u32, u64, usize);
+
 fn prepare_data<T>(size: usize) -> (Vec<T>, usize)
 where
-    T: num_traits::PrimInt + SampleUniform + IntoBytes + FromBytes + Immutable,
+    T: SampleUniform + IntoBytes + FromBytes + Immutable + Copy,
 {
     const MAX_VALUE: usize = 4096;
 
@@ -37,11 +55,8 @@ where
         transmute.to_vec()
     }
 
-    fn gen_data<T>(size: usize) -> Vec<T>
-    where
-        T: num_traits::PrimInt + SampleUniform,
-    {
-        Uniform::new_inclusive(T::zero(), T::from(MAX_VALUE).unwrap_or(T::max_value()))
+    fn gen_data<T: Sampleable>(size: usize) -> Vec<T> {
+        Uniform::new_inclusive(T::ZERO, T::from_usize(MAX_VALUE))
             .unwrap()
             .sample_iter(&mut SmallRng::seed_from_u64(42))
             .take(size)
@@ -82,10 +97,10 @@ mod compare_methods {
                     + Eq
                     + std::hash::Hash
                     + nohash_hasher::IsEnabled
-                    + num_traits::PrimInt
                     + IntoBytes
                     + FromBytes
                     + Immutable
+                    + Copy
                     + Send
                     + Sync,
             {
