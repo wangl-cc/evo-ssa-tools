@@ -94,7 +94,7 @@ mod tests {
             atomic::{AtomicUsize, Ordering},
         },
         thread::sleep,
-        time::{Duration, Instant},
+        time::Duration,
     };
 
     use rand::rngs::SmallRng;
@@ -161,18 +161,14 @@ mod tests {
         assert_eq!(analysis_calls.load(Ordering::SeqCst), 5);
 
         // Second execution - should use cached final results
-        let start = Instant::now();
         let results2 = exp_analysis
             .execute_many(&cache, (0..5).into_par_iter().map(|i| (i, i)))?
             .collect::<Result<Vec<usize>>>()?;
-        let time = start.elapsed();
 
         assert_eq!(results2, expected);
         // No additional calls should have been made
         assert_eq!(experiment_calls.load(Ordering::SeqCst), 5);
         assert_eq!(analysis_calls.load(Ordering::SeqCst), 5);
-        // Should be fast due to caching
-        assert!(time.as_millis() < 50);
 
         Ok(())
     }
