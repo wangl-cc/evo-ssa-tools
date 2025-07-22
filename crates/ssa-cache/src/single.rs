@@ -2,7 +2,7 @@ use std::marker::PhantomData;
 
 use rand::{Rng, SeedableRng};
 
-use crate::{CacheStore, Cacheable, Compute, Encodeable, Result};
+use crate::{CacheStore, Cacheable, Compute, Encodeable, Result, fetch_or_execute};
 
 #[derive(Debug)]
 pub struct PureCompute<I, O, F> {
@@ -29,19 +29,15 @@ impl<I, O, F: Clone> Clone for PureCompute<I, O, F> {
     }
 }
 
-impl<I, O, F, C> Compute<[u8], C> for PureCompute<I, O, F>
+impl<I, O, F, C> Compute<C> for PureCompute<I, O, F>
 where
     I: Encodeable,
     O: Cacheable<Buffer = I::Buffer>,
     F: Fn(I) -> O,
-    C: CacheStore<[u8]>,
+    C: CacheStore,
 {
     type Input = I;
     type Output = O;
-
-    fn raw_execute(&mut self, input: I) -> Self::Output {
-        (self.function)(input)
-    }
 
     fn execute(
         &mut self,
@@ -50,7 +46,7 @@ where
         buffer: &mut <Self::Output as Encodeable>::Buffer,
     ) -> Result<Self::Output> {
         let sig = input.encode(buffer).to_owned();
-        self.execute_with_sig(&sig, input, cache, buffer)
+        fetch_or_execute(&sig, cache, buffer, || (self.function)(input))
     }
 }
 
@@ -91,20 +87,16 @@ impl<I, O, F: Clone, G: SeedableRng> Clone for StochasiticCompute<I, O, F, G> {
     }
 }
 
-impl<F, I, O, G, C> Compute<[u8], C> for StochasiticCompute<I, O, F, G>
+impl<F, I, O, G, C> Compute<C> for StochasiticCompute<I, O, F, G>
 where
     F: for<'g> Fn(&'g mut G, I) -> O,
     G: Rng,
     I: Encodeable,
     O: Cacheable<Buffer = I::Buffer>,
-    C: CacheStore<[u8]>,
+    C: CacheStore,
 {
     type Input = (usize, I);
     type Output = O;
-
-    fn raw_execute(&mut self, (_, input): Self::Input) -> Self::Output {
-        (self.function)(&mut self.rng, input)
-    }
 
     fn execute(
         &mut self,
@@ -114,7 +106,10 @@ where
     ) -> Result<Self::Output> {
         let (i, input) = input;
         let sig = [input.encode(buffer), &i.to_le_bytes()].concat();
-        self.execute_with_sig(&sig, (i, input), cache, buffer)
+
+        fetch_or_execute(&sig, cache, buffer, || {
+            (self.function)(&mut self.rng, input)
+        })
     }
 }
 
@@ -122,34 +117,64 @@ where
 mod tests {
     use std::{
         hash::RandomState,
+        sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        },
         thread::sleep,
-        time::{Duration, Instant},
+        time::Duration,
     };
 
     use rand::rngs::SmallRng;
     use rayon::prelude::*;
 
     use super::*;
-    use crate::HashMapStore;
+    use crate::{CodecBuffer, HashMapStore};
 
     #[test]
     fn test_pure() -> Result<()> {
         let compute = PureCompute::new(|i| i + 1usize);
         let cache = HashMapStore::<RandomState>::default();
 
-        // Test fresh results
         let results = compute
             .execute_many(&cache, (0..100).into_par_iter())?
             .collect::<Result<Vec<usize>>>()?;
 
         assert_eq!(results, (0..100).map(|i| i + 1).collect::<Vec<usize>>());
 
-        // Test results are cached
-        let results = compute
-            .execute_many(&cache, (0..100).into_par_iter())?
+        Ok(())
+    }
+
+    #[test]
+    fn test_pure_caching() -> Result<()> {
+        let call_count = Arc::new(AtomicUsize::new(0));
+        let call_count_clone = call_count.clone();
+
+        let compute = PureCompute::new(move |i| {
+            call_count_clone.fetch_add(1, Ordering::SeqCst);
+            i * 2
+        });
+
+        let cache = HashMapStore::<RandomState>::default();
+        let n_inputs = 5;
+
+        // First execution - should call function for each input
+        let results1 = compute
+            .execute_many(&cache, (0..n_inputs).into_par_iter())?
             .collect::<Result<Vec<usize>>>()?;
 
-        assert_eq!(results, (0..100).map(|i| i + 1).collect::<Vec<usize>>());
+        let expected: Vec<usize> = (0..n_inputs).map(|i| i * 2).collect();
+        assert_eq!(results1, expected);
+        assert_eq!(call_count.load(Ordering::SeqCst), n_inputs);
+
+        // Second execution - should use cached results (no additional calls)
+        let results2 = compute
+            .execute_many(&cache, (0..n_inputs).into_par_iter())?
+            .collect::<Result<Vec<usize>>>()?;
+
+        assert_eq!(results2, expected);
+        // Should still be the same number of calls (cached)
+        assert_eq!(call_count.load(Ordering::SeqCst), n_inputs);
 
         Ok(())
     }
@@ -161,10 +186,9 @@ mod tests {
             sleep(Duration::from_millis(rng.random_range(0..100)));
             i + 1
         });
-        let n_input = rayon::current_num_threads() * 10;
+        let n_input = rayon::current_num_threads();
         let cache = HashMapStore::<RandomState>::default();
 
-        // Test fresh results
         let inputs = (0..n_input).into_par_iter().map(|i| (i, i));
         let results = compute
             .execute_many(&cache, inputs.into_par_iter())?
@@ -172,17 +196,80 @@ mod tests {
 
         assert_eq!(results, (0..n_input).map(|i| i + 1).collect::<Vec<usize>>());
 
-        // Test cache hits
-        let inputs = (0..n_input).into_par_iter().map(|i| (i, i));
-        let start = Instant::now();
-        let results = compute
-            .execute_many(&cache, inputs.into_par_iter())?
-            .collect::<Result<Vec<usize>>>()?;
-        let time = start.elapsed();
+        Ok(())
+    }
 
-        // If cache missing, we need around 500 ms + overhead
-        assert_eq!(results, (0..n_input).map(|i| i + 1).collect::<Vec<usize>>());
-        assert!(time.as_millis() < 200);
+    #[test]
+    fn test_stochastic_cache() -> Result<()> {
+        let call_count = Arc::new(AtomicUsize::new(0));
+        let call_count_clone = call_count.clone();
+
+        let compute = StochasiticCompute::new(move |_: &mut SmallRng, i| {
+            call_count_clone.fetch_add(1, Ordering::SeqCst);
+            i * 3
+        });
+
+        let cache = HashMapStore::<RandomState>::default();
+        let n_inputs = 20;
+
+        // First execution - should call function for each input
+        let inputs = (0..n_inputs).into_par_iter().map(|i| (i, i));
+        let results1 = compute
+            .execute_many(&cache, inputs)?
+            .collect::<Result<Vec<usize>>>()?;
+
+        let expected: Vec<usize> = (0..n_inputs).map(|i| i * 3).collect();
+        assert_eq!(results1, expected);
+        assert_eq!(call_count.load(Ordering::SeqCst), n_inputs);
+
+        // Second execution - should use cached results
+        let inputs = (0..n_inputs).into_par_iter().map(|i| (i, i));
+        let results2 = compute
+            .execute_many(&cache, inputs)?
+            .collect::<Result<Vec<usize>>>()?;
+
+        assert_eq!(results2, expected);
+        // Should still be the same number of calls (cached)
+        assert_eq!(call_count.load(Ordering::SeqCst), n_inputs);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_stochastic_seeding() -> Result<()> {
+        let mut compute1 = StochasiticCompute::<usize, usize, _, SmallRng>::new(|rng, i| {
+            i + rng.random_range(0..100)
+        });
+
+        let mut compute2 = StochasiticCompute::<usize, usize, _, SmallRng>::new(|rng, i| {
+            i + rng.random_range(0..100)
+        });
+
+        // Set same seed for both computations
+        let seed = [42; 32];
+        compute1.reseed(seed);
+        compute2.reseed(seed);
+
+        let cache1 = HashMapStore::<RandomState>::default();
+        let cache2 = HashMapStore::<RandomState>::default();
+
+        // Same inputs with same seed should produce same results
+        let inputs = [(0, 5), (1, 10), (2, 15)];
+
+        let mut buffer1 = <usize as crate::Encodeable>::Buffer::init();
+        let mut buffer2 = <usize as crate::Encodeable>::Buffer::init();
+
+        let results1: Result<Vec<_>> = inputs
+            .iter()
+            .map(|&input| compute1.execute(input, &cache1, &mut buffer1))
+            .collect();
+
+        let results2: Result<Vec<_>> = inputs
+            .iter()
+            .map(|&input| compute2.execute(input, &cache2, &mut buffer2))
+            .collect();
+
+        assert_eq!(results1?, results2?);
 
         Ok(())
     }
