@@ -7,6 +7,7 @@ pub mod prelude {
     pub use super::{
         Marker, NoMarker, divide_at,
         lineage::{analysis::PhyloTree, node::LineageNode},
+        util::distributions::PoissonKnuth,
     };
 }
 

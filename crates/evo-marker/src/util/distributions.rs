@@ -11,10 +11,7 @@ impl PoissonKnuth {
     ///
     /// Returns None if lambda is not positive or too large (lambda > 30.0).
     pub fn new(lambda: f64) -> Option<Self> {
-        if lambda > 0.0 {
-            if lambda > 30.0 {
-                return None;
-            }
+        if 0.0 < lambda && lambda < 30.0 {
             let exp_lambda = (-lambda).exp();
             Some(Self { exp_lambda })
         } else {
