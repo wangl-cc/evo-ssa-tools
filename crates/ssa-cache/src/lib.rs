@@ -4,7 +4,7 @@ mod error;
 pub use error::{Error, Result};
 
 mod cache;
-pub use cache::{CacheStore, Cacheable, CodecBuffer, Encodeable};
+pub use cache::{CacheStore, Cacheable, CodecBuffer, Encodeable, HashMapStore};
 
 /// Core trait for all compute operations
 pub trait Compute<S: ?Sized, C: CacheStore<S>> {
@@ -53,7 +53,7 @@ pub trait Compute<S: ?Sized, C: CacheStore<S>> {
     ) -> Result<Self::Output>;
 
     /// Execute many computations in parallel
-    fn execute_many<I, O>(
+    fn execute_many(
         &self,
         cache: &C,
         inputs: impl ParallelIterator<Item = Self::Input>,

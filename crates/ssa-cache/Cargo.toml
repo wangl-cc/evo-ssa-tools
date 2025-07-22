@@ -18,3 +18,6 @@ fjall = { workspace = true, default-features = false, optional = true }
 rand = { workspace = true, features = ["thread_rng"] }
 rayon = { workspace = true }
 thiserror = { workspace = true }
+
+[dev-dependencies]
+rand = { workspace = true, features = ["small_rng"] }

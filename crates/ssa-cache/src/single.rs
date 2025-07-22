@@ -117,3 +117,73 @@ where
         self.execute_with_sig(&sig, (i, input), cache, buffer)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        hash::RandomState,
+        thread::sleep,
+        time::{Duration, Instant},
+    };
+
+    use rand::rngs::SmallRng;
+    use rayon::prelude::*;
+
+    use super::*;
+    use crate::HashMapStore;
+
+    #[test]
+    fn test_pure() -> Result<()> {
+        let compute = PureCompute::new(|i| i + 1usize);
+        let cache = HashMapStore::<RandomState>::default();
+
+        // Test fresh results
+        let results = compute
+            .execute_many(&cache, (0..100).into_par_iter())?
+            .collect::<Result<Vec<usize>>>()?;
+
+        assert_eq!(results, (0..100).map(|i| i + 1).collect::<Vec<usize>>());
+
+        // Test results are cached
+        let results = compute
+            .execute_many(&cache, (0..100).into_par_iter())?
+            .collect::<Result<Vec<usize>>>()?;
+
+        assert_eq!(results, (0..100).map(|i| i + 1).collect::<Vec<usize>>());
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_stochastic() -> Result<()> {
+        let compute = StochasiticCompute::new(|rng: &mut SmallRng, i| {
+            // Sleep to test if execute many return results in the same order as the input
+            sleep(Duration::from_millis(rng.random_range(0..100)));
+            i + 1
+        });
+        let n_input = rayon::current_num_threads() * 10;
+        let cache = HashMapStore::<RandomState>::default();
+
+        // Test fresh results
+        let inputs = (0..n_input).into_par_iter().map(|i| (i, i));
+        let results = compute
+            .execute_many(&cache, inputs.into_par_iter())?
+            .collect::<Result<Vec<usize>>>()?;
+
+        assert_eq!(results, (0..n_input).map(|i| i + 1).collect::<Vec<usize>>());
+
+        // Test cache hits
+        let inputs = (0..n_input).into_par_iter().map(|i| (i, i));
+        let start = Instant::now();
+        let results = compute
+            .execute_many(&cache, inputs.into_par_iter())?
+            .collect::<Result<Vec<usize>>>()?;
+        let time = start.elapsed();
+
+        // If cache missing, we need around 500 ms + overhead
+        assert_eq!(results, (0..n_input).map(|i| i + 1).collect::<Vec<usize>>());
+        assert!(time.as_millis() < 200);
+
+        Ok(())
+    }
+}
