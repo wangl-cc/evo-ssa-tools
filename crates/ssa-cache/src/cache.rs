@@ -46,10 +46,10 @@ mod bitcode_codec {
     }
 }
 
-pub trait CacheStore<S: ?Sized>: Sync {
-    fn fetch<T: Cacheable>(&self, sig: &S, buffer: &mut T::Buffer) -> Result<Option<T>>;
+pub trait CacheStore: Sync {
+    fn fetch<T: Cacheable>(&self, sig: &[u8], buffer: &mut T::Buffer) -> Result<Option<T>>;
 
-    fn store<T: Cacheable>(&self, sig: &S, buffer: &mut T::Buffer, value: &T) -> Result<()>;
+    fn store<T: Cacheable>(&self, sig: &[u8], buffer: &mut T::Buffer, value: &T) -> Result<()>;
 }
 
 mod hashmap_store {
@@ -65,7 +65,7 @@ mod hashmap_store {
     #[derive(Debug, Default)]
     pub struct HashMapStore<H = RandomState>(Arc<RwLock<HashMap<H>>>);
 
-    impl<H> CacheStore<[u8]> for HashMapStore<H>
+    impl<H> CacheStore for HashMapStore<H>
     where
         H: std::hash::BuildHasher + Send + Sync,
     {
@@ -90,7 +90,7 @@ pub use hashmap_store::HashMapStore;
 mod fjall_store {
     use super::*;
 
-    impl CacheStore<[u8]> for fjall::Partition {
+    impl CacheStore for fjall::Partition {
         fn fetch<T: Cacheable>(&self, sig: &[u8], buffer: &mut T::Buffer) -> Result<Option<T>> {
             let value = self.get(sig)?;
             value
