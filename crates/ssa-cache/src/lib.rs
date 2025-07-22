@@ -4,7 +4,7 @@ mod error;
 pub use error::{Error, Result};
 
 mod cache;
-pub use cache::{CacheStore, Cacheable, CodecBuffer};
+pub use cache::{CacheStore, Cacheable, CodecBuffer, Encodeable};
 
 /// Core trait for all compute operations
 pub trait Compute<S: ?Sized, C: CacheStore<S>> {
@@ -30,7 +30,7 @@ pub trait Compute<S: ?Sized, C: CacheStore<S>> {
         sig: &S,
         input: Self::Input,
         cache: &C,
-        buffer: &mut <Self::Output as Cacheable>::Buffer,
+        buffer: &mut <Self::Output as Encodeable>::Buffer,
     ) -> Result<Self::Output> {
         if let Some(cached) = cache.fetch(sig, buffer)? {
             Ok(cached)
@@ -49,7 +49,7 @@ pub trait Compute<S: ?Sized, C: CacheStore<S>> {
         &mut self,
         input: Self::Input,
         cache: &C,
-        buffer: &mut <Self::Output as Cacheable>::Buffer,
+        buffer: &mut <Self::Output as Encodeable>::Buffer,
     ) -> Result<Self::Output>;
 
     /// Execute many computations in parallel
@@ -63,14 +63,14 @@ pub trait Compute<S: ?Sized, C: CacheStore<S>> {
         Self::Output: Send,
     {
         Ok(inputs.map_init(
-            || (<Self::Output as Cacheable>::Buffer::init(), self.clone()),
+            || (<Self::Output as Encodeable>::Buffer::init(), self.clone()),
             move |(buffer, c), input| c.execute(input, cache, buffer),
         ))
     }
 }
 
 mod single;
-pub use single::{PureCompute, StochasiticCompute, ToSignature};
+pub use single::{PureCompute, StochasiticCompute};
 
 mod multi;
 pub use multi::{ChainedSignature, ExpAnalysis};

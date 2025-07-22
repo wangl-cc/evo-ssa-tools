@@ -2,13 +2,7 @@ use std::marker::PhantomData;
 
 use rand::{Rng, SeedableRng};
 
-use crate::{CacheStore, Cacheable, Compute, Result};
-
-pub trait ToSignature {
-    type Signature: AsRef<[u8]>;
-
-    fn to_signature(&self) -> Self::Signature;
-}
+use crate::{CacheStore, Cacheable, Compute, Encodeable, Result};
 
 #[derive(Debug)]
 pub struct PureCompute<I, O, F> {
@@ -37,8 +31,8 @@ impl<I, O, F: Clone> Clone for PureCompute<I, O, F> {
 
 impl<I, O, F, C> Compute<[u8], C> for PureCompute<I, O, F>
 where
-    I: ToSignature,
-    O: Cacheable,
+    I: Encodeable,
+    O: Cacheable<Buffer = I::Buffer>,
     F: Fn(I) -> O,
     C: CacheStore<[u8]>,
 {
@@ -53,10 +47,10 @@ where
         &mut self,
         input: Self::Input,
         cache: &C,
-        buffer: &mut <Self::Output as Cacheable>::Buffer,
+        buffer: &mut <Self::Output as Encodeable>::Buffer,
     ) -> Result<Self::Output> {
-        let sig = input.to_signature();
-        self.execute_with_sig(sig.as_ref(), input, cache, buffer)
+        let sig = input.encode(buffer).to_owned();
+        self.execute_with_sig(&sig, input, cache, buffer)
     }
 }
 
@@ -101,8 +95,8 @@ impl<F, I, O, G, C> Compute<[u8], C> for StochasiticCompute<I, O, F, G>
 where
     F: for<'g> Fn(&'g mut G, I) -> O,
     G: Rng,
-    I: ToSignature,
-    O: Cacheable,
+    I: Encodeable,
+    O: Cacheable<Buffer = I::Buffer>,
     C: CacheStore<[u8]>,
 {
     type Input = (usize, I);
@@ -116,10 +110,10 @@ where
         &mut self,
         input: Self::Input,
         cache: &C,
-        buffer: &mut <Self::Output as Cacheable>::Buffer,
+        buffer: &mut <Self::Output as Encodeable>::Buffer,
     ) -> Result<Self::Output> {
         let (i, input) = input;
-        let sig = [input.to_signature().as_ref(), &i.to_le_bytes()].concat();
+        let sig = [input.encode(buffer), &i.to_le_bytes()].concat();
         self.execute_with_sig(&sig, (i, input), cache, buffer)
     }
 }

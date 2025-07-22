@@ -2,7 +2,7 @@ use std::marker::PhantomData;
 
 use rand::{Rng, SeedableRng};
 
-use crate::{CacheStore, Cacheable, Compute, Result, ToSignature};
+use crate::{CacheStore, Cacheable, Compute, Encodeable, Result};
 
 #[derive(Debug, Clone, Copy)]
 pub struct ChainedSignature<S: ?Sized> {
@@ -89,9 +89,9 @@ impl<I, M, O, E, A, G, C1, C2> Compute<ChainedSignature<[u8]>, (C1, C2)>
 where
     C1: CacheStore<[u8]>,
     C2: CacheStore<[u8]>,
-    I: ToSignature,
-    M: Cacheable,
-    O: Cacheable<Buffer = M::Buffer>,
+    I: Encodeable,
+    M: Cacheable<Buffer = I::Buffer>,
+    O: Cacheable<Buffer = I::Buffer>,
     E: Fn(&mut G, I) -> M,
     A: Fn(M) -> O,
 {
@@ -106,10 +106,10 @@ where
         &mut self,
         input: Self::Input,
         cache: &(C1, C2),
-        buffer: &mut <Self::Output as Cacheable>::Buffer,
+        buffer: &mut <Self::Output as Encodeable>::Buffer,
     ) -> Result<Self::Output> {
         let (i, input) = input;
-        let sig = [input.to_signature().as_ref(), &i.to_le_bytes()].concat();
+        let sig = [input.encode(buffer), &i.to_le_bytes()].concat();
         let sig = sig.as_ref();
         // Check if the final output is already cached
         if let Some(output) = cache.1.fetch(sig, buffer)? {
