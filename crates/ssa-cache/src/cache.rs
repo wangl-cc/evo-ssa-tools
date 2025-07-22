@@ -4,11 +4,13 @@ pub trait CodecBuffer {
     fn init() -> Self;
 }
 
-pub trait Cacheable: Sized {
+pub trait Encodeable {
     type Buffer: CodecBuffer;
 
     fn encode<'b>(&self, buffer: &'b mut Self::Buffer) -> &'b [u8];
+}
 
+pub trait Cacheable: Encodeable + Sized {
     fn decode(bytes: &[u8], buffer: &mut Self::Buffer) -> Result<Self>;
 }
 
@@ -20,18 +22,27 @@ impl CodecBuffer for bitcode::Buffer {
 }
 
 #[cfg(feature = "bitcode")]
-impl<T> Cacheable for T
-where
-    T: bitcode::Encode + for<'b> bitcode::Decode<'b>,
-{
-    type Buffer = bitcode::Buffer;
+mod bitcode_codec {
+    use super::*;
 
-    fn encode<'b>(&self, buffer: &'b mut Self::Buffer) -> &'b [u8] {
-        buffer.encode(self)
+    impl<T> Encodeable for T
+    where
+        T: bitcode::Encode,
+    {
+        type Buffer = bitcode::Buffer;
+
+        fn encode<'b>(&self, buffer: &'b mut Self::Buffer) -> &'b [u8] {
+            buffer.encode(self)
+        }
     }
 
-    fn decode(bytes: &[u8], buffer: &mut Self::Buffer) -> Result<Self> {
-        Ok(buffer.decode(bytes)?)
+    impl<T> Cacheable for T
+    where
+        T: bitcode::Encode + for<'b> bitcode::Decode<'b>,
+    {
+        fn decode(bytes: &[u8], buffer: &mut Self::Buffer) -> Result<Self> {
+            Ok(buffer.decode(bytes)?)
+        }
     }
 }
 
