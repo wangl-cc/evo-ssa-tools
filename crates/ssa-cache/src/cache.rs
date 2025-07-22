@@ -52,6 +52,40 @@ pub trait CacheStore<S: ?Sized>: Sync {
     fn store<T: Cacheable>(&self, sig: &S, buffer: &mut T::Buffer, value: &T) -> Result<()>;
 }
 
+mod hashmap_store {
+    use std::{
+        hash::RandomState,
+        sync::{Arc, RwLock},
+    };
+
+    use super::*;
+
+    type HashMap<H> = std::collections::HashMap<Vec<u8>, Vec<u8>, H>;
+
+    #[derive(Debug, Default)]
+    pub struct HashMapStore<H = RandomState>(Arc<RwLock<HashMap<H>>>);
+
+    impl<H> CacheStore<[u8]> for HashMapStore<H>
+    where
+        H: std::hash::BuildHasher + Send + Sync,
+    {
+        fn fetch<T: Cacheable>(&self, sig: &[u8], buffer: &mut T::Buffer) -> Result<Option<T>> {
+            let map = self.0.read().unwrap();
+            map.get(sig)
+                .map(|value| T::decode(value.as_slice(), buffer))
+                .transpose()
+        }
+
+        fn store<T: Cacheable>(&self, sig: &[u8], buffer: &mut T::Buffer, value: &T) -> Result<()> {
+            let value = value.encode(buffer).to_vec();
+            let mut map = self.0.write().unwrap();
+            map.insert(sig.to_owned(), value);
+            Ok(())
+        }
+    }
+}
+pub use hashmap_store::HashMapStore;
+
 #[cfg(feature = "fjall")]
 mod fjall_store {
     use super::*;
