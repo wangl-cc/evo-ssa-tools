@@ -10,6 +10,9 @@ pub enum Error {
 
     #[error("Try to get cache #{want} but only {total} available")]
     CacheOutofIndex { total: usize, want: usize },
+
+    #[error("Execution interrupted")]
+    Interrupted,
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
