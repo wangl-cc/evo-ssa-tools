@@ -91,7 +91,7 @@ mod tests {
         hash::RandomState,
         sync::{
             Arc,
-            atomic::{AtomicUsize, Ordering},
+            atomic::{AtomicBool, AtomicUsize, Ordering},
         },
         thread::sleep,
         time::Duration,
@@ -115,7 +115,11 @@ mod tests {
         let cache = (cache1, cache2);
 
         let results = exp_analysis
-            .execute_many(&cache, (0..10).into_par_iter().map(|i| (i, i)))?
+            .execute_many(
+                &cache,
+                Arc::new(AtomicBool::new(false)),
+                (0..10).into_par_iter().map(|i| (i, i)),
+            )?
             .collect::<Result<Vec<usize>>>()?;
 
         let expected: Vec<usize> = (0..10).map(|i| i * 2 + 10).collect();
@@ -152,7 +156,11 @@ mod tests {
 
         // First execution - both stages should run
         let results1 = exp_analysis
-            .execute_many(&cache, (0..5).into_par_iter().map(|i| (i, i)))?
+            .execute_many(
+                &cache,
+                Arc::new(AtomicBool::new(false)),
+                (0..5).into_par_iter().map(|i| (i, i)),
+            )?
             .collect::<Result<Vec<usize>>>()?;
 
         let expected: Vec<usize> = (0..5).map(|i| i * 3 + 5).collect();
@@ -162,7 +170,11 @@ mod tests {
 
         // Second execution - should use cached final results
         let results2 = exp_analysis
-            .execute_many(&cache, (0..5).into_par_iter().map(|i| (i, i)))?
+            .execute_many(
+                &cache,
+                Arc::new(AtomicBool::new(false)),
+                (0..5).into_par_iter().map(|i| (i, i)),
+            )?
             .collect::<Result<Vec<usize>>>()?;
 
         assert_eq!(results2, expected);
@@ -200,7 +212,11 @@ mod tests {
 
         // First execution
         let results1 = exp_analysis
-            .execute_many(&cache, (0..3).into_par_iter().map(|i| (i, i)))?
+            .execute_many(
+                &cache,
+                Arc::new(AtomicBool::new(false)),
+                (0..3).into_par_iter().map(|i| (i, i)),
+            )?
             .collect::<Result<Vec<String>>>()?;
 
         let expected: Vec<String> = (0..3).map(|i| format!("result_{}", i * 2)).collect();
@@ -215,7 +231,11 @@ mod tests {
 
         // Second execution - should reuse intermediate results but recompute final
         let results2 = exp_analysis
-            .execute_many(&cache, (0..3).into_par_iter().map(|i| (i, i)))?
+            .execute_many(
+                &cache,
+                Arc::new(AtomicBool::new(false)),
+                (0..3).into_par_iter().map(|i| (i, i)),
+            )?
             .collect::<Result<Vec<String>>>()?;
 
         assert_eq!(results2, expected);

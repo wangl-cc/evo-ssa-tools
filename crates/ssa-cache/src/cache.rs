@@ -53,17 +53,14 @@ pub trait CacheStore: Sync {
 }
 
 mod hashmap_store {
-    use std::{
-        hash::RandomState,
-        sync::{Arc, RwLock},
-    };
+    use std::sync::{Arc, RwLock};
 
     use super::*;
 
     type HashMap<H> = std::collections::HashMap<Vec<u8>, Vec<u8>, H>;
 
     #[derive(Debug, Default)]
-    pub struct HashMapStore<H = RandomState>(Arc<RwLock<HashMap<H>>>);
+    pub struct HashMapStore<H>(Arc<RwLock<HashMap<H>>>);
 
     impl<H> CacheStore for HashMapStore<H>
     where

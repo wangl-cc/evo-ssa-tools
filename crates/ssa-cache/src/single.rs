@@ -119,9 +119,9 @@ mod tests {
         hash::RandomState,
         sync::{
             Arc,
-            atomic::{AtomicUsize, Ordering},
+            atomic::{AtomicBool, AtomicUsize, Ordering},
         },
-        thread::sleep,
+        thread::{sleep, spawn},
         time::Duration,
     };
 
@@ -137,10 +137,41 @@ mod tests {
         let cache = HashMapStore::<RandomState>::default();
 
         let results = compute
-            .execute_many(&cache, (0..100).into_par_iter())?
+            .execute_many(
+                &cache,
+                Arc::new(AtomicBool::new(false)),
+                (0..100).into_par_iter(),
+            )?
             .collect::<Result<Vec<usize>>>()?;
 
         assert_eq!(results, (0..100).map(|i| i + 1).collect::<Vec<usize>>());
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_interrupt() -> Result<()> {
+        let compute = PureCompute::new(|i| {
+            sleep(Duration::from_millis(100));
+            i + 1usize
+        });
+        let cache = HashMapStore::<RandomState>::default();
+
+        let interrupted = Arc::new(AtomicBool::new(false));
+        let interrupted_clone = interrupted.clone();
+
+        let handle = spawn(move || {
+            compute
+                .execute_many(&cache, interrupted, (0..100).into_par_iter())?
+                .collect::<Result<Vec<usize>>>()
+        });
+
+        sleep(Duration::from_millis(50));
+        interrupted_clone.store(true, Ordering::Relaxed);
+
+        let results = handle.join().expect("Failed to join thread");
+
+        assert!(matches!(results.unwrap_err(), crate::Error::Interrupted));
 
         Ok(())
     }
@@ -160,7 +191,11 @@ mod tests {
 
         // First execution - should call function for each input
         let results1 = compute
-            .execute_many(&cache, (0..n_inputs).into_par_iter())?
+            .execute_many(
+                &cache,
+                Arc::new(AtomicBool::new(false)),
+                (0..n_inputs).into_par_iter(),
+            )?
             .collect::<Result<Vec<usize>>>()?;
 
         let expected: Vec<usize> = (0..n_inputs).map(|i| i * 2).collect();
@@ -169,7 +204,11 @@ mod tests {
 
         // Second execution - should use cached results (no additional calls)
         let results2 = compute
-            .execute_many(&cache, (0..n_inputs).into_par_iter())?
+            .execute_many(
+                &cache,
+                Arc::new(AtomicBool::new(false)),
+                (0..n_inputs).into_par_iter(),
+            )?
             .collect::<Result<Vec<usize>>>()?;
 
         assert_eq!(results2, expected);
@@ -191,7 +230,11 @@ mod tests {
 
         let inputs = (0..n_input).into_par_iter().map(|i| (i, i));
         let results = compute
-            .execute_many(&cache, inputs.into_par_iter())?
+            .execute_many(
+                &cache,
+                Arc::new(AtomicBool::new(false)),
+                inputs.into_par_iter(),
+            )?
             .collect::<Result<Vec<usize>>>()?;
 
         assert_eq!(results, (0..n_input).map(|i| i + 1).collect::<Vec<usize>>());
@@ -215,7 +258,7 @@ mod tests {
         // First execution - should call function for each input
         let inputs = (0..n_inputs).into_par_iter().map(|i| (i, i));
         let results1 = compute
-            .execute_many(&cache, inputs)?
+            .execute_many(&cache, Arc::new(AtomicBool::new(false)), inputs)?
             .collect::<Result<Vec<usize>>>()?;
 
         let expected: Vec<usize> = (0..n_inputs).map(|i| i * 3).collect();
@@ -225,7 +268,7 @@ mod tests {
         // Second execution - should use cached results
         let inputs = (0..n_inputs).into_par_iter().map(|i| (i, i));
         let results2 = compute
-            .execute_many(&cache, inputs)?
+            .execute_many(&cache, Arc::new(AtomicBool::new(false)), inputs)?
             .collect::<Result<Vec<usize>>>()?;
 
         assert_eq!(results2, expected);

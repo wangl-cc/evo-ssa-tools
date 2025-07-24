@@ -1,3 +1,8 @@
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
+
 use rayon::prelude::*;
 
 mod error;
@@ -26,6 +31,7 @@ pub trait Compute<C> {
     fn execute_many(
         &self,
         cache: &C,
+        interrupt: Arc<AtomicBool>,
         inputs: impl ParallelIterator<Item = Self::Input>,
     ) -> Result<impl ParallelIterator<Item = Result<Self::Output>>>
     where
@@ -35,7 +41,13 @@ pub trait Compute<C> {
     {
         Ok(inputs.map_init(
             || (<Self::Output as Encodeable>::Buffer::init(), self.clone()),
-            move |(buffer, c), input| c.execute(input, cache, buffer),
+            move |(buffer, c), input| {
+                if interrupt.load(Ordering::Relaxed) {
+                    return Err(Error::Interrupted);
+                };
+
+                c.execute(input, cache, buffer)
+            },
         ))
     }
 }
