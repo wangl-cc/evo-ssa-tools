@@ -31,7 +31,7 @@ pub trait Compute<C> {
     fn execute_many(
         &self,
         cache: &C,
-        interrupt: Arc<AtomicBool>,
+        interrupted: Arc<AtomicBool>,
         inputs: impl ParallelIterator<Item = Self::Input>,
     ) -> Result<impl ParallelIterator<Item = Result<Self::Output>>>
     where
@@ -42,7 +42,7 @@ pub trait Compute<C> {
         Ok(inputs.map_init(
             || (<Self::Output as Encodeable>::Buffer::init(), self.clone()),
             move |(buffer, c), input| {
-                if interrupt.load(Ordering::Relaxed) {
+                if interrupted.load(Ordering::Relaxed) {
                     return Err(Error::Interrupted);
                 };
 
