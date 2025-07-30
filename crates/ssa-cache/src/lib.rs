@@ -42,7 +42,7 @@ pub trait Compute<C> {
         Ok(inputs.map_init(
             || (<Self::Output as Encodeable>::Buffer::init(), self.clone()),
             move |(buffer, c), input| {
-                if interrupted.load(Ordering::Relaxed) {
+                if interrupted.load(Ordering::Acquire) {
                     return Err(Error::Interrupted);
                 };
 

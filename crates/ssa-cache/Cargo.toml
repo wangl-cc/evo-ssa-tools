@@ -21,3 +21,6 @@ thiserror = { workspace = true }
 
 [dev-dependencies]
 rand = { workspace = true, features = ["small_rng"] }
+
+[lints]
+workspace = true
