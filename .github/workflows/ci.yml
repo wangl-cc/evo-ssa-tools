@@ -52,8 +52,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-      - name: Setup Cache
-        uses: Swatinem/rust-cache@v2
       - name: Build
         run: |
           cargo build --locked --all-features --workspace
