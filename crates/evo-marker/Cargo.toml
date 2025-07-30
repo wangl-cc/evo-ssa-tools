@@ -22,3 +22,6 @@ rand = { workspace = true, features = ["os_rng", "small_rng"] }
 [[bench]]
 name = "tree_analysis"
 harness = false
+
+[lints]
+workspace = true

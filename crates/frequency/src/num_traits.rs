@@ -85,6 +85,7 @@ pub(crate) fn remove_trailing_zeros<U: Count>(vec: &mut Vec<U>) {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
 

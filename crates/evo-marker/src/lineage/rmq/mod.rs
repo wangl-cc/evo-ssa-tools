@@ -173,6 +173,7 @@ impl<const N: u32> BlockRMQBuilder<N> {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
 

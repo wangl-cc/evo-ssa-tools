@@ -1,3 +1,5 @@
+#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
+
 mod util;
 
 // Cell Lineage tracking as a marker
@@ -54,6 +56,7 @@ impl Marker for NoMarker {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
 

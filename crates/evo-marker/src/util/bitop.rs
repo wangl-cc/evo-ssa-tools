@@ -64,6 +64,7 @@ pub mod u16 {
     }
 
     #[cfg(test)]
+    #[cfg_attr(coverage_nightly, coverage(off))]
     mod tests {
         use super::*;
 
@@ -130,6 +131,7 @@ pub mod u4 {
     }
 
     #[cfg(test)]
+    #[cfg_attr(coverage_nightly, coverage(off))]
     mod tests {
         use super::*;
 

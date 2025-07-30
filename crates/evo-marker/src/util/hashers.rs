@@ -53,6 +53,7 @@ pub(crate) type NoHashMap<K, V> =
     std::collections::HashMap<K, V, std::hash::BuildHasherDefault<NoHashHasher>>;
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
 

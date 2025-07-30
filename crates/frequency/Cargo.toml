@@ -21,3 +21,6 @@ zerocopy = { workspace = true }
 [[bench]]
 name = "bounded_freq"
 harness = false
+
+[lints]
+workspace = true

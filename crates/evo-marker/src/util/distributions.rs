@@ -35,6 +35,7 @@ impl rand::prelude::Distribution<u16> for PoissonKnuth {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use rand::{SeedableRng, distr::Distribution, rngs::SmallRng};
 
