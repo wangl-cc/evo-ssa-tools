@@ -23,6 +23,7 @@ fjall = { version = "2.10.0", default-features = false }
 nohash-hasher = { version = "0.2.0" }
 rand = { version = "0.9.0", default-features = false, features = ["std"] }
 rayon = { version = "1.10.0" }
+tempfile = {version = "3.20.0" }
 thiserror = { version = "2" }
 zerocopy = { version = "0.8.26" }
 
