@@ -17,15 +17,14 @@ pub trait Cacheable: Encodeable + Sized {
 }
 
 #[cfg(feature = "bitcode")]
-impl CodecBuffer for bitcode::Buffer {
-    fn init() -> Self {
-        Self::new()
-    }
-}
-
-#[cfg(feature = "bitcode")]
 mod bitcode_codec {
     use super::*;
+
+    impl CodecBuffer for bitcode::Buffer {
+        fn init() -> Self {
+            Self::new()
+        }
+    }
 
     impl<T> Encodeable for T
     where
@@ -136,15 +135,30 @@ mod fjall_store {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use std::collections::hash_map::RandomState;
 
     use super::*;
 
     #[test]
+    fn test_codec() -> Result<()> {
+        let mut encode_buffer = <u32 as Encodeable>::Buffer::new();
+        let mut decode_buffer = <u32 as Encodeable>::Buffer::new();
+        let encoded = 42u32.encode(&mut encode_buffer);
+        let decoded = u32::decode(encoded, &mut decode_buffer)?;
+        assert_eq!(decoded, 42);
+
+        let decoded = u64::decode(encoded, &mut decode_buffer).unwrap_err();
+        assert!(matches!(decoded, crate::Error::Codec(_)));
+
+        Ok(())
+    }
+
+    #[test]
     fn test_no_store() -> Result<()> {
         let store = ();
-        let mut buffer = bitcode::Buffer::new();
+        let mut buffer = <u32 as Encodeable>::Buffer::new();
 
         // Test storing and fetching a value
         let value = 42u32;
@@ -158,7 +172,7 @@ mod tests {
     #[test]
     fn test_hashmap_store() -> Result<()> {
         let store = HashMapStore::<RandomState>::default();
-        let mut buffer = bitcode::Buffer::new();
+        let mut buffer = <u32 as Encodeable>::Buffer::new();
 
         // Test storing and fetching a value
         let value = 42u32;
@@ -169,6 +183,12 @@ mod tests {
         // Test fetching non-existent key
         assert_eq!(store.fetch::<u32>(b"non_existent", &mut buffer)?, None);
 
+        // Test fetching key with wrong type
+        assert!(matches!(
+            store.fetch::<u64>(sig, &mut buffer),
+            Err(crate::Error::Codec(_))
+        ));
+
         Ok(())
     }
 
@@ -177,7 +197,7 @@ mod tests {
     fn test_fjall_store() -> Result<()> {
         let db = fjall::Config::new(tempfile::tempdir().unwrap()).open()?;
         let partition = db.open_partition("test", Default::default())?;
-        let mut buffer = bitcode::Buffer::new();
+        let mut buffer = <u32 as Encodeable>::Buffer::new();
 
         // Test storing and fetching a value
         let value = 42u32;
@@ -187,6 +207,12 @@ mod tests {
 
         // Test fetching non-existent key
         assert_eq!(partition.fetch::<u32>(b"non_existent", &mut buffer)?, None);
+
+        // Test fetching key with wrong type
+        assert!(matches!(
+            partition.fetch::<u64>(sig, &mut buffer),
+            Err(crate::Error::Codec(_))
+        ));
 
         Ok(())
     }
