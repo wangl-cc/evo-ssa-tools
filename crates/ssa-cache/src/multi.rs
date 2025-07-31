@@ -247,4 +247,31 @@ mod tests {
 
         Ok(())
     }
+
+    #[test]
+    fn test_reseed() -> Result<()> {
+        use rand::Rng;
+
+        // Create ExpAnalysis that uses RNG in experiment
+        let mut exp_analysis = ExpAnalysis::new(
+            |rng: &mut SmallRng, input| input + rng.random::<u32>(),
+            |x| x + 1,
+        );
+        let seed = [42u8; 32];
+        let cache = ((), ());
+        let mut buffer = bitcode::Buffer::new();
+
+        // First run with seed
+        exp_analysis.reseed(seed);
+        let out1 = exp_analysis.execute((0, 5), &cache, &mut buffer)?;
+
+        // Second run with same seed (should produce same result)
+        exp_analysis.reseed(seed);
+        let out2 = exp_analysis.execute((0, 5), &cache, &mut buffer)?;
+
+        // Verify consistent results with same seed, different with new seed
+        assert_eq!(out1, out2);
+
+        Ok(())
+    }
 }

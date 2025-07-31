@@ -582,6 +582,7 @@ dependencies = [
  "fjall",
  "rand",
  "rayon",
+ "tempfile",
  "thiserror",
 ]
 
