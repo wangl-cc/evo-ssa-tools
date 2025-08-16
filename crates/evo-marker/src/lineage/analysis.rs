@@ -445,7 +445,7 @@ impl Children {
         panic!("Children is full");
     }
 
-    fn iter(&self) -> ChildrenIter {
+    fn iter(&self) -> ChildrenIter<'_> {
         ChildrenIter(self.0.iter())
     }
 }
