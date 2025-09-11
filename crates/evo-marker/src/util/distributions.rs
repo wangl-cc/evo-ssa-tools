@@ -2,6 +2,7 @@
 ///
 /// This is only suitable for small lambda values (lambda < 30.0).
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "bitcode", derive(bitcode::Encode, bitcode::Decode))]
 pub struct PoissonKnuth {
     exp_lambda: f64,
 }
