@@ -289,7 +289,7 @@ mod tests {
     fn test_block_min() {
         let blk: Block = Block::new(0b011_110_111_100_111, 16, 1);
         // Indexes:  [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, a, b, c, d, e, f]
-        // Sequance: [8, 7, 6, 5, 6, 7, 6, 5, 4, 3, 4, 3, 2, 1, 0, 1]
+        // Sequence: [8, 7, 6, 5, 6, 7, 6, 5, 4, 3, 4, 3, 2, 1, 0, 1]
 
         assert_eq!(blk.min_and_pos(), MinAndPosCompat::new(0, 14));
 
@@ -338,7 +338,7 @@ mod tests {
 
         let blk: Block = Block::new(0b000_110_111_000_000, 16, 6);
         // Indexes:  [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, a, b, c, d, e, f]
-        // Sequance: [1, 2, 3, 4, 5, 6, 7, 6, 5, 4, 5, 4, 3, 4, 5, 6]
+        // Sequence: [1, 2, 3, 4, 5, 6, 7, 6, 5, 4, 5, 4, 3, 4, 5, 6]
 
         assert_eq!(blk.min_and_pos(), MinAndPosCompat::new(1, 0));
 
@@ -393,7 +393,7 @@ mod tests {
     fn test_blocks_builder() {
         let mut builder = BlockBuilder::<5>::with_capacity(12);
 
-        // The first block, Sequance [0, 1, 0, 1, 2], Signature: 0b0010
+        // The first block, Sequence [0, 1, 0, 1, 2], Signature: 0b0010
         builder.step(false); // 0 -> 1
         builder.step(true); // 1 -> 0
         builder.step(false); // 0 -> 1
@@ -403,7 +403,7 @@ mod tests {
         // the change will not be included in any blocks' signature
         builder.step(false); // 2 -> 3 (a gap step)
 
-        // The second block, Sequance [3, 4, 3, 4, 3], Signature: 0b1010
+        // The second block, Sequence [3, 4, 3, 4, 3], Signature: 0b1010
         builder.step(false); // 3 -> 4
         builder.step(true); // 4 -> 3
         builder.step(false); // 3 -> 4
@@ -413,7 +413,7 @@ mod tests {
         // the change will not be included in any blocks' signature
         builder.step(true); // 3 -> 2
 
-        // The third block, Sequance [2, 1, 0], Signature: 0b11
+        // The third block, Sequence [2, 1, 0], Signature: 0b11
         builder.step(true); // 2 -> 1
         builder.step(true); // 1 -> 0
 
