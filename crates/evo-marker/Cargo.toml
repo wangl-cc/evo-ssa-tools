@@ -1,16 +1,16 @@
 [package]
 name = "evo-marker"
 version = "0.3.0"
-authors.workspace = true
 edition.workspace = true
-license.workspace = true
 rust-version.workspace = true
+license.workspace = true
 
-[features]
-bitcode = ["dep:bitcode"]
+[[bench]]
+harness = false
+name = "tree_analysis"
 
 [dependencies]
-bitcode = { workspace = true, optional = true, features = ["derive"] }
+bitcode = { workspace = true, features = ["derive"], optional = true }
 frequency = { workspace = true }
 rand = { workspace = true }
 rayon = { workspace = true }
@@ -19,9 +19,8 @@ rayon = { workspace = true }
 divan = { workspace = true }
 rand = { workspace = true, features = ["os_rng", "small_rng"] }
 
-[[bench]]
-name = "tree_analysis"
-harness = false
+[features]
+bitcode = ["dep:bitcode"]
 
 [lints]
 workspace = true
