@@ -1,58 +1,62 @@
-name: Lint Markdown files
+name: Lint Docs
 
 on:
   push:
     branches: ["main"]
     paths:
       - "**/*.md"
-      - ".github/workflows/lint-markdown.yml"
+      - ".github/workflows/lint-docs.yml"
   pull_request:
     branches: ["main"]
     paths:
       - "**/*.md"
-      - ".github/workflows/lint-markdown.yml"
+      - ".github/workflows/lint-docs.yml"
   schedule:
-    - cron: "44 7 * * 2"
+    - cron: "4 7 * * 4"
   workflow_dispatch:
 
 permissions:
   contents: read
-  pull-requests: write
 
 jobs:
-  lint:
-    name: Lint Markdown
+  typos:
+    name: Typos
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
-      - name: Lint Markdown
+        uses: actions/checkout@v6
+      - name: Run typos
+        uses: crate-ci/typos@v1
+
+  markdownlint:
+    name: Markdownlint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: Run markdownlint
         uses: DavidAnson/markdownlint-cli2-action@v20
         with:
           globs: "**/*.md"
 
-  check-links:
-    name: Check Dead Links
+  deadlinks:
+    name: Dead Links
     runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
-      - name: Setup Lychee Cache
-        uses: actions/cache@v4
-        with:
-          path: .lycheecache
-          key: cache-lychee-${{ github.sha }}
-          restore-keys: cache-lychee-
-      - name: Check Dead Links
+        uses: actions/checkout@v6
+      - name: Run lychee
         uses: lycheeverse/lychee-action@v2
         with:
           args: >
-            --verbose --no-progress --cache --max-cache-age 1d
-            -- .
+            --verbose --no-progress
+            -- '**/*.md'
       - name: Comment on Pull Request if Dead Links Found
         if: failure() && github.event_name == 'pull_request'
         uses: marocchino/sticky-pull-request-comment@v2
         with:
           message: |
             Dead links found in the documentation. Please fix them.
-            Details: https://github.com/MaaAssistantArknights/maa-cli/actions/runs/${{ github.run_id }}
+            Details: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}

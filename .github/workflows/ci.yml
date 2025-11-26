@@ -20,6 +20,9 @@ on:
       - ".cargo/config.toml"
       - ".github/workflows/ci.yml"
 
+permissions:
+  contents: read
+
 env:
   RUST_BACKTRACE: full
   CARGO_TERM_COLOR: always
