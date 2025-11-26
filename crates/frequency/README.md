@@ -7,8 +7,7 @@ A crate for counting occurrences (frequency) of unique elements in iterators.
 To efficiently calculate frequencies, there are two main approaches:
 
 1. *Bounded Frequency Calculation*: Utilizes a fixed-size array to store counts for each unique element within a known range. This method is useful when the range is small or dense distributed.
-    Example:
-  
+
     ```rust
     use frequency::prelude::*;
     
