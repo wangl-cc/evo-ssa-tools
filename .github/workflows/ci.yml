@@ -32,6 +32,15 @@ defaults:
     shell: bash
 
 jobs:
+  typos:
+    name: Typos
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: Run typos
+        uses: crate-ci/typos@v1
+
   format:
     name: Format Check
     runs-on: ubuntu-latest
