@@ -1,0 +1,59 @@
+name: Lint Markdown files
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - "**/*.md"
+      - ".github/workflows/lint-markdown.yml"
+  pull_request:
+    branches: ["main"]
+    paths:
+      - "**/*.md"
+      - ".github/workflows/lint-markdown.yml"
+  schedule:
+    - cron: "44 7 * * 2"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  lint:
+    name: Lint Markdown
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+      - name: Lint Markdown
+        uses: DavidAnson/markdownlint-cli2-action@v20
+        with:
+          globs: "**/*.md"
+          config: "crates/maa-cli/docs/.markdownlint.yaml"
+
+  check-links:
+    name: Check Dead Links
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+      - name: Setup Lychee Cache
+        uses: actions/cache@v4
+        with:
+          path: .lycheecache
+          key: cache-lychee-${{ github.sha }}
+          restore-keys: cache-lychee-
+      - name: Check Dead Links
+        uses: lycheeverse/lychee-action@v2
+        with:
+          args: >
+            --verbose --no-progress --cache --max-cache-age 1d
+            -- .
+      - name: Comment on Pull Request if Dead Links Found
+        if: failure() && github.event_name == 'pull_request'
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          message: |
+            Dead links found in the documentation. Please fix them.
+            Details: https://github.com/MaaAssistantArknights/maa-cli/actions/runs/${{ github.run_id }}
