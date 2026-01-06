@@ -11,7 +11,7 @@ license = "MIT OR Apache-2.0"
 [workspace.dependencies]
 bitcode = { version = "0.6", default-features = false, features = ["std"] }
 divan = { version = "0.1.17" }
-fjall = { version = "2.10.0", default-features = false }
+fjall = { version = "3.0.0", default-features = false }
 frequency = { path = "crates/frequency", version = "0.1" }
 nohash-hasher = { version = "0.2.0" }
 rand = { version = "0.9.0", default-features = false, features = ["std"] }
