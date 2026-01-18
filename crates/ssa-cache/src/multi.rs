@@ -13,8 +13,8 @@ pub struct ExpAnalysis<I, M, O, E, A, G> {
 
 impl<I, M, O, E, A, G> ExpAnalysis<I, M, O, E, A, G>
 where
-    E: Fn(&mut G, I) -> M,
-    A: Fn(M) -> O,
+    E: Fn(&mut G, I) -> Result<M>,
+    A: Fn(M) -> Result<O>,
     G: Rng + SeedableRng,
 {
     pub fn new(experiment: E, analysis: A) -> Self {
@@ -50,8 +50,8 @@ where
     I: Encodeable,
     M: Cacheable<Buffer = I::Buffer>,
     O: Cacheable<Buffer = I::Buffer>,
-    E: Fn(&mut G, I) -> M,
-    A: Fn(M) -> O,
+    E: Fn(&mut G, I) -> Result<M>,
+    A: Fn(M) -> Result<O>,
 {
     type Input = (usize, I);
     type Output = O;
@@ -74,11 +74,11 @@ where
             let inter = if let Some(output) = cache.0.fetch(sig, buffer)? {
                 output
             } else {
-                let inter = (self.experiment)(&mut self.rng, input);
+                let inter = (self.experiment)(&mut self.rng, input)?;
                 cache.0.store(sig, buffer, &inter)?;
                 inter
             };
-            let output = (self.analysis)(inter);
+            let output = (self.analysis)(inter)?;
             cache.1.store(sig, buffer, &output)?;
             Ok(output)
         }
@@ -107,8 +107,8 @@ mod tests {
     #[test]
     fn test_basic() -> Result<()> {
         let exp_analysis = ExpAnalysis::new(
-            |_: &mut SmallRng, input| input * 2, // experiment: double the input
-            |intermediate| intermediate + 10,    // analysis: add 10 to intermediate result
+            |_: &mut SmallRng, input| Ok(input * 2), // experiment: double the input
+            |intermediate| Ok(intermediate + 10),    // analysis: add 10 to intermediate result
         );
 
         let cache1 = HashMapStore::<RandomState>::default();
@@ -142,12 +142,12 @@ mod tests {
             move |_: &mut SmallRng, input| {
                 exp_calls_clone.fetch_add(1, Ordering::SeqCst);
                 sleep(Duration::from_millis(10)); // Simulate work
-                input * 3
+                Ok(input * 3)
             },
             move |intermediate| {
                 analysis_calls_clone.fetch_add(1, Ordering::SeqCst);
                 sleep(Duration::from_millis(10)); // Simulate work
-                intermediate + 5
+                Ok(intermediate + 5)
             },
         );
 
@@ -198,12 +198,12 @@ mod tests {
             move |_: &mut SmallRng, input| {
                 exp_calls_clone.fetch_add(1, Ordering::SeqCst);
                 sleep(Duration::from_millis(10));
-                input * 2
+                Ok(input * 2)
             },
             move |intermediate| {
                 analysis_calls_clone.fetch_add(1, Ordering::SeqCst);
                 sleep(Duration::from_millis(10));
-                format!("result_{intermediate}")
+                Ok(format!("result_{intermediate}"))
             },
         );
 
@@ -254,8 +254,8 @@ mod tests {
 
         // Create ExpAnalysis that uses RNG in experiment
         let mut exp_analysis = ExpAnalysis::new(
-            |rng: &mut SmallRng, input| input + rng.random::<u32>(),
-            |x| x + 1,
+            |rng: &mut SmallRng, input| Ok(input + rng.random::<u32>()),
+            |x| Ok(x + 1),
         );
         let seed = [42u8; 32];
         let cache = ((), ());

@@ -10,8 +10,13 @@ pub struct PureCompute<I, O, F> {
     _phantom: PhantomData<(I, O)>,
 }
 
-impl<I, O, F: Fn(I) -> O> PureCompute<I, O, F> {
+impl<I, O, F> PureCompute<I, O, F>
+where
+    F: Fn(I) -> Result<O>,
+{
     /// Create a new pure (deterministic) cached computation
+    ///
+    /// The function can return a `Result` to indicate computation failure.
     pub fn new(function: F) -> Self {
         Self {
             function,
@@ -33,7 +38,7 @@ impl<I, O, F, C> Compute<C> for PureCompute<I, O, F>
 where
     I: Encodeable,
     O: Cacheable<Buffer = I::Buffer>,
-    F: Fn(I) -> O,
+    F: Fn(I) -> Result<O>,
     C: CacheStore,
 {
     type Input = I;
@@ -57,10 +62,9 @@ pub struct StochasiticCompute<I, O, F, G> {
     _phantom: PhantomData<(I, O)>,
 }
 
-impl<I, O, F: Clone, G: SeedableRng> StochasiticCompute<I, O, F, G>
+impl<I, O, F, G: SeedableRng> StochasiticCompute<I, O, F, G>
 where
-    F: Fn(&mut G, I) -> O,
-    G: Rng + SeedableRng,
+    F: Fn(&mut G, I) -> Result<O>,
 {
     /// Create a new stochastic cached computation
     pub fn new(function: F) -> Self {
@@ -70,7 +74,9 @@ where
             _phantom: PhantomData,
         }
     }
+}
 
+impl<I, O, F, G: SeedableRng> StochasiticCompute<I, O, F, G> {
     /// Reseed the internal RNG with a new seed
     pub fn reseed(&mut self, seed: G::Seed) {
         self.rng = G::from_seed(seed);
@@ -89,7 +95,7 @@ impl<I, O, F: Clone, G: SeedableRng> Clone for StochasiticCompute<I, O, F, G> {
 
 impl<F, I, O, G, C> Compute<C> for StochasiticCompute<I, O, F, G>
 where
-    F: for<'g> Fn(&'g mut G, I) -> O,
+    F: for<'g> Fn(&'g mut G, I) -> Result<O>,
     G: Rng,
     I: Encodeable,
     O: Cacheable<Buffer = I::Buffer>,
@@ -134,7 +140,7 @@ mod tests {
 
     #[test]
     fn test_pure() -> Result<()> {
-        let compute = PureCompute::new(|i| i + 1usize);
+        let compute = PureCompute::new(|i| Ok(i + 1usize));
         let cache = HashMapStore::<RandomState>::default();
 
         let results = compute
@@ -154,7 +160,7 @@ mod tests {
     fn test_interrupt() -> Result<()> {
         let compute = PureCompute::new(|i| {
             sleep(Duration::from_millis(100));
-            i + 1usize
+            Ok(i + 1usize)
         });
         let cache = HashMapStore::<RandomState>::default();
 
@@ -184,7 +190,7 @@ mod tests {
 
         let compute = PureCompute::new(move |i| {
             call_count_clone.fetch_add(1, Ordering::SeqCst);
-            i * 2
+            Ok(i * 2)
         });
 
         let cache = HashMapStore::<RandomState>::default();
@@ -224,7 +230,7 @@ mod tests {
         let compute = StochasiticCompute::new(|rng: &mut SmallRng, i| {
             // Sleep to test if execute many return results in the same order as the input
             sleep(Duration::from_millis(rng.random_range(0..100)));
-            i + 1
+            Ok(i + 1)
         });
         let n_input = rayon::current_num_threads();
         let cache = HashMapStore::<RandomState>::default();
@@ -250,7 +256,7 @@ mod tests {
 
         let compute = StochasiticCompute::new(move |_: &mut SmallRng, i| {
             call_count_clone.fetch_add(1, Ordering::SeqCst);
-            i * 3
+            Ok(i * 3)
         });
 
         let cache = HashMapStore::<RandomState>::default();
@@ -282,11 +288,11 @@ mod tests {
     #[test]
     fn test_stochastic_seeding() -> Result<()> {
         let mut compute1 = StochasiticCompute::<usize, usize, _, SmallRng>::new(|rng, i| {
-            i + rng.random_range(0..100)
+            Ok(i + rng.random_range(0..100))
         });
 
         let mut compute2 = StochasiticCompute::<usize, usize, _, SmallRng>::new(|rng, i| {
-            i + rng.random_range(0..100)
+            Ok(i + rng.random_range(0..100))
         });
 
         // Set same seed for both computations
