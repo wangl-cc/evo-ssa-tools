@@ -63,12 +63,12 @@ pub fn fetch_or_execute<C, O, F>(
 where
     C: CacheStore,
     O: Cacheable,
-    F: FnOnce() -> O,
+    F: FnOnce() -> Result<O>,
 {
     if let Some(cached) = cache.fetch(sig, buffer)? {
         Ok(cached)
     } else {
-        let output = execute();
+        let output = execute()?;
         cache.store(sig, buffer, &output)?;
         Ok(output)
     }
