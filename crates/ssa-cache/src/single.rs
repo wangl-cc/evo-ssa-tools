@@ -2,15 +2,15 @@ use std::marker::PhantomData;
 
 use rand::{Rng, SeedableRng};
 
-use crate::{CacheStore, Cacheable, Compute, Encodeable, Result, fetch_or_execute};
+use crate::{CacheStore, CodecEngine, Compute, Decode, Encode, Result, fetch_or_execute};
 
 #[derive(Debug)]
-pub struct PureCompute<I, O, F> {
+pub struct PureCompute<I, O, F, E> {
     function: F,
-    _phantom: PhantomData<(I, O)>,
+    _phantom: PhantomData<(I, O, E)>,
 }
 
-impl<I, O, F> PureCompute<I, O, F>
+impl<I, O, F, E> PureCompute<I, O, F, E>
 where
     F: Fn(I) -> Result<O>,
 {
@@ -25,7 +25,7 @@ where
     }
 }
 
-impl<I, O, F: Clone> Clone for PureCompute<I, O, F> {
+impl<I, O, F: Clone, E> Clone for PureCompute<I, O, F, E> {
     fn clone(&self) -> Self {
         Self {
             function: self.function.clone(),
@@ -34,13 +34,13 @@ impl<I, O, F: Clone> Clone for PureCompute<I, O, F> {
     }
 }
 
-impl<I, O, F, C> Compute<C> for PureCompute<I, O, F>
+impl<I, O, F, C, E> Compute<C> for PureCompute<I, O, F, E>
 where
-    I: Encodeable,
-    O: Cacheable<Buffer = I::Buffer>,
     F: Fn(I) -> Result<O>,
-    C: CacheStore,
+    C: CacheStore<E>,
+    E: CodecEngine + Encode<I> + Encode<O> + Decode<O>,
 {
+    type Engine = E;
     type Input = I;
     type Output = O;
 
@@ -48,21 +48,21 @@ where
         &mut self,
         input: Self::Input,
         cache: &C,
-        buffer: &mut <Self::Output as Encodeable>::Buffer,
+        engine: &mut Self::Engine,
     ) -> Result<Self::Output> {
-        let sig = input.encode(buffer).to_owned();
-        fetch_or_execute(&sig, cache, buffer, || (self.function)(input))
+        let sig = engine.encode(&input).to_vec();
+        fetch_or_execute(&sig, cache, engine, || (self.function)(input))
     }
 }
 
 #[derive(Debug)]
-pub struct StochasiticCompute<I, O, F, G> {
+pub struct StochasiticCompute<I, O, F, G, E> {
     function: F,
     rng: G,
-    _phantom: PhantomData<(I, O)>,
+    _phantom: PhantomData<(I, O, E)>,
 }
 
-impl<I, O, F, G: SeedableRng> StochasiticCompute<I, O, F, G>
+impl<I, O, F, G: SeedableRng, E> StochasiticCompute<I, O, F, G, E>
 where
     F: Fn(&mut G, I) -> Result<O>,
 {
@@ -76,14 +76,14 @@ where
     }
 }
 
-impl<I, O, F, G: SeedableRng> StochasiticCompute<I, O, F, G> {
+impl<I, O, F, G: SeedableRng, E> StochasiticCompute<I, O, F, G, E> {
     /// Reseed the internal RNG with a new seed
     pub fn reseed(&mut self, seed: G::Seed) {
         self.rng = G::from_seed(seed);
     }
 }
 
-impl<I, O, F: Clone, G: SeedableRng> Clone for StochasiticCompute<I, O, F, G> {
+impl<I, O, F: Clone, G: SeedableRng, E> Clone for StochasiticCompute<I, O, F, G, E> {
     fn clone(&self) -> Self {
         Self {
             function: self.function.clone(),
@@ -93,14 +93,14 @@ impl<I, O, F: Clone, G: SeedableRng> Clone for StochasiticCompute<I, O, F, G> {
     }
 }
 
-impl<F, I, O, G, C> Compute<C> for StochasiticCompute<I, O, F, G>
+impl<F, I, O, G, C, E> Compute<C> for StochasiticCompute<I, O, F, G, E>
 where
     F: for<'g> Fn(&'g mut G, I) -> Result<O>,
     G: Rng,
-    I: Encodeable,
-    O: Cacheable<Buffer = I::Buffer>,
-    C: CacheStore,
+    C: CacheStore<E>,
+    E: CodecEngine + Encode<I> + Encode<usize> + Encode<O> + Decode<O>,
 {
+    type Engine = E;
     type Input = (usize, I);
     type Output = O;
 
@@ -108,12 +108,14 @@ where
         &mut self,
         input: Self::Input,
         cache: &C,
-        buffer: &mut <Self::Output as Encodeable>::Buffer,
+        engine: &mut Self::Engine,
     ) -> Result<Self::Output> {
         let (i, input) = input;
-        let sig = [input.encode(buffer), &i.to_le_bytes()].concat();
+        let mut sig = engine.encode(&input).to_vec();
+        let index = engine.encode(&i).to_vec();
+        sig.extend_from_slice(&index);
 
-        fetch_or_execute(&sig, cache, buffer, || {
+        fetch_or_execute(&sig, cache, engine, || {
             (self.function)(&mut self.rng, input)
         })
     }
@@ -136,11 +138,13 @@ mod tests {
     use rayon::prelude::*;
 
     use super::*;
-    use crate::{CodecBuffer, HashMapStore};
+    use crate::HashMapStore;
+
+    type Engine = crate::BitcodeCodec;
 
     #[test]
     fn test_pure() -> Result<()> {
-        let compute = PureCompute::new(|i| Ok(i + 1usize));
+        let compute: PureCompute<usize, usize, _, Engine> = PureCompute::new(|i| Ok(i + 1usize));
         let cache = HashMapStore::<RandomState>::default();
 
         let results = compute
@@ -158,7 +162,7 @@ mod tests {
 
     #[test]
     fn test_interrupt() -> Result<()> {
-        let compute = PureCompute::new(|i| {
+        let compute: PureCompute<usize, usize, _, Engine> = PureCompute::new(|i| {
             sleep(Duration::from_millis(100));
             Ok(i + 1usize)
         });
@@ -188,7 +192,7 @@ mod tests {
         let call_count = Arc::new(AtomicUsize::new(0));
         let call_count_clone = call_count.clone();
 
-        let compute = PureCompute::new(move |i| {
+        let compute: PureCompute<usize, usize, _, Engine> = PureCompute::new(move |i| {
             call_count_clone.fetch_add(1, Ordering::SeqCst);
             Ok(i * 2)
         });
@@ -227,11 +231,12 @@ mod tests {
 
     #[test]
     fn test_stochastic() -> Result<()> {
-        let compute = StochasiticCompute::new(|rng: &mut SmallRng, i| {
-            // Sleep to test if execute many return results in the same order as the input
-            sleep(Duration::from_millis(rng.random_range(0..100)));
-            Ok(i + 1)
-        });
+        let compute: StochasiticCompute<usize, usize, _, SmallRng, Engine> =
+            StochasiticCompute::new(|rng: &mut SmallRng, i| {
+                // Sleep to test if execute many return results in the same order as the input
+                sleep(Duration::from_millis(rng.random_range(0..100)));
+                Ok(i + 1)
+            });
         let n_input = rayon::current_num_threads();
         let cache = HashMapStore::<RandomState>::default();
 
@@ -254,10 +259,11 @@ mod tests {
         let call_count = Arc::new(AtomicUsize::new(0));
         let call_count_clone = call_count.clone();
 
-        let compute = StochasiticCompute::new(move |_: &mut SmallRng, i| {
-            call_count_clone.fetch_add(1, Ordering::SeqCst);
-            Ok(i * 3)
-        });
+        let compute: StochasiticCompute<usize, usize, _, SmallRng, Engine> =
+            StochasiticCompute::new(move |_: &mut SmallRng, i| {
+                call_count_clone.fetch_add(1, Ordering::SeqCst);
+                Ok(i * 3)
+            });
 
         let cache = HashMapStore::<RandomState>::default();
         let n_inputs = 20;
@@ -287,13 +293,15 @@ mod tests {
 
     #[test]
     fn test_stochastic_seeding() -> Result<()> {
-        let mut compute1 = StochasiticCompute::<usize, usize, _, SmallRng>::new(|rng, i| {
-            Ok(i + rng.random_range(0..100))
-        });
+        let mut compute1 =
+            StochasiticCompute::<usize, usize, _, SmallRng, Engine>::new(|rng, i| {
+                Ok(i + rng.random_range(0..100))
+            });
 
-        let mut compute2 = StochasiticCompute::<usize, usize, _, SmallRng>::new(|rng, i| {
-            Ok(i + rng.random_range(0..100))
-        });
+        let mut compute2 =
+            StochasiticCompute::<usize, usize, _, SmallRng, Engine>::new(|rng, i| {
+                Ok(i + rng.random_range(0..100))
+            });
 
         // Set same seed for both computations
         let seed = [42; 32];
@@ -306,17 +314,17 @@ mod tests {
         // Same inputs with same seed should produce same results
         let inputs = [(0, 5), (1, 10), (2, 15)];
 
-        let mut buffer1 = <usize as crate::Encodeable>::Buffer::init();
-        let mut buffer2 = <usize as crate::Encodeable>::Buffer::init();
+        let mut engine1 = Engine::default();
+        let mut engine2 = Engine::default();
 
         let results1: Result<Vec<_>> = inputs
             .iter()
-            .map(|&input| compute1.execute(input, &cache1, &mut buffer1))
+            .map(|&input| compute1.execute(input, &cache1, &mut engine1))
             .collect();
 
         let results2: Result<Vec<_>> = inputs
             .iter()
-            .map(|&input| compute2.execute(input, &cache2, &mut buffer2))
+            .map(|&input| compute2.execute(input, &cache2, &mut engine2))
             .collect();
 
         assert_eq!(results1?, results2?);

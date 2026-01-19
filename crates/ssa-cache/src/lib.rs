@@ -11,12 +11,18 @@ mod error;
 pub use error::{Error, Result};
 
 mod cache;
-pub use cache::{CacheStore, Cacheable, CodecBuffer, Encodeable, HashMapStore};
+#[cfg(feature = "bitcode")]
+pub use cache::codec::BitcodeCodec;
+pub use cache::{
+    codec::{CodecEngine, Decode, Encode},
+    storage::{CacheStore, HashMapStore},
+};
 
 /// Core trait for all compute operations
 pub trait Compute<C> {
+    type Engine: CodecEngine;
     type Input;
-    type Output: Cacheable;
+    type Output;
 
     /// Execute the computation or fetch from cache
     ///
@@ -26,7 +32,7 @@ pub trait Compute<C> {
         &mut self,
         input: Self::Input,
         cache: &C,
-        buffer: &mut <Self::Output as Encodeable>::Buffer,
+        engine: &mut Self::Engine,
     ) -> Result<Self::Output>;
 
     /// Execute many computations in parallel
@@ -40,42 +46,41 @@ pub trait Compute<C> {
         C: Sync,
         Self: Clone + Sync,
         Self::Output: Send,
+        Self::Engine: Send,
     {
         Ok(inputs.map_init(
-            || (<Self::Output as Encodeable>::Buffer::init(), self.clone()),
-            move |(buffer, c), input| {
+            || (Self::Engine::default(), self.clone()),
+            move |(engine, c), input| {
                 if interrupted.load(Ordering::Acquire) {
                     return Err(Error::Interrupted);
                 };
 
-                c.execute(input, cache, buffer)
+                c.execute(input, cache, engine)
             },
         ))
     }
 }
 
-pub fn fetch_or_execute<C, O, F>(
-    sig: &[u8],
-    cache: &C,
-    buffer: &mut O::Buffer,
-    execute: F,
-) -> Result<O>
+pub fn fetch_or_execute<C, E, O, F>(sig: &[u8], cache: &C, engine: &mut E, execute: F) -> Result<O>
 where
-    C: CacheStore,
-    O: Cacheable,
+    C: CacheStore<E>,
+    E: Encode<O> + Decode<O>,
     F: FnOnce() -> Result<O>,
 {
-    if let Some(cached) = cache.fetch(sig, buffer)? {
+    if let Some(cached) = cache.fetch(sig, engine)? {
         Ok(cached)
     } else {
         let output = execute()?;
-        cache.store(sig, buffer, &output)?;
+        cache.store(sig, engine, &output)?;
         Ok(output)
     }
 }
 
 mod single;
-pub use single::{PureCompute, StochasiticCompute};
+
+pub type PureCompute<I, O, F, C = BitcodeCodec> = single::PureCompute<I, O, F, C>;
+pub type StochasiticCompute<I, O, F, G, C = BitcodeCodec> =
+    single::StochasiticCompute<I, O, F, G, C>;
 
 mod multi;
-pub use multi::ExpAnalysis;
+pub type ExpAnalysis<I, M, O, E, A, G, C = BitcodeCodec> = multi::ExpAnalysis<I, M, O, E, A, G, C>;
