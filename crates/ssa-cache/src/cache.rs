@@ -118,7 +118,7 @@ where
 mod fjall_store {
     use super::*;
 
-    impl CacheStore for fjall::Partition {
+    impl CacheStore for fjall::Keyspace {
         fn fetch<T: Cacheable>(&self, sig: &[u8], buffer: &mut T::Buffer) -> Result<Option<T>> {
             let value = self.get(sig)?;
             value
@@ -195,8 +195,9 @@ mod tests {
     #[cfg(feature = "fjall")]
     #[test]
     fn test_fjall_store() -> Result<()> {
-        let db = fjall::Config::new(tempfile::tempdir().unwrap()).open()?;
-        let partition = db.open_partition("test", Default::default())?;
+        let dir = tempfile::tempdir().unwrap();
+        let db = fjall::Database::builder(dir).open()?;
+        let partition = db.keyspace("test", Default::default)?;
         let mut buffer = <u32 as Encodeable>::Buffer::new();
 
         // Test storing and fetching a value
