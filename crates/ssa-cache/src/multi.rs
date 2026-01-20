@@ -1,21 +1,21 @@
 use std::marker::PhantomData;
 
-use rand::{Rng, SeedableRng};
+use rand::SeedableRng;
 
 use crate::{CacheStore, CodecEngine, Compute, Decode, Encode, Result};
 
-pub struct ExpAnalysis<I, M, O, E, A, G, C> {
+pub struct ExpAnalysis<I, M, O, E, A, G> {
     experiment: E,
     analysis: A,
     rng: G,
-    _phantom: PhantomData<(I, M, O, C)>,
+    _phantom: PhantomData<(I, M, O)>,
 }
 
-impl<I, M, O, E, A, G, C> ExpAnalysis<I, M, O, E, A, G, C>
+impl<I, M, O, E, A, G> ExpAnalysis<I, M, O, E, A, G>
 where
     E: Fn(&mut G, I) -> Result<M>,
     A: Fn(M) -> Result<O>,
-    G: Rng + SeedableRng,
+    G: SeedableRng,
 {
     pub fn new(experiment: E, analysis: A) -> Self {
         Self {
@@ -32,7 +32,7 @@ where
     }
 }
 
-impl<I, M, O, E: Clone, A: Clone, G: SeedableRng, C> Clone for ExpAnalysis<I, M, O, E, A, G, C> {
+impl<I, M, O, E: Clone, A: Clone, G: SeedableRng> Clone for ExpAnalysis<I, M, O, E, A, G> {
     fn clone(&self) -> Self {
         Self {
             experiment: self.experiment.clone(),
@@ -43,7 +43,7 @@ impl<I, M, O, E: Clone, A: Clone, G: SeedableRng, C> Clone for ExpAnalysis<I, M,
     }
 }
 
-impl<I, M, O, E, A, G, C1, C2, C> Compute<(C1, C2)> for ExpAnalysis<I, M, O, E, A, G, C>
+impl<I, M, O, E, A, G, C1, C2, C> Compute<(C1, C2), C> for ExpAnalysis<I, M, O, E, A, G>
 where
     C1: CacheStore<C>,
     C2: CacheStore<C>,
@@ -51,7 +51,6 @@ where
     A: Fn(M) -> Result<O>,
     C: CodecEngine + Encode<I> + Encode<usize> + Encode<M> + Decode<M> + Encode<O> + Decode<O>,
 {
-    type Engine = C;
     type Input = (usize, I);
     type Output = O;
 
@@ -59,7 +58,7 @@ where
         &mut self,
         input: Self::Input,
         cache: &(C1, C2),
-        engine: &mut Self::Engine,
+        engine: &mut C,
     ) -> Result<Self::Output> {
         let (i, input) = input;
         let mut sig = engine.encode(&input).to_vec();
@@ -93,7 +92,7 @@ mod tests {
         hash::RandomState,
         sync::{
             Arc,
-            atomic::{AtomicBool, AtomicUsize, Ordering},
+            atomic::{AtomicUsize, Ordering},
         },
         thread::sleep,
         time::Duration,
@@ -103,27 +102,27 @@ mod tests {
     use rayon::prelude::*;
 
     use super::*;
-    use crate::HashMapStore;
 
-    type Engine = crate::BitcodeCodec;
+    type Engine = crate::DefaultCodec;
+    type HashMapStore = crate::HashMapStore<RandomState>;
+    type ExecuteOptions = crate::ExecuteOptions<Engine>;
 
     #[test]
     fn test_basic() -> Result<()> {
-        let exp_analysis: ExpAnalysis<usize, usize, usize, _, _, SmallRng, Engine> =
-            ExpAnalysis::new(
-                |_: &mut SmallRng, input| Ok(input * 2), // experiment: double the input
-                |intermediate| Ok(intermediate + 10),    // analysis: add 10 to intermediate result
-            );
+        let exp_analysis: ExpAnalysis<usize, usize, usize, _, _, _> = ExpAnalysis::new(
+            |_: &mut SmallRng, input| Ok(input * 2), // experiment: double the input
+            |intermediate| Ok(intermediate + 10),    // analysis: add 10 to intermediate result
+        );
 
-        let cache1 = HashMapStore::<RandomState>::default();
-        let cache2 = HashMapStore::<RandomState>::default();
+        let cache1 = HashMapStore::default();
+        let cache2 = HashMapStore::default();
         let cache = (cache1, cache2);
 
         let results = exp_analysis
             .execute_many(
-                &cache,
-                Arc::new(AtomicBool::new(false)),
                 (0..10).into_par_iter().map(|i| (i, i)),
+                &cache,
+                ExecuteOptions::default(),
             )?
             .collect::<Result<Vec<usize>>>()?;
 
@@ -142,30 +141,29 @@ mod tests {
         let exp_calls_clone = experiment_calls.clone();
         let analysis_calls_clone = analysis_calls.clone();
 
-        let exp_analysis: ExpAnalysis<usize, usize, usize, _, _, SmallRng, Engine> =
-            ExpAnalysis::new(
-                move |_: &mut SmallRng, input| {
-                    exp_calls_clone.fetch_add(1, Ordering::SeqCst);
-                    sleep(Duration::from_millis(10)); // Simulate work
-                    Ok(input * 3)
-                },
-                move |intermediate| {
-                    analysis_calls_clone.fetch_add(1, Ordering::SeqCst);
-                    sleep(Duration::from_millis(10)); // Simulate work
-                    Ok(intermediate + 5)
-                },
-            );
+        let exp_analysis: ExpAnalysis<usize, usize, usize, _, _, _> = ExpAnalysis::new(
+            move |_: &mut SmallRng, input| {
+                exp_calls_clone.fetch_add(1, Ordering::SeqCst);
+                sleep(Duration::from_millis(10)); // Simulate work
+                Ok(input * 3)
+            },
+            move |intermediate| {
+                analysis_calls_clone.fetch_add(1, Ordering::SeqCst);
+                sleep(Duration::from_millis(10)); // Simulate work
+                Ok(intermediate + 5)
+            },
+        );
 
-        let cache1 = HashMapStore::<RandomState>::default();
-        let cache2 = HashMapStore::<RandomState>::default();
+        let cache1 = HashMapStore::default();
+        let cache2 = HashMapStore::default();
         let cache = (cache1, cache2);
 
         // First execution - both stages should run
         let results1 = exp_analysis
             .execute_many(
-                &cache,
-                Arc::new(AtomicBool::new(false)),
                 (0..5).into_par_iter().map(|i| (i, i)),
+                &cache,
+                ExecuteOptions::default(),
             )?
             .collect::<Result<Vec<usize>>>()?;
 
@@ -177,9 +175,9 @@ mod tests {
         // Second execution - should use cached final results
         let results2 = exp_analysis
             .execute_many(
-                &cache,
-                Arc::new(AtomicBool::new(false)),
                 (0..5).into_par_iter().map(|i| (i, i)),
+                &cache,
+                ExecuteOptions::default(),
             )?
             .collect::<Result<Vec<usize>>>()?;
 
@@ -199,30 +197,29 @@ mod tests {
         let exp_calls_clone = experiment_calls.clone();
         let analysis_calls_clone = analysis_calls.clone();
 
-        let exp_analysis: ExpAnalysis<usize, usize, String, _, _, SmallRng, Engine> =
-            ExpAnalysis::new(
-                move |_: &mut SmallRng, input| {
-                    exp_calls_clone.fetch_add(1, Ordering::SeqCst);
-                    sleep(Duration::from_millis(10));
-                    Ok(input * 2)
-                },
-                move |intermediate| {
-                    analysis_calls_clone.fetch_add(1, Ordering::SeqCst);
-                    sleep(Duration::from_millis(10));
-                    Ok(format!("result_{intermediate}"))
-                },
-            );
+        let exp_analysis: ExpAnalysis<usize, usize, String, _, _, _> = ExpAnalysis::new(
+            move |_: &mut SmallRng, input| {
+                exp_calls_clone.fetch_add(1, Ordering::SeqCst);
+                sleep(Duration::from_millis(10));
+                Ok(input * 2)
+            },
+            move |intermediate| {
+                analysis_calls_clone.fetch_add(1, Ordering::SeqCst);
+                sleep(Duration::from_millis(10));
+                Ok(format!("result_{intermediate}"))
+            },
+        );
 
-        let cache1 = HashMapStore::<RandomState>::default();
-        let cache2 = HashMapStore::<RandomState>::default();
+        let cache1 = HashMapStore::default();
+        let cache2 = HashMapStore::default();
         let cache = (cache1, cache2);
 
         // First execution
         let results1 = exp_analysis
             .execute_many(
-                &cache,
-                Arc::new(AtomicBool::new(false)),
                 (0..3).into_par_iter().map(|i| (i, i)),
+                &cache,
+                ExecuteOptions::default(),
             )?
             .collect::<Result<Vec<String>>>()?;
 
@@ -233,15 +230,15 @@ mod tests {
 
         // Clear the final results cache but keep intermediate cache
         let cache1 = cache.0; // Keep intermediate cache
-        let cache2 = HashMapStore::<RandomState>::default(); // New final cache
+        let cache2 = HashMapStore::default(); // New final cache
         let cache = (cache1, cache2);
 
         // Second execution - should reuse intermediate results but recompute final
         let results2 = exp_analysis
             .execute_many(
-                &cache,
-                Arc::new(AtomicBool::new(false)),
                 (0..3).into_par_iter().map(|i| (i, i)),
+                &cache,
+                ExecuteOptions::default(),
             )?
             .collect::<Result<Vec<String>>>()?;
 
@@ -259,7 +256,7 @@ mod tests {
         use rand::Rng;
 
         // Create ExpAnalysis that uses RNG in experiment
-        let mut exp_analysis: ExpAnalysis<u32, u32, u32, _, _, SmallRng, Engine> = ExpAnalysis::new(
+        let mut exp_analysis: ExpAnalysis<u32, u32, u32, _, _, _> = ExpAnalysis::new(
             |rng: &mut SmallRng, input| Ok(input + rng.random::<u32>()),
             |x| Ok(x + 1),
         );

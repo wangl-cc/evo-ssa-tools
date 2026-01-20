@@ -134,8 +134,7 @@ mod tests {
 
     use super::*;
 
-    #[cfg(feature = "bitcode")]
-    type Engine = crate::cache::codec::BitcodeCodec;
+    type Engine = crate::DefaultCodec;
 
     #[test]
     fn test_hashmap_store() -> Result<()> {

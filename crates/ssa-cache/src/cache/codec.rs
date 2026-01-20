@@ -11,8 +11,12 @@ pub trait Decode<T>: CodecEngine {
     fn decode(&mut self, bytes: &[u8]) -> Result<T>;
 }
 
+pub trait Codec<T>: Encode<T> + Decode<T> {}
+
+impl<T, E> Codec<T> for E where E: Encode<T> + Decode<T> {}
+
 #[cfg(feature = "bitcode")]
-mod bitcode_codec {
+pub mod bitcode_codec {
     use super::*;
 
     #[derive(Default)]
@@ -33,15 +37,16 @@ mod bitcode_codec {
 
     impl<T> Decode<T> for BitcodeCodec
     where
-        T: bitcode::Encode + for<'b> bitcode::Decode<'b>,
+        T: for<'b> bitcode::Decode<'b>,
     {
         fn decode(&mut self, bytes: &[u8]) -> Result<T> {
             Ok(self.buffer.decode(bytes)?)
         }
     }
 }
+
 #[cfg(feature = "bitcode")]
-pub use bitcode_codec::BitcodeCodec;
+pub type DefaultCodec = bitcode_codec::BitcodeCodec;
 
 #[cfg(test)]
 mod tests {
