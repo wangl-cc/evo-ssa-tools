@@ -2,7 +2,7 @@ use std::marker::PhantomData;
 
 use rand::{Rng, SeedableRng};
 
-use crate::{CacheStore, Codec, Compute, Encode, Result};
+use crate::{CacheStore, CanonicalEncode, Codec, Compute, Result};
 
 #[derive(Debug)]
 pub struct PureCompute<I, O, F> {
@@ -34,18 +34,25 @@ impl<I, O, F: Clone> Clone for PureCompute<I, O, F> {
     }
 }
 
-impl<I, O, F, C, E> Compute<C, E> for PureCompute<I, O, F>
+impl<I, O, F, C> Compute<C> for PureCompute<I, O, F>
 where
     F: Fn(I) -> Result<O>,
-    C: CacheStore<E>,
-    E: Encode<I> + Codec<O>,
+    C: CacheStore,
+    I: CanonicalEncode,
+    O: Codec,
 {
     type Input = I;
     type Output = O;
 
-    fn execute(&mut self, input: Self::Input, cache: &C, engine: &mut E) -> Result<Self::Output> {
-        let sig = engine.encode(&input).to_vec();
-        cache.fetch_or_execute(&sig, engine, || (self.function)(input))
+    fn execute(
+        &mut self,
+        input: Self::Input,
+        cache: &C,
+        encode_buffer: &mut [u8],
+        codec_buffer: &mut <Self::Output as Codec>::Buffer,
+    ) -> Result<Self::Output> {
+        unsafe { input.encode_into(encode_buffer) };
+        cache.fetch_or_execute(sig.as_ref(), codec_buffer, || (self.function)(input))
     }
 }
 
@@ -84,22 +91,31 @@ impl<I, O, F: Clone, G: SeedableRng> Clone for StochasiticCompute<I, O, F, G> {
     }
 }
 
-impl<F, I, O, G, C, E> Compute<C, E> for StochasiticCompute<I, O, F, G>
+impl<F, I, O, G, C> Compute<C> for StochasiticCompute<I, O, F, G>
 where
     F: for<'g> Fn(&'g mut G, I) -> Result<O>,
     G: Rng,
-    C: CacheStore<E>,
-    E: Encode<I> + Encode<usize> + Codec<O>,
+    C: CacheStore,
+    I: CanonicalEncode,
+    usize: CanonicalEncode,
+    O: Codec,
 {
     type Input = (usize, I);
     type Output = O;
 
-    fn execute(&mut self, input: Self::Input, cache: &C, engine: &mut E) -> Result<Self::Output> {
+    fn execute(
+        &mut self,
+        input: Self::Input,
+        cache: &C,
+        buffer: &mut <Self::Output as Codec>::Buffer,
+    ) -> Result<Self::Output> {
         let (i, input) = input;
-        let mut sig = engine.encode(&input).to_vec();
-        let index = engine.encode(&i).to_vec();
-        sig.extend_from_slice(&index);
-        cache.fetch_or_execute(&sig, engine, || (self.function)(&mut self.rng, input))
+        let input_sig = input.signature();
+        let index_sig = i.signature();
+        let mut sig = Vec::with_capacity(input_sig.len() + index_sig.len());
+        sig.extend_from_slice(&input_sig);
+        sig.extend_from_slice(&index_sig);
+        cache.fetch_or_execute(&sig, buffer, || (self.function)(&mut self.rng, input))
     }
 }
 
@@ -120,10 +136,10 @@ mod tests {
     use rayon::prelude::*;
 
     use super::*;
+    use crate::cache::codec::CodecBuffer;
 
-    type Engine = crate::DefaultCodec;
     type HashMapStore = crate::HashMapStore<RandomState>;
-    type ExecuteOptions = crate::ExecuteOptions<Engine>;
+    type ExecuteOptions = crate::ExecuteOptions;
 
     #[test]
     fn test_pure() -> Result<()> {
@@ -293,17 +309,17 @@ mod tests {
         // Same inputs with same seed should produce same results
         let inputs = [(0, 5), (1, 10), (2, 15)];
 
-        let mut engine1 = Engine::default();
-        let mut engine2 = Engine::default();
+        let mut buffer1 = <usize as Codec>::Buffer::init();
+        let mut buffer2 = <usize as Codec>::Buffer::init();
 
         let results1: Result<Vec<_>> = inputs
             .iter()
-            .map(|&input| compute1.execute(input, &cache1, &mut engine1))
+            .map(|&input| compute1.execute(input, &cache1, &mut buffer1))
             .collect();
 
         let results2: Result<Vec<_>> = inputs
             .iter()
-            .map(|&input| compute2.execute(input, &cache2, &mut engine2))
+            .map(|&input| compute2.execute(input, &cache2, &mut buffer2))
             .collect();
 
         assert_eq!(results1?, results2?);

@@ -1,70 +1,64 @@
 use crate::Result;
 
-/// An abstract trait for a codec engine
-pub trait CodecEngine: Default {}
-
-pub trait Encode<T>: CodecEngine {
-    fn encode<'a>(&'a mut self, value: &T) -> &'a [u8];
+pub trait CodecBuffer {
+    fn init() -> Self;
 }
 
-pub trait Decode<T>: CodecEngine {
-    fn decode(&mut self, bytes: &[u8]) -> Result<T>;
+pub trait Codec: Sized {
+    type Buffer: CodecBuffer;
+
+    fn encode<'b>(&self, buffer: &'b mut Self::Buffer) -> &'b [u8];
+    fn decode(bytes: &[u8], buffer: &mut Self::Buffer) -> Result<Self>;
 }
-
-pub trait Codec<T>: Encode<T> + Decode<T> {}
-
-impl<T, E> Codec<T> for E where E: Encode<T> + Decode<T> {}
 
 #[cfg(feature = "bitcode")]
 pub mod bitcode_codec {
     use super::*;
 
-    #[derive(Default)]
-    pub struct BitcodeCodec {
-        buffer: bitcode::Buffer,
-    }
-
-    impl CodecEngine for BitcodeCodec {}
-
-    impl<T> Encode<T> for BitcodeCodec
-    where
-        T: bitcode::Encode,
-    {
-        fn encode(&mut self, value: &T) -> &[u8] {
-            self.buffer.encode(value)
+    impl CodecBuffer for bitcode::Buffer {
+        fn init() -> Self {
+            Self::new()
         }
     }
 
-    impl<T> Decode<T> for BitcodeCodec
+    impl<T> Codec for T
     where
-        T: for<'b> bitcode::Decode<'b>,
+        T: bitcode::Encode + for<'b> bitcode::Decode<'b>,
     {
-        fn decode(&mut self, bytes: &[u8]) -> Result<T> {
-            Ok(self.buffer.decode(bytes)?)
+        type Buffer = bitcode::Buffer;
+
+        fn encode<'b>(&self, buffer: &'b mut Self::Buffer) -> &'b [u8] {
+            buffer.encode(self)
+        }
+
+        fn decode(bytes: &[u8], buffer: &mut Self::Buffer) -> Result<Self> {
+            Ok(buffer.decode(bytes)?)
         }
     }
 }
 
 #[cfg(feature = "bitcode")]
-pub type DefaultCodec = bitcode_codec::BitcodeCodec;
+pub type BitcodeCodec = bitcode::Buffer;
+
+#[cfg(feature = "bitcode")]
+pub type DefaultCodec = bitcode::Buffer;
 
 #[cfg(test)]
 mod tests {
-    use super::{Decode, Encode};
+    use super::{Codec, CodecBuffer};
     use crate::Result;
 
     #[cfg(feature = "bitcode")]
     #[test]
     fn test_codec() -> Result<()> {
-        use super::bitcode_codec::BitcodeCodec;
+        let mut encode_buffer = <u64 as Codec>::Buffer::init();
+        let encoded = 1024u64.encode(&mut encode_buffer).to_vec();
 
-        let mut engine = BitcodeCodec::default();
-
-        let encoded = engine.encode(&1024u64).to_vec();
-        let decoded: u64 = engine.decode(&encoded)?;
+        let mut decode_buffer = <u64 as Codec>::Buffer::init();
+        let decoded: u64 = u64::decode(&encoded, &mut decode_buffer)?;
         assert_eq!(decoded, 1024);
 
-        let decoded: Result<u8> = engine.decode(&encoded);
+        let decoded: Result<u8> = u8::decode(&encoded, &mut decode_buffer);
         assert!(matches!(decoded.unwrap_err(), crate::Error::BitCode(_)));
 
         Ok(())

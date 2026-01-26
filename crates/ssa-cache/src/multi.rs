@@ -2,7 +2,7 @@ use std::marker::PhantomData;
 
 use rand::SeedableRng;
 
-use crate::{CacheStore, CodecEngine, Compute, Decode, Encode, Result};
+use crate::{CacheStore, CanonicalEncode, Codec, CodecBuffer, Compute, Result};
 
 pub struct ExpAnalysis<I, M, O, E, A, G> {
     experiment: E,
@@ -43,13 +43,16 @@ impl<I, M, O, E: Clone, A: Clone, G: SeedableRng> Clone for ExpAnalysis<I, M, O,
     }
 }
 
-impl<I, M, O, E, A, G, C1, C2, C> Compute<(C1, C2), C> for ExpAnalysis<I, M, O, E, A, G>
+impl<I, M, O, E, A, G, C1, C2> Compute<(C1, C2)> for ExpAnalysis<I, M, O, E, A, G>
 where
-    C1: CacheStore<C>,
-    C2: CacheStore<C>,
+    C1: CacheStore,
+    C2: CacheStore,
     E: Fn(&mut G, I) -> Result<M>,
     A: Fn(M) -> Result<O>,
-    C: CodecEngine + Encode<I> + Encode<usize> + Encode<M> + Decode<M> + Encode<O> + Decode<O>,
+    I: CanonicalEncode,
+    usize: CanonicalEncode,
+    M: Codec,
+    O: Codec,
 {
     type Input = (usize, I);
     type Output = O;
@@ -58,28 +61,31 @@ where
         &mut self,
         input: Self::Input,
         cache: &(C1, C2),
-        engine: &mut C,
+        buffer: &mut <Self::Output as Codec>::Buffer,
     ) -> Result<Self::Output> {
         let (i, input) = input;
-        let mut sig = engine.encode(&input).to_vec();
-        let index = engine.encode(&i).to_vec();
-        sig.extend_from_slice(&index);
+        let input_sig = input.signature();
+        let index_sig = i.signature();
+        let mut sig = Vec::with_capacity(input_sig.len() + index_sig.len());
+        sig.extend_from_slice(&input_sig);
+        sig.extend_from_slice(&index_sig);
         let sig = sig.as_ref();
 
         // Check if the final output is already cached
-        if let Some(output) = cache.1.fetch(sig, engine)? {
+        if let Some(output) = cache.1.fetch(sig, buffer)? {
             Ok(output)
         } else {
+            let mut inter_buffer = <M as Codec>::Buffer::init();
             // Check if the first output is already cached
-            let inter = if let Some(output) = cache.0.fetch(sig, engine)? {
+            let inter = if let Some(output) = cache.0.fetch(sig, &mut inter_buffer)? {
                 output
             } else {
                 let inter = (self.experiment)(&mut self.rng, input)?;
-                cache.0.store(sig, engine, &inter)?;
+                cache.0.store(sig, &mut inter_buffer, &inter)?;
                 inter
             };
             let output = (self.analysis)(inter)?;
-            cache.1.store(sig, engine, &output)?;
+            cache.1.store(sig, buffer, &output)?;
             Ok(output)
         }
     }
@@ -103,9 +109,8 @@ mod tests {
 
     use super::*;
 
-    type Engine = crate::DefaultCodec;
     type HashMapStore = crate::HashMapStore<RandomState>;
-    type ExecuteOptions = crate::ExecuteOptions<Engine>;
+    type ExecuteOptions = crate::ExecuteOptions;
 
     #[test]
     fn test_basic() -> Result<()> {
@@ -262,15 +267,15 @@ mod tests {
         );
         let seed = [42u8; 32];
         let cache = ((), ());
-        let mut engine = Engine::default();
+        let mut buffer = <u32 as Codec>::Buffer::init();
 
         // First run with seed
         exp_analysis.reseed(seed);
-        let out1 = exp_analysis.execute((0, 5), &cache, &mut engine)?;
+        let out1 = exp_analysis.execute((0, 5), &cache, &mut buffer)?;
 
         // Second run with same seed (should produce same result)
         exp_analysis.reseed(seed);
-        let out2 = exp_analysis.execute((0, 5), &cache, &mut engine)?;
+        let out2 = exp_analysis.execute((0, 5), &cache, &mut buffer)?;
 
         // Verify consistent results with same seed, different with new seed
         assert_eq!(out1, out2);
