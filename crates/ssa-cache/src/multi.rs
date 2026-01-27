@@ -1,8 +1,8 @@
 use std::marker::PhantomData;
 
-use rand::{Rng, SeedableRng};
+use rand::SeedableRng;
 
-use crate::{CacheStore, Cacheable, Compute, Encodeable, Result};
+use crate::{CacheStore, CodecEngine, Compute, Decode, Encode, Result};
 
 pub struct ExpAnalysis<I, M, O, E, A, G> {
     experiment: E,
@@ -15,7 +15,7 @@ impl<I, M, O, E, A, G> ExpAnalysis<I, M, O, E, A, G>
 where
     E: Fn(&mut G, I) -> Result<M>,
     A: Fn(M) -> Result<O>,
-    G: Rng + SeedableRng,
+    G: SeedableRng,
 {
     pub fn new(experiment: E, analysis: A) -> Self {
         Self {
@@ -43,15 +43,13 @@ impl<I, M, O, E: Clone, A: Clone, G: SeedableRng> Clone for ExpAnalysis<I, M, O,
     }
 }
 
-impl<I, M, O, E, A, G, C1, C2> Compute<(C1, C2)> for ExpAnalysis<I, M, O, E, A, G>
+impl<I, M, O, E, A, G, C1, C2, C> Compute<(C1, C2), C> for ExpAnalysis<I, M, O, E, A, G>
 where
-    C1: CacheStore,
-    C2: CacheStore,
-    I: Encodeable,
-    M: Cacheable<Buffer = I::Buffer>,
-    O: Cacheable<Buffer = I::Buffer>,
+    C1: CacheStore<C>,
+    C2: CacheStore<C>,
     E: Fn(&mut G, I) -> Result<M>,
     A: Fn(M) -> Result<O>,
+    C: CodecEngine + Encode<I> + Encode<usize> + Encode<M> + Decode<M> + Encode<O> + Decode<O>,
 {
     type Input = (usize, I);
     type Output = O;
@@ -60,26 +58,28 @@ where
         &mut self,
         input: Self::Input,
         cache: &(C1, C2),
-        buffer: &mut <Self::Output as Encodeable>::Buffer,
+        engine: &mut C,
     ) -> Result<Self::Output> {
         let (i, input) = input;
-        let sig = [input.encode(buffer), &i.to_le_bytes()].concat();
+        let mut sig = engine.encode(&input).to_vec();
+        let index = engine.encode(&i).to_vec();
+        sig.extend_from_slice(&index);
         let sig = sig.as_ref();
 
         // Check if the final output is already cached
-        if let Some(output) = cache.1.fetch(sig, buffer)? {
+        if let Some(output) = cache.1.fetch(sig, engine)? {
             Ok(output)
         } else {
             // Check if the first output is already cached
-            let inter = if let Some(output) = cache.0.fetch(sig, buffer)? {
+            let inter = if let Some(output) = cache.0.fetch(sig, engine)? {
                 output
             } else {
                 let inter = (self.experiment)(&mut self.rng, input)?;
-                cache.0.store(sig, buffer, &inter)?;
+                cache.0.store(sig, engine, &inter)?;
                 inter
             };
             let output = (self.analysis)(inter)?;
-            cache.1.store(sig, buffer, &output)?;
+            cache.1.store(sig, engine, &output)?;
             Ok(output)
         }
     }
@@ -92,7 +92,7 @@ mod tests {
         hash::RandomState,
         sync::{
             Arc,
-            atomic::{AtomicBool, AtomicUsize, Ordering},
+            atomic::{AtomicUsize, Ordering},
         },
         thread::sleep,
         time::Duration,
@@ -102,24 +102,27 @@ mod tests {
     use rayon::prelude::*;
 
     use super::*;
-    use crate::HashMapStore;
+
+    type Engine = crate::DefaultCodec;
+    type HashMapStore = crate::HashMapStore<RandomState>;
+    type ExecuteOptions = crate::ExecuteOptions<Engine>;
 
     #[test]
     fn test_basic() -> Result<()> {
-        let exp_analysis = ExpAnalysis::new(
+        let exp_analysis: ExpAnalysis<usize, usize, usize, _, _, _> = ExpAnalysis::new(
             |_: &mut SmallRng, input| Ok(input * 2), // experiment: double the input
             |intermediate| Ok(intermediate + 10),    // analysis: add 10 to intermediate result
         );
 
-        let cache1 = HashMapStore::<RandomState>::default();
-        let cache2 = HashMapStore::<RandomState>::default();
+        let cache1 = HashMapStore::default();
+        let cache2 = HashMapStore::default();
         let cache = (cache1, cache2);
 
         let results = exp_analysis
             .execute_many(
-                &cache,
-                Arc::new(AtomicBool::new(false)),
                 (0..10).into_par_iter().map(|i| (i, i)),
+                &cache,
+                ExecuteOptions::default(),
             )?
             .collect::<Result<Vec<usize>>>()?;
 
@@ -138,7 +141,7 @@ mod tests {
         let exp_calls_clone = experiment_calls.clone();
         let analysis_calls_clone = analysis_calls.clone();
 
-        let exp_analysis = ExpAnalysis::new(
+        let exp_analysis: ExpAnalysis<usize, usize, usize, _, _, _> = ExpAnalysis::new(
             move |_: &mut SmallRng, input| {
                 exp_calls_clone.fetch_add(1, Ordering::SeqCst);
                 sleep(Duration::from_millis(10)); // Simulate work
@@ -151,16 +154,16 @@ mod tests {
             },
         );
 
-        let cache1 = HashMapStore::<RandomState>::default();
-        let cache2 = HashMapStore::<RandomState>::default();
+        let cache1 = HashMapStore::default();
+        let cache2 = HashMapStore::default();
         let cache = (cache1, cache2);
 
         // First execution - both stages should run
         let results1 = exp_analysis
             .execute_many(
-                &cache,
-                Arc::new(AtomicBool::new(false)),
                 (0..5).into_par_iter().map(|i| (i, i)),
+                &cache,
+                ExecuteOptions::default(),
             )?
             .collect::<Result<Vec<usize>>>()?;
 
@@ -172,9 +175,9 @@ mod tests {
         // Second execution - should use cached final results
         let results2 = exp_analysis
             .execute_many(
-                &cache,
-                Arc::new(AtomicBool::new(false)),
                 (0..5).into_par_iter().map(|i| (i, i)),
+                &cache,
+                ExecuteOptions::default(),
             )?
             .collect::<Result<Vec<usize>>>()?;
 
@@ -194,7 +197,7 @@ mod tests {
         let exp_calls_clone = experiment_calls.clone();
         let analysis_calls_clone = analysis_calls.clone();
 
-        let exp_analysis = ExpAnalysis::new(
+        let exp_analysis: ExpAnalysis<usize, usize, String, _, _, _> = ExpAnalysis::new(
             move |_: &mut SmallRng, input| {
                 exp_calls_clone.fetch_add(1, Ordering::SeqCst);
                 sleep(Duration::from_millis(10));
@@ -207,16 +210,16 @@ mod tests {
             },
         );
 
-        let cache1 = HashMapStore::<RandomState>::default();
-        let cache2 = HashMapStore::<RandomState>::default();
+        let cache1 = HashMapStore::default();
+        let cache2 = HashMapStore::default();
         let cache = (cache1, cache2);
 
         // First execution
         let results1 = exp_analysis
             .execute_many(
-                &cache,
-                Arc::new(AtomicBool::new(false)),
                 (0..3).into_par_iter().map(|i| (i, i)),
+                &cache,
+                ExecuteOptions::default(),
             )?
             .collect::<Result<Vec<String>>>()?;
 
@@ -227,15 +230,15 @@ mod tests {
 
         // Clear the final results cache but keep intermediate cache
         let cache1 = cache.0; // Keep intermediate cache
-        let cache2 = HashMapStore::<RandomState>::default(); // New final cache
+        let cache2 = HashMapStore::default(); // New final cache
         let cache = (cache1, cache2);
 
         // Second execution - should reuse intermediate results but recompute final
         let results2 = exp_analysis
             .execute_many(
-                &cache,
-                Arc::new(AtomicBool::new(false)),
                 (0..3).into_par_iter().map(|i| (i, i)),
+                &cache,
+                ExecuteOptions::default(),
             )?
             .collect::<Result<Vec<String>>>()?;
 
@@ -253,21 +256,21 @@ mod tests {
         use rand::Rng;
 
         // Create ExpAnalysis that uses RNG in experiment
-        let mut exp_analysis = ExpAnalysis::new(
+        let mut exp_analysis: ExpAnalysis<u32, u32, u32, _, _, _> = ExpAnalysis::new(
             |rng: &mut SmallRng, input| Ok(input + rng.random::<u32>()),
             |x| Ok(x + 1),
         );
         let seed = [42u8; 32];
         let cache = ((), ());
-        let mut buffer = bitcode::Buffer::new();
+        let mut engine = Engine::default();
 
         // First run with seed
         exp_analysis.reseed(seed);
-        let out1 = exp_analysis.execute((0, 5), &cache, &mut buffer)?;
+        let out1 = exp_analysis.execute((0, 5), &cache, &mut engine)?;
 
         // Second run with same seed (should produce same result)
         exp_analysis.reseed(seed);
-        let out2 = exp_analysis.execute((0, 5), &cache, &mut buffer)?;
+        let out2 = exp_analysis.execute((0, 5), &cache, &mut engine)?;
 
         // Verify consistent results with same seed, different with new seed
         assert_eq!(out1, out2);

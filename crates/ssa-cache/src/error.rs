@@ -1,12 +1,12 @@
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
     #[cfg(feature = "bitcode")]
-    #[error("Codec error")]
-    Codec(#[from] bitcode::Error),
+    #[error("Bitcode codec error")]
+    BitCode(#[from] bitcode::Error),
 
     #[cfg(feature = "fjall")]
-    #[error("Database error")]
-    Db(#[from] fjall::Error),
+    #[error("Fjall database error")]
+    Fjall(#[from] fjall::Error),
 
     #[error("Try to get cache #{want} but only {total} available")]
     CacheOutofIndex { total: usize, want: usize },
