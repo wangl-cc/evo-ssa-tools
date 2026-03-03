@@ -8,13 +8,13 @@ mod error;
 pub use error::{Error, Result};
 
 mod cache;
-#[cfg(feature = "bitcode")]
-pub use cache::codec::BitcodeCodec;
 pub use cache::{
     canonical_encode::CanonicalEncode,
-    codec::{Codec, CodecBuffer, DefaultCodec},
+    codec::{Codec, CodecBuffer},
     storage::{CacheStore, HashMapStore},
 };
+#[cfg(feature = "bitcode")]
+pub use cache::codec::{BitcodeCodec, DefaultCodec};
 
 /// Core trait for all compute operations
 pub trait Compute<C> {
