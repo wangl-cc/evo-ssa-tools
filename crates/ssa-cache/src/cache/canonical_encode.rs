@@ -87,7 +87,7 @@ impl<T1: CanonicalEncode, T2: CanonicalEncode> CanonicalEncode for (T1, T2) {
     unsafe fn encode_into(&self, buffer: &mut [u8]) {
         unsafe {
             self.0.encode_into(&mut buffer[..T1::SIZE]);
-            self.1.encode_into(&mut buffer[T1::SIZE..T2::SIZE]);
+            self.1.encode_into(&mut buffer[T1::SIZE..Self::SIZE]);
         }
     }
 }
@@ -110,5 +110,29 @@ mod tests {
     fn test_float_encode_size_matches_type_width() {
         assert_eq!(f32::SIZE, 4);
         assert_eq!(f64::SIZE, 8);
+    }
+
+    #[test]
+    fn test_tuple_encode_concatenates_same_width_elements() {
+        let value = (0x0102_0304_0506_0708u64, 0x1112_1314_1516_1718u64);
+        let mut buffer = vec![0u8; <(u64, u64) as CanonicalEncode>::SIZE];
+        let encoded = unsafe { value.encode_with_buffer(&mut buffer) };
+
+        let mut expected = Vec::new();
+        expected.extend_from_slice(&0x0102_0304_0506_0708u64.to_be_bytes());
+        expected.extend_from_slice(&0x1112_1314_1516_1718u64.to_be_bytes());
+        assert_eq!(encoded, expected);
+    }
+
+    #[test]
+    fn test_tuple_encode_concatenates_mixed_width_elements() {
+        let value = (0x0102u16, 0x0304_0506_0708_090au64);
+        let mut buffer = vec![0u8; <(u16, u64) as CanonicalEncode>::SIZE];
+        let encoded = unsafe { value.encode_with_buffer(&mut buffer) };
+
+        let mut expected = Vec::new();
+        expected.extend_from_slice(&0x0102u16.to_be_bytes());
+        expected.extend_from_slice(&0x0304_0506_0708_090au64.to_be_bytes());
+        assert_eq!(encoded, expected);
     }
 }

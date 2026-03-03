@@ -36,8 +36,8 @@ pub trait Compute<C> {
     ///
     /// # Safety
     ///
-    /// The buffer must be with length at least `Self::SIZE`.
-    /// And implementation should only access buffer[..Self::SIZE].
+    /// The buffer must be with length at least `Self::Input::SIZE`.
+    /// And implementation should only access buffer[..Self::Input::SIZE].
     ///
     /// See [`CanonicalEncode`] for more details.
     unsafe fn execute(
