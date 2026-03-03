@@ -247,8 +247,7 @@ mod tests {
         let mut codec_buffer = <usize as Codec>::Buffer::init();
 
         // Should succeed for non-3 values
-        let result =
-            unsafe { pipeline.execute(2, &cache, &mut encode_buffer, &mut codec_buffer)? };
+        let result = unsafe { pipeline.execute(2, &cache, &mut encode_buffer, &mut codec_buffer)? };
         assert_eq!(result, 14); // 2*2+10
 
         // Should fail for 3
@@ -280,8 +279,7 @@ mod tests {
         let mut codec_buffer = <usize as Codec>::Buffer::init();
 
         // Should succeed for values != 3
-        let result =
-            unsafe { pipeline.execute(2, &cache, &mut encode_buffer, &mut codec_buffer)? };
+        let result = unsafe { pipeline.execute(2, &cache, &mut encode_buffer, &mut codec_buffer)? };
         assert_eq!(result, 14); // 2*2+10
 
         // Should fail for 3 (produces 6 in stage1)

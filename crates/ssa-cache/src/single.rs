@@ -217,7 +217,10 @@ mod tests {
             .collect::<Result<Vec<usize>>>()?;
 
         // Results should be in input order despite different completion times
-        assert_eq!(results, (0..n_inputs).map(|i| i + 100).collect::<Vec<usize>>());
+        assert_eq!(
+            results,
+            (0..n_inputs).map(|i| i + 100).collect::<Vec<usize>>()
+        );
 
         Ok(())
     }
