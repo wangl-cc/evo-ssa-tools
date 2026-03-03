@@ -1,16 +1,14 @@
 use std::marker::PhantomData;
 
-use rand::{Rng, SeedableRng};
-
 use crate::{CacheStore, CanonicalEncode, Codec, Compute, Result};
 
 #[derive(Debug)]
-pub struct PureCompute<I, O, F> {
+pub struct SingleStep<I, O, F> {
     function: F,
     _phantom: PhantomData<(I, O)>,
 }
 
-impl<I, O, F> PureCompute<I, O, F>
+impl<I, O, F> SingleStep<I, O, F>
 where
     F: Fn(I) -> Result<O>,
 {
@@ -25,7 +23,7 @@ where
     }
 }
 
-impl<I, O, F: Clone> Clone for PureCompute<I, O, F> {
+impl<I, O, F: Clone> Clone for SingleStep<I, O, F> {
     fn clone(&self) -> Self {
         Self {
             function: self.function.clone(),
@@ -34,7 +32,7 @@ impl<I, O, F: Clone> Clone for PureCompute<I, O, F> {
     }
 }
 
-impl<I, O, F, C> Compute<C> for PureCompute<I, O, F>
+impl<I, O, F, C> Compute<C> for SingleStep<I, O, F>
 where
     F: Fn(I) -> Result<O>,
     C: CacheStore,
@@ -44,78 +42,14 @@ where
     type Input = I;
     type Output = O;
 
-    fn execute(
+    fn execute_with_sig(
         &mut self,
         input: Self::Input,
+        input_signature: &[u8],
         cache: &C,
-        encode_buffer: &mut [u8],
         codec_buffer: &mut <Self::Output as Codec>::Buffer,
     ) -> Result<Self::Output> {
-        unsafe { input.encode_into(encode_buffer) };
-        cache.fetch_or_execute(sig.as_ref(), codec_buffer, || (self.function)(input))
-    }
-}
-
-#[derive(Debug)]
-pub struct StochasiticCompute<I, O, F, G> {
-    function: F,
-    rng: G,
-    _phantom: PhantomData<(I, O)>,
-}
-
-impl<I, O, F, G: SeedableRng> StochasiticCompute<I, O, F, G> {
-    /// Create a new stochastic cached computation
-    pub fn new(function: F) -> Self {
-        Self {
-            function,
-            rng: G::from_rng(&mut rand::rng()),
-            _phantom: PhantomData,
-        }
-    }
-}
-
-impl<I, O, F, G: SeedableRng> StochasiticCompute<I, O, F, G> {
-    /// Reseed the internal RNG with a new seed
-    pub fn reseed(&mut self, seed: G::Seed) {
-        self.rng = G::from_seed(seed);
-    }
-}
-
-impl<I, O, F: Clone, G: SeedableRng> Clone for StochasiticCompute<I, O, F, G> {
-    fn clone(&self) -> Self {
-        Self {
-            function: self.function.clone(),
-            rng: G::from_rng(&mut rand::rng()),
-            _phantom: PhantomData,
-        }
-    }
-}
-
-impl<F, I, O, G, C> Compute<C> for StochasiticCompute<I, O, F, G>
-where
-    F: for<'g> Fn(&'g mut G, I) -> Result<O>,
-    G: Rng,
-    C: CacheStore,
-    I: CanonicalEncode,
-    usize: CanonicalEncode,
-    O: Codec,
-{
-    type Input = (usize, I);
-    type Output = O;
-
-    fn execute(
-        &mut self,
-        input: Self::Input,
-        cache: &C,
-        buffer: &mut <Self::Output as Codec>::Buffer,
-    ) -> Result<Self::Output> {
-        let (i, input) = input;
-        let input_sig = input.signature();
-        let index_sig = i.signature();
-        let mut sig = Vec::with_capacity(input_sig.len() + index_sig.len());
-        sig.extend_from_slice(&input_sig);
-        sig.extend_from_slice(&index_sig);
-        cache.fetch_or_execute(&sig, buffer, || (self.function)(&mut self.rng, input))
+        cache.fetch_or_execute(input_signature, codec_buffer, |_| (self.function)(input))
     }
 }
 
@@ -123,7 +57,7 @@ where
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use std::{
-        hash::RandomState,
+        collections::hash_map::RandomState,
         sync::{
             Arc,
             atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -132,71 +66,50 @@ mod tests {
         time::Duration,
     };
 
-    use rand::rngs::SmallRng;
     use rayon::prelude::*;
 
     use super::*;
-    use crate::cache::codec::CodecBuffer;
-
-    type HashMapStore = crate::HashMapStore<RandomState>;
-    type ExecuteOptions = crate::ExecuteOptions;
+    use crate::{CodecBuffer, ExecuteOptions, HashMapStore};
 
     #[test]
-    fn test_pure() -> Result<()> {
-        let compute: PureCompute<usize, usize, _> = PureCompute::new(|i| Ok(i + 1usize));
-        let cache = HashMapStore::default();
+    fn test_single_step_basic() -> Result<()> {
+        let mut compute: SingleStep<usize, usize, _> = SingleStep::new(|i| Ok(i + 1));
+        let cache = HashMapStore::<RandomState>::default();
+        let mut encode_buffer = vec![0u8; usize::SIZE];
+        let mut codec_buffer = <usize as Codec>::Buffer::init();
+
+        // Execute and check result
+        let result = unsafe { compute.execute(5, &cache, &mut encode_buffer, &mut codec_buffer)? };
+        assert_eq!(result, 6);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_single_step_parallel() -> Result<()> {
+        let compute: SingleStep<usize, usize, _> = SingleStep::new(|i| Ok(i * 2));
+        let cache = HashMapStore::<RandomState>::default();
 
         let results = compute
             .execute_many((0..100).into_par_iter(), &cache, ExecuteOptions::default())?
             .collect::<Result<Vec<usize>>>()?;
 
-        assert_eq!(results, (0..100).map(|i| i + 1).collect::<Vec<usize>>());
+        assert_eq!(results, (0..100).map(|i| i * 2).collect::<Vec<usize>>());
 
         Ok(())
     }
 
     #[test]
-    fn test_interrupt() -> Result<()> {
-        let compute: PureCompute<usize, usize, _> = PureCompute::new(|i| {
-            sleep(Duration::from_millis(100));
-            Ok(i + 1usize)
-        });
-        let cache = HashMapStore::default();
-
-        let interrupted = Arc::new(AtomicBool::new(false));
-        let interrupted_clone = interrupted.clone();
-
-        let handle = spawn(move || {
-            compute
-                .execute_many(
-                    (0..100).into_par_iter(),
-                    &cache,
-                    ExecuteOptions::with_interrupt_signal(interrupted),
-                )?
-                .collect::<Result<Vec<usize>>>()
-        });
-
-        sleep(Duration::from_millis(50));
-        interrupted_clone.store(true, Ordering::Relaxed);
-
-        let results = handle.join().expect("Failed to join thread");
-
-        assert!(matches!(results.unwrap_err(), crate::Error::Interrupted));
-
-        Ok(())
-    }
-
-    #[test]
-    fn test_pure_caching() -> Result<()> {
+    fn test_single_step_caching() -> Result<()> {
         let call_count = Arc::new(AtomicUsize::new(0));
         let call_count_clone = call_count.clone();
 
-        let compute: PureCompute<usize, usize, _> = PureCompute::new(move |i| {
+        let compute: SingleStep<usize, usize, _> = SingleStep::new(move |i| {
             call_count_clone.fetch_add(1, Ordering::SeqCst);
-            Ok(i * 2)
+            Ok(i * 3)
         });
 
-        let cache = HashMapStore::default();
+        let cache = HashMapStore::<RandomState>::default();
         let n_inputs = 5;
 
         // First execution - should call function for each input
@@ -208,7 +121,7 @@ mod tests {
             )?
             .collect::<Result<Vec<usize>>>()?;
 
-        let expected: Vec<usize> = (0..n_inputs).map(|i| i * 2).collect();
+        let expected: Vec<usize> = (0..n_inputs).map(|i| i * 3).collect();
         assert_eq!(results1, expected);
         assert_eq!(call_count.load(Ordering::SeqCst), n_inputs);
 
@@ -229,100 +142,82 @@ mod tests {
     }
 
     #[test]
-    fn test_stochastic() -> Result<()> {
-        let compute: StochasiticCompute<usize, usize, _, SmallRng> =
-            StochasiticCompute::new(|rng: &mut SmallRng, i| {
-                // Sleep to test if execute many return results in the same order as the input
-                sleep(Duration::from_millis(rng.random_range(0..100)));
-                Ok(i + 1)
-            });
-        let n_input = rayon::current_num_threads();
-        let cache = HashMapStore::default();
+    fn test_single_step_interrupt() -> Result<()> {
+        let compute: SingleStep<usize, usize, _> = SingleStep::new(|i| {
+            sleep(Duration::from_millis(100));
+            Ok(i + 1)
+        });
+        let cache = HashMapStore::<RandomState>::default();
 
-        let inputs = (0..n_input).into_par_iter().map(|i| (i, i));
-        let results = compute
-            .execute_many(inputs.into_par_iter(), &cache, ExecuteOptions::default())?
-            .collect::<Result<Vec<usize>>>()?;
+        let interrupted = Arc::new(AtomicBool::new(false));
+        let interrupted_clone = interrupted.clone();
 
-        assert_eq!(results, (0..n_input).map(|i| i + 1).collect::<Vec<usize>>());
+        let handle = spawn(move || {
+            compute
+                .execute_many(
+                    (0..100).into_par_iter(),
+                    &cache,
+                    ExecuteOptions::with_interrupt_signal(interrupted),
+                )?
+                .collect::<Result<Vec<usize>>>()
+        });
+
+        sleep(Duration::from_millis(50));
+        interrupted_clone.store(true, Ordering::Relaxed);
+
+        let results = handle.join().expect("Failed to join thread");
+        assert!(matches!(results.unwrap_err(), crate::Error::Interrupted));
 
         Ok(())
     }
 
     #[test]
-    fn test_stochastic_cache() -> Result<()> {
-        let call_count = Arc::new(AtomicUsize::new(0));
-        let call_count_clone = call_count.clone();
+    fn test_single_step_error_propagation() -> Result<()> {
+        let mut compute: SingleStep<usize, usize, _> = SingleStep::new(|i| {
+            if i == 5 {
+                Err(crate::Error::Interrupted) // Use any error type
+            } else {
+                Ok(i * 2)
+            }
+        });
+        let cache = HashMapStore::<RandomState>::default();
+        let mut encode_buffer = vec![0u8; usize::SIZE];
+        let mut codec_buffer = <usize as Codec>::Buffer::init();
 
-        let compute: StochasiticCompute<usize, usize, _, _> =
-            StochasiticCompute::new(move |_: &mut SmallRng, i| {
-                call_count_clone.fetch_add(1, Ordering::SeqCst);
-                Ok(i * 3)
-            });
+        // Should succeed for non-5 values
+        let result = unsafe { compute.execute(3, &cache, &mut encode_buffer, &mut codec_buffer)? };
+        assert_eq!(result, 6);
 
-        let cache = HashMapStore::default();
+        // Should fail for 5
+        let result = unsafe { compute.execute(5, &cache, &mut encode_buffer, &mut codec_buffer) };
+        assert!(result.is_err());
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_single_step_execution_order() -> Result<()> {
+        // Test that parallel execution maintains input order in results
+        // Use varying sleep times based on input to ensure out-of-order completion
+        let compute: SingleStep<usize, usize, _> = SingleStep::new(|i| {
+            // Longer sleep for lower numbers to ensure they finish later
+            sleep(Duration::from_millis(20 - (i % 20) as u64));
+            Ok(i + 100)
+        });
+
+        let cache = HashMapStore::<RandomState>::default();
         let n_inputs = 20;
 
-        // First execution - should call function for each input
-        let inputs = (0..n_inputs).into_par_iter().map(|i| (i, i));
-        let results1 = compute
-            .execute_many(inputs, &cache, ExecuteOptions::default())?
+        let results = compute
+            .execute_many(
+                (0..n_inputs).into_par_iter(),
+                &cache,
+                ExecuteOptions::default(),
+            )?
             .collect::<Result<Vec<usize>>>()?;
 
-        let expected: Vec<usize> = (0..n_inputs).map(|i| i * 3).collect();
-        assert_eq!(results1, expected);
-        assert_eq!(call_count.load(Ordering::SeqCst), n_inputs);
-
-        // Second execution - should use cached results
-        let inputs = (0..n_inputs).into_par_iter().map(|i| (i, i));
-        let results2 = compute
-            .execute_many(inputs, &cache, ExecuteOptions::default())?
-            .collect::<Result<Vec<usize>>>()?;
-
-        assert_eq!(results2, expected);
-        // Should still be the same number of calls (cached)
-        assert_eq!(call_count.load(Ordering::SeqCst), n_inputs);
-
-        Ok(())
-    }
-
-    #[test]
-    fn test_stochastic_seeding() -> Result<()> {
-        let mut compute1 =
-            StochasiticCompute::<usize, usize, _, _>::new(|rng: &mut SmallRng, i| {
-                Ok(i + rng.random_range(0..100))
-            });
-
-        let mut compute2 =
-            StochasiticCompute::<usize, usize, _, _>::new(|rng: &mut SmallRng, i| {
-                Ok(i + rng.random_range(0..100))
-            });
-
-        // Set same seed for both computations
-        let seed = [42; 32];
-        compute1.reseed(seed);
-        compute2.reseed(seed);
-
-        let cache1 = HashMapStore::default();
-        let cache2 = HashMapStore::default();
-
-        // Same inputs with same seed should produce same results
-        let inputs = [(0, 5), (1, 10), (2, 15)];
-
-        let mut buffer1 = <usize as Codec>::Buffer::init();
-        let mut buffer2 = <usize as Codec>::Buffer::init();
-
-        let results1: Result<Vec<_>> = inputs
-            .iter()
-            .map(|&input| compute1.execute(input, &cache1, &mut buffer1))
-            .collect();
-
-        let results2: Result<Vec<_>> = inputs
-            .iter()
-            .map(|&input| compute2.execute(input, &cache2, &mut buffer2))
-            .collect();
-
-        assert_eq!(results1?, results2?);
+        // Results should be in input order despite different completion times
+        assert_eq!(results, (0..n_inputs).map(|i| i + 100).collect::<Vec<usize>>());
 
         Ok(())
     }

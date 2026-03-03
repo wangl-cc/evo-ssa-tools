@@ -34,16 +34,21 @@ pub trait CacheStore: Sync {
     /// If there are some errors during serialization or storage access.
     fn store<T: Codec>(&self, sig: &[u8], buffer: &mut T::Buffer, value: &T) -> Result<()>;
 
-    fn fetch_or_execute<T, F>(&self, sig: &[u8], buffer: &mut T::Buffer, execute: F) -> Result<T>
+    fn fetch_or_execute<T, F>(
+        &self,
+        signature: &[u8],
+        buffer: &mut T::Buffer,
+        execute: F,
+    ) -> Result<T>
     where
         T: Codec,
-        F: FnOnce() -> Result<T>,
+        F: FnOnce(&mut T::Buffer) -> Result<T>,
     {
-        if let Some(cached) = self.fetch(sig, buffer)? {
+        if let Some(cached) = self.fetch(signature, buffer)? {
             Ok(cached)
         } else {
-            let output = execute()?;
-            self.store(sig, buffer, &output)?;
+            let output = execute(buffer)?;
+            self.store(signature, buffer, &output)?;
             Ok(output)
         }
     }

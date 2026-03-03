@@ -1,93 +1,61 @@
 use std::marker::PhantomData;
 
-use rand::SeedableRng;
+use crate::{CacheStore, CanonicalEncode, Codec, Compute, Result};
 
-use crate::{CacheStore, CanonicalEncode, Codec, CodecBuffer, Compute, Result};
-
-pub struct ExpAnalysis<I, M, O, E, A, G> {
-    experiment: E,
-    analysis: A,
-    rng: G,
+pub struct Pipeline<R, F, I, M, O> {
+    required: R,
+    function: F,
     _phantom: PhantomData<(I, M, O)>,
 }
 
-impl<I, M, O, E, A, G> ExpAnalysis<I, M, O, E, A, G>
-where
-    E: Fn(&mut G, I) -> Result<M>,
-    A: Fn(M) -> Result<O>,
-    G: SeedableRng,
-{
-    pub fn new(experiment: E, analysis: A) -> Self {
+impl<R, F, I, M, O> Pipeline<R, F, I, M, O> {
+    pub fn new(required: R, function: F) -> Self {
         Self {
-            experiment,
-            analysis,
-            rng: G::from_rng(&mut rand::rng()),
+            required,
+            function,
             _phantom: PhantomData,
         }
     }
-
-    /// Reseed the internal RNG with a new seed
-    pub fn reseed(&mut self, seed: G::Seed) {
-        self.rng = G::from_seed(seed);
-    }
 }
 
-impl<I, M, O, E: Clone, A: Clone, G: SeedableRng> Clone for ExpAnalysis<I, M, O, E, A, G> {
+impl<R: Clone, F: Clone, I, M, O> Clone for Pipeline<R, F, I, M, O> {
     fn clone(&self) -> Self {
         Self {
-            experiment: self.experiment.clone(),
-            analysis: self.analysis.clone(),
-            rng: G::from_rng(&mut rand::rng()),
+            required: self.required.clone(),
+            function: self.function.clone(),
             _phantom: PhantomData,
         }
     }
 }
 
-impl<I, M, O, E, A, G, C1, C2> Compute<(C1, C2)> for ExpAnalysis<I, M, O, E, A, G>
+impl<R, F, I, M, O, C1, C2> Compute<(C1, C2)> for Pipeline<R, F, I, M, O>
 where
+    R: Compute<C1, Input = I, Output = M>,
+    F: Fn(M) -> Result<O>,
+    I: CanonicalEncode,
+    M: Codec<Buffer = <O as Codec>::Buffer>,
+    O: Codec,
     C1: CacheStore,
     C2: CacheStore,
-    E: Fn(&mut G, I) -> Result<M>,
-    A: Fn(M) -> Result<O>,
-    I: CanonicalEncode,
-    usize: CanonicalEncode,
-    M: Codec,
-    O: Codec,
 {
-    type Input = (usize, I);
+    type Input = I;
     type Output = O;
 
-    fn execute(
+    fn execute_with_sig(
         &mut self,
         input: Self::Input,
+        input_signature: &[u8],
         cache: &(C1, C2),
-        buffer: &mut <Self::Output as Codec>::Buffer,
+        codec_buffer: &mut <Self::Output as Codec>::Buffer,
     ) -> Result<Self::Output> {
-        let (i, input) = input;
-        let input_sig = input.signature();
-        let index_sig = i.signature();
-        let mut sig = Vec::with_capacity(input_sig.len() + index_sig.len());
-        sig.extend_from_slice(&input_sig);
-        sig.extend_from_slice(&index_sig);
-        let sig = sig.as_ref();
+        let (cache1, cache2) = cache;
 
-        // Check if the final output is already cached
-        if let Some(output) = cache.1.fetch(sig, buffer)? {
-            Ok(output)
-        } else {
-            let mut inter_buffer = <M as Codec>::Buffer::init();
-            // Check if the first output is already cached
-            let inter = if let Some(output) = cache.0.fetch(sig, &mut inter_buffer)? {
-                output
-            } else {
-                let inter = (self.experiment)(&mut self.rng, input)?;
-                cache.0.store(sig, &mut inter_buffer, &inter)?;
-                inter
-            };
-            let output = (self.analysis)(inter)?;
-            cache.1.store(sig, buffer, &output)?;
-            Ok(output)
-        }
+        cache2.fetch_or_execute(input_signature, codec_buffer, |codec_buffer| {
+            let intermediate =
+                self.required
+                    .execute_with_sig(input, input_signature, cache1, codec_buffer)?;
+            (self.function)(intermediate)
+        })
     }
 }
 
@@ -95,7 +63,7 @@ where
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use std::{
-        hash::RandomState,
+        collections::hash_map::RandomState,
         sync::{
             Arc,
             atomic::{AtomicUsize, Ordering},
@@ -104,33 +72,27 @@ mod tests {
         time::Duration,
     };
 
-    use rand::rngs::SmallRng;
     use rayon::prelude::*;
 
     use super::*;
-
-    type HashMapStore = crate::HashMapStore<RandomState>;
-    type ExecuteOptions = crate::ExecuteOptions;
+    use crate::{CodecBuffer, ExecuteOptions, HashMapStore, SingleStep};
 
     #[test]
-    fn test_basic() -> Result<()> {
-        let exp_analysis: ExpAnalysis<usize, usize, usize, _, _, _> = ExpAnalysis::new(
-            |_: &mut SmallRng, input| Ok(input * 2), // experiment: double the input
-            |intermediate| Ok(intermediate + 10),    // analysis: add 10 to intermediate result
-        );
+    fn test_pipeline_basic() -> Result<()> {
+        // Create a two-stage pipeline: input * 2, then + 10
+        let stage1: SingleStep<usize, usize, _> = SingleStep::new(|input| Ok(input * 2));
+        let pipeline: Pipeline<_, _, usize, usize, usize> =
+            Pipeline::new(stage1, |intermediate| Ok(intermediate + 10));
 
-        let cache1 = HashMapStore::default();
-        let cache2 = HashMapStore::default();
+        let cache1 = HashMapStore::<RandomState>::default();
+        let cache2 = HashMapStore::<RandomState>::default();
         let cache = (cache1, cache2);
 
-        let results = exp_analysis
-            .execute_many(
-                (0..10).into_par_iter().map(|i| (i, i)),
-                &cache,
-                ExecuteOptions::default(),
-            )?
+        let results = pipeline
+            .execute_many((0..10).into_par_iter(), &cache, ExecuteOptions::default())?
             .collect::<Result<Vec<usize>>>()?;
 
+        // 0*2+10=10, 1*2+10=12, 2*2+10=14, ...
         let expected: Vec<usize> = (0..10).map(|i| i * 2 + 10).collect();
         assert_eq!(results, expected);
 
@@ -138,147 +100,190 @@ mod tests {
     }
 
     #[test]
-    fn test_caching() -> Result<()> {
-        // Track how many times each function is called
-        let experiment_calls = Arc::new(AtomicUsize::new(0));
-        let analysis_calls = Arc::new(AtomicUsize::new(0));
+    fn test_pipeline_two_stage_caching() -> Result<()> {
+        let stage1_calls = Arc::new(AtomicUsize::new(0));
+        let stage1_calls_clone = stage1_calls.clone();
+        let stage2_calls = Arc::new(AtomicUsize::new(0));
+        let stage2_calls_clone = stage2_calls.clone();
 
-        let exp_calls_clone = experiment_calls.clone();
-        let analysis_calls_clone = analysis_calls.clone();
+        let stage1: SingleStep<usize, usize, _> = SingleStep::new(move |input| {
+            stage1_calls_clone.fetch_add(1, Ordering::SeqCst);
+            sleep(Duration::from_millis(10)); // Simulate work
+            Ok(input * 2)
+        });
 
-        let exp_analysis: ExpAnalysis<usize, usize, usize, _, _, _> = ExpAnalysis::new(
-            move |_: &mut SmallRng, input| {
-                exp_calls_clone.fetch_add(1, Ordering::SeqCst);
+        let pipeline: Pipeline<_, _, usize, usize, usize> =
+            Pipeline::new(stage1, move |intermediate| {
+                stage2_calls_clone.fetch_add(1, Ordering::SeqCst);
                 sleep(Duration::from_millis(10)); // Simulate work
-                Ok(input * 3)
-            },
-            move |intermediate| {
-                analysis_calls_clone.fetch_add(1, Ordering::SeqCst);
-                sleep(Duration::from_millis(10)); // Simulate work
-                Ok(intermediate + 5)
-            },
-        );
+                Ok(intermediate + 10)
+            });
 
-        let cache1 = HashMapStore::default();
-        let cache2 = HashMapStore::default();
+        let cache1 = HashMapStore::<RandomState>::default();
+        let cache2 = HashMapStore::<RandomState>::default();
         let cache = (cache1, cache2);
 
         // First execution - both stages should run
-        let results1 = exp_analysis
-            .execute_many(
-                (0..5).into_par_iter().map(|i| (i, i)),
-                &cache,
-                ExecuteOptions::default(),
-            )?
+        let results1 = pipeline
+            .execute_many((0..5).into_par_iter(), &cache, ExecuteOptions::default())?
             .collect::<Result<Vec<usize>>>()?;
 
-        let expected: Vec<usize> = (0..5).map(|i| i * 3 + 5).collect();
+        let expected: Vec<usize> = (0..5).map(|i| i * 2 + 10).collect();
         assert_eq!(results1, expected);
-        assert_eq!(experiment_calls.load(Ordering::SeqCst), 5);
-        assert_eq!(analysis_calls.load(Ordering::SeqCst), 5);
+        assert_eq!(stage1_calls.load(Ordering::SeqCst), 5);
+        assert_eq!(stage2_calls.load(Ordering::SeqCst), 5);
 
         // Second execution - should use cached final results
-        let results2 = exp_analysis
-            .execute_many(
-                (0..5).into_par_iter().map(|i| (i, i)),
-                &cache,
-                ExecuteOptions::default(),
-            )?
+        let results2 = pipeline
+            .execute_many((0..5).into_par_iter(), &cache, ExecuteOptions::default())?
             .collect::<Result<Vec<usize>>>()?;
 
         assert_eq!(results2, expected);
-        // No additional calls should have been made
-        assert_eq!(experiment_calls.load(Ordering::SeqCst), 5);
-        assert_eq!(analysis_calls.load(Ordering::SeqCst), 5);
+        // Neither stage should be called again (both cached)
+        assert_eq!(stage1_calls.load(Ordering::SeqCst), 5);
+        assert_eq!(stage2_calls.load(Ordering::SeqCst), 5);
 
         Ok(())
     }
 
     #[test]
-    fn test_intermediate_caching() -> Result<()> {
-        let experiment_calls = Arc::new(AtomicUsize::new(0));
-        let analysis_calls = Arc::new(AtomicUsize::new(0));
+    fn test_pipeline_intermediate_cache_reuse() -> Result<()> {
+        let stage1_calls = Arc::new(AtomicUsize::new(0));
+        let stage1_calls_clone = stage1_calls.clone();
+        let stage2_calls = Arc::new(AtomicUsize::new(0));
+        let stage2_calls_clone = stage2_calls.clone();
 
-        let exp_calls_clone = experiment_calls.clone();
-        let analysis_calls_clone = analysis_calls.clone();
+        let stage1: SingleStep<usize, usize, _> = SingleStep::new(move |input| {
+            stage1_calls_clone.fetch_add(1, Ordering::SeqCst);
+            sleep(Duration::from_millis(10));
+            Ok(input * 2)
+        });
 
-        let exp_analysis: ExpAnalysis<usize, usize, String, _, _, _> = ExpAnalysis::new(
-            move |_: &mut SmallRng, input| {
-                exp_calls_clone.fetch_add(1, Ordering::SeqCst);
+        let pipeline: Pipeline<_, _, usize, usize, String> =
+            Pipeline::new(stage1, move |intermediate| {
+                stage2_calls_clone.fetch_add(1, Ordering::SeqCst);
                 sleep(Duration::from_millis(10));
-                Ok(input * 2)
-            },
-            move |intermediate| {
-                analysis_calls_clone.fetch_add(1, Ordering::SeqCst);
-                sleep(Duration::from_millis(10));
-                Ok(format!("result_{intermediate}"))
-            },
-        );
+                Ok(format!("Result: {}", intermediate))
+            });
 
-        let cache1 = HashMapStore::default();
-        let cache2 = HashMapStore::default();
+        let cache1 = HashMapStore::<RandomState>::default();
+        let cache2 = HashMapStore::<RandomState>::default();
         let cache = (cache1, cache2);
 
         // First execution
-        let results1 = exp_analysis
-            .execute_many(
-                (0..3).into_par_iter().map(|i| (i, i)),
-                &cache,
-                ExecuteOptions::default(),
-            )?
+        let results1 = pipeline
+            .execute_many((0..3).into_par_iter(), &cache, ExecuteOptions::default())?
             .collect::<Result<Vec<String>>>()?;
 
-        let expected: Vec<String> = (0..3).map(|i| format!("result_{}", i * 2)).collect();
+        let expected: Vec<String> = (0..3).map(|i| format!("Result: {}", i * 2)).collect();
         assert_eq!(results1, expected);
-        assert_eq!(experiment_calls.load(Ordering::SeqCst), 3);
-        assert_eq!(analysis_calls.load(Ordering::SeqCst), 3);
+        assert_eq!(stage1_calls.load(Ordering::SeqCst), 3);
+        assert_eq!(stage2_calls.load(Ordering::SeqCst), 3);
 
         // Clear the final results cache but keep intermediate cache
         let cache1 = cache.0; // Keep intermediate cache
-        let cache2 = HashMapStore::default(); // New final cache
+        let cache2 = HashMapStore::<RandomState>::default(); // New final cache
         let cache = (cache1, cache2);
 
         // Second execution - should reuse intermediate results but recompute final
-        let results2 = exp_analysis
-            .execute_many(
-                (0..3).into_par_iter().map(|i| (i, i)),
-                &cache,
-                ExecuteOptions::default(),
-            )?
+        let results2 = pipeline
+            .execute_many((0..3).into_par_iter(), &cache, ExecuteOptions::default())?
             .collect::<Result<Vec<String>>>()?;
 
         assert_eq!(results2, expected);
-        // Experiment should not be called again (cached intermediate)
-        assert_eq!(experiment_calls.load(Ordering::SeqCst), 3);
-        // Analysis should be called again (no final cache)
-        assert_eq!(analysis_calls.load(Ordering::SeqCst), 6);
+        // Stage 1 should not be called again (cached)
+        assert_eq!(stage1_calls.load(Ordering::SeqCst), 3);
+        // Stage 2 should be called again (cache cleared)
+        assert_eq!(stage2_calls.load(Ordering::SeqCst), 6);
 
         Ok(())
     }
 
     #[test]
-    fn test_reseed() -> Result<()> {
-        use rand::Rng;
+    fn test_pipeline_with_different_types() -> Result<()> {
+        // Test pipeline with different input/intermediate/output types
+        let stage1: SingleStep<u32, u64, _> = SingleStep::new(|input: u32| Ok(input as u64 * 100));
 
-        // Create ExpAnalysis that uses RNG in experiment
-        let mut exp_analysis: ExpAnalysis<u32, u32, u32, _, _, _> = ExpAnalysis::new(
-            |rng: &mut SmallRng, input| Ok(input + rng.random::<u32>()),
-            |x| Ok(x + 1),
-        );
-        let seed = [42u8; 32];
-        let cache = ((), ());
-        let mut buffer = <u32 as Codec>::Buffer::init();
+        let pipeline: Pipeline<_, _, u32, u64, String> =
+            Pipeline::new(stage1, |intermediate: u64| {
+                Ok(format!("Value: {}", intermediate))
+            });
 
-        // First run with seed
-        exp_analysis.reseed(seed);
-        let out1 = exp_analysis.execute((0, 5), &cache, &mut buffer)?;
+        let cache1 = HashMapStore::<RandomState>::default();
+        let cache2 = HashMapStore::<RandomState>::default();
+        let cache = (cache1, cache2);
 
-        // Second run with same seed (should produce same result)
-        exp_analysis.reseed(seed);
-        let out2 = exp_analysis.execute((0, 5), &cache, &mut buffer)?;
+        let results = pipeline
+            .execute_many((0..5u32).into_par_iter(), &cache, ExecuteOptions::default())?
+            .collect::<Result<Vec<String>>>()?;
 
-        // Verify consistent results with same seed, different with new seed
-        assert_eq!(out1, out2);
+        let expected: Vec<String> = (0..5u32).map(|i| format!("Value: {}", i * 100)).collect();
+        assert_eq!(results, expected);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_pipeline_error_propagation() -> Result<()> {
+        // Test that errors in stage1 propagate correctly
+        let stage1: SingleStep<usize, usize, _> = SingleStep::new(|input| {
+            if input == 3 {
+                Err(crate::Error::Interrupted)
+            } else {
+                Ok(input * 2)
+            }
+        });
+
+        let mut pipeline: Pipeline<_, _, usize, usize, usize> =
+            Pipeline::new(stage1, |intermediate| Ok(intermediate + 10));
+
+        let cache1 = HashMapStore::<RandomState>::default();
+        let cache2 = HashMapStore::<RandomState>::default();
+        let cache = (cache1, cache2);
+        let mut encode_buffer = vec![0u8; usize::SIZE];
+        let mut codec_buffer = <usize as Codec>::Buffer::init();
+
+        // Should succeed for non-3 values
+        let result =
+            unsafe { pipeline.execute(2, &cache, &mut encode_buffer, &mut codec_buffer)? };
+        assert_eq!(result, 14); // 2*2+10
+
+        // Should fail for 3
+        let result = unsafe { pipeline.execute(3, &cache, &mut encode_buffer, &mut codec_buffer) };
+        assert!(result.is_err());
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_pipeline_stage2_error_propagation() -> Result<()> {
+        // Test that errors in stage2 propagate correctly
+        let stage1: SingleStep<usize, usize, _> = SingleStep::new(|input| Ok(input * 2));
+
+        let mut pipeline: Pipeline<_, _, usize, usize, usize> =
+            Pipeline::new(stage1, |intermediate| {
+                if intermediate == 6 {
+                    // 3 * 2 = 6
+                    Err(crate::Error::Interrupted)
+                } else {
+                    Ok(intermediate + 10)
+                }
+            });
+
+        let cache1 = HashMapStore::<RandomState>::default();
+        let cache2 = HashMapStore::<RandomState>::default();
+        let cache = (cache1, cache2);
+        let mut encode_buffer = vec![0u8; usize::SIZE];
+        let mut codec_buffer = <usize as Codec>::Buffer::init();
+
+        // Should succeed for values != 3
+        let result =
+            unsafe { pipeline.execute(2, &cache, &mut encode_buffer, &mut codec_buffer)? };
+        assert_eq!(result, 14); // 2*2+10
+
+        // Should fail for 3 (produces 6 in stage1)
+        let result = unsafe { pipeline.execute(3, &cache, &mut encode_buffer, &mut codec_buffer) };
+        assert!(result.is_err());
 
         Ok(())
     }

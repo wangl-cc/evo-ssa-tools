@@ -1,9 +1,6 @@
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering},
-};
+use std::sync::{Arc, atomic};
 
 use rayon::prelude::*;
 
@@ -24,17 +21,36 @@ pub trait Compute<C> {
     type Input: CanonicalEncode;
     type Output: Codec;
 
+    fn execute_with_sig(
+        &mut self,
+        input: Self::Input,
+        input_signature: &[u8],
+        cache: &C,
+        codec_buffer: &mut <Self::Output as Codec>::Buffer,
+    ) -> Result<Self::Output>;
+
     /// Execute the computation or fetch from cache
     ///
     /// If cache hit, return the cached value. Otherwise, execute the computation and store the
     /// result in the cache.
-    fn execute(
+    ///
+    /// # Safety
+    ///
+    /// The buffer must be with length at least `Self::SIZE`.
+    /// And implementation should only access buffer[..Self::SIZE].
+    ///
+    /// See [`CanonicalEncode`] for more details.
+    unsafe fn execute(
         &mut self,
         input: Self::Input,
         cache: &C,
         encode_buffer: &mut [u8],
-        codex_buffer: &mut <Self::Output as Codec>::Buffer,
-    ) -> Result<Self::Output>;
+        codec_buffer: &mut <Self::Output as Codec>::Buffer,
+    ) -> Result<Self::Output> {
+        // Safety: The safety is guaranteed by the caller.
+        let input_signature = unsafe { input.encode_with_buffer(encode_buffer) };
+        self.execute_with_sig(input, input_signature, cache, codec_buffer)
+    }
 
     /// Execute many computations in parallel
     fn execute_many(
@@ -60,12 +76,13 @@ pub trait Compute<C> {
             },
             move |(encode_buffer, codec_buffer, c, signal), input| {
                 if let Some(signal) = signal
-                    && signal.load(Ordering::Acquire)
+                    && signal.load(atomic::Ordering::Acquire)
                 {
                     return Err(Error::Interrupted);
                 };
 
-                c.execute(input, cache, encode_buffer, codec_buffer)
+                // Safety: The buffer is initialized with length Self::Input::SIZE.
+                unsafe { c.execute(input, cache, encode_buffer, codec_buffer) }
             },
         ))
     }
@@ -73,11 +90,11 @@ pub trait Compute<C> {
 
 #[derive(Debug, Clone, Default)]
 pub struct ExecuteOptions {
-    signal: Option<Arc<AtomicBool>>,
+    signal: Option<Arc<atomic::AtomicBool>>,
 }
 
 impl ExecuteOptions {
-    pub fn with_interrupt_signal(signal: Arc<AtomicBool>) -> Self {
+    pub fn with_interrupt_signal(signal: Arc<atomic::AtomicBool>) -> Self {
         Self {
             signal: Some(signal),
         }
@@ -85,7 +102,7 @@ impl ExecuteOptions {
 }
 
 mod single;
-pub use single::{PureCompute, StochasiticCompute};
+pub use single::SingleStep;
 
 mod multi;
-pub use multi::ExpAnalysis;
+pub use multi::Pipeline;

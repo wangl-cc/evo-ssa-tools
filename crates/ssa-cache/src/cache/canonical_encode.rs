@@ -1,10 +1,17 @@
-/// Encode a canonical key into bytes.
+/// Encode a key into canonical bytes.
 ///
-/// Implementations should be deterministic and stable for cache keys.
+/// Implementations should be deterministic and consistent across different builds and runs, and
+/// always have a consistent size `Self::SIZE`.
+///
+/// # Implementations
+///
+/// - For integers, the encoding is big-endian;
+/// - For floats, NaN values are normalized to a canonical NaN, and -0.0 is treated as +0.0.
+/// - For tuples and arrays, the encoding is the concatenation of the encodings of each element.
 pub trait CanonicalEncode {
     const SIZE: usize;
 
-    /// Encode self
+    /// Encode self into the provided buffer.
     ///
     /// ## Safety
     ///
@@ -12,6 +19,14 @@ pub trait CanonicalEncode {
     /// And implementation should only access buffer[..Self::SIZE].
     unsafe fn encode_into(&self, buffer: &mut [u8]);
 
+    /// Encode self into the provided buffer and return the encoded bytes.
+    ///
+    /// This is a convenience wrapper around `encode_into` that returns the encoded bytes.
+    ///
+    /// ## Safety
+    ///
+    /// The buffer must be with length at least `Self::SIZE`.
+    /// And implementation should only access buffer[..Self::SIZE].
     unsafe fn encode_with_buffer<'b>(&self, buffer: &'b mut [u8]) -> &'b [u8] {
         unsafe { self.encode_into(buffer) };
         &buffer[..Self::SIZE]
@@ -43,15 +58,15 @@ impl_encode_for_int!(usize => 4, isize => 4);
 impl_encode_for_int!(usize => 8, isize => 8);
 
 macro_rules! impl_encode_for_float {
-    ($($t:path => $nan:path => $size:literal),+ $(,)?) => {
+    ($($t:ident => $size:literal),+ $(,)?) => {
         $(
             impl CanonicalEncode for $t {
-                const SIZE: usize = 8;
+                const SIZE: usize = $size;
 
                 #[inline]
                 unsafe fn encode_into(&self, buffer: &mut [u8]) {
                     let bits = if self.is_nan() {
-                        $nan.to_bits()
+                        $t::NAN.to_bits()
                     } else if *self == 0.0 {
                         0
                     } else {
@@ -64,7 +79,7 @@ macro_rules! impl_encode_for_float {
     };
 }
 
-impl_encode_for_float!(f32 => f32::NAN => 4, f64 => f64::NAN => 8);
+impl_encode_for_float!(f32 => 4, f64 => 8);
 
 impl<T1: CanonicalEncode, T2: CanonicalEncode> CanonicalEncode for (T1, T2) {
     const SIZE: usize = T1::SIZE + T2::SIZE;
@@ -84,5 +99,16 @@ impl<T: CanonicalEncode, const N: usize> CanonicalEncode for [T; N] {
         for (item, chunk) in self.iter().zip(buf.chunks_exact_mut(T::SIZE)) {
             unsafe { item.encode_into(chunk) }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::CanonicalEncode;
+
+    #[test]
+    fn test_float_encode_size_matches_type_width() {
+        assert_eq!(f32::SIZE, 4);
+        assert_eq!(f64::SIZE, 8);
     }
 }
