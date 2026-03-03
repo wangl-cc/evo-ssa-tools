@@ -393,4 +393,18 @@ mod tests {
         assert_eq!(stage2_calls.load(Ordering::SeqCst), 20);
         Ok(())
     }
+
+    #[test]
+    fn test_stochastic_input_from_tuple_matches_new_encoding() {
+        let from_new = StochasticInput::new(123u64, 9);
+        let from_tuple: StochasticInput<u64> = (123u64, 9u64).into();
+
+        let mut buffer_new = vec![0u8; StochasticInput::<u64>::SIZE];
+        let mut buffer_tuple = vec![0u8; StochasticInput::<u64>::SIZE];
+
+        let encoded_new = unsafe { from_new.encode_with_buffer(&mut buffer_new) };
+        let encoded_tuple = unsafe { from_tuple.encode_with_buffer(&mut buffer_tuple) };
+
+        assert_eq!(encoded_new, encoded_tuple);
+    }
 }

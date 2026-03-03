@@ -135,4 +135,40 @@ mod tests {
         expected.extend_from_slice(&0x0304_0506_0708_090au64.to_be_bytes());
         assert_eq!(encoded, expected);
     }
+
+    #[test]
+    fn test_float_encode_canonicalization() {
+        let mut buffer_a = vec![0u8; f32::SIZE];
+        let mut buffer_b = vec![0u8; f32::SIZE];
+        let mut buffer_c = vec![0u8; f32::SIZE];
+
+        let nan_non_canonical = f32::from_bits(0x7fc0_0001);
+        let nan_canonical = f32::NAN;
+        let encoded_nan_non_canonical = unsafe { nan_non_canonical.encode_with_buffer(&mut buffer_a) };
+        let encoded_nan_canonical = unsafe { nan_canonical.encode_with_buffer(&mut buffer_b) };
+        assert_eq!(encoded_nan_non_canonical, encoded_nan_canonical);
+
+        let encoded_pos_zero = unsafe { 0.0f32.encode_with_buffer(&mut buffer_c) };
+        let mut buffer_d = vec![0u8; f32::SIZE];
+        let encoded_neg_zero = unsafe { (-0.0f32).encode_with_buffer(&mut buffer_d) };
+        assert_eq!(encoded_pos_zero, encoded_neg_zero);
+
+        let normal = 1.5f32;
+        let mut buffer_e = vec![0u8; f32::SIZE];
+        let encoded_normal = unsafe { normal.encode_with_buffer(&mut buffer_e) };
+        assert_eq!(encoded_normal, normal.to_bits().to_be_bytes());
+    }
+
+    #[test]
+    fn test_array_encode_concatenates_elements() {
+        let value = [0x0102u16, 0x0304u16, 0x0506u16];
+        let mut buffer = vec![0u8; <[u16; 3] as CanonicalEncode>::SIZE];
+        let encoded = unsafe { value.encode_with_buffer(&mut buffer) };
+
+        let mut expected = Vec::new();
+        expected.extend_from_slice(&0x0102u16.to_be_bytes());
+        expected.extend_from_slice(&0x0304u16.to_be_bytes());
+        expected.extend_from_slice(&0x0506u16.to_be_bytes());
+        assert_eq!(encoded, expected);
+    }
 }

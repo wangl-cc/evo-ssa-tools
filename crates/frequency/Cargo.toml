@@ -15,7 +15,7 @@ rayon = { workspace = true, optional = true }
 [dev-dependencies]
 divan = { workspace = true }
 nohash-hasher = { workspace = true }
-rand = { workspace = true, features = ["os_rng", "small_rng"] }
+rand = { workspace = true }
 zerocopy = { workspace = true }
 
 [features]
