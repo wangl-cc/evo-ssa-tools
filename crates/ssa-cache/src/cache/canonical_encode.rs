@@ -144,7 +144,8 @@ mod tests {
 
         let nan_non_canonical = f32::from_bits(0x7fc0_0001);
         let nan_canonical = f32::NAN;
-        let encoded_nan_non_canonical = unsafe { nan_non_canonical.encode_with_buffer(&mut buffer_a) };
+        let encoded_nan_non_canonical =
+            unsafe { nan_non_canonical.encode_with_buffer(&mut buffer_a) };
         let encoded_nan_canonical = unsafe { nan_canonical.encode_with_buffer(&mut buffer_b) };
         assert_eq!(encoded_nan_non_canonical, encoded_nan_canonical);
 
