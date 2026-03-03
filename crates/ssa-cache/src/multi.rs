@@ -72,10 +72,13 @@ mod tests {
         time::Duration,
     };
 
+    use rand::RngCore;
     use rayon::prelude::*;
 
     use super::*;
-    use crate::{CodecBuffer, ExecuteOptions, HashMapStore, SingleStep};
+    use crate::{
+        CodecBuffer, ExecuteOptions, HashMapStore, SingleStep, StochasticInput, StochasticStep,
+    };
 
     #[test]
     fn test_pipeline_basic() -> Result<()> {
@@ -284,6 +287,70 @@ mod tests {
         // Should fail for 3 (produces 6 in stage1)
         let result = unsafe { pipeline.execute(3, &cache, &mut encode_buffer, &mut codec_buffer) };
         assert!(result.is_err());
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_pipeline_stochastic_monte_carlo_analysis() -> Result<()> {
+        let experiment_calls = Arc::new(AtomicUsize::new(0));
+        let experiment_calls_clone = experiment_calls.clone();
+        let analysis_calls = Arc::new(AtomicUsize::new(0));
+        let analysis_calls_clone = analysis_calls.clone();
+
+        // Stage 1: Monte Carlo estimate of PI using a deterministic stochastic stream.
+        let stage1: StochasticStep<usize, f64, _> =
+            StochasticStep::new(b"mc-pi-experiment", move |rng, n_samples| {
+                experiment_calls_clone.fetch_add(1, Ordering::SeqCst);
+                let mut inside = 0usize;
+
+                for _ in 0..n_samples {
+                    let x = (rng.next_u64() as f64) / (u64::MAX as f64);
+                    let y = (rng.next_u64() as f64) / (u64::MAX as f64);
+                    if x * x + y * y <= 1.0 {
+                        inside += 1;
+                    }
+                }
+
+                Ok(4.0 * (inside as f64) / (n_samples as f64))
+            });
+
+        // Stage 2: Analysis returns absolute error against PI.
+        let pipeline: Pipeline<_, _, StochasticInput<usize>, f64, f64> =
+            Pipeline::new(stage1, move |pi_estimate: f64| {
+                analysis_calls_clone.fetch_add(1, Ordering::SeqCst);
+                Ok((pi_estimate - std::f64::consts::PI).abs())
+            });
+
+        let cache1 = HashMapStore::<RandomState>::default();
+        let cache2 = HashMapStore::<RandomState>::default();
+        let cache = (cache1, cache2);
+
+        let inputs: Vec<_> = (0..8u64)
+            .map(|repetition| StochasticInput::new(5_000usize, repetition))
+            .collect();
+
+        let results1 = pipeline
+            .execute_many(
+                inputs.clone().into_par_iter(),
+                &cache,
+                ExecuteOptions::default(),
+            )?
+            .collect::<Result<Vec<f64>>>()?;
+
+        assert_eq!(results1.len(), inputs.len());
+        assert!(results1.iter().all(|error| error.is_finite()));
+        assert_eq!(experiment_calls.load(Ordering::SeqCst), inputs.len());
+        assert_eq!(analysis_calls.load(Ordering::SeqCst), inputs.len());
+
+        // Second execution should hit final cache and avoid recomputing both stages.
+        let results2 = pipeline
+            .execute_many(inputs.into_par_iter(), &cache, ExecuteOptions::default())?
+            .collect::<Result<Vec<f64>>>()?;
+
+        assert_eq!(results1, results2);
+        assert_eq!(experiment_calls.load(Ordering::SeqCst), 8);
+        assert_eq!(analysis_calls.load(Ordering::SeqCst), 8);
 
         Ok(())
     }

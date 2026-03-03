@@ -102,7 +102,13 @@ impl ExecuteOptions {
 }
 
 mod single;
+/// Deterministic single-stage compute with cache.
 pub use single::SingleStep;
 
+mod stochastic;
+/// Deterministic stochastic compute with per-input stream derivation.
+pub use stochastic::{StochasticInput, StochasticStep};
+
 mod multi;
+/// Multi-stage compute pipeline with per-stage cache.
 pub use multi::Pipeline;

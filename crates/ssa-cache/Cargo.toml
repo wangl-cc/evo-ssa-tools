@@ -7,7 +7,10 @@ license.workspace = true
 
 [dependencies]
 bitcode = { workspace = true, optional = true }
+blake3 = { workspace = true }
 fjall = { workspace = true, default-features = false, optional = true }
+rand = { workspace = true }
+rand_xoshiro = { workspace = true }
 rayon = { workspace = true }
 thiserror = { workspace = true }
 
