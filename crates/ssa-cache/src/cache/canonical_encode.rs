@@ -3,6 +3,11 @@
 /// Implementations should be deterministic and consistent across different builds and runs, and
 /// always have a consistent size `Self::SIZE`.
 ///
+/// # Portability
+///
+/// `ssa-cache` targets 64-bit platforms only. This avoids platform-dependent key encodings (e.g.
+/// `usize` width) and makes cache keys stable across builds.
+///
 /// # Implementations
 ///
 /// - For integers, the encoding is big-endian;
@@ -48,14 +53,11 @@ macro_rules! impl_encode_for_int {
     };
 }
 
-impl_encode_for_int!(u8 => 1, u16 => 2, u32 => 4, u64 => 8, u128 => 16);
-impl_encode_for_int!(i8 => 1, i16 => 2, i32 => 4, i64 => 8, i128 => 16);
+impl_encode_for_int!(u8 => 1, u16 => 2, u32 => 4, u64 => 8, usize => 8, u128 => 16);
+impl_encode_for_int!(i8 => 1, i16 => 2, i32 => 4, i64 => 8, isize => 8, i128 => 16);
 
-#[cfg(target_pointer_width = "32")]
-impl_encode_for_int!(usize => 4, isize => 4);
-
-#[cfg(target_pointer_width = "64")]
-impl_encode_for_int!(usize => 8, isize => 8);
+#[cfg(not(target_pointer_width = "64"))]
+compile_error!("ssa-cache supports only 64-bit targets");
 
 macro_rules! impl_encode_for_float {
     ($($t:ident => $size:literal),+ $(,)?) => {
@@ -103,6 +105,7 @@ impl<T: CanonicalEncode, const N: usize> CanonicalEncode for [T; N] {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::CanonicalEncode;
 

@@ -7,8 +7,16 @@ use crate::{CacheStore, CanonicalEncode, Codec, Compute, Result};
 
 /// Input for stochastic computation.
 ///
-/// `param` is the model input, and `repetition_index` selects a deterministic random
-/// stream for repeated runs with the same `param`.
+/// This wraps a deterministic parameter value (`param`) with a `repetition_index`.
+///
+/// The pair serves two roles:
+///
+/// - It is the canonical input used for cache-key construction.
+/// - It identifies one reproducible random stream when used with [`StochasticStep`].
+///
+/// # Encoding
+///
+/// Canonical encoding is `param` bytes followed by big-endian `repetition_index` bytes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StochasticInput<P> {
     /// Deterministic model/config input.
@@ -48,53 +56,96 @@ impl<P: CanonicalEncode> CanonicalEncode for StochasticInput<P> {
     }
 }
 
-/// Stochastic cached computation with deterministic RNG seeding.
+/// Stochastic compute node with reproducible randomness.
 ///
-/// Reproducibility is determined by:
+/// `StochasticStep` is a cached compute node where each input is executed with a deterministic RNG
+/// stream derived from `(key_material, encoded_input_bytes)`.
 ///
-/// - Key material passed to [`Self::new`],
-/// - Canonical input bytes,
-/// - The fixed RNG type (`Xoshiro256PlusPlus`),
-/// - and key-material normalization domain version in this module.
+/// # When to use
 ///
-/// Updating the key-material domain version or RNG algorithm changes both generated random streams
-/// and cache signatures by design.
+/// - You want repeated stochastic simulations with reproducible results per repetition.
+/// - You want randomness to be input-scoped (no global RNG state).
+/// - You want caching keyed by canonical input bytes (including `repetition_index`).
+///
+/// # Reproducibility
+///
+/// The RNG stream for an input is derived from:
+///
+/// - `key_material` (provided at construction), and
+/// - the canonical encoding of the full input (`param` plus `repetition_index`).
+///
+/// Changing either will change the stream.
+///
+/// # Example
+///
+/// ```rust
+/// # use ssa_cache::prelude::*;
+/// # use rayon::prelude::*;
+/// # use rand::Rng;
+/// # fn main() -> ssa_cache::error::Result<()> {
+/// type Store = HashMapStore<std::collections::hash_map::RandomState>;
+/// let step = StochasticStep::new(Store::default(), "my-experiment-seed", |rng, param: f64| {
+///     let noise: f64 = rng.random_range(-1.0..1.0);
+///     Ok(param + noise)
+/// });
+///
+/// // Create 5 repetitions for param 10.0
+/// let inputs = (0..5)
+///     .into_par_iter()
+///     .map(|idx| StochasticInput::new(10.0, idx));
+/// let results = step
+///     .execute_many(inputs, ExecuteOptions::default())?
+///     .collect::<ssa_cache::error::Result<Vec<f64>>>()?;
+/// # Ok(())
+/// # }
+/// ```
+///
+/// # Caching / keyspace contract
+///
+/// The provided `cache` is treated as this step's private keyspace.
+/// Reusing the same underlying keyspace for different stochastic steps is not supported and may
+/// return cached values written by another step for the same input bytes.
+/// Keyspace compatibility is caller-managed: when seed derivation, stochastic algorithm, or
+/// encoding semantics change in an incompatible way, use a new keyspace.
+///
+/// Note: `key_material` only affects random seed derivation. It is not used as a cache-key
+/// namespace.
 #[derive(Debug)]
-pub struct StochasticStep<P, O, F> {
+pub struct StochasticStep<C, P, O, F> {
+    cache: C,
     seed_key: [u8; 32],
     function: F,
     _phantom: PhantomData<(P, O)>,
 }
 
-impl<P, O, F> StochasticStep<P, O, F>
+impl<C, P, O, F> StochasticStep<C, P, O, F>
 where
     F: Fn(&mut Xoshiro256PlusPlus, P) -> Result<O>,
 {
-    /// Domain for key-material normalization.
-    ///
-    /// `key_material` is normalized to a 32-byte key with `blake3::derive_key`.
     const KEY_DOMAIN: &str = "ssa-cache/stochastic/key-material/v1";
 
-    /// Create a stochastic step with deterministic random stream derivation.
+    /// Create a stochastic step from `cache`, `key_material`, and `function`.
     ///
-    /// Any bytes can be used as key material (for example, experiment name bytes). The material is
-    /// normalized once to a 32-byte key and then used to derive per-input run seeds.
-    pub fn new(key_material: impl AsRef<[u8]>, function: F) -> Self {
+    /// `cache` should be dedicated to this step (see [`StochasticStep`] cache keyspace contract).
+    /// `key_material` affects seed derivation only; it does not namespace cache keys.
+    pub fn new(cache: C, key_material: impl AsRef<[u8]>, function: F) -> Self {
         Self {
+            cache,
             seed_key: blake3::derive_key(Self::KEY_DOMAIN, key_material.as_ref()),
             function,
             _phantom: PhantomData,
         }
     }
 
-    fn derive_seed(&self, input_signature: &[u8]) -> [u8; 32] {
-        *blake3::keyed_hash(&self.seed_key, input_signature).as_bytes()
+    fn derive_seed(&self, encoded_input: &[u8]) -> [u8; 32] {
+        *blake3::keyed_hash(&self.seed_key, encoded_input).as_bytes()
     }
 }
 
-impl<P, O, F: Clone> Clone for StochasticStep<P, O, F> {
+impl<C: Clone, P, O, F: Clone> Clone for StochasticStep<C, P, O, F> {
     fn clone(&self) -> Self {
         Self {
+            cache: self.cache.clone(),
             seed_key: self.seed_key,
             function: self.function.clone(),
             _phantom: PhantomData,
@@ -102,7 +153,7 @@ impl<P, O, F: Clone> Clone for StochasticStep<P, O, F> {
     }
 }
 
-impl<P, O, F, C> Compute<C> for StochasticStep<P, O, F>
+impl<C, P, O, F> Compute for StochasticStep<C, P, O, F>
 where
     F: Fn(&mut Xoshiro256PlusPlus, P) -> Result<O>,
     C: CacheStore,
@@ -112,18 +163,20 @@ where
     type Input = StochasticInput<P>;
     type Output = O;
 
-    fn execute_with_sig(
+    fn execute_with_encoded_input(
         &mut self,
         input: Self::Input,
-        input_signature: &[u8],
-        cache: &C,
+        encoded: &[u8],
         codec_buffer: &mut <Self::Output as Codec>::Buffer,
     ) -> Result<Self::Output> {
-        let seed = self.derive_seed(input_signature);
+        let seed = self.derive_seed(encoded);
         let param = input.param;
-        cache.fetch_or_execute(&seed, codec_buffer, |_| {
+        let cache = &self.cache;
+        let function = &self.function;
+
+        cache.fetch_or_execute(encoded, codec_buffer, |_| {
             let mut rng = Xoshiro256PlusPlus::from_seed(seed);
-            (self.function)(&mut rng, param)
+            function(&mut rng, param)
         })
     }
 }
@@ -131,24 +184,21 @@ where
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
-    use std::{
-        collections::hash_map::RandomState,
-        sync::{
-            Arc,
-            atomic::{AtomicUsize, Ordering},
-        },
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
     };
 
     use rand::RngCore;
     use rayon::prelude::*;
 
     use super::*;
-    use crate::{CodecBuffer, ExecuteOptions, HashMapStore, Pipeline};
+    use crate::{cache::storage::DefaultHashMapStore, prelude::*};
 
     #[test]
-    fn test_stochastic_reproducible_same_seed_and_input() -> Result<()> {
-        let mut step: StochasticStep<u64, [u64; 4], _> =
-            StochasticStep::new(b"experiment-A", |rng, param| {
+    fn test_stochastic_reproducible_with_owned_cache() -> Result<()> {
+        let mut step: StochasticStep<_, u64, [u64; 4], _> =
+            StochasticStep::new((), b"experiment-A", |rng, param| {
                 Ok([
                     rng.next_u64() ^ param,
                     rng.next_u64(),
@@ -156,14 +206,12 @@ mod tests {
                     rng.next_u64(),
                 ])
             });
-        let cache = ();
         let mut encode_buffer = vec![0u8; <StochasticInput<u64> as CanonicalEncode>::SIZE];
         let mut codec_buffer = <[u64; 4] as Codec>::Buffer::init();
 
         let output1 = unsafe {
             step.execute(
                 StochasticInput::new(42, 7),
-                &cache,
                 &mut encode_buffer,
                 &mut codec_buffer,
             )?
@@ -171,7 +219,6 @@ mod tests {
         let output2 = unsafe {
             step.execute(
                 StochasticInput::new(42, 7),
-                &cache,
                 &mut encode_buffer,
                 &mut codec_buffer,
             )?
@@ -183,8 +230,8 @@ mod tests {
 
     #[test]
     fn test_stochastic_diff_repetition_index_changes_stream() -> Result<()> {
-        let mut step: StochasticStep<u64, [u64; 4], _> =
-            StochasticStep::new(b"experiment-A", |rng, param| {
+        let mut step: StochasticStep<_, u64, [u64; 4], _> =
+            StochasticStep::new((), b"experiment-A", |rng, param| {
                 Ok([
                     rng.next_u64() ^ param,
                     rng.next_u64(),
@@ -192,14 +239,12 @@ mod tests {
                     rng.next_u64(),
                 ])
             });
-        let cache = ();
         let mut encode_buffer = vec![0u8; <StochasticInput<u64> as CanonicalEncode>::SIZE];
         let mut codec_buffer = <[u64; 4] as Codec>::Buffer::init();
 
         let output1 = unsafe {
             step.execute(
                 StochasticInput::new(42, 1),
-                &cache,
                 &mut encode_buffer,
                 &mut codec_buffer,
             )?
@@ -207,7 +252,6 @@ mod tests {
         let output2 = unsafe {
             step.execute(
                 StochasticInput::new(42, 2),
-                &cache,
                 &mut encode_buffer,
                 &mut codec_buffer,
             )?
@@ -219,8 +263,8 @@ mod tests {
 
     #[test]
     fn test_stochastic_diff_seed_material_isolated() -> Result<()> {
-        let mut step1: StochasticStep<u64, [u64; 4], _> =
-            StochasticStep::new(b"experiment-A", |rng, param| {
+        let mut step1: StochasticStep<_, u64, [u64; 4], _> =
+            StochasticStep::new((), b"experiment-A", |rng, param| {
                 Ok([
                     rng.next_u64() ^ param,
                     rng.next_u64(),
@@ -228,8 +272,8 @@ mod tests {
                     rng.next_u64(),
                 ])
             });
-        let mut step2: StochasticStep<u64, [u64; 4], _> =
-            StochasticStep::new(b"experiment-B", |rng, param| {
+        let mut step2: StochasticStep<_, u64, [u64; 4], _> =
+            StochasticStep::new((), b"experiment-B", |rng, param| {
                 Ok([
                     rng.next_u64() ^ param,
                     rng.next_u64(),
@@ -237,7 +281,6 @@ mod tests {
                     rng.next_u64(),
                 ])
             });
-        let cache = ();
         let mut encode_buffer1 = vec![0u8; <StochasticInput<u64> as CanonicalEncode>::SIZE];
         let mut encode_buffer2 = vec![0u8; <StochasticInput<u64> as CanonicalEncode>::SIZE];
         let mut codec_buffer1 = <[u64; 4] as Codec>::Buffer::init();
@@ -246,7 +289,6 @@ mod tests {
         let output1 = unsafe {
             step1.execute(
                 StochasticInput::new(42, 7),
-                &cache,
                 &mut encode_buffer1,
                 &mut codec_buffer1,
             )?
@@ -254,7 +296,6 @@ mod tests {
         let output2 = unsafe {
             step2.execute(
                 StochasticInput::new(42, 7),
-                &cache,
                 &mut encode_buffer2,
                 &mut codec_buffer2,
             )?
@@ -265,24 +306,29 @@ mod tests {
     }
 
     #[test]
-    fn test_stochastic_cache_isolated_by_seed() -> Result<()> {
+    fn test_stochastic_cache_isolated_by_compute_instance() -> Result<()> {
         let calls_a = Arc::new(AtomicUsize::new(0));
         let calls_a_clone = calls_a.clone();
         let calls_b = Arc::new(AtomicUsize::new(0));
         let calls_b_clone = calls_b.clone();
 
-        let mut step_a: StochasticStep<u64, u64, _> =
-            StochasticStep::new(b"experiment-A", move |rng, param| {
+        let mut step_a: StochasticStep<_, u64, u64, _> = StochasticStep::new(
+            DefaultHashMapStore::default(),
+            b"experiment-A",
+            move |rng, param| {
                 calls_a_clone.fetch_add(1, Ordering::SeqCst);
                 Ok(rng.next_u64() ^ param)
-            });
-        let mut step_b: StochasticStep<u64, u64, _> =
-            StochasticStep::new(b"experiment-B", move |rng, param| {
+            },
+        );
+        let mut step_b: StochasticStep<_, u64, u64, _> = StochasticStep::new(
+            DefaultHashMapStore::default(),
+            b"experiment-B",
+            move |rng, param| {
                 calls_b_clone.fetch_add(1, Ordering::SeqCst);
                 Ok(rng.next_u64() ^ param)
-            });
+            },
+        );
 
-        let cache = HashMapStore::<RandomState>::default();
         let mut encode_buffer_a = vec![0u8; <StochasticInput<u64> as CanonicalEncode>::SIZE];
         let mut encode_buffer_b = vec![0u8; <StochasticInput<u64> as CanonicalEncode>::SIZE];
         let mut codec_buffer_a = <u64 as Codec>::Buffer::init();
@@ -290,32 +336,14 @@ mod tests {
 
         let input = StochasticInput::new(42, 7);
 
-        let output_a1 = unsafe {
-            step_a.execute(
-                input.clone(),
-                &cache,
-                &mut encode_buffer_a,
-                &mut codec_buffer_a,
-            )?
-        };
-        let output_b1 = unsafe {
-            step_b.execute(
-                input.clone(),
-                &cache,
-                &mut encode_buffer_b,
-                &mut codec_buffer_b,
-            )?
-        };
-        let output_a2 = unsafe {
-            step_a.execute(
-                input.clone(),
-                &cache,
-                &mut encode_buffer_a,
-                &mut codec_buffer_a,
-            )?
-        };
+        let output_a1 =
+            unsafe { step_a.execute(input.clone(), &mut encode_buffer_a, &mut codec_buffer_a)? };
+        let output_b1 =
+            unsafe { step_b.execute(input.clone(), &mut encode_buffer_b, &mut codec_buffer_b)? };
+        let output_a2 =
+            unsafe { step_a.execute(input.clone(), &mut encode_buffer_a, &mut codec_buffer_a)? };
         let output_b2 =
-            unsafe { step_b.execute(input, &cache, &mut encode_buffer_b, &mut codec_buffer_b)? };
+            unsafe { step_b.execute(input, &mut encode_buffer_b, &mut codec_buffer_b)? };
 
         assert_eq!(output_a1, output_a2);
         assert_eq!(output_b1, output_b2);
@@ -326,25 +354,26 @@ mod tests {
 
     #[test]
     fn test_stochastic_execute_many_parallel_reproducible() -> Result<()> {
-        let step: StochasticStep<u64, u64, _> =
-            StochasticStep::new(b"experiment-A", |rng, param| Ok(rng.next_u64() ^ param));
+        let step1: StochasticStep<_, u64, u64, _> = StochasticStep::new(
+            DefaultHashMapStore::default(),
+            b"experiment-A",
+            |rng, param| Ok(rng.next_u64() ^ param),
+        );
+        let step2: StochasticStep<_, u64, u64, _> = StochasticStep::new(
+            DefaultHashMapStore::default(),
+            b"experiment-A",
+            |rng, param| Ok(rng.next_u64() ^ param),
+        );
 
         let inputs: Vec<_> = (0..128u64)
             .map(|i| StochasticInput::new(i, i % 8))
             .collect();
 
-        let cache1 = HashMapStore::<RandomState>::default();
-        let cache2 = HashMapStore::<RandomState>::default();
-
-        let outputs1 = step
-            .execute_many(
-                inputs.clone().into_par_iter(),
-                &cache1,
-                ExecuteOptions::default(),
-            )?
+        let outputs1 = step1
+            .execute_many(inputs.clone().into_par_iter(), ExecuteOptions::default())?
             .collect::<Result<Vec<u64>>>()?;
-        let outputs2 = step
-            .execute_many(inputs.into_par_iter(), &cache2, ExecuteOptions::default())?
+        let outputs2 = step2
+            .execute_many(inputs.into_par_iter(), ExecuteOptions::default())?
             .collect::<Result<Vec<u64>>>()?;
 
         assert_eq!(outputs1, outputs2);
@@ -358,34 +387,33 @@ mod tests {
         let stage2_calls = Arc::new(AtomicUsize::new(0));
         let stage2_calls_clone = stage2_calls.clone();
 
-        let stage1: StochasticStep<usize, usize, _> =
-            StochasticStep::new(b"experiment-A", move |rng, param| {
+        let stage1: StochasticStep<_, usize, usize, _> = StochasticStep::new(
+            DefaultHashMapStore::default(),
+            b"experiment-A",
+            move |rng, param| {
                 stage1_calls_clone.fetch_add(1, Ordering::SeqCst);
                 Ok((rng.next_u64() as usize) ^ param)
-            });
+            },
+        );
 
-        let pipeline: Pipeline<_, _, StochasticInput<usize>, usize, usize> =
-            Pipeline::new(stage1, move |intermediate| {
+        let pipeline: Pipeline<_, _, _, StochasticInput<usize>, usize, usize> = Pipeline::new(
+            stage1,
+            DefaultHashMapStore::default(),
+            move |intermediate| {
                 stage2_calls_clone.fetch_add(1, Ordering::SeqCst);
                 Ok(intermediate + 10)
-            });
+            },
+        );
 
-        let cache1 = HashMapStore::<RandomState>::default();
-        let cache2 = HashMapStore::<RandomState>::default();
-        let cache = (cache1, cache2);
         let inputs: Vec<_> = (0..20usize)
             .map(|i| StochasticInput::new(i, (i % 4) as u64))
             .collect();
 
         let outputs1 = pipeline
-            .execute_many(
-                inputs.clone().into_par_iter(),
-                &cache,
-                ExecuteOptions::default(),
-            )?
+            .execute_many(inputs.clone().into_par_iter(), ExecuteOptions::default())?
             .collect::<Result<Vec<usize>>>()?;
         let outputs2 = pipeline
-            .execute_many(inputs.into_par_iter(), &cache, ExecuteOptions::default())?
+            .execute_many(inputs.into_par_iter(), ExecuteOptions::default())?
             .collect::<Result<Vec<usize>>>()?;
 
         assert_eq!(outputs1, outputs2);

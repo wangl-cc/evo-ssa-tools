@@ -15,10 +15,11 @@ rayon = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]
+evo-marker = { workspace = true, features = ["bitcode"] }
 tempfile = { workspace = true }
 
 [features]
-default = ["bitcode", "fjall"]
+default = ["bitcode"]
 bitcode = ["dep:bitcode"]
 fjall = ["dep:fjall"]
 

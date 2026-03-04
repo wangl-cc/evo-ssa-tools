@@ -2,53 +2,39 @@ use std::sync::{Arc, RwLock};
 
 use crate::{Result, cache::codec::Codec};
 
-/// A trait defining a cache storage interface for storing and retrieving cacheable values.
+/// Storage backend for `key -> value` entries.
+///
+/// Keys are opaque bytes. In `ssa-cache`, keys are produced by canonical input encoding
+/// ([`CanonicalEncode`](crate::cache::canonical_encode::CanonicalEncode)).
+///
+/// Values are
+///
+/// This trait is `Sync` because stores are shared across parallel workers. Implementations are
+/// expected to be thread-safe for concurrent reads and writes.
+///
+/// `()` implements `CacheStore` as a "no-cache" backend that always misses and discards writes.
 pub trait CacheStore: Sync {
     /// Attempts to fetch a value from the cache.
     ///
-    /// # Arguments
-    ///
-    /// - `sig` - The signature (key) used to identify the cached value,
-    /// - `buffer` - A reusable buffer for deserialization.
-    ///
-    /// # Returns
-    ///
-    /// If the value was found and successfully decoded, return `Some(T)`.
-    /// If no value was found for the given signature, return `None`.
-    ///
-    /// # Errors
-    ///
-    /// If there are some errors during deserialization or storage access.
-    fn fetch<T: Codec>(&self, sig: &[u8], buffer: &mut T::Buffer) -> Result<Option<T>>;
+    /// Returns `Ok(Some(value))` on hit, `Ok(None)` on miss.
+    fn fetch<T: Codec>(&self, key: &[u8], buffer: &mut T::Buffer) -> Result<Option<T>>;
 
     /// Stores a value in the cache.
-    ///
-    /// # Arguments
-    ///
-    /// - `sig` - The signature (key) to associate with the value,
-    /// - `buffer` - A reusable buffer for serialization,
-    /// - `value` - The value to be cached.
-    ///
-    /// # Errors
-    ///
-    /// If there are some errors during serialization or storage access.
-    fn store<T: Codec>(&self, sig: &[u8], buffer: &mut T::Buffer, value: &T) -> Result<()>;
+    fn store<T: Codec>(&self, key: &[u8], buffer: &mut T::Buffer, value: &T) -> Result<()>;
 
-    fn fetch_or_execute<T, F>(
-        &self,
-        signature: &[u8],
-        buffer: &mut T::Buffer,
-        execute: F,
-    ) -> Result<T>
+    /// Fetch value by key, or execute and store it on cache miss.
+    ///
+    /// The same `buffer` is reused for fetch, execute, and store to minimize allocations.
+    fn fetch_or_execute<T, F>(&self, key: &[u8], buffer: &mut T::Buffer, execute: F) -> Result<T>
     where
         T: Codec,
         F: FnOnce(&mut T::Buffer) -> Result<T>,
     {
-        if let Some(cached) = self.fetch(signature, buffer)? {
+        if let Some(cached) = self.fetch(key, buffer)? {
             Ok(cached)
         } else {
             let output = execute(buffer)?;
-            self.store(signature, buffer, &output)?;
+            self.store(key, buffer, &output)?;
             Ok(output)
         }
     }
@@ -66,24 +52,40 @@ impl CacheStore for () {
 
 type HashMap<H> = std::collections::HashMap<Vec<u8>, Vec<u8>, H>;
 
-#[derive(Debug, Default)]
+/// A simple in-memory cache store backed by a `HashMap`.
+///
+/// Clone is cheap and shares the underlying map (`Arc<RwLock<...>>`).
+/// You may want a faster hasher like [`rapidhash`] instead of the default for better performance.
+#[derive(Debug, Clone)]
 pub struct HashMapStore<H>(Arc<RwLock<HashMap<H>>>);
+
+impl<H> Default for HashMapStore<H>
+where
+    H: std::hash::BuildHasher + Default,
+{
+    fn default() -> Self {
+        Self(Arc::new(RwLock::new(HashMap::<H>::default())))
+    }
+}
+
+/// Type alias for a [`HashMapStore`] using the default hasher from [`std::collections::hash_map`].
+pub type DefaultHashMapStore = HashMapStore<std::collections::hash_map::RandomState>;
 
 impl<H> CacheStore for HashMapStore<H>
 where
     H: std::hash::BuildHasher + Send + Sync,
 {
-    fn fetch<T: Codec>(&self, sig: &[u8], buffer: &mut T::Buffer) -> Result<Option<T>> {
+    fn fetch<T: Codec>(&self, key: &[u8], buffer: &mut T::Buffer) -> Result<Option<T>> {
         let map = self.0.read().unwrap();
-        map.get(sig)
+        map.get(key)
             .map(|value| T::decode(value.as_slice(), buffer))
             .transpose()
     }
 
-    fn store<T: Codec>(&self, sig: &[u8], buffer: &mut T::Buffer, value: &T) -> Result<()> {
+    fn store<T: Codec>(&self, key: &[u8], buffer: &mut T::Buffer, value: &T) -> Result<()> {
         let value = value.encode(buffer);
         let mut map = self.0.write().unwrap();
-        map.insert(sig.to_owned(), value.to_vec());
+        map.insert(key.to_owned(), value.to_vec());
         Ok(())
     }
 }
@@ -93,16 +95,16 @@ mod fjall_store {
     use super::*;
 
     impl CacheStore for fjall::Keyspace {
-        fn fetch<T: Codec>(&self, sig: &[u8], buffer: &mut T::Buffer) -> Result<Option<T>> {
-            let value = self.get(sig)?;
+        fn fetch<T: Codec>(&self, key: &[u8], buffer: &mut T::Buffer) -> Result<Option<T>> {
+            let value = self.get(key)?;
             value
                 .map(|value| T::decode(value.as_ref(), buffer))
                 .transpose()
         }
 
-        fn store<T: Codec>(&self, sig: &[u8], buffer: &mut T::Buffer, value: &T) -> Result<()> {
+        fn store<T: Codec>(&self, key: &[u8], buffer: &mut T::Buffer, value: &T) -> Result<()> {
             let value = value.encode(buffer);
-            self.insert(sig, value)?;
+            self.insert(key, value)?;
             Ok(())
         }
     }
@@ -111,28 +113,26 @@ mod fjall_store {
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
-    use std::collections::hash_map::RandomState;
-
     use super::*;
     use crate::cache::codec::CodecBuffer;
 
     #[test]
     fn test_hashmap_store() -> Result<()> {
-        let store = HashMapStore::<RandomState>::default();
+        let store = DefaultHashMapStore::default();
         let mut buffer = <u32 as Codec>::Buffer::init();
 
         // Test storing and fetching a value
         let value = 42u32;
-        let sig = b"test_sig";
-        store.store(sig, &mut buffer, &value)?;
-        assert_eq!(store.fetch(sig, &mut buffer)?, Some(value));
+        let key = b"test_sig";
+        store.store(key, &mut buffer, &value)?;
+        assert_eq!(store.fetch(key, &mut buffer)?, Some(value));
 
         // Test fetching non-existent key
         assert_eq!(store.fetch::<u32>(b"non_existent", &mut buffer)?, None);
 
         // Test fetching key with wrong type
         assert!(matches!(
-            store.fetch::<u64>(sig, &mut buffer),
+            store.fetch::<u64>(key, &mut buffer),
             Err(crate::Error::BitCode(_))
         ));
 
@@ -149,16 +149,16 @@ mod tests {
 
         // Test storing and fetching a value
         let value = 42u32;
-        let sig = b"test_sig";
-        partition.store(sig, &mut buffer, &value)?;
-        assert_eq!(partition.fetch(sig, &mut buffer)?, Some(value));
+        let key = b"test_sig";
+        partition.store(key, &mut buffer, &value)?;
+        assert_eq!(partition.fetch(key, &mut buffer)?, Some(value));
 
         // Test fetching non-existent key
         assert_eq!(partition.fetch::<u32>(b"non_existent", &mut buffer)?, None);
 
         // Test fetching key with wrong type
         assert!(matches!(
-            partition.fetch::<u64>(sig, &mut buffer),
+            partition.fetch::<u64>(key, &mut buffer),
             Err(crate::Error::BitCode(_))
         ));
 
