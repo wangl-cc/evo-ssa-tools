@@ -150,12 +150,6 @@ impl ExecuteOptions {
     }
 }
 
-/// Commonly used items for `ssa-cache`.
-///
-/// This is intended for applications that want a concise import surface: `use ssa_cache::prelude::*;`.
-///
-/// Note: `Error`/`Result` are intentionally not re-exported to avoid conflicts in application
-/// code. Use `ssa_cache::error::{Error, Result}` (or `ssa_cache::error::Result<T>`) explicitly.
 pub mod prelude {
     pub use crate::{
         Compute, ExecuteOptions,
