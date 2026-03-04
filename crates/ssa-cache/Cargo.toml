@@ -1,23 +1,25 @@
 [package]
 name = "ssa-cache"
-version = "0.3.0"
+version = "0.4.0"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
 bitcode = { workspace = true, optional = true }
+blake3 = { workspace = true }
 fjall = { workspace = true, default-features = false, optional = true }
-rand = { workspace = true, features = ["thread_rng"] }
+rand = { workspace = true }
+rand_xoshiro = { workspace = true }
 rayon = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]
-rand = { workspace = true, features = ["small_rng"] }
+evo-marker = { workspace = true, features = ["bitcode"] }
 tempfile = { workspace = true }
 
 [features]
-default = ["bitcode", "fjall"]
+default = ["bitcode"]
 bitcode = ["dep:bitcode"]
 fjall = ["dep:fjall"]
 
