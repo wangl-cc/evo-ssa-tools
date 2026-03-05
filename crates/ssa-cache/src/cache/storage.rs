@@ -7,7 +7,8 @@ use crate::{Result, cache::codec::Codec};
 /// Keys are opaque bytes. In `ssa-cache`, keys are produced by canonical input encoding
 /// ([`CanonicalEncode`](crate::cache::canonical_encode::CanonicalEncode)).
 ///
-/// Values are encoded byte payloads managed by the configured [`Codec`](crate::cache::codec::Codec).
+/// Values are encoded byte payloads managed by the configured
+/// [`Codec`](crate::cache::codec::Codec).
 ///
 /// This trait is `Sync` because stores are shared across parallel workers. Implementations are
 /// expected to be thread-safe for concurrent reads and writes.
