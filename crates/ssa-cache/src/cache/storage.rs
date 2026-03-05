@@ -7,7 +7,7 @@ use crate::{Result, cache::codec::Codec};
 /// Keys are opaque bytes. In `ssa-cache`, keys are produced by canonical input encoding
 /// ([`CanonicalEncode`](crate::cache::canonical_encode::CanonicalEncode)).
 ///
-/// Values are
+/// Values are encoded byte payloads managed by the configured [`Codec`](crate::cache::codec::Codec).
 ///
 /// This trait is `Sync` because stores are shared across parallel workers. Implementations are
 /// expected to be thread-safe for concurrent reads and writes.
@@ -76,7 +76,10 @@ where
     H: std::hash::BuildHasher + Send + Sync,
 {
     fn fetch<T: Codec>(&self, key: &[u8], buffer: &mut T::Buffer) -> Result<Option<T>> {
-        let map = self.0.read().unwrap();
+        let map = self
+            .0
+            .read()
+            .expect("cache read lock poisoned: HashMapStore should not panic while holding lock");
         map.get(key)
             .map(|value| T::decode(value.as_slice(), buffer))
             .transpose()
@@ -84,7 +87,10 @@ where
 
     fn store<T: Codec>(&self, key: &[u8], buffer: &mut T::Buffer, value: &T) -> Result<()> {
         let value = value.encode(buffer);
-        let mut map = self.0.write().unwrap();
+        let mut map = self
+            .0
+            .write()
+            .expect("cache write lock poisoned: HashMapStore should not panic while holding lock");
         map.insert(key.to_owned(), value.to_vec());
         Ok(())
     }

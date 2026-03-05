@@ -192,7 +192,7 @@ mod tests {
         });
 
         sleep(Duration::from_millis(50));
-        interrupted_clone.store(true, Ordering::Relaxed);
+        interrupted_clone.store(true, Ordering::Release);
 
         let results = handle.join().expect("Failed to join thread");
         assert!(matches!(
