@@ -1,52 +1,58 @@
 use std::sync::{Arc, RwLock};
 
-use crate::{Result, cache::codec::Codec};
+use crate::{Result, cache::codec::CodecEngine};
 
 /// Storage backend for `key -> value` entries.
 ///
-/// Keys are opaque bytes. In `ssa-cache`, keys are produced by canonical input encoding
+/// Keys are opaque bytes produced by canonical input encoding
 /// ([`CanonicalEncode`](crate::cache::canonical_encode::CanonicalEncode)).
+/// Values are encoded byte payloads managed by the configured [`EngineCodec`].
 ///
-/// Values are encoded byte payloads managed by the configured
-/// [`Codec`](crate::cache::codec::Codec).
-///
-/// This trait is `Sync` because stores are shared across parallel workers. Implementations are
-/// expected to be thread-safe for concurrent reads and writes.
+/// This trait is `Sync` because stores are shared across parallel workers.
+/// Implementations are expected to be thread-safe for concurrent reads and writes.
 ///
 /// `()` implements `CacheStore` as a "no-cache" backend that always misses and discards writes.
 pub trait CacheStore: Sync {
     /// Attempts to fetch a value from the cache.
     ///
     /// Returns `Ok(Some(value))` on hit, `Ok(None)` on miss.
-    fn fetch<T: Codec>(&self, key: &[u8], buffer: &mut T::Buffer) -> Result<Option<T>>;
+    fn fetch<T, E>(&self, key: &[u8], engine: &mut E) -> Result<Option<T>>
+    where
+        E: CodecEngine<T>;
 
     /// Stores a value in the cache.
-    fn store<T: Codec>(&self, key: &[u8], buffer: &mut T::Buffer, value: &T) -> Result<()>;
+    fn store<T, E>(&self, key: &[u8], engine: &mut E, value: &T) -> Result<()>
+    where
+        E: CodecEngine<T>;
 
     /// Fetch value by key, or execute and store it on cache miss.
-    ///
-    /// The same `buffer` is reused for fetch, execute, and store to minimize allocations.
-    fn fetch_or_execute<T, F>(&self, key: &[u8], buffer: &mut T::Buffer, execute: F) -> Result<T>
+    fn fetch_or_execute<T, E, F>(&self, key: &[u8], engine: &mut E, execute: F) -> Result<T>
     where
-        T: Codec,
-        F: FnOnce(&mut T::Buffer) -> Result<T>,
+        E: CodecEngine<T>,
+        F: FnOnce(&mut E) -> Result<T>,
     {
-        if let Some(cached) = self.fetch(key, buffer)? {
+        if let Some(cached) = self.fetch::<T, E>(key, engine)? {
             Ok(cached)
         } else {
-            let output = execute(buffer)?;
-            self.store(key, buffer, &output)?;
+            let output = execute(engine)?;
+            self.store::<T, E>(key, engine, &output)?;
             Ok(output)
         }
     }
 }
 
 impl CacheStore for () {
-    fn fetch<T: Codec>(&self, _: &[u8], _: &mut T::Buffer) -> Result<Option<T>> {
+    fn fetch<T, E>(&self, _: &[u8], _: &mut E) -> Result<Option<T>>
+    where
+        E: CodecEngine<T>,
+    {
         Ok(None)
     }
 
-    fn store<T: Codec>(&self, _: &[u8], _: &mut T::Buffer, _: &T) -> Result<()> {
+    fn store<T, E>(&self, _: &[u8], _: &mut E, _: &T) -> Result<()>
+    where
+        E: CodecEngine<T>,
+    {
         Ok(())
     }
 }
@@ -76,23 +82,29 @@ impl<H> CacheStore for HashMapStore<H>
 where
     H: std::hash::BuildHasher + Send + Sync,
 {
-    fn fetch<T: Codec>(&self, key: &[u8], buffer: &mut T::Buffer) -> Result<Option<T>> {
+    fn fetch<T, E>(&self, key: &[u8], engine: &mut E) -> Result<Option<T>>
+    where
+        E: CodecEngine<T>,
+    {
         let map = self
             .0
             .read()
             .expect("cache read lock poisoned: HashMapStore should not panic while holding lock");
         map.get(key)
-            .map(|value| T::decode(value.as_slice(), buffer))
+            .map(|v| engine.decode(v.as_slice()))
             .transpose()
     }
 
-    fn store<T: Codec>(&self, key: &[u8], buffer: &mut T::Buffer, value: &T) -> Result<()> {
-        let value = value.encode(buffer);
+    fn store<T, E>(&self, key: &[u8], engine: &mut E, value: &T) -> Result<()>
+    where
+        E: CodecEngine<T>,
+    {
+        let encoded = engine.encode(value).to_vec();
         let mut map = self
             .0
             .write()
             .expect("cache write lock poisoned: HashMapStore should not panic while holding lock");
-        map.insert(key.to_owned(), value.to_vec());
+        map.insert(key.to_owned(), encoded);
         Ok(())
     }
 }
@@ -102,47 +114,77 @@ mod fjall_store {
     use super::*;
 
     impl CacheStore for fjall::Keyspace {
-        fn fetch<T: Codec>(&self, key: &[u8], buffer: &mut T::Buffer) -> Result<Option<T>> {
-            let value = self.get(key)?;
-            value
-                .map(|value| T::decode(value.as_ref(), buffer))
+        fn fetch<T, E>(&self, key: &[u8], engine: &mut E) -> Result<Option<T>>
+        where
+            E: CodecEngine<T>,
+        {
+            self.get(key)?
+                .map(|v| engine.decode(v.as_ref()))
                 .transpose()
         }
 
-        fn store<T: Codec>(&self, key: &[u8], buffer: &mut T::Buffer, value: &T) -> Result<()> {
-            let value = value.encode(buffer);
-            self.insert(key, value)?;
+        fn store<T, E>(&self, key: &[u8], engine: &mut E, value: &T) -> Result<()>
+        where
+            E: CodecEngine<T>,
+        {
+            self.insert(key, engine.encode(value))?;
             Ok(())
         }
     }
 }
 
 #[cfg(test)]
+#[cfg(feature = "bitcode")]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
-    use crate::cache::codec::CodecBuffer;
+    use crate::cache::codec::bitcode::Bitcode;
 
     #[test]
     fn test_hashmap_store() -> Result<()> {
         let store = DefaultHashMapStore::default();
-        let mut buffer = <u32 as Codec>::Buffer::init();
+        let mut engine = Bitcode::default();
 
-        // Test storing and fetching a value
         let value = 42u32;
         let key = b"test_sig";
-        store.store(key, &mut buffer, &value)?;
-        assert_eq!(store.fetch(key, &mut buffer)?, Some(value));
+        store.store::<u32, Bitcode>(key, &mut engine, &value)?;
+        assert_eq!(store.fetch::<u32, Bitcode>(key, &mut engine)?, Some(value));
 
-        // Test fetching non-existent key
-        assert_eq!(store.fetch::<u32>(b"non_existent", &mut buffer)?, None);
+        assert_eq!(
+            store.fetch::<u32, Bitcode>(b"non_existent", &mut engine)?,
+            None
+        );
 
-        // Test fetching key with wrong type
         assert!(matches!(
-            store.fetch::<u64>(key, &mut buffer),
+            store.fetch::<u64, Bitcode>(key, &mut engine),
             Err(crate::Error::BitCode(_))
         ));
 
+        Ok(())
+    }
+
+    #[cfg(all(feature = "lz4", feature = "bitcode"))]
+    #[test]
+    fn test_hashmap_store_compressed_value_roundtrip() -> Result<()> {
+        use crate::cache::codec::compress::{CompressedCodec, lz4::Lz4};
+        type Lz4Engine = CompressedCodec<Bitcode, Lz4>;
+
+        let store = DefaultHashMapStore::default();
+        let mut engine = Lz4Engine::default();
+        let key = b"compressible";
+        let value = "a".repeat(96 * 1024);
+
+        store.store::<String, Lz4Engine>(key, &mut engine, &value)?;
+        assert_eq!(
+            store.fetch::<String, Lz4Engine>(key, &mut engine)?,
+            Some(value)
+        );
+
+        let map = store.0.read().unwrap();
+        let encoded = map.get(key.as_slice()).expect("value should be stored");
+        assert!(!encoded.is_empty());
+        assert_eq!(encoded[0] & 0b1111_0000, 0b0001_0000);
+        assert_eq!(encoded[0] & 0b0000_1111, 0b0001);
         Ok(())
     }
 
@@ -152,20 +194,23 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let db = fjall::Database::builder(&tmp).open()?;
         let partition = db.keyspace("test", Default::default)?;
-        let mut buffer = <u32 as Codec>::Buffer::init();
+        let mut engine = Bitcode::default();
 
-        // Test storing and fetching a value
         let value = 42u32;
         let key = b"test_sig";
-        partition.store(key, &mut buffer, &value)?;
-        assert_eq!(partition.fetch(key, &mut buffer)?, Some(value));
+        partition.store::<u32, Bitcode>(key, &mut engine, &value)?;
+        assert_eq!(
+            partition.fetch::<u32, Bitcode>(key, &mut engine)?,
+            Some(value)
+        );
 
-        // Test fetching non-existent key
-        assert_eq!(partition.fetch::<u32>(b"non_existent", &mut buffer)?, None);
+        assert_eq!(
+            partition.fetch::<u32, Bitcode>(b"non_existent", &mut engine)?,
+            None
+        );
 
-        // Test fetching key with wrong type
         assert!(matches!(
-            partition.fetch::<u64>(key, &mut buffer),
+            partition.fetch::<u64, Bitcode>(key, &mut engine),
             Err(crate::Error::BitCode(_))
         ));
 

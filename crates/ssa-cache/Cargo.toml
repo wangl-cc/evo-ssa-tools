@@ -9,6 +9,7 @@ license.workspace = true
 bitcode = { workspace = true, optional = true }
 blake3 = { workspace = true }
 fjall = { workspace = true, default-features = false, optional = true }
+lz4_flex = { workspace = true, optional = true }
 rand = { workspace = true }
 rand_xoshiro = { workspace = true }
 rayon = { workspace = true }
@@ -19,9 +20,10 @@ evo-marker = { workspace = true, features = ["bitcode"] }
 tempfile = { workspace = true }
 
 [features]
-default = ["bitcode"]
+default = ["bitcode", "lz4"]
 bitcode = ["dep:bitcode"]
 fjall = ["dep:fjall"]
+lz4 = ["dep:lz4_flex"]
 
 [lints]
 workspace = true

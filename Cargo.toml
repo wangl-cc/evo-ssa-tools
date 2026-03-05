@@ -14,6 +14,7 @@ divan = { version = "0.1.17" }
 evo-marker = { path = "crates/evo-marker" }
 fjall = { version = "3", default-features = false }
 frequency = { path = "crates/frequency", version = "0.1" }
+lz4_flex = { version = "0.11", default-features = false, features = ["std"] }
 nohash-hasher = { version = "0.2.0" }
 rand = { version = "0.9" }
 rand_xoshiro = { version = "0.7" }

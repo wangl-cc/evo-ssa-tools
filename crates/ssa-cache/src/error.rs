@@ -10,6 +10,9 @@ pub enum Error {
     #[error("Bitcode codec error")]
     BitCode(#[from] bitcode::Error),
 
+    #[error("Compression codec error")]
+    Compress(#[from] crate::cache::codec::compress::Error),
+
     #[cfg(feature = "fjall")]
     #[error("Fjall database error")]
     Fjall(#[from] fjall::Error),
@@ -28,4 +31,4 @@ pub enum Error {
 }
 
 /// Convenience alias for `std::result::Result<T, Error>`.
-pub type Result<T> = std::result::Result<T, Error>;
+pub type Result<T, E = Error> = std::result::Result<T, E>;

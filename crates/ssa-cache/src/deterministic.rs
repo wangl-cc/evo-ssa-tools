@@ -1,6 +1,6 @@
 use std::marker::PhantomData;
 
-use crate::{CacheStore, CanonicalEncode, Codec, Compute, Result};
+use crate::{CacheStore, CanonicalEncode, Compute, Result, cache::codec::CodecEngine};
 
 /// Deterministic compute node.
 ///
@@ -40,23 +40,18 @@ use crate::{CacheStore, CanonicalEncode, Codec, Compute, Result};
 ///
 /// To disable caching entirely, pass `()` as the cache.
 #[derive(Debug)]
-pub struct DeterministicStep<C, I, O, F> {
+pub struct DeterministicStep<C, I, O, E, F> {
     cache: C,
     function: F,
-    _phantom: PhantomData<(I, O)>,
+    _phantom: PhantomData<(I, O, E)>,
 }
 
-impl<C, I, O, F> DeterministicStep<C, I, O, F>
+impl<C, I, O, E, F> DeterministicStep<C, I, O, E, F>
 where
     F: Fn(I) -> Result<O>,
 {
-    /// Create a deterministic step from `cache` and `function`.
-    ///
-    /// Pass `()` as `cache` to disable caching.
-    ///
-    /// `cache` should be dedicated to this step (see [`DeterministicStep`] cache keyspace
-    /// contract).
-    pub fn new(cache: C, function: F) -> Self {
+    /// Create a deterministic step from `cache` and `function` with explicit engine type `E`.
+    pub fn new_with_engine(cache: C, function: F) -> Self {
         Self {
             cache,
             function,
@@ -65,7 +60,18 @@ where
     }
 }
 
-impl<C: Clone, I, O, F: Clone> Clone for DeterministicStep<C, I, O, F> {
+#[cfg(feature = "bitcode")]
+impl<C, I, O, F> DeterministicStep<C, I, O, crate::cache::codec::bitcode::Bitcode, F>
+where
+    F: Fn(I) -> Result<O>,
+{
+    /// Create a deterministic step from `cache` and `function` using bitcode engine.
+    pub fn new(cache: C, function: F) -> Self {
+        Self::new_with_engine(cache, function)
+    }
+}
+
+impl<C: Clone, I, O, E, F: Clone> Clone for DeterministicStep<C, I, O, E, F> {
     fn clone(&self) -> Self {
         Self {
             cache: self.cache.clone(),
@@ -75,13 +81,14 @@ impl<C: Clone, I, O, F: Clone> Clone for DeterministicStep<C, I, O, F> {
     }
 }
 
-impl<C, I, O, F> Compute for DeterministicStep<C, I, O, F>
+impl<C, I, O, E, F> Compute for DeterministicStep<C, I, O, E, F>
 where
     F: Fn(I) -> Result<O>,
     C: CacheStore,
     I: CanonicalEncode,
-    O: Codec,
+    E: CodecEngine<O>,
 {
+    type Engine = E;
     type Input = I;
     type Output = O;
 
@@ -89,15 +96,16 @@ where
         &mut self,
         input: Self::Input,
         encoded: &[u8],
-        codec_buffer: &mut <Self::Output as Codec>::Buffer,
+        engine: &mut Self::Engine,
     ) -> Result<Self::Output> {
         let cache = &self.cache;
         let function = &self.function;
-        cache.fetch_or_execute(encoded, codec_buffer, |_| function(input))
+        cache.fetch_or_execute::<O, E, _>(encoded, engine, |_| function(input))
     }
 }
 
 #[cfg(test)]
+#[cfg(feature = "bitcode")]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use std::{
@@ -112,16 +120,19 @@ mod tests {
     use rayon::prelude::*;
 
     use super::*;
-    use crate::{cache::storage::DefaultHashMapStore, prelude::*};
+    use crate::{
+        cache::{codec::bitcode::Bitcode, storage::DefaultHashMapStore},
+        prelude::*,
+    };
 
     #[test]
     fn test_deterministic_basic_with_owned_cache() -> Result<()> {
-        let mut compute: DeterministicStep<_, usize, usize, _> =
+        let mut compute: DeterministicStep<_, usize, usize, Bitcode, _> =
             DeterministicStep::new(DefaultHashMapStore::default(), |i| Ok(i + 1));
         let mut encode_buffer = vec![0u8; usize::SIZE];
-        let mut codec_buffer = <usize as Codec>::Buffer::init();
+        let mut engine = Bitcode::default();
 
-        let result = unsafe { compute.execute(5, &mut encode_buffer, &mut codec_buffer)? };
+        let result = unsafe { compute.execute(5, &mut encode_buffer, &mut engine)? };
         assert_eq!(result, 6);
 
         Ok(())
@@ -129,7 +140,7 @@ mod tests {
 
     #[test]
     fn test_execute_many_without_runtime_cache_arg() -> Result<()> {
-        let compute: DeterministicStep<_, usize, usize, _> =
+        let compute: DeterministicStep<_, usize, usize, Bitcode, _> =
             DeterministicStep::new(DefaultHashMapStore::default(), |i| Ok(i * 2));
 
         let results = compute
@@ -145,7 +156,7 @@ mod tests {
         let call_count = Arc::new(AtomicUsize::new(0));
         let call_count_clone = call_count.clone();
 
-        let compute: DeterministicStep<_, usize, usize, _> =
+        let compute: DeterministicStep<_, usize, usize, Bitcode, _> =
             DeterministicStep::new(DefaultHashMapStore::default(), move |i| {
                 call_count_clone.fetch_add(1, Ordering::SeqCst);
                 Ok(i * 3)
@@ -173,7 +184,7 @@ mod tests {
 
     #[test]
     fn test_deterministic_interrupt() -> Result<()> {
-        let compute: DeterministicStep<_, usize, usize, _> =
+        let compute: DeterministicStep<_, usize, usize, Bitcode, _> =
             DeterministicStep::new(DefaultHashMapStore::default(), |i| {
                 sleep(Duration::from_millis(100));
                 Ok(i + 1)
@@ -205,7 +216,7 @@ mod tests {
 
     #[test]
     fn test_deterministic_error_propagation() -> Result<()> {
-        let mut compute: DeterministicStep<_, usize, usize, _> =
+        let mut compute: DeterministicStep<_, usize, usize, Bitcode, _> =
             DeterministicStep::new(DefaultHashMapStore::default(), |i| {
                 if i == 5 {
                     Err(crate::error::Error::Interrupted)
@@ -214,12 +225,12 @@ mod tests {
                 }
             });
         let mut encode_buffer = vec![0u8; usize::SIZE];
-        let mut codec_buffer = <usize as Codec>::Buffer::init();
+        let mut engine = Bitcode::default();
 
-        let result = unsafe { compute.execute(3, &mut encode_buffer, &mut codec_buffer)? };
+        let result = unsafe { compute.execute(3, &mut encode_buffer, &mut engine)? };
         assert_eq!(result, 6);
 
-        let result = unsafe { compute.execute(5, &mut encode_buffer, &mut codec_buffer) };
+        let result = unsafe { compute.execute(5, &mut encode_buffer, &mut engine) };
         assert!(result.is_err());
 
         Ok(())
@@ -227,7 +238,7 @@ mod tests {
 
     #[test]
     fn test_deterministic_execution_order() -> Result<()> {
-        let compute: DeterministicStep<_, usize, usize, _> =
+        let compute: DeterministicStep<_, usize, usize, Bitcode, _> =
             DeterministicStep::new(DefaultHashMapStore::default(), |i| {
                 sleep(Duration::from_millis(20 - (i % 20) as u64));
                 Ok(i + 100)
@@ -252,16 +263,16 @@ mod tests {
         let call_count = Arc::new(AtomicUsize::new(0));
         let call_count_clone = call_count.clone();
 
-        let mut compute: DeterministicStep<_, usize, usize, _> =
+        let mut compute: DeterministicStep<_, usize, usize, Bitcode, _> =
             DeterministicStep::new((), move |i| {
                 call_count_clone.fetch_add(1, Ordering::SeqCst);
                 Ok(i * 11)
             });
         let mut encode_buffer = vec![0u8; usize::SIZE];
-        let mut codec_buffer = <usize as Codec>::Buffer::init();
+        let mut engine = Bitcode::default();
 
-        let output1 = unsafe { compute.execute(3, &mut encode_buffer, &mut codec_buffer)? };
-        let output2 = unsafe { compute.execute(3, &mut encode_buffer, &mut codec_buffer)? };
+        let output1 = unsafe { compute.execute(3, &mut encode_buffer, &mut engine)? };
+        let output2 = unsafe { compute.execute(3, &mut encode_buffer, &mut engine)? };
 
         assert_eq!(output1, 33);
         assert_eq!(output2, 33);
@@ -274,7 +285,7 @@ mod tests {
         let shared_cache = DefaultHashMapStore::default();
         let call_count = Arc::new(AtomicUsize::new(0));
 
-        let mut compute_a: DeterministicStep<_, usize, usize, _> = {
+        let mut compute_a = {
             let call_count = call_count.clone();
             DeterministicStep::new(shared_cache.clone(), move |i| {
                 call_count.fetch_add(1, Ordering::SeqCst);
@@ -282,7 +293,7 @@ mod tests {
             })
         };
 
-        let mut compute_b: DeterministicStep<_, usize, usize, _> = {
+        let mut compute_b = {
             let call_count = call_count.clone();
             DeterministicStep::new(shared_cache, move |i| {
                 call_count.fetch_add(1, Ordering::SeqCst);
@@ -291,12 +302,12 @@ mod tests {
         };
 
         let mut encode_buffer_a = vec![0u8; usize::SIZE];
-        let mut codec_buffer_a = <usize as Codec>::Buffer::init();
+        let mut engine_a = Bitcode::default();
         let mut encode_buffer_b = vec![0u8; usize::SIZE];
-        let mut codec_buffer_b = <usize as Codec>::Buffer::init();
+        let mut engine_b = Bitcode::default();
 
-        let output_a = unsafe { compute_a.execute(4, &mut encode_buffer_a, &mut codec_buffer_a)? };
-        let output_b = unsafe { compute_b.execute(4, &mut encode_buffer_b, &mut codec_buffer_b)? };
+        let output_a = unsafe { compute_a.execute(4usize, &mut encode_buffer_a, &mut engine_a)? };
+        let output_b = unsafe { compute_b.execute(4usize, &mut encode_buffer_b, &mut engine_b)? };
 
         assert_eq!(output_a, 28);
         assert_eq!(output_b, 28);

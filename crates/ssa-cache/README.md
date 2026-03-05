@@ -238,14 +238,32 @@ output.
 
 - `Compute`: core trait (`execute` for one input, `execute_many` for batched parallel inputs).
 - `ExecuteOptions`: execution controls (including `with_interrupt_signal`).
+- `CodecEngine<T>`: pluggable serialization engines (e.g. `Bitcode`, `CompressedCodec<Bitcode, Lz4>`).
 - `DeterministicStep`: deterministic compute with an owned cache.
 - `StochasticStep`: stochastic compute with reproducible per-repetition RNG streams.
 - `Pipeline` / `PipelineExt`: stage composition and per-stage caching.
 - `CacheStore`: cache backend interface and the in-memory implementation.
 
+### Selecting an Engine
+
+`DeterministicStep` / `StochasticStep` carry an engine type parameter.
+By default (`bitcode` feature), `new(...)` uses `Bitcode`.
+To select an explicit engine, use `new_with_engine(...)` with a typed variable:
+
+```rust
+use ssa_cache::prelude::*;
+
+type Store = HashMapStore<std::collections::hash_map::RandomState>;
+type ExplicitEngine = Bitcode;
+
+let step: DeterministicStep<_, u64, String, ExplicitEngine, _> =
+    DeterministicStep::new_with_engine(Store::default(), |x| Ok(format!("v={x}")));
+```
+
 ## Feature Flags
 
 - `bitcode` (enabled by default): `bitcode` serialization/deserialization.
+- `lz4` (enabled by default): `Lz4` compression engine.
 - `fjall` (disabled by default): `fjall` persistent backend.
 
 ## License

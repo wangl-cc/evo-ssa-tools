@@ -1,6 +1,6 @@
 use std::marker::PhantomData;
 
-use crate::{CacheStore, CanonicalEncode, Codec, Compute, Result};
+use crate::{CacheStore, CanonicalEncode, Compute, Result, cache::codec::CodecEngine};
 
 /// Two-stage pipeline node.
 ///
@@ -22,14 +22,14 @@ use crate::{CacheStore, CanonicalEncode, Codec, Compute, Result};
 ///
 /// Keyspace compatibility is caller-managed: if source/transform logic, encoding, or output types
 /// change incompatibly, use a new keyspace.
-pub struct Pipeline<S, C, T, I, M, O> {
+pub struct Pipeline<S, C, T, I, M, O, E> {
     source: S,
     cache: C,
     transform: T,
-    _phantom: PhantomData<(I, M, O)>,
+    _phantom: PhantomData<(I, M, O, E)>,
 }
 
-impl<S, C, T, I, M, O> Pipeline<S, C, T, I, M, O> {
+impl<S, C, T, I, M, O, E> Pipeline<S, C, T, I, M, O, E> {
     /// Create a pipeline from `source`, transform `cache`, and `transform`.
     ///
     /// - `source`: upstream node that produces `M`.
@@ -50,7 +50,7 @@ impl<S, C, T, I, M, O> Pipeline<S, C, T, I, M, O> {
     }
 }
 
-impl<S: Clone, C: Clone, T: Clone, I, M, O> Clone for Pipeline<S, C, T, I, M, O> {
+impl<S: Clone, C: Clone, T: Clone, I, M, O, E> Clone for Pipeline<S, C, T, I, M, O, E> {
     fn clone(&self) -> Self {
         Self {
             source: self.source.clone(),
@@ -61,15 +61,15 @@ impl<S: Clone, C: Clone, T: Clone, I, M, O> Clone for Pipeline<S, C, T, I, M, O>
     }
 }
 
-impl<S, C, T, I, M, O> Compute for Pipeline<S, C, T, I, M, O>
+impl<S, C, T, I, M, O, E> Compute for Pipeline<S, C, T, I, M, O, E>
 where
-    S: Compute<Input = I, Output = M>,
+    S: Compute<Input = I, Output = M, Engine = E>,
     C: CacheStore,
     T: Fn(M) -> Result<O>,
     I: CanonicalEncode,
-    M: Codec<Buffer = <O as Codec>::Buffer>,
-    O: Codec,
+    E: CodecEngine<M> + CodecEngine<O>,
 {
+    type Engine = E;
     type Input = I;
     type Output = O;
 
@@ -77,14 +77,14 @@ where
         &mut self,
         input: Self::Input,
         encoded: &[u8],
-        codec_buffer: &mut <Self::Output as Codec>::Buffer,
+        engine: &mut E,
     ) -> Result<Self::Output> {
         let cache = &self.cache;
         let source = &mut self.source;
         let transform = &self.transform;
 
-        cache.fetch_or_execute(encoded, codec_buffer, |codec_buffer| {
-            let intermediate = source.execute_with_encoded_input(input, encoded, codec_buffer)?;
+        cache.fetch_or_execute::<O, E, _>(encoded, engine, |engine_buffer| {
+            let intermediate = source.execute_with_encoded_input(input, encoded, engine_buffer)?;
             transform(intermediate)
         })
     }
@@ -99,11 +99,14 @@ where
 ///
 /// ```rust
 /// # use ssa_cache::prelude::*;
+/// # #[cfg(feature = "bitcode")]
+/// # {
 /// type Store = HashMapStore<std::collections::hash_map::RandomState>;
 /// let stage1 = DeterministicStep::new(Store::default(), |i: usize| Ok(i + 1));
 /// let pipeline = stage1
 ///     .pipe(Store::default(), |i| Ok(i * 2))
 ///     .pipe(Store::default(), |i| Ok(format!("Result: {}", i)));
+/// # }
 /// ```
 pub trait PipelineExt: Compute + Sized {
     /// Chain a new transform stage onto this compute node.
@@ -117,12 +120,11 @@ pub trait PipelineExt: Compute + Sized {
         self,
         cache: C,
         transform: T,
-    ) -> Pipeline<Self, C, T, Self::Input, Self::Output, O>
+    ) -> Pipeline<Self, C, T, Self::Input, Self::Output, O, Self::Engine>
     where
         T: Fn(Self::Output) -> Result<O>,
         C: CacheStore,
-        Self::Output: Codec<Buffer = <O as Codec>::Buffer>,
-        O: Codec,
+        Self::Engine: CodecEngine<Self::Output> + CodecEngine<O>,
     {
         Pipeline::new(self, cache, transform)
     }
@@ -131,6 +133,7 @@ pub trait PipelineExt: Compute + Sized {
 impl<T: Compute> PipelineExt for T {}
 
 #[cfg(test)]
+#[cfg(feature = "bitcode")]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use std::{
@@ -146,19 +149,20 @@ mod tests {
     use rayon::prelude::*;
 
     use super::*;
-    use crate::{cache::storage::DefaultHashMapStore, prelude::*};
+    use crate::{
+        cache::{codec::bitcode::Bitcode, storage::DefaultHashMapStore},
+        prelude::*,
+    };
 
     #[test]
     fn pipeline_basic() -> Result<()> {
-        let stage1: DeterministicStep<_, usize, usize, _> =
-            DeterministicStep::new(DefaultHashMapStore::default(), |input| Ok(input * 2));
-        let pipeline: Pipeline<_, _, _, usize, usize, usize> =
-            Pipeline::new(stage1, DefaultHashMapStore::default(), |intermediate| {
-                Ok(intermediate + 10)
-            });
+        let stage1 = DeterministicStep::new(DefaultHashMapStore::default(), |input| Ok(input * 2));
+        let pipeline = Pipeline::new(stage1, DefaultHashMapStore::default(), |intermediate| {
+            Ok(intermediate + 10)
+        });
 
         let results = pipeline
-            .execute_many((0..10).into_par_iter(), ExecuteOptions::default())?
+            .execute_many((0..10usize).into_par_iter(), ExecuteOptions::default())?
             .collect::<Result<Vec<usize>>>()?;
 
         let expected: Vec<usize> = (0..10).map(|i| i * 2 + 10).collect();
@@ -174,14 +178,13 @@ mod tests {
         let stage2_calls = Arc::new(AtomicUsize::new(0));
         let stage2_calls_clone = stage2_calls.clone();
 
-        let stage1: DeterministicStep<_, usize, usize, _> =
-            DeterministicStep::new(DefaultHashMapStore::default(), move |input| {
-                stage1_calls_clone.fetch_add(1, Ordering::SeqCst);
-                sleep(Duration::from_millis(10));
-                Ok(input * 2)
-            });
+        let stage1 = DeterministicStep::new(DefaultHashMapStore::default(), move |input| {
+            stage1_calls_clone.fetch_add(1, Ordering::SeqCst);
+            sleep(Duration::from_millis(10));
+            Ok(input * 2)
+        });
 
-        let pipeline: Pipeline<_, _, _, usize, usize, usize> = Pipeline::new(
+        let pipeline = Pipeline::new(
             stage1,
             DefaultHashMapStore::default(),
             move |intermediate| {
@@ -192,7 +195,7 @@ mod tests {
         );
 
         let results1 = pipeline
-            .execute_many((0..5).into_par_iter(), ExecuteOptions::default())?
+            .execute_many((0..5usize).into_par_iter(), ExecuteOptions::default())?
             .collect::<Result<Vec<usize>>>()?;
 
         let expected: Vec<usize> = (0..5).map(|i| i * 2 + 10).collect();
@@ -217,7 +220,7 @@ mod tests {
         let stage2_calls = Arc::new(AtomicUsize::new(0));
         let stage1_cache = DefaultHashMapStore::default();
 
-        let stage1: DeterministicStep<_, usize, usize, _> = {
+        let stage1 = {
             let stage1_calls = stage1_calls.clone();
             DeterministicStep::new(stage1_cache.clone(), move |input| {
                 stage1_calls.fetch_add(1, Ordering::SeqCst);
@@ -226,7 +229,7 @@ mod tests {
             })
         };
 
-        let pipeline1: Pipeline<_, _, _, usize, usize, String> = {
+        let pipeline1 = {
             let stage2_calls = stage2_calls.clone();
             Pipeline::new(
                 stage1,
@@ -249,7 +252,7 @@ mod tests {
         assert_eq!(stage2_calls.load(Ordering::SeqCst), 3);
 
         // Rebuild pipeline with a new transform cache while reusing source cache.
-        let stage1_reused: DeterministicStep<_, usize, usize, _> = {
+        let stage1_reused = {
             let stage1_calls = stage1_calls.clone();
             DeterministicStep::new(stage1_cache, move |input| {
                 stage1_calls.fetch_add(1, Ordering::SeqCst);
@@ -257,7 +260,7 @@ mod tests {
                 Ok(input * 2)
             })
         };
-        let pipeline2: Pipeline<_, _, _, usize, usize, String> = {
+        let pipeline2 = {
             let stage2_calls = stage2_calls.clone();
             Pipeline::new(
                 stage1_reused,
@@ -283,12 +286,11 @@ mod tests {
 
     #[test]
     fn test_pipeline_with_different_types() -> Result<()> {
-        let stage1: DeterministicStep<_, u32, u64, _> =
-            DeterministicStep::new(DefaultHashMapStore::default(), |input: u32| {
-                Ok(input as u64 * 100)
-            });
+        let stage1 = DeterministicStep::new(DefaultHashMapStore::default(), |input: u32| {
+            Ok(input as u64 * 100)
+        });
 
-        let pipeline: Pipeline<_, _, _, u32, u64, String> = Pipeline::new(
+        let pipeline = Pipeline::new(
             stage1,
             DefaultHashMapStore::default(),
             |intermediate: u64| Ok(format!("Value: {}", intermediate)),
@@ -306,27 +308,25 @@ mod tests {
 
     #[test]
     fn test_pipeline_error_propagation() -> Result<()> {
-        let stage1: DeterministicStep<_, usize, usize, _> =
-            DeterministicStep::new(DefaultHashMapStore::default(), |input| {
-                if input == 3 {
-                    Err(crate::error::Error::Interrupted)
-                } else {
-                    Ok(input * 2)
-                }
-            });
+        let stage1 = DeterministicStep::new(DefaultHashMapStore::default(), |input| {
+            if input == 3 {
+                Err(crate::error::Error::Interrupted)
+            } else {
+                Ok(input * 2)
+            }
+        });
 
-        let mut pipeline: Pipeline<_, _, _, usize, usize, usize> =
-            Pipeline::new(stage1, DefaultHashMapStore::default(), |intermediate| {
-                Ok(intermediate + 10)
-            });
+        let mut pipeline = Pipeline::new(stage1, DefaultHashMapStore::default(), |intermediate| {
+            Ok(intermediate + 10)
+        });
 
         let mut encode_buffer = vec![0u8; usize::SIZE];
-        let mut codec_buffer = <usize as Codec>::Buffer::init();
+        let mut codec_engine = Bitcode::default();
 
-        let result = unsafe { pipeline.execute(2, &mut encode_buffer, &mut codec_buffer)? };
+        let result = unsafe { pipeline.execute(2usize, &mut encode_buffer, &mut codec_engine)? };
         assert_eq!(result, 14);
 
-        let result = unsafe { pipeline.execute(3, &mut encode_buffer, &mut codec_buffer) };
+        let result = unsafe { pipeline.execute(3, &mut encode_buffer, &mut codec_engine) };
         assert!(result.is_err());
 
         Ok(())
@@ -334,25 +334,23 @@ mod tests {
 
     #[test]
     fn test_pipeline_stage2_error_propagation() -> Result<()> {
-        let stage1: DeterministicStep<_, usize, usize, _> =
-            DeterministicStep::new(DefaultHashMapStore::default(), |input| Ok(input * 2));
+        let stage1 = DeterministicStep::new(DefaultHashMapStore::default(), |input| Ok(input * 2));
 
-        let mut pipeline: Pipeline<_, _, _, usize, usize, usize> =
-            Pipeline::new(stage1, DefaultHashMapStore::default(), |intermediate| {
-                if intermediate == 6 {
-                    Err(crate::error::Error::Interrupted)
-                } else {
-                    Ok(intermediate + 10)
-                }
-            });
+        let mut pipeline = Pipeline::new(stage1, DefaultHashMapStore::default(), |intermediate| {
+            if intermediate == 6 {
+                Err(crate::error::Error::Interrupted)
+            } else {
+                Ok(intermediate + 10)
+            }
+        });
 
         let mut encode_buffer = vec![0u8; usize::SIZE];
-        let mut codec_buffer = <usize as Codec>::Buffer::init();
+        let mut codec_engine = Bitcode::default();
 
-        let result = unsafe { pipeline.execute(2, &mut encode_buffer, &mut codec_buffer)? };
+        let result = unsafe { pipeline.execute(2usize, &mut encode_buffer, &mut codec_engine)? };
         assert_eq!(result, 14);
 
-        let result = unsafe { pipeline.execute(3, &mut encode_buffer, &mut codec_buffer) };
+        let result = unsafe { pipeline.execute(3, &mut encode_buffer, &mut codec_engine) };
         assert!(result.is_err());
 
         Ok(())
@@ -365,7 +363,7 @@ mod tests {
         let analysis_calls = Arc::new(AtomicUsize::new(0));
         let analysis_calls_clone = analysis_calls.clone();
 
-        let stage1: StochasticStep<_, usize, f64, _> = StochasticStep::new(
+        let stage1 = StochasticStep::new(
             DefaultHashMapStore::default(),
             b"mc-pi-experiment",
             move |rng, n_samples| {
@@ -384,7 +382,7 @@ mod tests {
             },
         );
 
-        let pipeline: Pipeline<_, _, _, StochasticInput<usize>, f64, f64> = Pipeline::new(
+        let pipeline = Pipeline::new(
             stage1,
             DefaultHashMapStore::default(),
             move |pi_estimate: f64| {
