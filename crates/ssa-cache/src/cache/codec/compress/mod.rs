@@ -98,7 +98,7 @@ impl Header {
     const fn new_compressed(algorithm_id: u8) -> Self {
         assert!(
             0 < algorithm_id && algorithm_id <= Self::ALGORITHM_MASK,
-            "algorithm id out of range (must be 1..=16)",
+            "algorithm id out of range (must be 1..=15)",
         );
         let value = Self::VERSION_ENCODED | (algorithm_id & Self::ALGORITHM_MASK);
         Self { value }
@@ -207,6 +207,7 @@ impl<C: Compress> CompressFrame<C> {
                         .try_into()
                         .expect("payload is checked to be at least ORIGINAL_LEN_BYTES"),
                 );
+                #[cfg(any(target_pointer_width = "16", target_pointer_width = "32"))]
                 if original_len > usize::MAX as u64 {
                     return Err(Error::ContentTooLarge);
                 }
@@ -295,10 +296,73 @@ pub(crate) mod fixtures {
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
-    use super::{Header, fixtures::assert_raw_header};
+    use super::{
+        Compress, CompressedCodec, Error, Header,
+        fixtures::{BytesRaw, assert_raw_header},
+    };
+    use crate::cache::codec::CodecEngine;
 
     #[test]
     fn test_raw_header() {
         assert_raw_header(&[Header::RAW.into_inner()]);
+    }
+
+    #[test]
+    fn test_header_new_compressed_roundtrip() {
+        let header = Header::new_compressed(3);
+        assert_eq!(header.version(), Header::VERSION_V1);
+        assert_eq!(header.algorithm(), 3);
+    }
+
+    #[test]
+    #[should_panic(expected = "algorithm id out of range")]
+    fn test_header_new_compressed_rejects_zero() {
+        let _ = Header::new_compressed(0);
+    }
+
+    #[test]
+    #[should_panic(expected = "algorithm id out of range")]
+    fn test_header_new_compressed_rejects_too_large() {
+        let _ = Header::new_compressed(16);
+    }
+
+    struct LenMismatchCompress;
+
+    impl Compress for LenMismatchCompress {
+        const ALGORITHM_ID: u8 = 2;
+
+        fn max_output_size(input_len: usize) -> usize {
+            input_len
+        }
+
+        fn compress_into(input: &[u8], output: &mut [u8]) -> usize {
+            output[..input.len()].copy_from_slice(input);
+            input.len()
+        }
+
+        fn decompress_into(_input: &[u8], output: &mut [u8]) -> Result<usize, Error> {
+            if output.is_empty() {
+                Ok(0)
+            } else {
+                Ok(output.len() - 1)
+            }
+        }
+    }
+
+    #[test]
+    fn decode_decompressed_length_mismatch_returns_error() {
+        type Engine = CompressedCodec<BytesRaw, LenMismatchCompress>;
+
+        let mut bytes =
+            vec![Header::new_compressed(LenMismatchCompress::ALGORITHM_ID).into_inner()];
+        bytes.extend_from_slice(&(8u64).to_le_bytes());
+        bytes.extend_from_slice(&[1, 2, 3, 4]);
+
+        let mut engine = Engine::default();
+        let err = engine.decode(&bytes).unwrap_err();
+        assert!(matches!(
+            err,
+            crate::Error::Compress(Error::DecompressedLengthMismatch)
+        ));
     }
 }
