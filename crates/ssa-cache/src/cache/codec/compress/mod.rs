@@ -138,6 +138,8 @@ impl<C> Default for CompressFrame<C> {
 impl<C: Compress> CompressFrame<C> {
     const COMPRESSED_HEADER_LEN: usize = 1 + Self::ORIGINAL_LEN_BYTES;
     const COMPRESSION_THRESHOLD: usize = 64 * 1024;
+    // Cap untrusted declared output size before allocating decode scratch.
+    const MAX_DECOMPRESSED_LEN: usize = 64 * 1024 * 1024;
     const MIN_COMPRESSION_SAVINGS: usize = 4 * 1024;
     /// The length in bytes to store the original length of the uncompressed data.
     const ORIGINAL_LEN_BYTES: usize = core::mem::size_of::<u64>();
@@ -207,6 +209,9 @@ impl<C: Compress> CompressFrame<C> {
                         .try_into()
                         .expect("payload is checked to be at least ORIGINAL_LEN_BYTES"),
                 );
+                if original_len > Self::MAX_DECOMPRESSED_LEN as u64 {
+                    return Err(Error::ContentTooLarge);
+                }
                 #[cfg(any(target_pointer_width = "16", target_pointer_width = "32"))]
                 if original_len > usize::MAX as u64 {
                     return Err(Error::ContentTooLarge);
@@ -297,7 +302,7 @@ pub(crate) mod fixtures {
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::{
-        Compress, CompressedCodec, Error, Header,
+        Compress, CompressFrame, CompressedCodec, Error, Header,
         fixtures::{BytesRaw, assert_raw_header},
     };
     use crate::cache::codec::CodecEngine;
@@ -364,5 +369,20 @@ mod tests {
             err,
             crate::Error::Compress(Error::DecompressedLengthMismatch)
         ));
+    }
+
+    #[test]
+    fn decode_declared_length_over_limit_returns_error() {
+        type Engine = CompressedCodec<BytesRaw, LenMismatchCompress>;
+
+        let declared_len = CompressFrame::<LenMismatchCompress>::MAX_DECOMPRESSED_LEN as u64 + 1;
+        let mut bytes =
+            vec![Header::new_compressed(LenMismatchCompress::ALGORITHM_ID).into_inner()];
+        bytes.extend_from_slice(&declared_len.to_le_bytes());
+        bytes.extend_from_slice(&[0xAA]);
+
+        let mut engine = Engine::default();
+        let err = engine.decode(&bytes).unwrap_err();
+        assert!(matches!(err, crate::Error::Compress(Error::ContentTooLarge)));
     }
 }
