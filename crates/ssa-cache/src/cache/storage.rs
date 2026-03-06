@@ -13,17 +13,47 @@ use crate::{Result, cache::codec::CodecEngine};
 ///
 /// `()` implements `CacheStore` as a "no-cache" backend that always misses and discards writes.
 pub trait CacheStore: Sync {
+    /// Fetch the encoded bytes for `key` and pass them to `f`.
+    ///
+    /// Implementers are responsible only for locating the encoded value by `key`
+    /// and borrowing it for the duration of `f`.
+    ///
+    /// - On hit, call `f(Some(bytes))`.
+    /// - On miss, call `f(None)`.
+    /// - The borrowed `bytes` only need to remain valid until `f` returns.
+    fn fetch_encoded_with<T, F>(&self, key: &[u8], f: F) -> Result<T>
+    where
+        F: FnOnce(Option<&[u8]>) -> Result<T>;
+
+    /// Store an already-encoded payload for `key`.
+    fn store_encoded(&self, key: &[u8], encoded: &[u8]) -> Result<()>;
+
     /// Attempts to fetch a value from the cache.
     ///
     /// Returns `Ok(Some(value))` on hit, `Ok(None)` on miss.
     fn fetch<T, E>(&self, key: &[u8], engine: &mut E) -> Result<Option<T>>
     where
-        E: CodecEngine<T>;
+        E: CodecEngine<T>,
+    {
+        self.fetch_encoded_with(key, |encoded| {
+            encoded.map(|bytes| engine.decode(bytes)).transpose()
+        })
+    }
 
     /// Stores a value in the cache.
     fn store<T, E>(&self, key: &[u8], engine: &mut E, value: &T) -> Result<()>
     where
-        E: CodecEngine<T>;
+        E: CodecEngine<T>,
+    {
+        let encoded = match engine.encode(value) {
+            Ok(encoded) => encoded,
+            Err(reason) => {
+                eprintln!("[ssa-cache] skipping cache write: {reason}");
+                return Ok(());
+            }
+        };
+        self.store_encoded(key, encoded)
+    }
 
     /// Fetch value by key, or execute and store it on cache miss.
     fn fetch_or_execute<T, E, F>(&self, key: &[u8], engine: &mut E, execute: F) -> Result<T>
@@ -42,17 +72,14 @@ pub trait CacheStore: Sync {
 }
 
 impl CacheStore for () {
-    fn fetch<T, E>(&self, _: &[u8], _: &mut E) -> Result<Option<T>>
+    fn fetch_encoded_with<T, F>(&self, _: &[u8], f: F) -> Result<T>
     where
-        E: CodecEngine<T>,
+        F: FnOnce(Option<&[u8]>) -> Result<T>,
     {
-        Ok(None)
+        f(None)
     }
 
-    fn store<T, E>(&self, _: &[u8], _: &mut E, _: &T) -> Result<()>
-    where
-        E: CodecEngine<T>,
-    {
+    fn store_encoded(&self, _: &[u8], _: &[u8]) -> Result<()> {
         Ok(())
     }
 }
@@ -82,29 +109,23 @@ impl<H> CacheStore for HashMapStore<H>
 where
     H: std::hash::BuildHasher + Send + Sync,
 {
-    fn fetch<T, E>(&self, key: &[u8], engine: &mut E) -> Result<Option<T>>
+    fn fetch_encoded_with<T, F>(&self, key: &[u8], f: F) -> Result<T>
     where
-        E: CodecEngine<T>,
+        F: FnOnce(Option<&[u8]>) -> Result<T>,
     {
         let map = self
             .0
             .read()
             .expect("cache read lock poisoned: HashMapStore should not panic while holding lock");
-        map.get(key)
-            .map(|v| engine.decode(v.as_slice()))
-            .transpose()
+        f(map.get(key).map(|bytes| bytes.as_slice()))
     }
 
-    fn store<T, E>(&self, key: &[u8], engine: &mut E, value: &T) -> Result<()>
-    where
-        E: CodecEngine<T>,
-    {
-        let encoded = engine.encode(value).to_vec();
+    fn store_encoded(&self, key: &[u8], encoded: &[u8]) -> Result<()> {
         let mut map = self
             .0
             .write()
             .expect("cache write lock poisoned: HashMapStore should not panic while holding lock");
-        map.insert(key.to_owned(), encoded);
+        map.insert(key.to_owned(), encoded.to_vec());
         Ok(())
     }
 }
@@ -114,20 +135,16 @@ mod fjall_store {
     use super::*;
 
     impl CacheStore for fjall::Keyspace {
-        fn fetch<T, E>(&self, key: &[u8], engine: &mut E) -> Result<Option<T>>
+        fn fetch_encoded_with<T, F>(&self, key: &[u8], f: F) -> Result<T>
         where
-            E: CodecEngine<T>,
+            F: FnOnce(Option<&[u8]>) -> Result<T>,
         {
-            self.get(key)?
-                .map(|v| engine.decode(v.as_ref()))
-                .transpose()
+            let value = self.get(key)?;
+            f(value.as_ref().map(|bytes| bytes.as_ref()))
         }
 
-        fn store<T, E>(&self, key: &[u8], engine: &mut E, value: &T) -> Result<()>
-        where
-            E: CodecEngine<T>,
-        {
-            self.insert(key, engine.encode(value))?;
+        fn store_encoded(&self, key: &[u8], encoded: &[u8]) -> Result<()> {
+            self.insert(key, encoded)?;
             Ok(())
         }
     }
@@ -185,6 +202,25 @@ mod tests {
         assert!(!encoded.is_empty());
         assert_eq!(encoded[0] & 0b1111_0000, 0b0001_0000);
         assert_eq!(encoded[0] & 0b0000_1111, 0b0001);
+        Ok(())
+    }
+
+    #[cfg(all(feature = "lz4", feature = "bitcode"))]
+    #[test]
+    fn test_hashmap_store_skips_oversize_compressed_value() -> Result<()> {
+        use crate::cache::codec::compress::{CompressedCodec, fixtures::SizedBytesRaw, lz4::Lz4};
+        type Lz4Engine = CompressedCodec<SizedBytesRaw, Lz4>;
+
+        let store = DefaultHashMapStore::default();
+        let mut engine = Lz4Engine::default();
+        let key = b"oversize";
+        let value = 64 * 1024 * 1024 + 1;
+
+        store.store::<usize, Lz4Engine>(key, &mut engine, &value)?;
+        assert_eq!(store.fetch::<usize, Lz4Engine>(key, &mut engine)?, None);
+
+        let map = store.0.read().unwrap();
+        assert!(!map.contains_key(key.as_slice()));
         Ok(())
     }
 

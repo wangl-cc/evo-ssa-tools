@@ -29,14 +29,15 @@ mod tests {
     use crate::{
         Result,
         cache::codec::{
-            CodecEngine,
+            CodecEngine, SkipReason,
             compress::{
-                CompressedCodec,
-                fixtures::{BytesRaw, assert_raw_header},
+                CompressFrame, CompressedCodec,
+                fixtures::{BytesRaw, SizedBytesRaw, assert_raw_header},
             },
         },
     };
 
+    #[track_caller]
     fn assert_lz4_header(encoded: &[u8]) {
         assert!(!encoded.is_empty());
         assert_eq!(encoded[0] & 0b1111_0000, 0b0001_0000);
@@ -49,7 +50,7 @@ mod tests {
 
         let value = vec![0u8; 96 * 1024];
         let mut engine = Lz4BytesEngine::default();
-        let encoded = engine.encode(&value).to_vec();
+        let encoded = engine.encode(&value).unwrap().to_vec();
         assert_lz4_header(&encoded);
 
         let decoded: Vec<u8> = engine.decode(&encoded)?;
@@ -65,7 +66,7 @@ mod tests {
 
         let value = vec![7u8; 1024];
         let mut engine = Lz4Engine::default();
-        let encoded = engine.encode(&value).to_vec();
+        let encoded = engine.encode(&value).unwrap().to_vec();
         assert_raw_header(&encoded);
 
         let decoded: Vec<u8> = engine.decode(&encoded)?;
@@ -81,7 +82,7 @@ mod tests {
 
         let value = "a".repeat(96 * 1024);
         let mut engine = Lz4Engine::default();
-        let encoded = engine.encode(&value).to_vec();
+        let encoded = engine.encode(&value).unwrap().to_vec();
         assert_lz4_header(&encoded);
 
         let decoded: String = engine.decode(&encoded)?;
@@ -99,7 +100,7 @@ mod tests {
         rand::rngs::StdRng::seed_from_u64(0x5A17).fill_bytes(&mut value);
 
         let mut engine = Lz4Engine::default();
-        let encoded = engine.encode(&value).to_vec();
+        let encoded = engine.encode(&value).unwrap().to_vec();
         assert_raw_header(&encoded);
 
         let decoded: Vec<u8> = engine.decode(&encoded)?;
@@ -133,19 +134,7 @@ mod tests {
             Err::<u8, _>(crate::Error::Compress(_))
         ));
 
-        let invalid_lz4_payload = vec![
-            0b0001_0001,
-            0x08,
-            0x00,
-            0x00,
-            0x00,
-            0x00,
-            0x00,
-            0x00,
-            0x00,
-            0xAA,
-            0xBB,
-        ];
+        let invalid_lz4_payload = vec![0b0001_0001, 0x08, 0x00, 0x00, 0x00, 0xAA, 0xBB];
         assert!(matches!(
             engine.decode(&invalid_lz4_payload),
             Err::<u8, _>(crate::Error::Compress(_))
@@ -161,15 +150,27 @@ mod tests {
         let value = "abc".repeat(1024);
 
         let mut bitcode_engine = Bitcode::default();
-        let encoded = bitcode_engine.encode(&value).to_vec();
+        let encoded = bitcode_engine.encode(&value).unwrap().to_vec();
         let decoded: String = bitcode_engine.decode(&encoded)?;
         assert_eq!(decoded, value);
 
         let mut lz4_engine = Lz4Engine::default();
-        let encoded = lz4_engine.encode(&value).to_vec();
+        let encoded = lz4_engine.encode(&value).unwrap().to_vec();
         let decoded: String = lz4_engine.decode(&encoded)?;
         assert_eq!(decoded, value);
 
         Ok(())
+    }
+
+    #[test]
+    fn oversize_raw_payload_skips_cache_encoding() {
+        type Lz4SizedEngine = CompressedCodec<SizedBytesRaw, Lz4>;
+
+        let oversize_len = CompressFrame::<Lz4>::MAX_DECOMPRESSED_LEN + 1;
+        let mut engine = Lz4SizedEngine::default();
+        assert!(matches!(
+            engine.encode(&oversize_len),
+            Err(SkipReason::EncodedValueTooLarge { .. })
+        ));
     }
 }

@@ -1,10 +1,33 @@
-use super::CodecEngine;
+//! Framing and compression adapters layered on top of another [`CodecEngine`].
+//!
+//! [`CompressedCodec`] serializes values with an inner engine `E`, then
+//! optionally compresses those serialized bytes with `C`. The outer frame is
+//! self-describing: the first byte identifies the wire-format version and
+//! whether the payload is raw or compressed.
+//!
+//! Compression policy lives in this module rather than in [`Compress`]:
+//! small values stay raw, large values are compressed only when that produces a
+//! meaningful frame-size win, and oversized serialized payloads are skipped
+//! from cache writes via [`SkipReason`].
+
+use super::{CodecEngine, SkipReason};
 use crate::Result;
 
 /// Compression algorithm adapter.
 ///
 /// Implementors provide a block-level compress/decompress pair used by [`CompressedCodec`].
+///
+/// This trait does not decide *when* compression should be attempted or skipped.
+/// That policy lives in [`CompressedCodec`]. `Compress` only describes how to
+/// transform one raw byte slice into one compressed byte slice and back.
 pub trait Compress {
+    /// Algorithm identifier stored in the low 4 bits of the frame header.
+    ///
+    /// Assigned ids in the current format:
+    ///
+    /// - `0`: raw/uncompressed payload (reserved by the frame format)
+    /// - `1`: [`lz4::Lz4`] when the `lz4` feature is enabled
+    /// - `2..=15`: currently unassigned
     const ALGORITHM_ID: u8;
 
     /// Return the maximum output size to compress `input_len` bytes.
@@ -35,6 +58,7 @@ pub trait Compress {
     fn decompress_into(input: &[u8], output: &mut [u8]) -> Result<usize, Error>;
 }
 
+/// Decode-time failures specific to the framed compression layer.
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
     #[error("Header mismatch")]
@@ -121,6 +145,27 @@ impl Header {
     }
 }
 
+/// Reusable framing buffer for [`CompressedCodec`].
+///
+/// The first byte of every frame is a [`Header`]; see [`Header`] for the
+/// exact bit layout.
+///
+/// # Wire Format
+///
+/// Raw frame:
+///
+/// ```text
+/// [header][raw_payload...]
+/// ```
+///
+/// Compressed frame:
+///
+/// ```text
+/// [header][original_len_u32_le][compressed_payload...]
+/// ```
+///
+/// `CompressFrame` owns the reusable scratch buffer used to build frames during
+/// encode and to materialize raw serialized bytes during decode.
 struct CompressFrame<C> {
     scratch: Vec<u8>,
     _compress: std::marker::PhantomData<C>,
@@ -136,14 +181,18 @@ impl<C> Default for CompressFrame<C> {
 }
 
 impl<C: Compress> CompressFrame<C> {
+    /// `[header][orig_len_u32_le][compressed_payload...]`
     const COMPRESSED_HEADER_LEN: usize = 1 + Self::ORIGINAL_LEN_BYTES;
+    /// Only attempt compression for moderately large payloads (64 KiB)
     const COMPRESSION_THRESHOLD: usize = 64 * 1024;
-    // Cap untrusted declared output size before allocating decode scratch.
+    /// Cap untrusted declared output size before allocating decode scratch (64 MiB).
     const MAX_DECOMPRESSED_LEN: usize = 64 * 1024 * 1024;
+    /// Require a meaningful frame-size win before keeping the compressed form (4 KiB).
     const MIN_COMPRESSION_SAVINGS: usize = 4 * 1024;
-    /// The length in bytes to store the original length of the uncompressed data.
-    const ORIGINAL_LEN_BYTES: usize = core::mem::size_of::<u64>();
+    /// The length prefix stored in compressed frames.
+    const ORIGINAL_LEN_BYTES: usize = core::mem::size_of::<u32>();
 
+    /// Encode an uncompressed frame as `[header][raw_payload...]`.
     fn encode_raw(&mut self, raw: &[u8]) -> &[u8] {
         let req_len = 1 + raw.len();
         let scratch = &mut self.scratch;
@@ -155,10 +204,21 @@ impl<C: Compress> CompressFrame<C> {
         &scratch[..req_len]
     }
 
-    fn compress(&mut self, raw: &[u8]) -> &[u8] {
+    /// Encode either a raw frame or a compressed frame.
+    ///
+    /// Returns [`SkipReason::EncodedValueTooLarge`] when the serialized payload is
+    /// too large to be accepted by the compressed-frame safety bound.
+    fn compress(&mut self, raw: &[u8]) -> std::result::Result<&[u8], SkipReason> {
+        if raw.len() > Self::MAX_DECOMPRESSED_LEN {
+            return Err(SkipReason::EncodedValueTooLarge {
+                encoded_len: raw.len(),
+                max_len: Self::MAX_DECOMPRESSED_LEN,
+            });
+        }
+
         // If the input is not big enough to compress, return the raw data.
         if raw.len() < Self::COMPRESSION_THRESHOLD {
-            return self.encode_raw(raw);
+            return Ok(self.encode_raw(raw));
         }
 
         // Compress the raw data
@@ -175,18 +235,23 @@ impl<C: Compress> CompressFrame<C> {
         let total_raw_len = 1 + raw.len();
         let saved_bytes = total_raw_len.saturating_sub(total_compressed_len);
         if saved_bytes < Self::MIN_COMPRESSION_SAVINGS {
-            return self.encode_raw(raw);
+            return Ok(self.encode_raw(raw));
         }
 
         // Write the header into the scratch buffer.
+        let original_len =
+            u32::try_from(raw.len()).expect("compressed payload length is capped below u32::MAX");
         self.scratch[0] = const { Header::new_compressed(C::ALGORITHM_ID).into_inner() };
-        self.scratch[1..Self::COMPRESSED_HEADER_LEN]
-            .copy_from_slice(&(raw.len() as u64).to_le_bytes());
+        self.scratch[1..Self::COMPRESSED_HEADER_LEN].copy_from_slice(&original_len.to_le_bytes());
 
         // Return the compressed data including the header.
-        &self.scratch[..total_compressed_len]
+        Ok(&self.scratch[..total_compressed_len])
     }
 
+    /// Decode a framed payload into raw serialized bytes for the inner codec.
+    ///
+    /// Raw frames borrow directly from the input slice. Compressed frames
+    /// decompress into the reusable scratch buffer owned by this frame.
     fn decompress<'a>(&'a mut self, bytes: &'a [u8]) -> Result<&'a [u8], Error> {
         let (header_byte, payload) = bytes.split_first().ok_or(Error::HeaderMismatch)?;
         let header = Header::from_inner(*header_byte);
@@ -204,19 +269,14 @@ impl<C: Compress> CompressFrame<C> {
                     return Err(Error::TruncatedInput);
                 }
                 let (len_bytes, compressed_payload) = payload.split_at(Self::ORIGINAL_LEN_BYTES);
-                let original_len = u64::from_le_bytes(
+                let original_len = u32::from_le_bytes(
                     len_bytes
                         .try_into()
                         .expect("payload is checked to be at least ORIGINAL_LEN_BYTES"),
-                );
-                if original_len > Self::MAX_DECOMPRESSED_LEN as u64 {
+                ) as usize;
+                if original_len > Self::MAX_DECOMPRESSED_LEN {
                     return Err(Error::ContentTooLarge);
                 }
-                #[cfg(any(target_pointer_width = "16", target_pointer_width = "32"))]
-                if original_len > usize::MAX as u64 {
-                    return Err(Error::ContentTooLarge);
-                }
-                let original_len = original_len as usize;
                 if scratch.len() < original_len {
                     scratch.resize(original_len, 0);
                 }
@@ -234,7 +294,18 @@ impl<C: Compress> CompressFrame<C> {
 
 /// Compression wrapper engine over a base serialization engine.
 ///
-/// # Bit Layout
+/// Encoding path:
+///
+/// - Serialize `T` with the inner engine `E`.
+/// - If the serialized form is large enough, attempt compression with `C`.
+/// - Keep the compressed frame only if it clears the configured savings threshold.
+/// - Return [`SkipReason`] if the serialized form exceeds the compressed-frame safety limit.
+///
+/// Decoding path:
+///
+/// - Inspect the frame header.
+/// - Either borrow the raw payload directly or decompress it into scratch space.
+/// - Pass the recovered serialized bytes back to `E::decode`.
 pub struct CompressedCodec<E, C> {
     inner: E,
     frame: CompressFrame<C>,
@@ -254,9 +325,9 @@ where
     E: CodecEngine<T>,
     C: Compress,
 {
-    fn encode(&mut self, value: &T) -> &[u8] {
+    fn encode(&mut self, value: &T) -> std::result::Result<&[u8], SkipReason> {
         let Self { inner, frame, .. } = self;
-        let raw = inner.encode(value);
+        let raw = inner.encode(value)?;
         frame.compress(raw)
     }
 
@@ -279,14 +350,31 @@ pub(crate) mod fixtures {
     }
 
     impl CodecEngine<Vec<u8>> for BytesRaw {
-        fn encode(&mut self, value: &Vec<u8>) -> &[u8] {
+        fn encode(&mut self, value: &Vec<u8>) -> std::result::Result<&[u8], SkipReason> {
             self.buffer.clear();
             self.buffer.extend_from_slice(value);
-            &self.buffer
+            Ok(&self.buffer)
         }
 
         fn decode(&mut self, bytes: &[u8]) -> Result<Vec<u8>> {
             Ok(bytes.to_vec())
+        }
+    }
+
+    /// Test engine that materializes a zero-filled raw payload of the requested length.
+    #[derive(Debug, Default)]
+    pub struct SizedBytesRaw {
+        buffer: Vec<u8>,
+    }
+
+    impl CodecEngine<usize> for SizedBytesRaw {
+        fn encode(&mut self, value: &usize) -> std::result::Result<&[u8], SkipReason> {
+            self.buffer.resize(*value, 0);
+            Ok(&self.buffer)
+        }
+
+        fn decode(&mut self, bytes: &[u8]) -> Result<usize> {
+            Ok(bytes.len())
         }
     }
 
@@ -360,7 +448,7 @@ mod tests {
 
         let mut bytes =
             vec![Header::new_compressed(LenMismatchCompress::ALGORITHM_ID).into_inner()];
-        bytes.extend_from_slice(&(8u64).to_le_bytes());
+        bytes.extend_from_slice(&(8u32).to_le_bytes());
         bytes.extend_from_slice(&[1, 2, 3, 4]);
 
         let mut engine = Engine::default();
@@ -375,7 +463,7 @@ mod tests {
     fn decode_declared_length_over_limit_returns_error() {
         type Engine = CompressedCodec<BytesRaw, LenMismatchCompress>;
 
-        let declared_len = CompressFrame::<LenMismatchCompress>::MAX_DECOMPRESSED_LEN as u64 + 1;
+        let declared_len = CompressFrame::<LenMismatchCompress>::MAX_DECOMPRESSED_LEN as u32 + 1;
         let mut bytes =
             vec![Header::new_compressed(LenMismatchCompress::ALGORITHM_ID).into_inner()];
         bytes.extend_from_slice(&declared_len.to_le_bytes());
@@ -383,6 +471,9 @@ mod tests {
 
         let mut engine = Engine::default();
         let err = engine.decode(&bytes).unwrap_err();
-        assert!(matches!(err, crate::Error::Compress(Error::ContentTooLarge)));
+        assert!(matches!(
+            err,
+            crate::Error::Compress(Error::ContentTooLarge)
+        ));
     }
 }
