@@ -20,6 +20,7 @@ rayon = { workspace = true, optional = true }
 criterion = { workspace = true }
 nohash-hasher = { workspace = true }
 rand = { workspace = true }
+rapidhash = { workspace = true }
 
 [features]
 parallel = ["dep:rayon"]

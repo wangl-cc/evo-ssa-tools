@@ -16,6 +16,7 @@ evo-marker = { path = "crates/evo-marker" }
 fjall = { version = "3", default-features = false }
 frequency = { path = "crates/frequency", version = "0.1" }
 nohash-hasher = { version = "0.2.0" }
+rapidhash = { version = "4.2.2" }
 rand = { version = "0.9" }
 rand_xoshiro = { version = "0.7" }
 rayon = { version = "1.10.0" }
