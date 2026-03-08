@@ -10,7 +10,7 @@
 //! meaningful frame-size win, and oversized serialized payloads are skipped
 //! from cache writes via [`SkipReason`].
 
-use crc32c::crc32c_append;
+use crc32c::crc32c;
 
 use super::{CodecEngine, SkipReason};
 use crate::Result;
@@ -163,10 +163,22 @@ impl Header {
 /// [header][raw_payload...][checksum_crc32c_u32_le]
 /// ```
 ///
+/// Raw-frame checksum coverage:
+///
+/// ```text
+/// crc32c(header || raw_payload)
+/// ```
+///
 /// Compressed frame:
 ///
 /// ```text
 /// [header][original_len_u32_le][compressed_payload...][checksum_crc32c_u32_le]
+/// ```
+///
+/// Compressed-frame checksum coverage:
+///
+/// ```text
+/// crc32c(header || original_len_u32_le || compressed_payload)
 /// ```
 ///
 /// `CompressFrame` owns the reusable scratch buffer used to build frames during
@@ -211,7 +223,7 @@ impl<C: Compress> CompressFrame<C> {
         let header = Header::RAW;
         scratch[0] = header.into_inner();
         scratch[Self::RAW_PREFIX_LEN..Self::RAW_PREFIX_LEN + raw.len()].copy_from_slice(raw);
-        let checksum = Self::checksum(header, &[], raw);
+        let checksum = crc32c(&scratch[..Self::RAW_PREFIX_LEN + raw.len()]);
         scratch[Self::RAW_PREFIX_LEN + raw.len()..req_len].copy_from_slice(&checksum.to_le_bytes());
         &scratch[..req_len]
     }
@@ -260,13 +272,8 @@ impl<C: Compress> CompressFrame<C> {
             u32::try_from(raw.len()).expect("compressed payload length is capped below u32::MAX");
         self.scratch[0] = header.into_inner();
         let original_len_bytes = original_len.to_le_bytes();
-        let checksum = Self::checksum(
-            header,
-            &original_len_bytes,
-            &self.scratch
-                [Self::COMPRESSED_PREFIX_LEN..Self::COMPRESSED_PREFIX_LEN + compressed_len],
-        );
         self.scratch[1..Self::COMPRESSED_PREFIX_LEN].copy_from_slice(&original_len_bytes);
+        let checksum = crc32c(&self.scratch[..Self::COMPRESSED_PREFIX_LEN + compressed_len]);
         self.scratch[Self::COMPRESSED_PREFIX_LEN + compressed_len..total_compressed_len]
             .copy_from_slice(&checksum.to_le_bytes());
 
@@ -300,7 +307,7 @@ impl<C: Compress> CompressFrame<C> {
                         .try_into()
                         .expect("payload is checked to be at least CHECKSUM_BYTES"),
                 );
-                let actual_checksum = Self::checksum(header, &[], raw_payload);
+                let actual_checksum = crc32c(&bytes[..bytes.len() - Self::CHECKSUM_BYTES]);
                 if actual_checksum != stored_checksum {
                     return Err(Error::ChecksumMismatch);
                 }
@@ -318,7 +325,7 @@ impl<C: Compress> CompressFrame<C> {
                         .try_into()
                         .expect("payload is checked to be at least CHECKSUM_BYTES"),
                 );
-                let actual_checksum = Self::checksum(header, len_bytes, compressed_payload);
+                let actual_checksum = crc32c(&bytes[..bytes.len() - Self::CHECKSUM_BYTES]);
                 if actual_checksum != stored_checksum {
                     return Err(Error::ChecksumMismatch);
                 }
@@ -342,12 +349,6 @@ impl<C: Compress> CompressFrame<C> {
             }
             _ => Err(Error::CompressionAlgorithmMismatch),
         }
-    }
-
-    fn checksum(header: Header, metadata: &[u8], payload: &[u8]) -> u32 {
-        let checksum = crc32c_append(0, &[header.into_inner()]);
-        let checksum = crc32c_append(checksum, metadata);
-        crc32c_append(checksum, payload)
     }
 }
 
@@ -612,28 +613,19 @@ mod tests {
             engine.encode(value).unwrap().to_vec()
         }
 
-        fn compressed_frame<C: Compress>(
-            header: Header,
-            original_len: u32,
-            payload: &[u8],
-        ) -> Vec<u8> {
-            let original_len_bytes = original_len.to_le_bytes();
-            let checksum =
-                CompressFrame::<C>::checksum(header, &original_len_bytes, payload).to_le_bytes();
-
+        fn compressed_frame(header: Header, original_len: u32, payload: &[u8]) -> Vec<u8> {
             let mut bytes = vec![header.into_inner()];
-            bytes.extend_from_slice(&original_len_bytes);
+            bytes.extend_from_slice(&original_len.to_le_bytes());
             bytes.extend_from_slice(payload);
+            let checksum = crc32c::crc32c(&bytes).to_le_bytes();
             bytes.extend_from_slice(&checksum);
             bytes
         }
 
-        fn raw_frame<C: Compress>(payload: &[u8]) -> Vec<u8> {
-            let header = Header::RAW;
-            let checksum = CompressFrame::<C>::checksum(header, &[], payload).to_le_bytes();
-
-            let mut bytes = vec![header.into_inner()];
+        fn raw_frame(payload: &[u8]) -> Vec<u8> {
+            let mut bytes = vec![Header::RAW.into_inner()];
             bytes.extend_from_slice(payload);
+            let checksum = crc32c::crc32c(&bytes).to_le_bytes();
             bytes.extend_from_slice(&checksum);
             bytes
         }
@@ -690,7 +682,7 @@ mod tests {
         #[test]
         fn decompressed_length_mismatch_returns_error() {
             let header = Header::new_compressed(ShortDecodeCompress::ALGORITHM_ID);
-            let bytes = compressed_frame::<ShortDecodeCompress>(header, 8, &[1, 2, 3, 4]);
+            let bytes = compressed_frame(header, 8, &[1, 2, 3, 4]);
             assert!(matches!(
                 decode_compress_error::<ShortDecodeEngine, Vec<u8>>(&bytes),
                 Error::DecompressedLengthMismatch
@@ -727,7 +719,7 @@ mod tests {
         fn declared_length_over_limit_returns_error() {
             let header = Header::new_compressed(TestCompress::ALGORITHM_ID);
             let declared_len = CompressFrame::<TestCompress>::MAX_DECOMPRESSED_LEN as u32 + 1;
-            let bytes = compressed_frame::<TestCompress>(header, declared_len, &[0xAA]);
+            let bytes = compressed_frame(header, declared_len, &[0xAA]);
             assert!(matches!(
                 decode_compress_error::<Engine, Vec<u8>>(&bytes),
                 Error::ContentTooLarge
@@ -737,7 +729,7 @@ mod tests {
         #[test]
         fn checksum_mismatch_returns_error() {
             let header = Header::new_compressed(TestCompress::ALGORITHM_ID);
-            let mut bytes = compressed_frame::<TestCompress>(header, 8, &[1, 2, 3, 4]);
+            let mut bytes = compressed_frame(header, 8, &[1, 2, 3, 4]);
             let checksum_index = bytes.len() - CompressFrame::<TestCompress>::CHECKSUM_BYTES;
             bytes[checksum_index] ^= 0x01;
             assert!(matches!(
@@ -748,7 +740,7 @@ mod tests {
 
         #[test]
         fn raw_checksum_mismatch_returns_error() {
-            let mut bytes = raw_frame::<TestCompress>(b"raw-bytes");
+            let mut bytes = raw_frame(b"raw-bytes");
             let checksum_index = bytes.len() - CompressFrame::<TestCompress>::CHECKSUM_BYTES;
             bytes[checksum_index] ^= 0x01;
             assert!(matches!(
