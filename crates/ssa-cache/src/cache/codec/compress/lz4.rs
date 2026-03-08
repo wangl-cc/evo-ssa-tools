@@ -31,7 +31,7 @@ mod tests {
         cache::codec::{
             CodecEngine, SkipReason,
             compress::{
-                CompressFrame, CompressedCodec,
+                CompressFrame, CompressedCodec, Error,
                 fixtures::{BytesRaw, SizedBytesRaw, assert_raw_header},
             },
         },
@@ -92,6 +92,64 @@ mod tests {
 
     #[cfg(feature = "bitcode")]
     #[test]
+    fn corrupted_compressed_payload_returns_checksum_mismatch() {
+        use crate::cache::codec::bitcode::Bitcode;
+        type Lz4Engine = CompressedCodec<Bitcode, Lz4>;
+
+        let value = "a".repeat(96 * 1024);
+        let mut engine = Lz4Engine::default();
+        let mut encoded = engine.encode(&value).unwrap().to_vec();
+        let payload_index = CompressFrame::<Lz4>::COMPRESSED_HEADER_LEN + 1;
+        encoded[payload_index] ^= 0x01;
+
+        let err: crate::Result<String> = engine.decode(&encoded);
+        let err = err.unwrap_err();
+        assert!(matches!(
+            err,
+            crate::Error::Compress(Error::ChecksumMismatch)
+        ));
+    }
+
+    #[cfg(feature = "bitcode")]
+    #[test]
+    fn corrupted_declared_length_returns_checksum_mismatch() {
+        use crate::cache::codec::bitcode::Bitcode;
+        type Lz4Engine = CompressedCodec<Bitcode, Lz4>;
+
+        let value = "a".repeat(96 * 1024);
+        let mut engine = Lz4Engine::default();
+        let mut encoded = engine.encode(&value).unwrap().to_vec();
+        encoded[1] ^= 0x01;
+
+        let err: crate::Result<String> = engine.decode(&encoded);
+        let err = err.unwrap_err();
+        assert!(matches!(
+            err,
+            crate::Error::Compress(Error::ChecksumMismatch)
+        ));
+    }
+
+    #[cfg(feature = "bitcode")]
+    #[test]
+    fn compressed_header_flip_to_raw_returns_checksum_mismatch() {
+        use crate::cache::codec::bitcode::Bitcode;
+        type Lz4Engine = CompressedCodec<Bitcode, Lz4>;
+
+        let value = "a".repeat(96 * 1024);
+        let mut engine = Lz4Engine::default();
+        let mut encoded = engine.encode(&value).unwrap().to_vec();
+        encoded[0] = 0b0001_0000;
+
+        let err: crate::Result<String> = engine.decode(&encoded);
+        let err = err.unwrap_err();
+        assert!(matches!(
+            err,
+            crate::Error::Compress(Error::ChecksumMismatch)
+        ));
+    }
+
+    #[cfg(feature = "bitcode")]
+    #[test]
     fn incompressible_data_falls_back_to_raw() -> Result<()> {
         use crate::cache::codec::bitcode::Bitcode;
         type Lz4Engine = CompressedCodec<Bitcode, Lz4>;
@@ -128,13 +186,25 @@ mod tests {
             Err::<u8, _>(crate::Error::Compress(_))
         ));
 
-        let truncated_lz4_len = vec![0b0001_0001, 0x01, 0x02, 0x03];
+        let truncated_lz4_len = vec![0b0001_0001, 0x01, 0x02, 0x03, 0x04];
         assert!(matches!(
             engine.decode(&truncated_lz4_len),
             Err::<u8, _>(crate::Error::Compress(_))
         ));
 
-        let invalid_lz4_payload = vec![0b0001_0001, 0x08, 0x00, 0x00, 0x00, 0xAA, 0xBB];
+        let header = 0b0001_0001;
+        let len_bytes = (8u32).to_le_bytes();
+        let payload = [0xAA, 0xBB];
+        let checksum = CompressFrame::<Lz4>::checksum(
+            super::super::Header::from_inner(header),
+            &len_bytes,
+            &payload,
+        )
+        .to_le_bytes();
+        let mut invalid_lz4_payload = vec![header];
+        invalid_lz4_payload.extend_from_slice(&len_bytes);
+        invalid_lz4_payload.extend_from_slice(&checksum);
+        invalid_lz4_payload.extend_from_slice(&payload);
         assert!(matches!(
             engine.decode(&invalid_lz4_payload),
             Err::<u8, _>(crate::Error::Compress(_))

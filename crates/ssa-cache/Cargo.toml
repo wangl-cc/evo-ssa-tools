@@ -8,6 +8,7 @@ license.workspace = true
 [dependencies]
 bitcode = { workspace = true, optional = true }
 blake3 = { workspace = true }
+crc32c = { workspace = true, optional = true }
 fjall = { workspace = true, default-features = false, optional = true }
 lz4_flex = { workspace = true, optional = true }
 rand = { workspace = true }
@@ -22,8 +23,9 @@ tempfile = { workspace = true }
 [features]
 default = ["bitcode", "lz4"]
 bitcode = ["dep:bitcode"]
+compress = ["dep:crc32c"]
 fjall = ["dep:fjall"]
-lz4 = ["dep:lz4_flex"]
+lz4 = ["compress", "dep:lz4_flex"]
 
 [lints]
 workspace = true

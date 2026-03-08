@@ -154,14 +154,13 @@ pub mod prelude {
     pub use crate::cache::codec::bitcode::Bitcode;
     #[cfg(feature = "lz4")]
     pub use crate::cache::codec::compress::lz4::Lz4;
+    #[cfg(feature = "compress")]
+    pub use crate::cache::codec::compress::{Compress, CompressedCodec};
     pub use crate::{
         Compute, ExecuteOptions,
         cache::{
             canonical_encode::CanonicalEncode,
-            codec::{
-                CodecEngine,
-                compress::{Compress, CompressedCodec},
-            },
+            codec::CodecEngine,
             storage::{CacheStore, HashMapStore},
         },
         deterministic::DeterministicStep,

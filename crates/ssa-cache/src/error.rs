@@ -10,6 +10,7 @@ pub enum Error {
     #[error("Bitcode codec error")]
     BitCode(#[from] bitcode::Error),
 
+    #[cfg(feature = "compress")]
     #[error("Compression codec error")]
     Compress(#[from] crate::cache::codec::compress::Error),
 

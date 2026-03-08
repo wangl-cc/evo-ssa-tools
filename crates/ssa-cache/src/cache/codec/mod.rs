@@ -38,4 +38,5 @@ pub enum SkipReason {
 #[cfg(feature = "bitcode")]
 pub mod bitcode;
 
+#[cfg(feature = "compress")]
 pub mod compress;
