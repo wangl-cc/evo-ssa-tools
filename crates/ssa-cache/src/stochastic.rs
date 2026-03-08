@@ -225,6 +225,7 @@ mod tests {
     use crate::{
         cache::{codec::fixtures::FixtureEngine, storage::DefaultHashMapStore},
         prelude::*,
+        test_utils::execute_one,
     };
 
     #[test]
@@ -238,23 +239,8 @@ mod tests {
             ])
         })
         .with_engine::<FixtureEngine>();
-        let mut encode_buffer = vec![0u8; <StochasticInput<u64> as CanonicalEncode>::SIZE];
-        let mut codec_engine = FixtureEngine::default();
-
-        let output1 = unsafe {
-            step.execute(
-                StochasticInput::new(42, 7),
-                &mut encode_buffer,
-                &mut codec_engine,
-            )?
-        };
-        let output2 = unsafe {
-            step.execute(
-                StochasticInput::new(42, 7),
-                &mut encode_buffer,
-                &mut codec_engine,
-            )?
-        };
+        let output1 = execute_one(&mut step, StochasticInput::new(42, 7))?;
+        let output2 = execute_one(&mut step, StochasticInput::new(42, 7))?;
 
         assert_eq!(output1, output2);
         Ok(())
@@ -271,23 +257,8 @@ mod tests {
             ])
         })
         .with_engine::<FixtureEngine>();
-        let mut encode_buffer = vec![0u8; <StochasticInput<u64> as CanonicalEncode>::SIZE];
-        let mut codec_engine = FixtureEngine::default();
-
-        let output1 = unsafe {
-            step.execute(
-                StochasticInput::new(42, 1),
-                &mut encode_buffer,
-                &mut codec_engine,
-            )?
-        };
-        let output2 = unsafe {
-            step.execute(
-                StochasticInput::new(42, 2),
-                &mut encode_buffer,
-                &mut codec_engine,
-            )?
-        };
+        let output1 = execute_one(&mut step, StochasticInput::new(42, 1))?;
+        let output2 = execute_one(&mut step, StochasticInput::new(42, 2))?;
 
         assert_ne!(output1, output2);
         Ok(())
@@ -313,25 +284,8 @@ mod tests {
             ])
         })
         .with_engine::<FixtureEngine>();
-        let mut encode_buffer1 = vec![0u8; <StochasticInput<u64> as CanonicalEncode>::SIZE];
-        let mut encode_buffer2 = vec![0u8; <StochasticInput<u64> as CanonicalEncode>::SIZE];
-        let mut codec_engine1 = FixtureEngine::default();
-        let mut codec_engine2 = FixtureEngine::default();
-
-        let output1 = unsafe {
-            step1.execute(
-                StochasticInput::new(42, 7),
-                &mut encode_buffer1,
-                &mut codec_engine1,
-            )?
-        };
-        let output2 = unsafe {
-            step2.execute(
-                StochasticInput::new(42, 7),
-                &mut encode_buffer2,
-                &mut codec_engine2,
-            )?
-        };
+        let output1 = execute_one(&mut step1, StochasticInput::new(42, 7))?;
+        let output2 = execute_one(&mut step2, StochasticInput::new(42, 7))?;
 
         assert_ne!(output1, output2);
         Ok(())
@@ -363,20 +317,12 @@ mod tests {
         )
         .with_engine::<FixtureEngine>();
 
-        let mut encode_buffer1 = vec![0u8; <StochasticInput<u64> as CanonicalEncode>::SIZE];
-        let mut encode_buffer2 = vec![0u8; <StochasticInput<u64> as CanonicalEncode>::SIZE];
-        let mut codec_buffer1 = FixtureEngine::default();
-        let mut codec_buffer2 = FixtureEngine::default();
-
         let input = StochasticInput::new(42, 7);
 
-        let output_a1 =
-            unsafe { step_a.execute(input.clone(), &mut encode_buffer1, &mut codec_buffer1)? };
-        let output_b1 =
-            unsafe { step_b.execute(input.clone(), &mut encode_buffer2, &mut codec_buffer2)? };
-        let output_a2 =
-            unsafe { step_a.execute(input.clone(), &mut encode_buffer1, &mut codec_buffer1)? };
-        let output_b2 = unsafe { step_b.execute(input, &mut encode_buffer2, &mut codec_buffer2)? };
+        let output_a1 = execute_one(&mut step_a, input.clone())?;
+        let output_b1 = execute_one(&mut step_b, input.clone())?;
+        let output_a2 = execute_one(&mut step_a, input.clone())?;
+        let output_b2 = execute_one(&mut step_b, input)?;
 
         assert_eq!(output_a1, output_a2);
         assert_eq!(output_b1, output_b2);

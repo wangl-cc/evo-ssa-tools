@@ -152,25 +152,8 @@ mod tests {
     use crate::{
         cache::{codec::fixtures::FixtureEngine, storage::DefaultHashMapStore},
         prelude::*,
+        test_utils::execute_one,
     };
-
-    #[test]
-    fn pipeline_basic() -> Result<()> {
-        let stage1 = DeterministicStep::new(DefaultHashMapStore::default(), |input| Ok(input * 2))
-            .with_engine::<FixtureEngine>();
-        let pipeline = Pipeline::new(stage1, DefaultHashMapStore::default(), |intermediate| {
-            Ok(intermediate + 10)
-        });
-
-        let results = pipeline
-            .execute_many((0..10usize).into_par_iter(), ExecuteOptions::default())?
-            .collect::<Result<Vec<usize>>>()?;
-
-        let expected: Vec<usize> = (0..10).map(|i| i * 2 + 10).collect();
-        assert_eq!(results, expected);
-
-        Ok(())
-    }
 
     #[test]
     fn test_pipeline_two_stage_caching() -> Result<()> {
@@ -179,22 +162,17 @@ mod tests {
         let stage2_calls = Arc::new(AtomicUsize::new(0));
         let stage2_calls_clone = stage2_calls.clone();
 
-        let stage1 = DeterministicStep::new(DefaultHashMapStore::default(), move |input| {
+        let pipeline = DeterministicStep::new(DefaultHashMapStore::default(), move |input| {
             stage1_calls_clone.fetch_add(1, Ordering::SeqCst);
             sleep(Duration::from_millis(10));
             Ok(input * 2)
         })
-        .with_engine::<FixtureEngine>();
-
-        let pipeline = Pipeline::new(
-            stage1,
-            DefaultHashMapStore::default(),
-            move |intermediate| {
-                stage2_calls_clone.fetch_add(1, Ordering::SeqCst);
-                sleep(Duration::from_millis(10));
-                Ok(intermediate + 10)
-            },
-        );
+        .with_engine::<FixtureEngine>()
+        .pipe(DefaultHashMapStore::default(), move |intermediate| {
+            stage2_calls_clone.fetch_add(1, Ordering::SeqCst);
+            sleep(Duration::from_millis(10));
+            Ok(intermediate + 10)
+        });
 
         let results1 = pipeline
             .execute_many((0..5usize).into_par_iter(), ExecuteOptions::default())?
@@ -234,15 +212,11 @@ mod tests {
 
         let pipeline1 = {
             let stage2_calls = stage2_calls.clone();
-            Pipeline::new(
-                stage1,
-                DefaultHashMapStore::default(),
-                move |intermediate| {
-                    stage2_calls.fetch_add(1, Ordering::SeqCst);
-                    sleep(Duration::from_millis(10));
-                    Ok(format!("Result: {}", intermediate))
-                },
-            )
+            stage1.pipe(DefaultHashMapStore::default(), move |intermediate| {
+                stage2_calls.fetch_add(1, Ordering::SeqCst);
+                sleep(Duration::from_millis(10));
+                Ok(format!("Result: {}", intermediate))
+            })
         };
 
         let results1 = pipeline1
@@ -266,15 +240,11 @@ mod tests {
         };
         let pipeline2 = {
             let stage2_calls = stage2_calls.clone();
-            Pipeline::new(
-                stage1_reused,
-                DefaultHashMapStore::default(),
-                move |intermediate| {
-                    stage2_calls.fetch_add(1, Ordering::SeqCst);
-                    sleep(Duration::from_millis(10));
-                    Ok(format!("Result: {}", intermediate))
-                },
-            )
+            stage1_reused.pipe(DefaultHashMapStore::default(), move |intermediate| {
+                stage2_calls.fetch_add(1, Ordering::SeqCst);
+                sleep(Duration::from_millis(10));
+                Ok(format!("Result: {}", intermediate))
+            })
         };
 
         let results2 = pipeline2
@@ -290,16 +260,13 @@ mod tests {
 
     #[test]
     fn test_pipeline_with_different_types() -> Result<()> {
-        let stage1 = DeterministicStep::new(DefaultHashMapStore::default(), |input: u32| {
+        let pipeline = DeterministicStep::new(DefaultHashMapStore::default(), |input: u32| {
             Ok(input as u64 * 100)
         })
-        .with_engine::<FixtureEngine>();
-
-        let pipeline = Pipeline::new(
-            stage1,
-            DefaultHashMapStore::default(),
-            |intermediate: u64| Ok(format!("Value: {}", intermediate)),
-        );
+        .with_engine::<FixtureEngine>()
+        .pipe(DefaultHashMapStore::default(), |intermediate: u64| {
+            Ok(format!("Value: {}", intermediate))
+        });
 
         let results = pipeline
             .execute_many((0..5u32).into_par_iter(), ExecuteOptions::default())?
@@ -313,26 +280,22 @@ mod tests {
 
     #[test]
     fn test_pipeline_error_propagation() -> Result<()> {
-        let stage1 = DeterministicStep::new(DefaultHashMapStore::default(), |input| {
+        let mut pipeline = DeterministicStep::new(DefaultHashMapStore::default(), |input| {
             if input == 3 {
                 Err(crate::error::Error::Interrupted)
             } else {
                 Ok(input * 2)
             }
         })
-        .with_engine::<FixtureEngine>();
-
-        let mut pipeline = Pipeline::new(stage1, DefaultHashMapStore::default(), |intermediate| {
+        .with_engine::<FixtureEngine>()
+        .pipe(DefaultHashMapStore::default(), |intermediate| {
             Ok(intermediate + 10)
         });
 
-        let mut encode_buffer = vec![0u8; usize::SIZE];
-        let mut codec_engine = FixtureEngine::default();
-
-        let result = unsafe { pipeline.execute(2usize, &mut encode_buffer, &mut codec_engine)? };
+        let result = execute_one(&mut pipeline, 2usize)?;
         assert_eq!(result, 14);
 
-        let result = unsafe { pipeline.execute(3, &mut encode_buffer, &mut codec_engine) };
+        let result = execute_one(&mut pipeline, 3);
         assert!(result.is_err());
 
         Ok(())
@@ -340,24 +303,21 @@ mod tests {
 
     #[test]
     fn test_pipeline_stage2_error_propagation() -> Result<()> {
-        let stage1 = DeterministicStep::new(DefaultHashMapStore::default(), |input| Ok(input * 2))
-            .with_engine::<FixtureEngine>();
+        let mut pipeline =
+            DeterministicStep::new(DefaultHashMapStore::default(), |input| Ok(input * 2))
+                .with_engine::<FixtureEngine>()
+                .pipe(DefaultHashMapStore::default(), |intermediate| {
+                    if intermediate == 6 {
+                        Err(crate::error::Error::Interrupted)
+                    } else {
+                        Ok(intermediate + 10)
+                    }
+                });
 
-        let mut pipeline = Pipeline::new(stage1, DefaultHashMapStore::default(), |intermediate| {
-            if intermediate == 6 {
-                Err(crate::error::Error::Interrupted)
-            } else {
-                Ok(intermediate + 10)
-            }
-        });
-
-        let mut encode_buffer = vec![0u8; usize::SIZE];
-        let mut codec_engine = FixtureEngine::default();
-
-        let result = unsafe { pipeline.execute(2usize, &mut encode_buffer, &mut codec_engine)? };
+        let result = execute_one(&mut pipeline, 2usize)?;
         assert_eq!(result, 14);
 
-        let result = unsafe { pipeline.execute(3, &mut encode_buffer, &mut codec_engine) };
+        let result = execute_one(&mut pipeline, 3);
         assert!(result.is_err());
 
         Ok(())
@@ -370,7 +330,7 @@ mod tests {
         let analysis_calls = Arc::new(AtomicUsize::new(0));
         let analysis_calls_clone = analysis_calls.clone();
 
-        let stage1 = StochasticStep::new(
+        let pipeline = StochasticStep::new(
             DefaultHashMapStore::default(),
             b"mc-pi-experiment",
             move |rng, n_samples| {
@@ -388,16 +348,11 @@ mod tests {
                 Ok(4.0 * (inside as f64) / (n_samples as f64))
             },
         )
-        .with_engine::<FixtureEngine>();
-
-        let pipeline = Pipeline::new(
-            stage1,
-            DefaultHashMapStore::default(),
-            move |pi_estimate: f64| {
-                analysis_calls_clone.fetch_add(1, Ordering::SeqCst);
-                Ok((pi_estimate - std::f64::consts::PI).abs())
-            },
-        );
+        .with_engine::<FixtureEngine>()
+        .pipe(DefaultHashMapStore::default(), move |pi_estimate: f64| {
+            analysis_calls_clone.fetch_add(1, Ordering::SeqCst);
+            Ok((pi_estimate - std::f64::consts::PI).abs())
+        });
 
         let inputs: Vec<_> = (0..8u64)
             .map(|repetition| StochasticInput::new(5_000usize, repetition))
@@ -420,30 +375,6 @@ mod tests {
         assert_eq!(experiment_calls.load(Ordering::SeqCst), 8);
         assert_eq!(analysis_calls.load(Ordering::SeqCst), 8);
 
-        Ok(())
-    }
-
-    #[test]
-    fn test_pipeline_chaining_api() -> Result<()> {
-        let stage1 = DeterministicStep::new(DefaultHashMapStore::default(), |i: usize| Ok(i + 1))
-            .with_engine::<FixtureEngine>();
-
-        // Use the chainable .pipe() API
-        let pipeline = stage1
-            .pipe(DefaultHashMapStore::default(), |i| Ok(i * 2))
-            .pipe(DefaultHashMapStore::default(), |i| {
-                Ok(format!("Val: {}", i))
-            });
-
-        let results = pipeline
-            .execute_many((0..3).into_par_iter(), ExecuteOptions::default())?
-            .collect::<Result<Vec<String>>>()?;
-
-        assert_eq!(results, vec![
-            "Val: 2".to_string(),
-            "Val: 4".to_string(),
-            "Val: 6".to_string()
-        ]);
         Ok(())
     }
 }

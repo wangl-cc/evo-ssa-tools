@@ -168,3 +168,18 @@ pub mod prelude {
         stochastic::{StochasticInput, StochasticStep},
     };
 }
+
+#[cfg(test)]
+pub(crate) mod test_utils {
+    use super::{Compute, Result};
+    use crate::cache::{canonical_encode::CanonicalEncode, codec::fixtures::FixtureEngine};
+
+    pub(crate) fn execute_one<C>(compute: &mut C, input: C::Input) -> Result<C::Output>
+    where
+        C: Compute<Engine = FixtureEngine>,
+    {
+        let mut encode_buffer = vec![0u8; C::Input::SIZE];
+        let mut engine = FixtureEngine::default();
+        unsafe { compute.execute(input, &mut encode_buffer, &mut engine) }
+    }
+}

@@ -129,34 +129,7 @@ mod tests {
     use rayon::prelude::*;
 
     use super::*;
-    use crate::{cache::codec::fixtures::FixtureEngine, prelude::*};
-
-    #[test]
-    fn test_deterministic_basic_with_owned_cache() -> Result<()> {
-        let mut compute =
-            DeterministicStep::new(DefaultHashMapStore::default(), |i: usize| Ok(i + 1))
-                .with_engine::<FixtureEngine>();
-        let mut encode_buffer = vec![0u8; usize::SIZE];
-        let mut engine = FixtureEngine::default();
-
-        let result = unsafe { compute.execute(5, &mut encode_buffer, &mut engine)? };
-        assert_eq!(result, 6);
-
-        Ok(())
-    }
-
-    #[test]
-    fn test_execute_many_without_runtime_cache_arg() -> Result<()> {
-        let compute = DeterministicStep::new(DefaultHashMapStore::default(), |i: usize| Ok(i * 2))
-            .with_engine::<FixtureEngine>();
-
-        let results = compute
-            .execute_many((0..100).into_par_iter(), ExecuteOptions::default())?
-            .collect::<Result<Vec<usize>>>()?;
-
-        assert_eq!(results, (0..100).map(|i| i * 2).collect::<Vec<usize>>());
-        Ok(())
-    }
+    use crate::{cache::codec::fixtures::FixtureEngine, prelude::*, test_utils::execute_one};
 
     #[test]
     fn test_deterministic_caching() -> Result<()> {
@@ -231,13 +204,11 @@ mod tests {
             }
         })
         .with_engine::<FixtureEngine>();
-        let mut encode_buffer = vec![0u8; usize::SIZE];
-        let mut engine = FixtureEngine::default();
 
-        let result = unsafe { compute.execute(3, &mut encode_buffer, &mut engine)? };
+        let result = execute_one(&mut compute, 3)?;
         assert_eq!(result, 6);
 
-        let result = unsafe { compute.execute(5, &mut encode_buffer, &mut engine) };
+        let result = execute_one(&mut compute, 5);
         assert!(result.is_err());
 
         Ok(())
@@ -275,11 +246,9 @@ mod tests {
             Ok(i * 11)
         })
         .with_engine::<FixtureEngine>();
-        let mut encode_buffer = vec![0u8; usize::SIZE];
-        let mut engine = FixtureEngine::default();
 
-        let output1 = unsafe { compute.execute(3, &mut encode_buffer, &mut engine)? };
-        let output2 = unsafe { compute.execute(3, &mut encode_buffer, &mut engine)? };
+        let output1 = execute_one(&mut compute, 3)?;
+        let output2 = execute_one(&mut compute, 3)?;
 
         assert_eq!(output1, 33);
         assert_eq!(output2, 33);
@@ -310,13 +279,8 @@ mod tests {
             .with_engine::<FixtureEngine>()
         };
 
-        let mut encode_buffer_a = vec![0u8; usize::SIZE];
-        let mut engine_a = FixtureEngine::default();
-        let mut encode_buffer_b = vec![0u8; usize::SIZE];
-        let mut engine_b = FixtureEngine::default();
-
-        let output_a = unsafe { compute_a.execute(4usize, &mut encode_buffer_a, &mut engine_a)? };
-        let output_b = unsafe { compute_b.execute(4usize, &mut encode_buffer_b, &mut engine_b)? };
+        let output_a = execute_one(&mut compute_a, 4usize)?;
+        let output_b = execute_one(&mut compute_b, 4usize)?;
 
         assert_eq!(output_a, 28);
         assert_eq!(output_b, 28);

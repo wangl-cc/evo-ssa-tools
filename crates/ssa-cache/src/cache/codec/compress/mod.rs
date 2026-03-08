@@ -397,11 +397,11 @@ pub(crate) mod fixtures {
 
     /// Minimal pass-through engine for testing [`CompressedCodec`] independent of bitcode.
     #[derive(Debug, Default)]
-    pub struct BytesRaw {
+    pub struct PassthroughBytesEngine {
         buffer: Vec<u8>,
     }
 
-    impl CodecEngine<Vec<u8>> for BytesRaw {
+    impl CodecEngine<Vec<u8>> for PassthroughBytesEngine {
         fn encode(&mut self, value: &Vec<u8>) -> std::result::Result<&[u8], SkipReason> {
             self.buffer.clear();
             self.buffer.extend_from_slice(value);
@@ -415,11 +415,11 @@ pub(crate) mod fixtures {
 
     /// Test engine that materializes a zero-filled raw payload of the requested length.
     #[derive(Debug, Default)]
-    pub struct SizedBytesRaw {
+    pub struct SizedBytesEngine {
         buffer: Vec<u8>,
     }
 
-    impl CodecEngine<usize> for SizedBytesRaw {
+    impl CodecEngine<usize> for SizedBytesEngine {
         fn encode(&mut self, value: &usize) -> std::result::Result<&[u8], SkipReason> {
             self.buffer.resize(*value, 0);
             Ok(&self.buffer)
@@ -443,38 +443,17 @@ pub(crate) mod fixtures {
 mod tests {
     use super::{
         Compress, CompressFrame, CompressedCodec, Error, Header,
-        fixtures::{BytesRaw, assert_raw_header},
+        fixtures::{PassthroughBytesEngine, SizedBytesEngine, assert_raw_header},
     };
-    use crate::cache::codec::CodecEngine;
+    use crate::{
+        Result,
+        cache::codec::{CodecEngine, SkipReason},
+    };
 
-    #[test]
-    fn test_raw_header() {
-        assert_raw_header(&[Header::RAW.into_inner()]);
-    }
+    struct ShortDecodeCompress;
 
-    #[test]
-    fn test_header_new_compressed_roundtrip() {
-        let header = Header::new_compressed(3);
-        assert_eq!(header.version(), Header::VERSION_V1);
-        assert_eq!(header.algorithm(), 3);
-    }
-
-    #[test]
-    #[should_panic(expected = "algorithm id out of range")]
-    fn test_header_new_compressed_rejects_zero() {
-        let _ = Header::new_compressed(0);
-    }
-
-    #[test]
-    #[should_panic(expected = "algorithm id out of range")]
-    fn test_header_new_compressed_rejects_too_large() {
-        let _ = Header::new_compressed(16);
-    }
-
-    struct LenMismatchCompress;
-
-    impl Compress for LenMismatchCompress {
-        const ALGORITHM_ID: u8 = 2;
+    impl Compress for ShortDecodeCompress {
+        const ALGORITHM_ID: u8 = 14;
 
         fn max_output_size(input_len: usize) -> usize {
             input_len
@@ -494,113 +473,292 @@ mod tests {
         }
     }
 
-    #[test]
-    fn decode_decompressed_length_mismatch_returns_error() {
-        type Engine = CompressedCodec<BytesRaw, LenMismatchCompress>;
+    struct TestCompress;
 
-        let header = Header::new_compressed(LenMismatchCompress::ALGORITHM_ID);
-        let mut bytes = vec![header.into_inner()];
-        let original_len = (8u32).to_le_bytes();
-        let payload = [1, 2, 3, 4];
-        let checksum =
-            CompressFrame::<LenMismatchCompress>::checksum(header, &original_len, &payload)
-                .to_le_bytes();
-        bytes.extend_from_slice(&original_len);
-        bytes.extend_from_slice(&checksum);
-        bytes.extend_from_slice(&payload);
+    impl Compress for TestCompress {
+        const ALGORITHM_ID: u8 = 15;
 
-        let mut engine = Engine::default();
-        let err = engine.decode(&bytes).unwrap_err();
-        assert!(matches!(
-            err,
-            crate::Error::Codec(crate::cache::codec::Error::Compress(
+        fn max_output_size(input_len: usize) -> usize {
+            input_len.max(1)
+        }
+
+        fn compress_into(input: &[u8], output: &mut [u8]) -> usize {
+            if input.is_empty() {
+                return 0;
+            }
+
+            if input.iter().all(|byte| *byte == input[0]) {
+                output[0] = input[0];
+                1
+            } else {
+                output[..input.len()].copy_from_slice(input);
+                input.len()
+            }
+        }
+
+        fn decompress_into(input: &[u8], output: &mut [u8]) -> Result<usize, Error> {
+            match input.len() {
+                0 => Ok(0),
+                1 => {
+                    output.fill(input[0]);
+                    Ok(output.len())
+                }
+                len if len == output.len() => {
+                    output.copy_from_slice(input);
+                    Ok(len)
+                }
+                _ => Err(Error::TruncatedInput),
+            }
+        }
+    }
+
+    mod header {
+        use super::*;
+
+        #[test]
+        fn new_compressed_roundtrip() {
+            let header = Header::new_compressed(15);
+            assert_eq!(header.version(), Header::VERSION_V1);
+            assert_eq!(header.algorithm(), 15);
+        }
+
+        #[test]
+        #[should_panic(expected = "algorithm id out of range")]
+        fn new_compressed_rejects_zero() {
+            let _ = Header::new_compressed(0);
+        }
+
+        #[test]
+        #[should_panic(expected = "algorithm id out of range")]
+        fn new_compressed_rejects_too_large() {
+            let _ = Header::new_compressed(16);
+        }
+    }
+
+    mod encode {
+        use super::*;
+
+        type Engine = CompressedCodec<PassthroughBytesEngine, TestCompress>;
+        type OversizeEngine = CompressedCodec<SizedBytesEngine, TestCompress>;
+
+        fn encode_decode<T>(value: &T) -> Result<(Vec<u8>, T)>
+        where
+            Engine: CodecEngine<T> + Default,
+        {
+            let mut engine = Engine::default();
+            let encoded = engine.encode(value).unwrap().to_vec();
+            let decoded = engine.decode(&encoded)?;
+            Ok((encoded, decoded))
+        }
+
+        #[test]
+        fn small_value_stays_uncompressed() -> Result<()> {
+            let value = vec![7u8; 1024];
+            let (encoded, decoded) = encode_decode(&value)?;
+            assert_raw_header(&encoded);
+            assert_eq!(decoded, value);
+            Ok(())
+        }
+
+        #[test]
+        fn large_compressible_value_is_compressed() -> Result<()> {
+            let value = vec![b'a'; 96 * 1024];
+            let (encoded, decoded) = encode_decode(&value)?;
+            assert!(!encoded.is_empty());
+            assert_eq!(encoded[0] & 0b1111_0000, 0b0001_0000);
+            assert_eq!(encoded[0] & 0b0000_1111, TestCompress::ALGORITHM_ID);
+            assert_eq!(decoded, value);
+            Ok(())
+        }
+
+        #[test]
+        fn incompressible_data_falls_back_to_raw() -> Result<()> {
+            let value: Vec<u8> = (0..(96 * 1024)).map(|i| (i % 251) as u8).collect();
+            let (encoded, decoded) = encode_decode(&value)?;
+            assert_raw_header(&encoded);
+            assert_eq!(decoded, value);
+            Ok(())
+        }
+
+        #[test]
+        fn oversize_raw_payload_skips_cache_encoding() {
+            let oversize_len = CompressFrame::<TestCompress>::MAX_DECOMPRESSED_LEN + 1;
+            let mut engine = OversizeEngine::default();
+            assert!(matches!(
+                engine.encode(&oversize_len),
+                Err(SkipReason::EncodedValueTooLarge { .. })
+            ));
+        }
+    }
+
+    mod decode {
+        use super::*;
+
+        type Engine = CompressedCodec<PassthroughBytesEngine, TestCompress>;
+        type ShortDecodeEngine = CompressedCodec<PassthroughBytesEngine, ShortDecodeCompress>;
+
+        fn encode_bytes<T>(value: &T) -> Vec<u8>
+        where
+            Engine: CodecEngine<T> + Default,
+        {
+            let mut engine = Engine::default();
+            engine.encode(value).unwrap().to_vec()
+        }
+
+        fn compressed_frame<C: Compress>(
+            header: Header,
+            original_len: u32,
+            payload: &[u8],
+        ) -> Vec<u8> {
+            let original_len_bytes = original_len.to_le_bytes();
+            let checksum =
+                CompressFrame::<C>::checksum(header, &original_len_bytes, payload).to_le_bytes();
+
+            let mut bytes = vec![header.into_inner()];
+            bytes.extend_from_slice(&original_len_bytes);
+            bytes.extend_from_slice(&checksum);
+            bytes.extend_from_slice(payload);
+            bytes
+        }
+
+        fn raw_frame<C: Compress>(payload: &[u8]) -> Vec<u8> {
+            let header = Header::RAW;
+            let checksum = CompressFrame::<C>::checksum(header, &[], payload).to_le_bytes();
+
+            let mut bytes = vec![header.into_inner()];
+            bytes.extend_from_slice(&checksum);
+            bytes.extend_from_slice(payload);
+            bytes
+        }
+
+        fn decode_compress_error<E, T>(bytes: &[u8]) -> Error
+        where
+            E: CodecEngine<T> + Default,
+        {
+            let mut engine = E::default();
+            match engine.decode(bytes) {
+                Err(crate::Error::Codec(crate::cache::codec::Error::Compress(err))) => err,
+                Err(err) => panic!("expected compress error, got {err:?}"),
+                Ok(_) => panic!("expected decode error"),
+            }
+        }
+
+        #[test]
+        fn corrupted_compressed_payload_returns_checksum_mismatch() {
+            let value = vec![b'a'; 96 * 1024];
+            let mut encoded = encode_bytes(&value);
+            let payload_index = CompressFrame::<TestCompress>::COMPRESSED_HEADER_LEN;
+            encoded[payload_index] ^= 0x01;
+
+            assert!(matches!(
+                decode_compress_error::<Engine, Vec<u8>>(&encoded),
+                Error::ChecksumMismatch
+            ));
+        }
+
+        #[test]
+        fn corrupted_declared_length_returns_checksum_mismatch() {
+            let value = vec![b'a'; 96 * 1024];
+            let mut encoded = encode_bytes(&value);
+            encoded[1] ^= 0x01;
+
+            assert!(matches!(
+                decode_compress_error::<Engine, Vec<u8>>(&encoded),
+                Error::ChecksumMismatch
+            ));
+        }
+
+        #[test]
+        fn compressed_header_flip_to_raw_returns_checksum_mismatch() {
+            let value = vec![b'a'; 96 * 1024];
+            let mut encoded = encode_bytes(&value);
+            encoded[0] = Header::RAW.into_inner();
+
+            assert!(matches!(
+                decode_compress_error::<Engine, Vec<u8>>(&encoded),
+                Error::ChecksumMismatch
+            ));
+        }
+
+        #[test]
+        fn decompressed_length_mismatch_returns_error() {
+            let header = Header::new_compressed(ShortDecodeCompress::ALGORITHM_ID);
+            let bytes = compressed_frame::<ShortDecodeCompress>(header, 8, &[1, 2, 3, 4]);
+            assert!(matches!(
+                decode_compress_error::<ShortDecodeEngine, Vec<u8>>(&bytes),
                 Error::DecompressedLengthMismatch
-            ))
-        ));
-    }
+            ));
+        }
 
-    #[test]
-    fn decode_declared_length_over_limit_returns_error() {
-        type Engine = CompressedCodec<BytesRaw, LenMismatchCompress>;
+        #[test]
+        fn unsupported_version_returns_error() {
+            assert!(matches!(
+                decode_compress_error::<Engine, Vec<u8>>(&[0b0010_0000]),
+                Error::UnsupportedVersion(2)
+            ));
+        }
 
-        let declared_len = CompressFrame::<LenMismatchCompress>::MAX_DECOMPRESSED_LEN as u32 + 1;
-        let header = Header::new_compressed(LenMismatchCompress::ALGORITHM_ID);
-        let mut bytes = vec![header.into_inner()];
-        let len_bytes = declared_len.to_le_bytes();
-        let payload = [0xAA];
-        let checksum = CompressFrame::<LenMismatchCompress>::checksum(header, &len_bytes, &payload)
-            .to_le_bytes();
-        bytes.extend_from_slice(&len_bytes);
-        bytes.extend_from_slice(&checksum);
-        bytes.extend_from_slice(&payload);
+        #[test]
+        fn truncated_compressed_frame_returns_error() {
+            let header = Header::new_compressed(TestCompress::ALGORITHM_ID);
+            assert!(matches!(
+                decode_compress_error::<Engine, Vec<u8>>(&[header.into_inner(), 0, 0, 0, 0,]),
+                Error::TruncatedInput
+            ));
+        }
 
-        let mut engine = Engine::default();
-        let err = engine.decode(&bytes).unwrap_err();
-        assert!(matches!(
-            err,
-            crate::Error::Codec(crate::cache::codec::Error::Compress(Error::ContentTooLarge))
-        ));
-    }
+        #[test]
+        fn algorithm_mismatch_returns_error() {
+            let header = Header::new_compressed(2);
+            assert!(matches!(
+                decode_compress_error::<Engine, Vec<u8>>(&[header.into_inner()]),
+                Error::CompressionAlgorithmMismatch
+            ));
+        }
 
-    #[test]
-    fn decode_checksum_mismatch_returns_error() {
-        type Engine = CompressedCodec<BytesRaw, LenMismatchCompress>;
+        #[test]
+        fn declared_length_over_limit_returns_error() {
+            let header = Header::new_compressed(TestCompress::ALGORITHM_ID);
+            let declared_len = CompressFrame::<TestCompress>::MAX_DECOMPRESSED_LEN as u32 + 1;
+            let bytes = compressed_frame::<TestCompress>(header, declared_len, &[0xAA]);
+            assert!(matches!(
+                decode_compress_error::<Engine, Vec<u8>>(&bytes),
+                Error::ContentTooLarge
+            ));
+        }
 
-        let header = Header::new_compressed(LenMismatchCompress::ALGORITHM_ID);
-        let mut bytes = vec![header.into_inner()];
-        let original_len = (8u32).to_le_bytes();
-        let payload = [1, 2, 3, 4];
-        let mut checksum =
-            CompressFrame::<LenMismatchCompress>::checksum(header, &original_len, &payload)
-                .to_le_bytes();
-        checksum[0] ^= 0x01;
-        bytes.extend_from_slice(&original_len);
-        bytes.extend_from_slice(&checksum);
-        bytes.extend_from_slice(&payload);
-
-        let mut engine = Engine::default();
-        let err = engine.decode(&bytes).unwrap_err();
-        assert!(matches!(
-            err,
-            crate::Error::Codec(crate::cache::codec::Error::Compress(
+        #[test]
+        fn checksum_mismatch_returns_error() {
+            let header = Header::new_compressed(TestCompress::ALGORITHM_ID);
+            let mut bytes = compressed_frame::<TestCompress>(header, 8, &[1, 2, 3, 4]);
+            bytes[1 + CompressFrame::<TestCompress>::ORIGINAL_LEN_BYTES] ^= 0x01;
+            assert!(matches!(
+                decode_compress_error::<Engine, Vec<u8>>(&bytes),
                 Error::ChecksumMismatch
-            ))
-        ));
-    }
+            ));
+        }
 
-    #[test]
-    fn decode_raw_checksum_mismatch_returns_error() {
-        type Engine = CompressedCodec<BytesRaw, LenMismatchCompress>;
-
-        let header = Header::RAW;
-        let mut bytes = vec![header.into_inner()];
-        let payload = b"raw-bytes";
-        let mut checksum =
-            CompressFrame::<LenMismatchCompress>::checksum(header, &[], payload).to_le_bytes();
-        checksum[0] ^= 0x01;
-        bytes.extend_from_slice(&checksum);
-        bytes.extend_from_slice(payload);
-
-        let mut engine = Engine::default();
-        let err = engine.decode(&bytes).unwrap_err();
-        assert!(matches!(
-            err,
-            crate::Error::Codec(crate::cache::codec::Error::Compress(
+        #[test]
+        fn raw_checksum_mismatch_returns_error() {
+            let mut bytes = raw_frame::<TestCompress>(b"raw-bytes");
+            bytes[1] ^= 0x01;
+            assert!(matches!(
+                decode_compress_error::<Engine, Vec<u8>>(&bytes),
                 Error::ChecksumMismatch
-            ))
-        ));
-    }
+            ));
+        }
 
-    #[test]
-    fn decode_truncated_raw_frame_returns_error() {
-        type Engine = CompressedCodec<BytesRaw, LenMismatchCompress>;
-
-        let bytes = [Header::RAW.into_inner(), 0xAA, 0xBB, 0xCC];
-        let mut engine = Engine::default();
-        let err = engine.decode(&bytes).unwrap_err();
-        assert!(matches!(
-            err,
-            crate::Error::Codec(crate::cache::codec::Error::Compress(Error::TruncatedInput))
-        ));
+        #[test]
+        fn truncated_raw_frame_returns_error() {
+            assert!(matches!(
+                decode_compress_error::<Engine, Vec<u8>>(&[
+                    Header::RAW.into_inner(),
+                    0xAA,
+                    0xBB,
+                    0xCC,
+                ]),
+                Error::TruncatedInput
+            ));
+        }
     }
 }

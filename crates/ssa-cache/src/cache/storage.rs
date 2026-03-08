@@ -245,8 +245,10 @@ mod tests {
     #[cfg(all(feature = "lz4", feature = "bitcode"))]
     #[test]
     fn test_hashmap_store_skips_oversize_compressed_value() -> Result<()> {
-        use crate::cache::codec::compress::{CompressedCodec, fixtures::SizedBytesRaw, lz4::Lz4};
-        type Lz4Engine = CompressedCodec<SizedBytesRaw, Lz4>;
+        use crate::cache::codec::compress::{
+            CompressedCodec, fixtures::SizedBytesEngine, lz4::Lz4,
+        };
+        type Lz4Engine = CompressedCodec<SizedBytesEngine, Lz4>;
 
         let store = DefaultHashMapStore::default();
         let mut engine = Lz4Engine::default();
