@@ -147,8 +147,8 @@ fn main() -> ssa_cache::error::Result<()> {
             let (_, trajectory) = birth_death_ssa::<()>(rng, initial_cells, max_events);
             Ok(trajectory)
         },
-    )
-    .with_engine::<Bitcode>();
+        Bitcode::default,
+    );
 
     let trajectories = trajectory_step
         .execute_many(
@@ -181,8 +181,8 @@ fn main() -> ssa_cache::error::Result<()> {
                 return Ok(tree);
             }
         },
-    )
-    .with_engine::<Bitcode>();
+        Bitcode::default,
+    );
     let sfs_pipeline = sfs_source.pipe(Store::default(), |tree: PhyloTree<2>| Ok(tree.sfs()));
 
     let inputs: Vec<_> = (0..8u64)
@@ -245,21 +245,6 @@ output.
 - `StochasticStep`: stochastic compute with reproducible per-repetition RNG streams.
 - `Pipeline` / `PipelineExt`: stage composition and per-stage caching.
 - `CacheStore`: cache backend interface and the in-memory implementation.
-
-### Selecting an Engine
-
-`DeterministicStep` / `StochasticStep` carry an engine type parameter.
-Select an explicit engine by calling `with_engine::<E>()` on the constructed step:
-
-```rust
-use ssa_cache::prelude::*;
-
-type Store = HashMapStore<std::collections::hash_map::RandomState>;
-type ExplicitEngine = Bitcode;
-
-let step = DeterministicStep::new(Store::default(), |x: u64| Ok(format!("v={x}")))
-    .with_engine::<ExplicitEngine>();
-```
 
 ## Feature Flags
 

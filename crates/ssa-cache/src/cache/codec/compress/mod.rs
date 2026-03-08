@@ -371,12 +371,19 @@ pub struct CompressedCodec<E, C> {
     frame: CompressFrame<C>,
 }
 
-impl<E: Default, C> Default for CompressedCodec<E, C> {
-    fn default() -> Self {
+impl<E, C> CompressedCodec<E, C> {
+    /// Create a compressed codec from an already-configured inner engine.
+    pub fn new(inner: E) -> Self {
         Self {
-            inner: E::default(),
+            inner,
             frame: CompressFrame::default(),
         }
+    }
+}
+
+impl<E: Default, C> Default for CompressedCodec<E, C> {
+    fn default() -> Self {
+        Self::new(E::default())
     }
 }
 

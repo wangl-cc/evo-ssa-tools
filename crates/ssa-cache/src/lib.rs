@@ -33,7 +33,7 @@ use error::{Error, Result};
 /// Internally, execution is structured to minimize allocations:
 ///
 /// - One encode buffer (`Vec<u8>`) per worker, reused across items.
-/// - One engine per worker (created via `Self::Engine::default()`), owns its scratch buffer.
+/// - One engine per worker (created via [`Self::make_engine`]), owns its scratch buffer.
 /// - One `self.clone()` per worker; implementers should keep `Clone` cheap.
 ///
 /// # Interrupts
@@ -48,6 +48,9 @@ pub trait Compute {
     type Output;
     /// Serialization engine used for caching this node's output.
     type Engine: CodecEngine<Self::Output>;
+
+    /// Construct a fresh cache engine for one worker.
+    fn make_engine(&self) -> Self::Engine;
 
     /// Low-level API for executing with pre-encoded input bytes.
     ///
@@ -101,14 +104,13 @@ pub trait Compute {
     where
         Self: Clone + Sync,
         Self::Output: Send,
-        Self::Engine: Default,
     {
         let signal = opts.signal;
         Ok(inputs.map_init(
             move || {
                 (
                     vec![0u8; Self::Input::SIZE],
-                    Self::Engine::default(),
+                    self.make_engine(),
                     self.clone(),
                     signal.clone(),
                 )
@@ -160,7 +162,7 @@ pub mod prelude {
         Compute, ExecuteOptions,
         cache::{
             canonical_encode::CanonicalEncode,
-            codec::CodecEngine,
+            codec::{CodecEngine, EngineFactory},
             storage::{CacheStore, DefaultHashMapStore, HashMapStore},
         },
         deterministic::DeterministicStep,
@@ -172,14 +174,14 @@ pub mod prelude {
 #[cfg(test)]
 pub(crate) mod test_utils {
     use super::{Compute, Result};
-    use crate::cache::{canonical_encode::CanonicalEncode, codec::fixtures::FixtureEngine};
+    use crate::cache::canonical_encode::CanonicalEncode;
 
     pub(crate) fn execute_one<C>(compute: &mut C, input: C::Input) -> Result<C::Output>
     where
-        C: Compute<Engine = FixtureEngine>,
+        C: Compute,
     {
         let mut encode_buffer = vec![0u8; C::Input::SIZE];
-        let mut engine = FixtureEngine::default();
+        let mut engine = compute.make_engine();
         unsafe { compute.execute(input, &mut encode_buffer, &mut engine) }
     }
 }
