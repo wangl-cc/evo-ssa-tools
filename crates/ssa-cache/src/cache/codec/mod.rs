@@ -14,9 +14,7 @@
 ///     .to_vec();
 /// let value: u8 = engine.decode(&bytes).unwrap();
 /// ```
-///
-/// All engine types must implement [`Default`] (to construct instances for each worker).
-pub trait CodecEngine<T>: Default {
+pub trait CodecEngine<T> {
     /// Encode `value` and return the encoded bytes, or `Err(SkipReason)` to skip caching.
     ///
     /// The returned slice borrows from the engine's internal buffer and is
@@ -27,9 +25,26 @@ pub trait CodecEngine<T>: Default {
     fn decode(&mut self, bytes: &[u8]) -> Result<T, Error>;
 }
 
-/// Marker engine used by step builders before a concrete cache engine is chosen.
-#[derive(Debug, Default, Clone, Copy)]
-pub struct UnboundEngine;
+/// Factory for per-worker codec engines.
+///
+/// `execute_many` uses one engine instance per worker thread, created by calling this factory.
+/// Factories may be stateful and can capture runtime configuration.
+pub trait EngineFactory {
+    type Engine;
+
+    fn make_engine(&self) -> Self::Engine;
+}
+
+impl<F, E> EngineFactory for F
+where
+    F: Fn() -> E,
+{
+    type Engine = E;
+
+    fn make_engine(&self) -> Self::Engine {
+        (self)()
+    }
+}
 
 /// Reasons why a value may be skipped from the cache.
 #[derive(thiserror::Error, Debug)]

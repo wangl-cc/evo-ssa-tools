@@ -22,14 +22,14 @@ use crate::{CacheStore, CanonicalEncode, Compute, Result, cache::codec::CodecEng
 ///
 /// Keyspace compatibility is caller-managed: if source/transform logic, encoding, or output types
 /// change incompatibly, use a new keyspace.
-pub struct Pipeline<S, C, T, I, M, O, E> {
+pub struct Pipeline<S, C, T, I, M, O> {
     source: S,
     cache: C,
     transform: T,
-    _phantom: PhantomData<(I, M, O, E)>,
+    _phantom: PhantomData<(I, M, O)>,
 }
 
-impl<S, C, T, I, M, O, E> Pipeline<S, C, T, I, M, O, E> {
+impl<S, C, T, I, M, O> Pipeline<S, C, T, I, M, O> {
     /// Create a pipeline from `source`, transform `cache`, and `transform`.
     ///
     /// - `source`: upstream node that produces `M`.
@@ -50,7 +50,7 @@ impl<S, C, T, I, M, O, E> Pipeline<S, C, T, I, M, O, E> {
     }
 }
 
-impl<S: Clone, C: Clone, T: Clone, I, M, O, E> Clone for Pipeline<S, C, T, I, M, O, E> {
+impl<S: Clone, C: Clone, T: Clone, I, M, O> Clone for Pipeline<S, C, T, I, M, O> {
     fn clone(&self) -> Self {
         Self {
             source: self.source.clone(),
@@ -61,29 +61,33 @@ impl<S: Clone, C: Clone, T: Clone, I, M, O, E> Clone for Pipeline<S, C, T, I, M,
     }
 }
 
-impl<S, C, T, I, M, O, E> Compute for Pipeline<S, C, T, I, M, O, E>
+impl<S, C, T, I, M, O> Compute for Pipeline<S, C, T, I, M, O>
 where
-    S: Compute<Input = I, Output = M, Engine = E>,
+    S: Compute<Input = I, Output = M>,
     C: CacheStore,
     T: Fn(M) -> Result<O>,
     I: CanonicalEncode,
-    E: CodecEngine<M> + CodecEngine<O>,
+    S::Engine: CodecEngine<M> + CodecEngine<O>,
 {
-    type Engine = E;
+    type Engine = S::Engine;
     type Input = I;
     type Output = O;
+
+    fn make_engine(&self) -> Self::Engine {
+        self.source.make_engine()
+    }
 
     fn execute_with_encoded_input(
         &mut self,
         input: Self::Input,
         encoded: &[u8],
-        engine: &mut E,
+        engine: &mut Self::Engine,
     ) -> Result<Self::Output> {
         let cache = &self.cache;
         let source = &mut self.source;
         let transform = &self.transform;
 
-        cache.fetch_or_execute::<O, E, _>(encoded, engine, |engine_buffer| {
+        cache.fetch_or_execute::<O, Self::Engine, _>(encoded, engine, |engine_buffer| {
             let intermediate = source.execute_with_encoded_input(input, encoded, engine_buffer)?;
             transform(intermediate)
         })
@@ -102,8 +106,7 @@ where
 /// # #[cfg(feature = "bitcode")]
 /// # {
 /// type Store = HashMapStore<std::collections::hash_map::RandomState>;
-/// let stage1 =
-///     DeterministicStep::new(Store::default(), |i: usize| Ok(i + 1)).with_engine::<Bitcode>();
+/// let stage1 = DeterministicStep::new(Store::default(), |i: usize| Ok(i + 1), Bitcode::default);
 /// let pipeline = stage1
 ///     .pipe(Store::default(), |i| Ok(i * 2))
 ///     .pipe(Store::default(), |i| Ok(format!("Result: {}", i)));
@@ -121,7 +124,7 @@ pub trait PipelineExt: Compute + Sized {
         self,
         cache: C,
         transform: T,
-    ) -> Pipeline<Self, C, T, Self::Input, Self::Output, O, Self::Engine>
+    ) -> Pipeline<Self, C, T, Self::Input, Self::Output, O>
     where
         T: Fn(Self::Output) -> Result<O>,
         C: CacheStore,
@@ -162,12 +165,15 @@ mod tests {
         let stage2_calls = Arc::new(AtomicUsize::new(0));
         let stage2_calls_clone = stage2_calls.clone();
 
-        let pipeline = DeterministicStep::new(DefaultHashMapStore::default(), move |input| {
-            stage1_calls_clone.fetch_add(1, Ordering::SeqCst);
-            sleep(Duration::from_millis(10));
-            Ok(input * 2)
-        })
-        .with_engine::<FixtureEngine>()
+        let pipeline = DeterministicStep::new(
+            DefaultHashMapStore::default(),
+            move |input| {
+                stage1_calls_clone.fetch_add(1, Ordering::SeqCst);
+                sleep(Duration::from_millis(10));
+                Ok(input * 2)
+            },
+            FixtureEngine::default,
+        )
         .pipe(DefaultHashMapStore::default(), move |intermediate| {
             stage2_calls_clone.fetch_add(1, Ordering::SeqCst);
             sleep(Duration::from_millis(10));
@@ -202,12 +208,15 @@ mod tests {
 
         let stage1 = {
             let stage1_calls = stage1_calls.clone();
-            DeterministicStep::new(stage1_cache.clone(), move |input| {
-                stage1_calls.fetch_add(1, Ordering::SeqCst);
-                sleep(Duration::from_millis(10));
-                Ok(input * 2)
-            })
-            .with_engine::<FixtureEngine>()
+            DeterministicStep::new(
+                stage1_cache.clone(),
+                move |input| {
+                    stage1_calls.fetch_add(1, Ordering::SeqCst);
+                    sleep(Duration::from_millis(10));
+                    Ok(input * 2)
+                },
+                FixtureEngine::default,
+            )
         };
 
         let pipeline1 = {
@@ -228,15 +237,17 @@ mod tests {
         assert_eq!(stage1_calls.load(Ordering::SeqCst), 3);
         assert_eq!(stage2_calls.load(Ordering::SeqCst), 3);
 
-        // Rebuild pipeline with a new transform cache while reusing source cache.
         let stage1_reused = {
             let stage1_calls = stage1_calls.clone();
-            DeterministicStep::new(stage1_cache, move |input| {
-                stage1_calls.fetch_add(1, Ordering::SeqCst);
-                sleep(Duration::from_millis(10));
-                Ok(input * 2)
-            })
-            .with_engine::<FixtureEngine>()
+            DeterministicStep::new(
+                stage1_cache,
+                move |input| {
+                    stage1_calls.fetch_add(1, Ordering::SeqCst);
+                    sleep(Duration::from_millis(10));
+                    Ok(input * 2)
+                },
+                FixtureEngine::default,
+            )
         };
         let pipeline2 = {
             let stage2_calls = stage2_calls.clone();
@@ -260,10 +271,11 @@ mod tests {
 
     #[test]
     fn test_pipeline_with_different_types() -> Result<()> {
-        let pipeline = DeterministicStep::new(DefaultHashMapStore::default(), |input: u32| {
-            Ok(input as u64 * 100)
-        })
-        .with_engine::<FixtureEngine>()
+        let pipeline = DeterministicStep::new(
+            DefaultHashMapStore::default(),
+            |input: u32| Ok(input as u64 * 100),
+            FixtureEngine::default,
+        )
         .pipe(DefaultHashMapStore::default(), |intermediate: u64| {
             Ok(format!("Value: {}", intermediate))
         });
@@ -280,14 +292,17 @@ mod tests {
 
     #[test]
     fn test_pipeline_error_propagation() -> Result<()> {
-        let mut pipeline = DeterministicStep::new(DefaultHashMapStore::default(), |input| {
-            if input == 3 {
-                Err(crate::error::Error::Interrupted)
-            } else {
-                Ok(input * 2)
-            }
-        })
-        .with_engine::<FixtureEngine>()
+        let mut pipeline = DeterministicStep::new(
+            DefaultHashMapStore::default(),
+            |input| {
+                if input == 3 {
+                    Err(crate::error::Error::Interrupted)
+                } else {
+                    Ok(input * 2)
+                }
+            },
+            FixtureEngine::default,
+        )
         .pipe(DefaultHashMapStore::default(), |intermediate| {
             Ok(intermediate + 10)
         });
@@ -303,16 +318,18 @@ mod tests {
 
     #[test]
     fn test_pipeline_stage2_error_propagation() -> Result<()> {
-        let mut pipeline =
-            DeterministicStep::new(DefaultHashMapStore::default(), |input| Ok(input * 2))
-                .with_engine::<FixtureEngine>()
-                .pipe(DefaultHashMapStore::default(), |intermediate| {
-                    if intermediate == 6 {
-                        Err(crate::error::Error::Interrupted)
-                    } else {
-                        Ok(intermediate + 10)
-                    }
-                });
+        let mut pipeline = DeterministicStep::new(
+            DefaultHashMapStore::default(),
+            |input| Ok(input * 2),
+            FixtureEngine::default,
+        )
+        .pipe(DefaultHashMapStore::default(), |intermediate| {
+            if intermediate == 6 {
+                Err(crate::error::Error::Interrupted)
+            } else {
+                Ok(intermediate + 10)
+            }
+        });
 
         let result = execute_one(&mut pipeline, 2usize)?;
         assert_eq!(result, 14);
@@ -347,8 +364,8 @@ mod tests {
 
                 Ok(4.0 * (inside as f64) / (n_samples as f64))
             },
+            FixtureEngine::default,
         )
-        .with_engine::<FixtureEngine>()
         .pipe(DefaultHashMapStore::default(), move |pi_estimate: f64| {
             analysis_calls_clone.fetch_add(1, Ordering::SeqCst);
             Ok((pi_estimate - std::f64::consts::PI).abs())
