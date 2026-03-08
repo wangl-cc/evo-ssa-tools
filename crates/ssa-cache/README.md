@@ -246,19 +246,6 @@ output.
 - `Pipeline` / `PipelineExt`: stage composition and per-stage caching.
 - `CacheStore`: cache backend interface and the in-memory implementation.
 
-### Selecting an Engine
-
-`DeterministicStep` / `StochasticStep` bind cache engines through an explicit engine factory.
-Select an engine by passing a factory to `new(...)`:
-
-```rust
-use ssa_cache::prelude::*;
-
-type Store = HashMapStore<std::collections::hash_map::RandomState>;
-
-let step = DeterministicStep::new(Store::default(), |x: u64| Ok(format!("v={x}")), Bitcode::default);
-```
-
 ## Feature Flags
 
 - `bitcode` (enabled by default): `bitcode` serialization/deserialization.
