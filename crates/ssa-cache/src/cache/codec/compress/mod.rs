@@ -584,4 +584,14 @@ mod tests {
             crate::Error::Compress(Error::ChecksumMismatch)
         ));
     }
+
+    #[test]
+    fn decode_truncated_raw_frame_returns_error() {
+        type Engine = CompressedCodec<BytesRaw, LenMismatchCompress>;
+
+        let bytes = [Header::RAW.into_inner(), 0xAA, 0xBB, 0xCC];
+        let mut engine = Engine::default();
+        let err = engine.decode(&bytes).unwrap_err();
+        assert!(matches!(err, crate::Error::Compress(Error::TruncatedInput)));
+    }
 }

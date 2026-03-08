@@ -208,6 +208,13 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn test_unit_store_encoded_is_noop() -> Result<()> {
+        let store = ();
+        store.store_encoded(b"ignored", b"payload")?;
+        Ok(())
+    }
+
     #[cfg(all(feature = "lz4", feature = "bitcode"))]
     #[test]
     fn test_hashmap_store_compressed_value_roundtrip() -> Result<()> {
