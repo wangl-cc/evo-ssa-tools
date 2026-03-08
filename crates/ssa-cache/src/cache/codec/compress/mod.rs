@@ -160,13 +160,13 @@ impl Header {
 /// Raw frame:
 ///
 /// ```text
-/// [header][checksum_crc32c_u32_le][raw_payload...]
+/// [header][raw_payload...][checksum_crc32c_u32_le]
 /// ```
 ///
 /// Compressed frame:
 ///
 /// ```text
-/// [header][original_len_u32_le][checksum_crc32c_u32_le][compressed_payload...]
+/// [header][original_len_u32_le][compressed_payload...][checksum_crc32c_u32_le]
 /// ```
 ///
 /// `CompressFrame` owns the reusable scratch buffer used to build frames during
@@ -188,8 +188,8 @@ impl<C> Default for CompressFrame<C> {
 impl<C: Compress> CompressFrame<C> {
     /// The checksum stored in framed payloads.
     const CHECKSUM_BYTES: usize = core::mem::size_of::<u32>();
-    /// `[header][orig_len_u32_le][checksum_crc32c_u32_le][compressed_payload...]`
-    const COMPRESSED_HEADER_LEN: usize = 1 + Self::ORIGINAL_LEN_BYTES + Self::CHECKSUM_BYTES;
+    /// `[header][orig_len_u32_le]`
+    const COMPRESSED_PREFIX_LEN: usize = 1 + Self::ORIGINAL_LEN_BYTES;
     /// Only attempt compression for moderately large payloads (64 KiB)
     const COMPRESSION_THRESHOLD: usize = 64 * 1024;
     /// Cap untrusted declared output size before allocating decode scratch (64 MiB).
@@ -198,21 +198,21 @@ impl<C: Compress> CompressFrame<C> {
     const MIN_COMPRESSION_SAVINGS: usize = 4 * 1024;
     /// The length prefix stored in compressed frames.
     const ORIGINAL_LEN_BYTES: usize = core::mem::size_of::<u32>();
-    /// `[header][checksum_crc32c_u32_le][raw_payload...]`
-    const RAW_HEADER_LEN: usize = 1 + Self::CHECKSUM_BYTES;
+    /// `[header]`
+    const RAW_PREFIX_LEN: usize = 1;
 
-    /// Encode an uncompressed frame as `[header][checksum_crc32c_u32_le][raw_payload...]`.
+    /// Encode an uncompressed frame as `[header][raw_payload...][checksum_crc32c_u32_le]`.
     fn encode_raw(&mut self, raw: &[u8]) -> &[u8] {
-        let req_len = Self::RAW_HEADER_LEN + raw.len();
+        let req_len = Self::RAW_PREFIX_LEN + raw.len() + Self::CHECKSUM_BYTES;
         let scratch = &mut self.scratch;
         if scratch.len() < req_len {
             scratch.resize(req_len, 0);
         }
         let header = Header::RAW;
         scratch[0] = header.into_inner();
-        scratch[Self::RAW_HEADER_LEN..req_len].copy_from_slice(raw);
+        scratch[Self::RAW_PREFIX_LEN..Self::RAW_PREFIX_LEN + raw.len()].copy_from_slice(raw);
         let checksum = Self::checksum(header, &[], raw);
-        scratch[1..Self::RAW_HEADER_LEN].copy_from_slice(&checksum.to_le_bytes());
+        scratch[Self::RAW_PREFIX_LEN + raw.len()..req_len].copy_from_slice(&checksum.to_le_bytes());
         &scratch[..req_len]
     }
 
@@ -235,16 +235,20 @@ impl<C: Compress> CompressFrame<C> {
 
         // Compress the raw data
         let max_size = C::max_output_size(raw.len());
-        let compressed_frame_capacity = Self::COMPRESSED_HEADER_LEN + max_size;
+        let compressed_frame_capacity =
+            Self::COMPRESSED_PREFIX_LEN + max_size + Self::CHECKSUM_BYTES;
         if self.scratch.len() < compressed_frame_capacity {
             self.scratch.resize(compressed_frame_capacity, 0);
         }
-        let compressed_len =
-            C::compress_into(raw, &mut self.scratch[Self::COMPRESSED_HEADER_LEN..]);
-        let total_compressed_len = Self::COMPRESSED_HEADER_LEN + compressed_len;
+        let compressed_len = C::compress_into(
+            raw,
+            &mut self.scratch[Self::COMPRESSED_PREFIX_LEN..Self::COMPRESSED_PREFIX_LEN + max_size],
+        );
+        let total_compressed_len =
+            Self::COMPRESSED_PREFIX_LEN + compressed_len + Self::CHECKSUM_BYTES;
 
         // If compression doesn't save enough bytes, return the raw data instead.
-        let total_raw_len = Self::RAW_HEADER_LEN + raw.len();
+        let total_raw_len = Self::RAW_PREFIX_LEN + raw.len() + Self::CHECKSUM_BYTES;
         let saved_bytes = total_raw_len.saturating_sub(total_compressed_len);
         if saved_bytes < Self::MIN_COMPRESSION_SAVINGS {
             return Ok(self.encode_raw(raw));
@@ -259,11 +263,12 @@ impl<C: Compress> CompressFrame<C> {
         let checksum = Self::checksum(
             header,
             &original_len_bytes,
-            &self.scratch[Self::COMPRESSED_HEADER_LEN..total_compressed_len],
+            &self.scratch
+                [Self::COMPRESSED_PREFIX_LEN..Self::COMPRESSED_PREFIX_LEN + compressed_len],
         );
-        let metadata = &mut self.scratch[1..Self::COMPRESSED_HEADER_LEN];
-        metadata[..Self::ORIGINAL_LEN_BYTES].copy_from_slice(&original_len_bytes);
-        metadata[Self::ORIGINAL_LEN_BYTES..].copy_from_slice(&checksum.to_le_bytes());
+        self.scratch[1..Self::COMPRESSED_PREFIX_LEN].copy_from_slice(&original_len_bytes);
+        self.scratch[Self::COMPRESSED_PREFIX_LEN + compressed_len..total_compressed_len]
+            .copy_from_slice(&checksum.to_le_bytes());
 
         // Return the compressed data including the header.
         Ok(&self.scratch[..total_compressed_len])
@@ -288,7 +293,8 @@ impl<C: Compress> CompressFrame<C> {
                 if payload.len() < Self::CHECKSUM_BYTES {
                     return Err(Error::TruncatedInput);
                 }
-                let (checksum_bytes, raw_payload) = payload.split_at(Self::CHECKSUM_BYTES);
+                let (raw_payload, checksum_bytes) =
+                    payload.split_at(payload.len() - Self::CHECKSUM_BYTES);
                 let stored_checksum = u32::from_le_bytes(
                     checksum_bytes
                         .try_into()
@@ -305,7 +311,8 @@ impl<C: Compress> CompressFrame<C> {
                     return Err(Error::TruncatedInput);
                 }
                 let (len_bytes, rest) = payload.split_at(Self::ORIGINAL_LEN_BYTES);
-                let (checksum_bytes, compressed_payload) = rest.split_at(Self::CHECKSUM_BYTES);
+                let (compressed_payload, checksum_bytes) =
+                    rest.split_at(rest.len() - Self::CHECKSUM_BYTES);
                 let stored_checksum = u32::from_le_bytes(
                     checksum_bytes
                         .try_into()
@@ -616,8 +623,8 @@ mod tests {
 
             let mut bytes = vec![header.into_inner()];
             bytes.extend_from_slice(&original_len_bytes);
-            bytes.extend_from_slice(&checksum);
             bytes.extend_from_slice(payload);
+            bytes.extend_from_slice(&checksum);
             bytes
         }
 
@@ -626,8 +633,8 @@ mod tests {
             let checksum = CompressFrame::<C>::checksum(header, &[], payload).to_le_bytes();
 
             let mut bytes = vec![header.into_inner()];
-            bytes.extend_from_slice(&checksum);
             bytes.extend_from_slice(payload);
+            bytes.extend_from_slice(&checksum);
             bytes
         }
 
@@ -647,7 +654,7 @@ mod tests {
         fn corrupted_compressed_payload_returns_checksum_mismatch() {
             let value = vec![b'a'; 96 * 1024];
             let mut encoded = encode_bytes(&value);
-            let payload_index = CompressFrame::<TestCompress>::COMPRESSED_HEADER_LEN;
+            let payload_index = CompressFrame::<TestCompress>::COMPRESSED_PREFIX_LEN;
             encoded[payload_index] ^= 0x01;
 
             assert!(matches!(
@@ -731,7 +738,8 @@ mod tests {
         fn checksum_mismatch_returns_error() {
             let header = Header::new_compressed(TestCompress::ALGORITHM_ID);
             let mut bytes = compressed_frame::<TestCompress>(header, 8, &[1, 2, 3, 4]);
-            bytes[1 + CompressFrame::<TestCompress>::ORIGINAL_LEN_BYTES] ^= 0x01;
+            let checksum_index = bytes.len() - CompressFrame::<TestCompress>::CHECKSUM_BYTES;
+            bytes[checksum_index] ^= 0x01;
             assert!(matches!(
                 decode_compress_error::<Engine, Vec<u8>>(&bytes),
                 Error::ChecksumMismatch
@@ -741,7 +749,8 @@ mod tests {
         #[test]
         fn raw_checksum_mismatch_returns_error() {
             let mut bytes = raw_frame::<TestCompress>(b"raw-bytes");
-            bytes[1] ^= 0x01;
+            let checksum_index = bytes.len() - CompressFrame::<TestCompress>::CHECKSUM_BYTES;
+            bytes[checksum_index] ^= 0x01;
             assert!(matches!(
                 decode_compress_error::<Engine, Vec<u8>>(&bytes),
                 Error::ChecksumMismatch
