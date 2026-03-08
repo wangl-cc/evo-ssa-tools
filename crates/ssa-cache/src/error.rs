@@ -6,9 +6,8 @@
 /// Error type for execution, caching, and serialization/deserialization.
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
-    #[cfg(feature = "bitcode")]
-    #[error("Bitcode codec error")]
-    BitCode(#[from] bitcode::Error),
+    #[error(transparent)]
+    Codec(#[from] crate::cache::codec::Error),
 
     #[cfg(feature = "fjall")]
     #[error("Fjall database error")]
@@ -28,4 +27,4 @@ pub enum Error {
 }
 
 /// Convenience alias for `std::result::Result<T, Error>`.
-pub type Result<T> = std::result::Result<T, Error>;
+pub type Result<T, E = Error> = std::result::Result<T, E>;

@@ -147,7 +147,8 @@ fn main() -> ssa_cache::error::Result<()> {
             let (_, trajectory) = birth_death_ssa::<()>(rng, initial_cells, max_events);
             Ok(trajectory)
         },
-    );
+    )
+    .with_engine::<Bitcode>();
 
     let trajectories = trajectory_step
         .execute_many(
@@ -161,7 +162,7 @@ fn main() -> ssa_cache::error::Result<()> {
 
     // 2) Two-stage pipeline: stage 1 builds a lineage tree, stage 2 computes SFS.
     // Stage 1 output is PhyloTree (large intermediate); stage 2 output is Vec<u32> (SFS).
-    let sfs_pipeline = StochasticStep::new(
+    let sfs_source = StochasticStep::new(
         Store::default(),
         "lineage-track",
         |rng, (initial_cells, max_events): (u32, u32)| {
@@ -181,7 +182,8 @@ fn main() -> ssa_cache::error::Result<()> {
             }
         },
     )
-    .pipe(Store::default(), |tree: PhyloTree<2>| Ok(tree.sfs()));
+    .with_engine::<Bitcode>();
+    let sfs_pipeline = sfs_source.pipe(Store::default(), |tree: PhyloTree<2>| Ok(tree.sfs()));
 
     let inputs: Vec<_> = (0..8u64)
         .map(|rep| StochasticInput::new((1u32, 250u32), rep))
@@ -238,14 +240,32 @@ output.
 
 - `Compute`: core trait (`execute` for one input, `execute_many` for batched parallel inputs).
 - `ExecuteOptions`: execution controls (including `with_interrupt_signal`).
+- `CodecEngine<T>`: pluggable serialization engines (e.g. `Bitcode`, `CompressedCodec<Bitcode, Lz4>` when `compress`/`lz4` are enabled).
 - `DeterministicStep`: deterministic compute with an owned cache.
 - `StochasticStep`: stochastic compute with reproducible per-repetition RNG streams.
 - `Pipeline` / `PipelineExt`: stage composition and per-stage caching.
 - `CacheStore`: cache backend interface and the in-memory implementation.
 
+### Selecting an Engine
+
+`DeterministicStep` / `StochasticStep` carry an engine type parameter.
+Select an explicit engine by calling `with_engine::<E>()` on the constructed step:
+
+```rust
+use ssa_cache::prelude::*;
+
+type Store = HashMapStore<std::collections::hash_map::RandomState>;
+type ExplicitEngine = Bitcode;
+
+let step = DeterministicStep::new(Store::default(), |x: u64| Ok(format!("v={x}")))
+    .with_engine::<ExplicitEngine>();
+```
+
 ## Feature Flags
 
 - `bitcode` (enabled by default): `bitcode` serialization/deserialization.
+- `compress` (enabled by `lz4`): framed compressed codec layer plus checksum support for custom compression engines.
+- `lz4` (enabled by default): `Lz4` compression engine.
 - `fjall` (disabled by default): `fjall` persistent backend.
 
 ## License
