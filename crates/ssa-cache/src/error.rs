@@ -33,12 +33,5 @@ impl From<bitcode::Error> for Error {
     }
 }
 
-#[cfg(feature = "compress")]
-impl From<crate::cache::codec::compress::Error> for Error {
-    fn from(err: crate::cache::codec::compress::Error) -> Self {
-        crate::cache::codec::Error::from(err).into()
-    }
-}
-
 /// Convenience alias for `std::result::Result<T, Error>`.
 pub type Result<T, E = Error> = std::result::Result<T, E>;

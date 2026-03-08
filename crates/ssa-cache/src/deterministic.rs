@@ -55,6 +55,10 @@ where
     F: Fn(I) -> Result<O>,
 {
     /// Create a deterministic step from `cache` and `function`.
+    ///
+    /// Pass `()` as `cache` to disable caching.
+    ///
+    /// `cache` should be dedicated to this step (see cache keyspace contract).
     pub fn new(cache: C, function: F) -> Self {
         Self {
             cache,
@@ -68,7 +72,7 @@ impl<C, I, O, F> DeterministicStep<C, I, O, UnboundEngine, F>
 where
     F: Fn(I) -> Result<O>,
 {
-    /// Bind this step to a concrete cache engine.
+    /// Bind this step to a concrete codec engine.
     pub fn with_engine<E>(self) -> DeterministicStep<C, I, O, E, F> {
         let Self {
             cache, function, ..
@@ -110,7 +114,7 @@ where
     ) -> Result<Self::Output> {
         let cache = &self.cache;
         let function = &self.function;
-        cache.fetch_or_execute::<O, E, _>(encoded, engine, |_| function(input))
+        cache.fetch_or_execute(encoded, engine, |_| function(input))
     }
 }
 

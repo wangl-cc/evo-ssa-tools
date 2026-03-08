@@ -24,10 +24,9 @@ impl Compress for Lz4 {
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
-    use crate::Result;
 
     #[test]
-    fn block_roundtrip() -> Result<()> {
+    fn block_roundtrip() -> Result<(), super::super::CodecError> {
         let input = vec![7u8; 8 * 1024];
         let mut compressed = vec![0u8; Lz4::max_output_size(input.len())];
         let compressed_len = Lz4::compress_into(&input, &mut compressed);

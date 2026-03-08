@@ -1,6 +1,7 @@
 use std::sync::{Arc, RwLock};
 
-use crate::{Result, cache::codec::CodecEngine};
+use super::codec::CodecEngine;
+use crate::error::Result;
 
 /// Storage backend for `key -> value` entries.
 ///
@@ -36,7 +37,7 @@ pub trait CacheStore: Sync {
         E: CodecEngine<T>,
     {
         self.fetch_encoded_with(key, |encoded| {
-            encoded.map(|bytes| engine.decode(bytes)).transpose()
+            Ok(encoded.map(|bytes| engine.decode(bytes)).transpose()?)
         })
     }
 
@@ -196,7 +197,7 @@ mod tests {
                 panic!("no-cache store should not encode values");
             }
 
-            fn decode(&mut self, _: &[u8]) -> Result<u32> {
+            fn decode(&mut self, _: &[u8]) -> Result<u32, crate::cache::codec::Error> {
                 unreachable!("no-cache fetch always misses")
             }
         }

@@ -1,7 +1,4 @@
-use crate::{
-    Result,
-    cache::codec::{CodecEngine, SkipReason},
-};
+use super::super::{CodecEngine, Error as CodecError, SkipReason};
 
 /// A codec engine that uses [`bitcode`] for encoding and decoding.
 #[derive(Default)]
@@ -17,7 +14,7 @@ where
         Ok(self.buffer.encode(value))
     }
 
-    fn decode(&mut self, bytes: &[u8]) -> Result<T> {
+    fn decode(&mut self, bytes: &[u8]) -> Result<T, CodecError> {
         Ok(self.buffer.decode(bytes)?)
     }
 }
@@ -41,11 +38,8 @@ mod tests {
     fn decode_wrong_type_returns_error() -> Result<()> {
         let mut engine = Bitcode::default();
         let encoded = engine.encode(&1024u64).unwrap().to_vec();
-        let result: crate::error::Result<u8> = engine.decode(&encoded);
-        assert!(matches!(
-            result.unwrap_err(),
-            crate::Error::Codec(crate::cache::codec::Error::BitCode(_))
-        ));
+        let result: Result<u8, _> = engine.decode(&encoded);
+        assert!(matches!(result.unwrap_err(), CodecError::BitCode(_)));
         Ok(())
     }
 }

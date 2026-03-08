@@ -12,7 +12,7 @@
 
 use crc32c::crc32c;
 
-use super::{CodecEngine, SkipReason};
+use super::{CodecEngine, Error as CodecError, SkipReason};
 use crate::Result;
 
 /// Compression algorithm adapter.
@@ -232,7 +232,7 @@ impl<C: Compress> CompressFrame<C> {
     ///
     /// Returns [`SkipReason::EncodedValueTooLarge`] when the serialized payload is
     /// too large to be accepted by the compressed-frame safety bound.
-    fn compress(&mut self, raw: &[u8]) -> std::result::Result<&[u8], SkipReason> {
+    fn compress(&mut self, raw: &[u8]) -> Result<&[u8], SkipReason> {
         if raw.len() > Self::MAX_DECOMPRESSED_LEN {
             return Err(SkipReason::EncodedValueTooLarge {
                 encoded_len: raw.len(),
@@ -391,7 +391,7 @@ where
         frame.compress(raw)
     }
 
-    fn decode(&mut self, bytes: &[u8]) -> Result<T> {
+    fn decode(&mut self, bytes: &[u8]) -> Result<T, CodecError> {
         let raw = self.frame.decompress(bytes)?;
         self.inner.decode(raw)
     }
@@ -416,7 +416,7 @@ pub(crate) mod fixtures {
             Ok(&self.buffer)
         }
 
-        fn decode(&mut self, bytes: &[u8]) -> Result<Vec<u8>> {
+        fn decode(&mut self, bytes: &[u8]) -> Result<Vec<u8>, CodecError> {
             Ok(bytes.to_vec())
         }
     }
@@ -433,7 +433,7 @@ pub(crate) mod fixtures {
             Ok(&self.buffer)
         }
 
-        fn decode(&mut self, bytes: &[u8]) -> Result<usize> {
+        fn decode(&mut self, bytes: &[u8]) -> Result<usize, CodecError> {
             Ok(bytes.len())
         }
     }
@@ -449,14 +449,8 @@ pub(crate) mod fixtures {
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
-    use super::{
-        Compress, CompressFrame, CompressedCodec, Error, Header,
-        fixtures::{PassthroughBytesEngine, SizedBytesEngine, assert_raw_header},
-    };
-    use crate::{
-        Result,
-        cache::codec::{CodecEngine, SkipReason},
-    };
+    use super::{fixtures::*, *};
+    use crate::cache::codec::{CodecEngine, SkipReason};
 
     struct ShortDecodeCompress;
 
@@ -636,7 +630,7 @@ mod tests {
         {
             let mut engine = E::default();
             match engine.decode(bytes) {
-                Err(crate::Error::Codec(crate::cache::codec::Error::Compress(err))) => err,
+                Err(CodecError::Compress(err)) => err,
                 Err(err) => panic!("expected compress error, got {err:?}"),
                 Ok(_) => panic!("expected decode error"),
             }

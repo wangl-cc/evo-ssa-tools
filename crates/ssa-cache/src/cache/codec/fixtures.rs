@@ -1,8 +1,6 @@
-use crate::{
-    Result,
-    cache::codec::{CodecEngine, SkipReason},
-    error::Error as GlobalError,
-};
+use super::{CodecEngine, Error as CodecError, SkipReason};
+
+type Result<T, E = CodecError> = ::core::result::Result<T, E>;
 
 #[derive(Debug, Default)]
 pub(crate) struct FixtureEngine {
@@ -179,8 +177,8 @@ pub enum Error {
     Invalid(&'static str),
 }
 
-fn fixture_error(message: &'static str) -> GlobalError {
-    GlobalError::from(super::Error::from(Error::Invalid(message)))
+fn fixture_error(message: &'static str) -> CodecError {
+    CodecError::from(Error::Invalid(message))
 }
 
 fn decode_fixed<const N: usize>(bytes: &[u8]) -> Result<[u8; N]> {
