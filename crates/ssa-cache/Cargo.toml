@@ -21,7 +21,7 @@ evo-marker = { workspace = true, features = ["bitcode"] }
 tempfile = { workspace = true }
 
 [features]
-default = ["bitcode", "lz4"]
+default = ["bitcode"]
 bitcode = ["dep:bitcode"]
 compress = ["dep:crc32c"]
 fjall = ["dep:fjall"]
