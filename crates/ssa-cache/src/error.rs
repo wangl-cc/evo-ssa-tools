@@ -6,13 +6,8 @@
 /// Error type for execution, caching, and serialization/deserialization.
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
-    #[cfg(feature = "bitcode")]
-    #[error("Bitcode codec error")]
-    BitCode(#[from] bitcode::Error),
-
-    #[cfg(feature = "compress")]
-    #[error("Compression codec error")]
-    Compress(#[from] crate::cache::codec::compress::Error),
+    #[error(transparent)]
+    Codec(#[from] crate::cache::codec::Error),
 
     #[cfg(feature = "fjall")]
     #[error("Fjall database error")]
@@ -29,6 +24,20 @@ pub enum Error {
     /// User compute function returned an error.
     #[error("Compute error")]
     Compute(#[from] Box<dyn std::error::Error + Send + Sync>),
+}
+
+#[cfg(feature = "bitcode")]
+impl From<bitcode::Error> for Error {
+    fn from(err: bitcode::Error) -> Self {
+        crate::cache::codec::Error::from(err).into()
+    }
+}
+
+#[cfg(feature = "compress")]
+impl From<crate::cache::codec::compress::Error> for Error {
+    fn from(err: crate::cache::codec::compress::Error) -> Self {
+        crate::cache::codec::Error::from(err).into()
+    }
 }
 
 /// Convenience alias for `std::result::Result<T, Error>`.

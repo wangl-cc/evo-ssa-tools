@@ -102,7 +102,8 @@ where
 /// # #[cfg(feature = "bitcode")]
 /// # {
 /// type Store = HashMapStore<std::collections::hash_map::RandomState>;
-/// let stage1 = DeterministicStep::new(Store::default(), |i: usize| Ok(i + 1));
+/// let stage1 =
+///     DeterministicStep::new(Store::default(), |i: usize| Ok(i + 1)).with_engine::<Bitcode>();
 /// let pipeline = stage1
 ///     .pipe(Store::default(), |i| Ok(i * 2))
 ///     .pipe(Store::default(), |i| Ok(format!("Result: {}", i)));
@@ -133,7 +134,6 @@ pub trait PipelineExt: Compute + Sized {
 impl<T: Compute> PipelineExt for T {}
 
 #[cfg(test)]
-#[cfg(feature = "bitcode")]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use std::{
@@ -150,13 +150,14 @@ mod tests {
 
     use super::*;
     use crate::{
-        cache::{codec::bitcode::Bitcode, storage::DefaultHashMapStore},
+        cache::{codec::fixtures::FixtureEngine, storage::DefaultHashMapStore},
         prelude::*,
     };
 
     #[test]
     fn pipeline_basic() -> Result<()> {
-        let stage1 = DeterministicStep::new(DefaultHashMapStore::default(), |input| Ok(input * 2));
+        let stage1 = DeterministicStep::new(DefaultHashMapStore::default(), |input| Ok(input * 2))
+            .with_engine::<FixtureEngine>();
         let pipeline = Pipeline::new(stage1, DefaultHashMapStore::default(), |intermediate| {
             Ok(intermediate + 10)
         });
@@ -182,7 +183,8 @@ mod tests {
             stage1_calls_clone.fetch_add(1, Ordering::SeqCst);
             sleep(Duration::from_millis(10));
             Ok(input * 2)
-        });
+        })
+        .with_engine::<FixtureEngine>();
 
         let pipeline = Pipeline::new(
             stage1,
@@ -227,6 +229,7 @@ mod tests {
                 sleep(Duration::from_millis(10));
                 Ok(input * 2)
             })
+            .with_engine::<FixtureEngine>()
         };
 
         let pipeline1 = {
@@ -259,6 +262,7 @@ mod tests {
                 sleep(Duration::from_millis(10));
                 Ok(input * 2)
             })
+            .with_engine::<FixtureEngine>()
         };
         let pipeline2 = {
             let stage2_calls = stage2_calls.clone();
@@ -288,7 +292,8 @@ mod tests {
     fn test_pipeline_with_different_types() -> Result<()> {
         let stage1 = DeterministicStep::new(DefaultHashMapStore::default(), |input: u32| {
             Ok(input as u64 * 100)
-        });
+        })
+        .with_engine::<FixtureEngine>();
 
         let pipeline = Pipeline::new(
             stage1,
@@ -314,14 +319,15 @@ mod tests {
             } else {
                 Ok(input * 2)
             }
-        });
+        })
+        .with_engine::<FixtureEngine>();
 
         let mut pipeline = Pipeline::new(stage1, DefaultHashMapStore::default(), |intermediate| {
             Ok(intermediate + 10)
         });
 
         let mut encode_buffer = vec![0u8; usize::SIZE];
-        let mut codec_engine = Bitcode::default();
+        let mut codec_engine = FixtureEngine::default();
 
         let result = unsafe { pipeline.execute(2usize, &mut encode_buffer, &mut codec_engine)? };
         assert_eq!(result, 14);
@@ -334,7 +340,8 @@ mod tests {
 
     #[test]
     fn test_pipeline_stage2_error_propagation() -> Result<()> {
-        let stage1 = DeterministicStep::new(DefaultHashMapStore::default(), |input| Ok(input * 2));
+        let stage1 = DeterministicStep::new(DefaultHashMapStore::default(), |input| Ok(input * 2))
+            .with_engine::<FixtureEngine>();
 
         let mut pipeline = Pipeline::new(stage1, DefaultHashMapStore::default(), |intermediate| {
             if intermediate == 6 {
@@ -345,7 +352,7 @@ mod tests {
         });
 
         let mut encode_buffer = vec![0u8; usize::SIZE];
-        let mut codec_engine = Bitcode::default();
+        let mut codec_engine = FixtureEngine::default();
 
         let result = unsafe { pipeline.execute(2usize, &mut encode_buffer, &mut codec_engine)? };
         assert_eq!(result, 14);
@@ -380,7 +387,8 @@ mod tests {
 
                 Ok(4.0 * (inside as f64) / (n_samples as f64))
             },
-        );
+        )
+        .with_engine::<FixtureEngine>();
 
         let pipeline = Pipeline::new(
             stage1,
@@ -417,7 +425,8 @@ mod tests {
 
     #[test]
     fn test_pipeline_chaining_api() -> Result<()> {
-        let stage1 = DeterministicStep::new(DefaultHashMapStore::default(), |i: usize| Ok(i + 1));
+        let stage1 = DeterministicStep::new(DefaultHashMapStore::default(), |i: usize| Ok(i + 1))
+            .with_engine::<FixtureEngine>();
 
         // Use the chainable .pipe() API
         let pipeline = stage1

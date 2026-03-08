@@ -513,7 +513,9 @@ mod tests {
         let err = engine.decode(&bytes).unwrap_err();
         assert!(matches!(
             err,
-            crate::Error::Compress(Error::DecompressedLengthMismatch)
+            crate::Error::Codec(crate::cache::codec::Error::Compress(
+                Error::DecompressedLengthMismatch
+            ))
         ));
     }
 
@@ -536,7 +538,7 @@ mod tests {
         let err = engine.decode(&bytes).unwrap_err();
         assert!(matches!(
             err,
-            crate::Error::Compress(Error::ContentTooLarge)
+            crate::Error::Codec(crate::cache::codec::Error::Compress(Error::ContentTooLarge))
         ));
     }
 
@@ -560,7 +562,9 @@ mod tests {
         let err = engine.decode(&bytes).unwrap_err();
         assert!(matches!(
             err,
-            crate::Error::Compress(Error::ChecksumMismatch)
+            crate::Error::Codec(crate::cache::codec::Error::Compress(
+                Error::ChecksumMismatch
+            ))
         ));
     }
 
@@ -581,7 +585,9 @@ mod tests {
         let err = engine.decode(&bytes).unwrap_err();
         assert!(matches!(
             err,
-            crate::Error::Compress(Error::ChecksumMismatch)
+            crate::Error::Codec(crate::cache::codec::Error::Compress(
+                Error::ChecksumMismatch
+            ))
         ));
     }
 
@@ -592,6 +598,9 @@ mod tests {
         let bytes = [Header::RAW.into_inner(), 0xAA, 0xBB, 0xCC];
         let mut engine = Engine::default();
         let err = engine.decode(&bytes).unwrap_err();
-        assert!(matches!(err, crate::Error::Compress(Error::TruncatedInput)));
+        assert!(matches!(
+            err,
+            crate::Error::Codec(crate::cache::codec::Error::Compress(Error::TruncatedInput))
+        ));
     }
 }

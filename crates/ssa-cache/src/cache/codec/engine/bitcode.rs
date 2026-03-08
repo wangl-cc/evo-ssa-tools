@@ -1,5 +1,7 @@
-use super::{CodecEngine, SkipReason};
-use crate::Result;
+use crate::{
+    Result,
+    cache::codec::{CodecEngine, SkipReason},
+};
 
 /// A codec engine that uses [`bitcode`] for encoding and decoding.
 #[derive(Default)]
@@ -40,7 +42,10 @@ mod tests {
         let mut engine = Bitcode::default();
         let encoded = engine.encode(&1024u64).unwrap().to_vec();
         let result: crate::error::Result<u8> = engine.decode(&encoded);
-        assert!(matches!(result.unwrap_err(), crate::Error::BitCode(_)));
+        assert!(matches!(
+            result.unwrap_err(),
+            crate::Error::Codec(crate::cache::codec::Error::BitCode(_))
+        ));
         Ok(())
     }
 }

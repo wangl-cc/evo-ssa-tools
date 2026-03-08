@@ -1,6 +1,9 @@
 use std::marker::PhantomData;
 
-use crate::{CacheStore, CanonicalEncode, Compute, Result, cache::codec::CodecEngine};
+use crate::{
+    CacheStore, CanonicalEncode, Compute, Result,
+    cache::codec::{CodecEngine, UnboundEngine},
+};
 
 /// Deterministic compute node.
 ///
@@ -20,7 +23,8 @@ use crate::{CacheStore, CanonicalEncode, Compute, Result, cache::codec::CodecEng
 /// # use rayon::prelude::*;
 /// # fn main() -> ssa_cache::error::Result<()> {
 /// type Store = HashMapStore<std::collections::hash_map::RandomState>;
-/// let step = DeterministicStep::new(Store::default(), |i: i32| Ok(i.abs()));
+/// let step =
+///     DeterministicStep::new(Store::default(), |i: i32| Ok(i.abs())).with_engine::<Bitcode>();
 /// let results = step
 ///     .execute_many((0..10).into_par_iter(), ExecuteOptions::default())?
 ///     .collect::<ssa_cache::error::Result<Vec<i32>>>()?;
@@ -46,12 +50,12 @@ pub struct DeterministicStep<C, I, O, E, F> {
     _phantom: PhantomData<(I, O, E)>,
 }
 
-impl<C, I, O, E, F> DeterministicStep<C, I, O, E, F>
+impl<C, I, O, F> DeterministicStep<C, I, O, UnboundEngine, F>
 where
     F: Fn(I) -> Result<O>,
 {
-    /// Create a deterministic step from `cache` and `function` with explicit engine type `E`.
-    pub fn new_with_engine(cache: C, function: F) -> Self {
+    /// Create a deterministic step from `cache` and `function`.
+    pub fn new(cache: C, function: F) -> Self {
         Self {
             cache,
             function,
@@ -60,14 +64,20 @@ where
     }
 }
 
-#[cfg(feature = "bitcode")]
-impl<C, I, O, F> DeterministicStep<C, I, O, crate::cache::codec::bitcode::Bitcode, F>
+impl<C, I, O, F> DeterministicStep<C, I, O, UnboundEngine, F>
 where
     F: Fn(I) -> Result<O>,
 {
-    /// Create a deterministic step from `cache` and `function` using bitcode engine.
-    pub fn new(cache: C, function: F) -> Self {
-        Self::new_with_engine(cache, function)
+    /// Bind this step to a concrete cache engine.
+    pub fn with_engine<E>(self) -> DeterministicStep<C, I, O, E, F> {
+        let Self {
+            cache, function, ..
+        } = self;
+        DeterministicStep {
+            cache,
+            function,
+            _phantom: PhantomData,
+        }
     }
 }
 
@@ -105,7 +115,6 @@ where
 }
 
 #[cfg(test)]
-#[cfg(feature = "bitcode")]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use std::{
@@ -120,17 +129,15 @@ mod tests {
     use rayon::prelude::*;
 
     use super::*;
-    use crate::{
-        cache::{codec::bitcode::Bitcode, storage::DefaultHashMapStore},
-        prelude::*,
-    };
+    use crate::{cache::codec::fixtures::FixtureEngine, prelude::*};
 
     #[test]
     fn test_deterministic_basic_with_owned_cache() -> Result<()> {
-        let mut compute: DeterministicStep<_, usize, usize, Bitcode, _> =
-            DeterministicStep::new(DefaultHashMapStore::default(), |i| Ok(i + 1));
+        let mut compute =
+            DeterministicStep::new(DefaultHashMapStore::default(), |i: usize| Ok(i + 1))
+                .with_engine::<FixtureEngine>();
         let mut encode_buffer = vec![0u8; usize::SIZE];
-        let mut engine = Bitcode::default();
+        let mut engine = FixtureEngine::default();
 
         let result = unsafe { compute.execute(5, &mut encode_buffer, &mut engine)? };
         assert_eq!(result, 6);
@@ -140,8 +147,8 @@ mod tests {
 
     #[test]
     fn test_execute_many_without_runtime_cache_arg() -> Result<()> {
-        let compute: DeterministicStep<_, usize, usize, Bitcode, _> =
-            DeterministicStep::new(DefaultHashMapStore::default(), |i| Ok(i * 2));
+        let compute = DeterministicStep::new(DefaultHashMapStore::default(), |i: usize| Ok(i * 2))
+            .with_engine::<FixtureEngine>();
 
         let results = compute
             .execute_many((0..100).into_par_iter(), ExecuteOptions::default())?
@@ -156,11 +163,11 @@ mod tests {
         let call_count = Arc::new(AtomicUsize::new(0));
         let call_count_clone = call_count.clone();
 
-        let compute: DeterministicStep<_, usize, usize, Bitcode, _> =
-            DeterministicStep::new(DefaultHashMapStore::default(), move |i| {
-                call_count_clone.fetch_add(1, Ordering::SeqCst);
-                Ok(i * 3)
-            });
+        let compute = DeterministicStep::new(DefaultHashMapStore::default(), move |i: usize| {
+            call_count_clone.fetch_add(1, Ordering::SeqCst);
+            Ok(i * 3)
+        })
+        .with_engine::<FixtureEngine>();
 
         let n_inputs = 5;
 
@@ -184,11 +191,11 @@ mod tests {
 
     #[test]
     fn test_deterministic_interrupt() -> Result<()> {
-        let compute: DeterministicStep<_, usize, usize, Bitcode, _> =
-            DeterministicStep::new(DefaultHashMapStore::default(), |i| {
-                sleep(Duration::from_millis(100));
-                Ok(i + 1)
-            });
+        let compute = DeterministicStep::new(DefaultHashMapStore::default(), |i: usize| {
+            sleep(Duration::from_millis(100));
+            Ok(i + 1)
+        })
+        .with_engine::<FixtureEngine>();
 
         let interrupted = Arc::new(AtomicBool::new(false));
         let interrupted_clone = interrupted.clone();
@@ -216,16 +223,16 @@ mod tests {
 
     #[test]
     fn test_deterministic_error_propagation() -> Result<()> {
-        let mut compute: DeterministicStep<_, usize, usize, Bitcode, _> =
-            DeterministicStep::new(DefaultHashMapStore::default(), |i| {
-                if i == 5 {
-                    Err(crate::error::Error::Interrupted)
-                } else {
-                    Ok(i * 2)
-                }
-            });
+        let mut compute = DeterministicStep::new(DefaultHashMapStore::default(), |i: usize| {
+            if i == 5 {
+                Err(crate::error::Error::Interrupted)
+            } else {
+                Ok(i * 2)
+            }
+        })
+        .with_engine::<FixtureEngine>();
         let mut encode_buffer = vec![0u8; usize::SIZE];
-        let mut engine = Bitcode::default();
+        let mut engine = FixtureEngine::default();
 
         let result = unsafe { compute.execute(3, &mut encode_buffer, &mut engine)? };
         assert_eq!(result, 6);
@@ -238,11 +245,11 @@ mod tests {
 
     #[test]
     fn test_deterministic_execution_order() -> Result<()> {
-        let compute: DeterministicStep<_, usize, usize, Bitcode, _> =
-            DeterministicStep::new(DefaultHashMapStore::default(), |i| {
-                sleep(Duration::from_millis(20 - (i % 20) as u64));
-                Ok(i + 100)
-            });
+        let compute = DeterministicStep::new(DefaultHashMapStore::default(), |i: usize| {
+            sleep(Duration::from_millis(20 - (i % 20) as u64));
+            Ok(i + 100)
+        })
+        .with_engine::<FixtureEngine>();
 
         let n_inputs = 20;
 
@@ -263,13 +270,13 @@ mod tests {
         let call_count = Arc::new(AtomicUsize::new(0));
         let call_count_clone = call_count.clone();
 
-        let mut compute: DeterministicStep<_, usize, usize, Bitcode, _> =
-            DeterministicStep::new((), move |i| {
-                call_count_clone.fetch_add(1, Ordering::SeqCst);
-                Ok(i * 11)
-            });
+        let mut compute = DeterministicStep::new((), move |i: usize| {
+            call_count_clone.fetch_add(1, Ordering::SeqCst);
+            Ok(i * 11)
+        })
+        .with_engine::<FixtureEngine>();
         let mut encode_buffer = vec![0u8; usize::SIZE];
-        let mut engine = Bitcode::default();
+        let mut engine = FixtureEngine::default();
 
         let output1 = unsafe { compute.execute(3, &mut encode_buffer, &mut engine)? };
         let output2 = unsafe { compute.execute(3, &mut encode_buffer, &mut engine)? };
@@ -287,24 +294,26 @@ mod tests {
 
         let mut compute_a = {
             let call_count = call_count.clone();
-            DeterministicStep::new(shared_cache.clone(), move |i| {
+            DeterministicStep::new(shared_cache.clone(), move |i: usize| {
                 call_count.fetch_add(1, Ordering::SeqCst);
                 Ok(i * 7)
             })
+            .with_engine::<FixtureEngine>()
         };
 
         let mut compute_b = {
             let call_count = call_count.clone();
-            DeterministicStep::new(shared_cache, move |i| {
+            DeterministicStep::new(shared_cache, move |i: usize| {
                 call_count.fetch_add(1, Ordering::SeqCst);
                 Ok(i * 7)
             })
+            .with_engine::<FixtureEngine>()
         };
 
         let mut encode_buffer_a = vec![0u8; usize::SIZE];
-        let mut engine_a = Bitcode::default();
+        let mut engine_a = FixtureEngine::default();
         let mut encode_buffer_b = vec![0u8; usize::SIZE];
-        let mut engine_b = Bitcode::default();
+        let mut engine_b = FixtureEngine::default();
 
         let output_a = unsafe { compute_a.execute(4usize, &mut encode_buffer_a, &mut engine_a)? };
         let output_b = unsafe { compute_b.execute(4usize, &mut encode_buffer_b, &mut engine_b)? };

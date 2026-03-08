@@ -158,31 +158,30 @@ mod fjall_store {
 }
 
 #[cfg(test)]
-#[cfg(feature = "bitcode")]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
-    use crate::cache::codec::{CodecEngine, SkipReason, bitcode::Bitcode};
+    use crate::cache::codec::{CodecEngine, SkipReason, fixtures::FixtureEngine};
 
     #[test]
     fn test_hashmap_store() -> Result<()> {
         let store = DefaultHashMapStore::default();
-        let mut engine = Bitcode::default();
+        let mut engine = FixtureEngine::default();
 
         let value = 42u32;
         let key = b"test_sig";
-        store.store::<u32, Bitcode>(key, &mut engine, &value)?;
-        assert_eq!(store.fetch::<u32, Bitcode>(key, &mut engine)?, Some(value));
+        store.store::<u32, FixtureEngine>(key, &mut engine, &value)?;
+        assert_eq!(
+            store.fetch::<u32, FixtureEngine>(key, &mut engine)?,
+            Some(value)
+        );
 
         assert_eq!(
-            store.fetch::<u32, Bitcode>(b"non_existent", &mut engine)?,
+            store.fetch::<u32, FixtureEngine>(b"non_existent", &mut engine)?,
             None
         );
 
-        assert!(matches!(
-            store.fetch::<u64, Bitcode>(key, &mut engine),
-            Err(crate::Error::BitCode(_))
-        ));
+        assert!(store.fetch::<u64, FixtureEngine>(key, &mut engine).is_err());
 
         Ok(())
     }
@@ -215,11 +214,14 @@ mod tests {
         Ok(())
     }
 
-    #[cfg(all(feature = "lz4", feature = "bitcode"))]
+    #[cfg(feature = "lz4")]
     #[test]
     fn test_hashmap_store_compressed_value_roundtrip() -> Result<()> {
-        use crate::cache::codec::compress::{CompressedCodec, lz4::Lz4};
-        type Lz4Engine = CompressedCodec<Bitcode, Lz4>;
+        use crate::cache::codec::{
+            compress::{CompressedCodec, lz4::Lz4},
+            fixtures::FixtureEngine,
+        };
+        type Lz4Engine = CompressedCodec<FixtureEngine, Lz4>;
 
         let store = DefaultHashMapStore::default();
         let mut engine = Lz4Engine::default();
@@ -265,25 +267,26 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let db = fjall::Database::builder(&tmp).open()?;
         let partition = db.keyspace("test", Default::default)?;
-        let mut engine = Bitcode::default();
+        let mut engine = FixtureEngine::default();
 
         let value = 42u32;
         let key = b"test_sig";
-        partition.store::<u32, Bitcode>(key, &mut engine, &value)?;
+        partition.store::<u32, FixtureEngine>(key, &mut engine, &value)?;
         assert_eq!(
-            partition.fetch::<u32, Bitcode>(key, &mut engine)?,
+            partition.fetch::<u32, FixtureEngine>(key, &mut engine)?,
             Some(value)
         );
 
         assert_eq!(
-            partition.fetch::<u32, Bitcode>(b"non_existent", &mut engine)?,
+            partition.fetch::<u32, FixtureEngine>(b"non_existent", &mut engine)?,
             None
         );
 
-        assert!(matches!(
-            partition.fetch::<u64, Bitcode>(key, &mut engine),
-            Err(crate::Error::BitCode(_))
-        ));
+        assert!(
+            partition
+                .fetch::<u64, FixtureEngine>(key, &mut engine)
+                .is_err()
+        );
 
         Ok(())
     }

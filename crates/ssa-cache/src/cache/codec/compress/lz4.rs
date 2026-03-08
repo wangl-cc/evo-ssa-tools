@@ -34,6 +34,7 @@ mod tests {
                 CompressFrame, CompressedCodec, Error,
                 fixtures::{BytesRaw, SizedBytesRaw, assert_raw_header},
             },
+            fixtures::FixtureEngine,
         },
     };
 
@@ -58,11 +59,9 @@ mod tests {
         Ok(())
     }
 
-    #[cfg(feature = "bitcode")]
     #[test]
     fn small_value_stays_uncompressed() -> Result<()> {
-        use crate::cache::codec::bitcode::Bitcode;
-        type Lz4Engine = CompressedCodec<Bitcode, Lz4>;
+        type Lz4Engine = CompressedCodec<FixtureEngine, Lz4>;
 
         let value = vec![7u8; 1024];
         let mut engine = Lz4Engine::default();
@@ -74,11 +73,9 @@ mod tests {
         Ok(())
     }
 
-    #[cfg(feature = "bitcode")]
     #[test]
     fn large_compressible_value_is_compressed() -> Result<()> {
-        use crate::cache::codec::bitcode::Bitcode;
-        type Lz4Engine = CompressedCodec<Bitcode, Lz4>;
+        type Lz4Engine = CompressedCodec<FixtureEngine, Lz4>;
 
         let value = "a".repeat(96 * 1024);
         let mut engine = Lz4Engine::default();
@@ -90,11 +87,9 @@ mod tests {
         Ok(())
     }
 
-    #[cfg(feature = "bitcode")]
     #[test]
     fn corrupted_compressed_payload_returns_checksum_mismatch() {
-        use crate::cache::codec::bitcode::Bitcode;
-        type Lz4Engine = CompressedCodec<Bitcode, Lz4>;
+        type Lz4Engine = CompressedCodec<FixtureEngine, Lz4>;
 
         let value = "a".repeat(96 * 1024);
         let mut engine = Lz4Engine::default();
@@ -106,15 +101,15 @@ mod tests {
         let err = err.unwrap_err();
         assert!(matches!(
             err,
-            crate::Error::Compress(Error::ChecksumMismatch)
+            crate::Error::Codec(crate::cache::codec::Error::Compress(
+                Error::ChecksumMismatch
+            ))
         ));
     }
 
-    #[cfg(feature = "bitcode")]
     #[test]
     fn corrupted_declared_length_returns_checksum_mismatch() {
-        use crate::cache::codec::bitcode::Bitcode;
-        type Lz4Engine = CompressedCodec<Bitcode, Lz4>;
+        type Lz4Engine = CompressedCodec<FixtureEngine, Lz4>;
 
         let value = "a".repeat(96 * 1024);
         let mut engine = Lz4Engine::default();
@@ -125,15 +120,15 @@ mod tests {
         let err = err.unwrap_err();
         assert!(matches!(
             err,
-            crate::Error::Compress(Error::ChecksumMismatch)
+            crate::Error::Codec(crate::cache::codec::Error::Compress(
+                Error::ChecksumMismatch
+            ))
         ));
     }
 
-    #[cfg(feature = "bitcode")]
     #[test]
     fn compressed_header_flip_to_raw_returns_checksum_mismatch() {
-        use crate::cache::codec::bitcode::Bitcode;
-        type Lz4Engine = CompressedCodec<Bitcode, Lz4>;
+        type Lz4Engine = CompressedCodec<FixtureEngine, Lz4>;
 
         let value = "a".repeat(96 * 1024);
         let mut engine = Lz4Engine::default();
@@ -144,15 +139,15 @@ mod tests {
         let err = err.unwrap_err();
         assert!(matches!(
             err,
-            crate::Error::Compress(Error::ChecksumMismatch)
+            crate::Error::Codec(crate::cache::codec::Error::Compress(
+                Error::ChecksumMismatch
+            ))
         ));
     }
 
-    #[cfg(feature = "bitcode")]
     #[test]
     fn incompressible_data_falls_back_to_raw() -> Result<()> {
-        use crate::cache::codec::bitcode::Bitcode;
-        type Lz4Engine = CompressedCodec<Bitcode, Lz4>;
+        type Lz4Engine = CompressedCodec<FixtureEngine, Lz4>;
 
         let mut value = vec![0u8; 96 * 1024];
         rand::rngs::StdRng::seed_from_u64(0x5A17).fill_bytes(&mut value);
@@ -166,30 +161,28 @@ mod tests {
         Ok(())
     }
 
-    #[cfg(feature = "bitcode")]
     #[test]
     fn decode_invalid_header_or_truncated_payload() {
-        use crate::cache::codec::bitcode::Bitcode;
-        type Lz4Engine = CompressedCodec<Bitcode, Lz4>;
+        type Lz4Engine = CompressedCodec<FixtureEngine, Lz4>;
 
         let mut engine = Lz4Engine::default();
 
         let wrong_version = vec![0b0000_0000, 0x12];
         assert!(matches!(
             engine.decode(&wrong_version),
-            Err::<u8, _>(crate::Error::Compress(_))
+            Err::<u8, _>(crate::Error::Codec(crate::cache::codec::Error::Compress(_)))
         ));
 
         let unknown_algorithm = vec![0b0001_0010, 0x12, 0x34];
         assert!(matches!(
             engine.decode(&unknown_algorithm),
-            Err::<u8, _>(crate::Error::Compress(_))
+            Err::<u8, _>(crate::Error::Codec(crate::cache::codec::Error::Compress(_)))
         ));
 
         let truncated_lz4_len = vec![0b0001_0001, 0x01, 0x02, 0x03, 0x04];
         assert!(matches!(
             engine.decode(&truncated_lz4_len),
-            Err::<u8, _>(crate::Error::Compress(_))
+            Err::<u8, _>(crate::Error::Codec(crate::cache::codec::Error::Compress(_)))
         ));
 
         let header = 0b0001_0001;
@@ -207,21 +200,19 @@ mod tests {
         invalid_lz4_payload.extend_from_slice(&payload);
         assert!(matches!(
             engine.decode(&invalid_lz4_payload),
-            Err::<u8, _>(crate::Error::Compress(_))
+            Err::<u8, _>(crate::Error::Codec(crate::cache::codec::Error::Compress(_)))
         ));
     }
 
-    #[cfg(feature = "bitcode")]
     #[test]
     fn same_type_roundtrip_with_multiple_engines() -> Result<()> {
-        use crate::cache::codec::bitcode::Bitcode;
-        type Lz4Engine = CompressedCodec<Bitcode, Lz4>;
+        type Lz4Engine = CompressedCodec<FixtureEngine, Lz4>;
 
         let value = "abc".repeat(1024);
 
-        let mut bitcode_engine = Bitcode::default();
-        let encoded = bitcode_engine.encode(&value).unwrap().to_vec();
-        let decoded: String = bitcode_engine.decode(&encoded)?;
+        let mut raw_engine = FixtureEngine::default();
+        let encoded = raw_engine.encode(&value).unwrap().to_vec();
+        let decoded: String = raw_engine.decode(&encoded)?;
         assert_eq!(decoded, value);
 
         let mut lz4_engine = Lz4Engine::default();

@@ -1,5 +1,21 @@
 use crate::Result;
 
+/// Errors produced by codec engines and codec adapters.
+#[derive(thiserror::Error, Debug)]
+pub enum Error {
+    #[cfg(feature = "bitcode")]
+    #[error("Bitcode codec error")]
+    BitCode(#[from] bitcode::Error),
+
+    #[cfg(test)]
+    #[error("Fixture codec error")]
+    Fixture(#[from] fixtures::Error),
+
+    #[cfg(feature = "compress")]
+    #[error("Compression codec error")]
+    Compress(#[from] crate::cache::codec::compress::Error),
+}
+
 /// A codec engine that can encode/decode `T`
 ///
 /// Engines can carry their own scratch space, so the same instance can be reused
@@ -29,14 +45,21 @@ pub trait CodecEngine<T>: Default {
     fn decode(&mut self, bytes: &[u8]) -> Result<T>;
 }
 
+/// Marker engine used by step builders before a concrete cache engine is chosen.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct UnboundEngine;
+
 #[derive(thiserror::Error, Debug)]
 pub enum SkipReason {
     #[error("encoded value size {encoded_len} exceeds cache limit {max_len}")]
     EncodedValueTooLarge { encoded_len: usize, max_len: usize },
 }
 
-#[cfg(feature = "bitcode")]
-pub mod bitcode;
+pub mod engine;
 
 #[cfg(feature = "compress")]
 pub mod compress;
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+pub mod fixtures;

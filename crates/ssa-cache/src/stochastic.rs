@@ -3,7 +3,10 @@ use std::marker::PhantomData;
 use rand::SeedableRng;
 use rand_xoshiro::Xoshiro256PlusPlus;
 
-use crate::{CacheStore, CanonicalEncode, Compute, Result, cache::codec::CodecEngine};
+use crate::{
+    CacheStore, CanonicalEncode, Compute, Result,
+    cache::codec::{CodecEngine, UnboundEngine},
+};
 
 /// Input for stochastic computation.
 ///
@@ -88,7 +91,8 @@ impl<P: CanonicalEncode> CanonicalEncode for StochasticInput<P> {
 /// let step = StochasticStep::new(Store::default(), "my-experiment-seed", |rng, param: f64| {
 ///     let noise: f64 = rng.random_range(-1.0..1.0);
 ///     Ok(param + noise)
-/// });
+/// })
+/// .with_engine::<Bitcode>();
 ///
 /// // Create 5 repetitions for param 10.0
 /// let inputs = (0..5)
@@ -121,7 +125,7 @@ pub struct StochasticStep<C, P, O, E, F> {
     _phantom: PhantomData<(P, O, E)>,
 }
 
-impl<C, P, O, E, F> StochasticStep<C, P, O, E, F>
+impl<C, P, O, F> StochasticStep<C, P, O, UnboundEngine, F>
 where
     F: Fn(&mut Xoshiro256PlusPlus, P) -> Result<O>,
 {
@@ -131,7 +135,7 @@ where
     ///
     /// `cache` should be dedicated to this step (see [`StochasticStep`] cache keyspace contract).
     /// `key_material` affects seed derivation only; it does not namespace cache keys.
-    pub fn new_with_engine(cache: C, key_material: impl AsRef<[u8]>, function: F) -> Self {
+    pub fn new(cache: C, key_material: impl AsRef<[u8]>, function: F) -> Self {
         Self {
             cache,
             seed_key: blake3::derive_key(Self::KEY_DOMAIN, key_material.as_ref()),
@@ -140,19 +144,29 @@ where
         }
     }
 
-    fn derive_seed(&self, encoded_input: &[u8]) -> [u8; 32] {
-        *blake3::keyed_hash(&self.seed_key, encoded_input).as_bytes()
+    /// Bind this step to a concrete cache engine.
+    pub fn with_engine<E>(self) -> StochasticStep<C, P, O, E, F> {
+        let Self {
+            cache,
+            seed_key,
+            function,
+            ..
+        } = self;
+        StochasticStep {
+            cache,
+            seed_key,
+            function,
+            _phantom: PhantomData,
+        }
     }
 }
 
-#[cfg(feature = "bitcode")]
-impl<C, P, O, F> StochasticStep<C, P, O, crate::cache::codec::bitcode::Bitcode, F>
+impl<C, P, O, E, F> StochasticStep<C, P, O, E, F>
 where
     F: Fn(&mut Xoshiro256PlusPlus, P) -> Result<O>,
 {
-    /// Create a stochastic step using bitcode engine.
-    pub fn new(cache: C, key_material: impl AsRef<[u8]>, function: F) -> Self {
-        Self::new_with_engine(cache, key_material, function)
+    fn derive_seed(&self, encoded_input: &[u8]) -> [u8; 32] {
+        *blake3::keyed_hash(&self.seed_key, encoded_input).as_bytes()
     }
 }
 
@@ -197,7 +211,6 @@ where
 }
 
 #[cfg(test)]
-#[cfg(feature = "bitcode")]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use std::sync::{
@@ -210,7 +223,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        cache::{codec::bitcode::Bitcode, storage::DefaultHashMapStore},
+        cache::{codec::fixtures::FixtureEngine, storage::DefaultHashMapStore},
         prelude::*,
     };
 
@@ -223,9 +236,10 @@ mod tests {
                 rng.next_u64(),
                 rng.next_u64(),
             ])
-        });
+        })
+        .with_engine::<FixtureEngine>();
         let mut encode_buffer = vec![0u8; <StochasticInput<u64> as CanonicalEncode>::SIZE];
-        let mut codec_engine = Bitcode::default();
+        let mut codec_engine = FixtureEngine::default();
 
         let output1 = unsafe {
             step.execute(
@@ -255,9 +269,10 @@ mod tests {
                 rng.next_u64(),
                 rng.next_u64(),
             ])
-        });
+        })
+        .with_engine::<FixtureEngine>();
         let mut encode_buffer = vec![0u8; <StochasticInput<u64> as CanonicalEncode>::SIZE];
-        let mut codec_engine = Bitcode::default();
+        let mut codec_engine = FixtureEngine::default();
 
         let output1 = unsafe {
             step.execute(
@@ -287,7 +302,8 @@ mod tests {
                 rng.next_u64(),
                 rng.next_u64(),
             ])
-        });
+        })
+        .with_engine::<FixtureEngine>();
         let mut step2 = StochasticStep::new((), b"experiment-B", |rng, param| {
             Ok([
                 rng.next_u64() ^ param,
@@ -295,11 +311,12 @@ mod tests {
                 rng.next_u64(),
                 rng.next_u64(),
             ])
-        });
+        })
+        .with_engine::<FixtureEngine>();
         let mut encode_buffer1 = vec![0u8; <StochasticInput<u64> as CanonicalEncode>::SIZE];
         let mut encode_buffer2 = vec![0u8; <StochasticInput<u64> as CanonicalEncode>::SIZE];
-        let mut codec_engine1 = Bitcode::default();
-        let mut codec_engine2 = Bitcode::default();
+        let mut codec_engine1 = FixtureEngine::default();
+        let mut codec_engine2 = FixtureEngine::default();
 
         let output1 = unsafe {
             step1.execute(
@@ -327,27 +344,29 @@ mod tests {
         let calls_b = Arc::new(AtomicUsize::new(0));
         let calls_b_clone = calls_b.clone();
 
-        let mut step_a: StochasticStep<_, u64, u64, Bitcode, _> = StochasticStep::new(
+        let mut step_a = StochasticStep::new(
             DefaultHashMapStore::default(),
             b"experiment-A",
             move |rng, param| {
                 calls_a_clone.fetch_add(1, Ordering::SeqCst);
                 Ok(rng.next_u64() ^ param)
             },
-        );
-        let mut step_b: StochasticStep<_, u64, u64, Bitcode, _> = StochasticStep::new(
+        )
+        .with_engine::<FixtureEngine>();
+        let mut step_b = StochasticStep::new(
             DefaultHashMapStore::default(),
             b"experiment-B",
             move |rng, param| {
                 calls_b_clone.fetch_add(1, Ordering::SeqCst);
                 Ok(rng.next_u64() ^ param)
             },
-        );
+        )
+        .with_engine::<FixtureEngine>();
 
         let mut encode_buffer1 = vec![0u8; <StochasticInput<u64> as CanonicalEncode>::SIZE];
         let mut encode_buffer2 = vec![0u8; <StochasticInput<u64> as CanonicalEncode>::SIZE];
-        let mut codec_buffer1 = Bitcode::default();
-        let mut codec_buffer2 = Bitcode::default();
+        let mut codec_buffer1 = FixtureEngine::default();
+        let mut codec_buffer2 = FixtureEngine::default();
 
         let input = StochasticInput::new(42, 7);
 
@@ -372,12 +391,14 @@ mod tests {
             DefaultHashMapStore::default(),
             b"experiment-A",
             |rng, param| Ok(rng.next_u64() ^ param),
-        );
+        )
+        .with_engine::<FixtureEngine>();
         let step2 = StochasticStep::new(
             DefaultHashMapStore::default(),
             b"experiment-A",
             |rng, param| Ok(rng.next_u64() ^ param),
-        );
+        )
+        .with_engine::<FixtureEngine>();
 
         let inputs: Vec<_> = (0..128u64)
             .map(|i| StochasticInput::new(i, i % 8))
@@ -408,7 +429,8 @@ mod tests {
                 stage1_calls_clone.fetch_add(1, Ordering::SeqCst);
                 Ok((rng.next_u64() as usize) ^ param)
             },
-        );
+        )
+        .with_engine::<FixtureEngine>();
 
         let pipeline = Pipeline::new(
             stage1,

@@ -150,18 +150,18 @@ impl ExecuteOptions {
 }
 
 pub mod prelude {
-    #[cfg(feature = "bitcode")]
-    pub use crate::cache::codec::bitcode::Bitcode;
     #[cfg(feature = "lz4")]
     pub use crate::cache::codec::compress::lz4::Lz4;
     #[cfg(feature = "compress")]
     pub use crate::cache::codec::compress::{Compress, CompressedCodec};
+    #[cfg(feature = "bitcode")]
+    pub use crate::cache::codec::engine::bitcode::Bitcode;
     pub use crate::{
         Compute, ExecuteOptions,
         cache::{
             canonical_encode::CanonicalEncode,
             codec::CodecEngine,
-            storage::{CacheStore, HashMapStore},
+            storage::{CacheStore, DefaultHashMapStore, HashMapStore},
         },
         deterministic::DeterministicStep,
         pipeline::{Pipeline, PipelineExt},
