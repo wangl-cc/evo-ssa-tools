@@ -26,12 +26,5 @@ pub enum Error {
     Compute(#[from] Box<dyn std::error::Error + Send + Sync>),
 }
 
-#[cfg(feature = "bitcode")]
-impl From<bitcode::Error> for Error {
-    fn from(err: bitcode::Error) -> Self {
-        crate::cache::codec::Error::from(err).into()
-    }
-}
-
 /// Convenience alias for `std::result::Result<T, Error>`.
 pub type Result<T, E = Error> = std::result::Result<T, E>;
