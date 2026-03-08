@@ -3,9 +3,17 @@
 use core::hash::{BuildHasher, Hash};
 use std::collections::HashMap;
 
-use rayon::prelude::*;
+use rayon::{
+    iter::{IndexedParallelIterator, MinLen},
+    prelude::*,
+};
 
 use crate::{num_traits::*, *};
+
+fn thread_sized_min_len(len: usize) -> usize {
+    let threads = rayon::current_num_threads().max(1);
+    len.div_ceil(threads).max(1)
+}
 
 /// An parallel iterator adapter for items with a known upper bound
 ///
@@ -20,6 +28,18 @@ pub trait IntoBoundedParallelIterator: IntoParallelIterator {
     fn into_bounded_par_iter(self, upper_bound: usize) -> BoundedParallelIterator<Self::Iter>;
 }
 
+/// A trait for converting an indexed [`IntoParallelIterator`] into a [`BoundedParallelIterator`]
+/// with a coarser default split strategy.
+pub trait IntoBoundedIndexedParallelIterator: IntoParallelIterator
+where
+    Self::Iter: IndexedParallelIterator,
+{
+    fn into_bounded_indexed_par_iter(
+        self,
+        upper_bound: usize,
+    ) -> BoundedParallelIterator<MinLen<Self::Iter>>;
+}
+
 /// A trait for converting a [`ParallelIterator`] into a [`BoundedParallelIterator`]
 impl<I: IntoParallelIterator> IntoBoundedParallelIterator for I {
     /// Converts the parallel iterator into a [`BoundedParallelIterator`]
@@ -28,6 +48,30 @@ impl<I: IntoParallelIterator> IntoBoundedParallelIterator for I {
     fn into_bounded_par_iter(self, upper_bound: usize) -> BoundedParallelIterator<Self::Iter> {
         BoundedParallelIterator {
             iter: self.into_par_iter(),
+            upper_bound,
+        }
+    }
+}
+
+impl<I> IntoBoundedIndexedParallelIterator for I
+where
+    I: IntoParallelIterator,
+    I::Iter: IndexedParallelIterator,
+{
+    /// Converts the indexed parallel iterator into a [`BoundedParallelIterator`] with roughly one
+    /// chunk per Rayon worker.
+    ///
+    /// This reduces per-job frequency table allocation and merge overhead for dense bounded
+    /// counting workloads.
+    fn into_bounded_indexed_par_iter(
+        self,
+        upper_bound: usize,
+    ) -> BoundedParallelIterator<MinLen<Self::Iter>> {
+        let iter = self.into_par_iter();
+        let min_len = thread_sized_min_len(iter.len());
+
+        BoundedParallelIterator {
+            iter: iter.with_min_len(min_len),
             upper_bound,
         }
     }
@@ -125,6 +169,25 @@ pub trait IntoUncheckedBoundedParallelIterator: IntoParallelIterator {
     ) -> UncheckedBoundedParallelIterator<Self::Iter>;
 }
 
+/// A trait for converting an indexed [`IntoParallelIterator`] into an
+/// [`UncheckedBoundedParallelIterator`] with a coarser default split strategy.
+pub trait IntoUncheckedBoundedIndexedParallelIterator: IntoParallelIterator
+where
+    Self::Iter: IndexedParallelIterator,
+{
+    /// Converts the indexed iterator into an [`UncheckedBoundedParallelIterator`] with roughly one
+    /// chunk per Rayon worker.
+    ///
+    /// # Safety
+    ///
+    /// All items in the iterator must be within the range `0..=upper_bound`.
+    /// Using values outside this range will lead to undefined behavior.
+    unsafe fn into_unchecked_bounded_indexed_par_iter(
+        self,
+        upper_bound: usize,
+    ) -> UncheckedBoundedParallelIterator<MinLen<Self::Iter>>;
+}
+
 impl<I: IntoParallelIterator> IntoUncheckedBoundedParallelIterator for I {
     /// # Safety
     ///
@@ -136,6 +199,25 @@ impl<I: IntoParallelIterator> IntoUncheckedBoundedParallelIterator for I {
     ) -> UncheckedBoundedParallelIterator<Self::Iter> {
         UncheckedBoundedParallelIterator {
             iter: self.into_par_iter(),
+            upper_bound,
+        }
+    }
+}
+
+impl<I> IntoUncheckedBoundedIndexedParallelIterator for I
+where
+    I: IntoParallelIterator,
+    I::Iter: IndexedParallelIterator,
+{
+    unsafe fn into_unchecked_bounded_indexed_par_iter(
+        self,
+        upper_bound: usize,
+    ) -> UncheckedBoundedParallelIterator<MinLen<Self::Iter>> {
+        let iter = self.into_par_iter();
+        let min_len = thread_sized_min_len(iter.len());
+
+        UncheckedBoundedParallelIterator {
+            iter: iter.with_min_len(min_len),
             upper_bound,
         }
     }
@@ -225,9 +307,31 @@ pub trait IntoHashableParallelIterator: IntoParallelIterator {
     fn into_hash_per_iter(self) -> HashableParallelIterator<Self::Iter>;
 }
 
+/// A trait for converting an indexed [`IntoParallelIterator`] into a
+/// [`HashableParallelIterator`] with a coarser default split strategy.
+pub trait IntoHashableIndexedParallelIterator: IntoParallelIterator
+where
+    Self::Iter: IndexedParallelIterator,
+{
+    fn into_hash_indexed_par_iter(self) -> HashableParallelIterator<MinLen<Self::Iter>>;
+}
+
 impl<I: IntoParallelIterator> IntoHashableParallelIterator for I {
     fn into_hash_per_iter(self) -> HashableParallelIterator<Self::Iter> {
         HashableParallelIterator(self.into_par_iter())
+    }
+}
+
+impl<I> IntoHashableIndexedParallelIterator for I
+where
+    I: IntoParallelIterator,
+    I::Iter: IndexedParallelIterator,
+{
+    fn into_hash_indexed_par_iter(self) -> HashableParallelIterator<MinLen<Self::Iter>> {
+        let iter = self.into_par_iter();
+        let min_len = thread_sized_min_len(iter.len());
+
+        HashableParallelIterator(iter.with_min_len(min_len))
     }
 }
 
@@ -313,6 +417,19 @@ mod tests {
 
         assert_eq!(freq, vec![0, 3, 3, 1]);
     }
+
+    #[test]
+    fn test_bounded_indexed_parallel_iterator_freq() {
+        let data: Vec<usize> = vec![1, 2, 3, 2, 1, 4, 5, 3, 2];
+        let freq: Vec<usize> = data
+            .par_iter()
+            .map(|&x| x - 1)
+            .into_bounded_indexed_par_iter(4)
+            .freq();
+
+        assert_eq!(freq, vec![2, 3, 2, 1, 1]);
+    }
+
     #[test]
     fn test_unchecked_bounded_parallel_iterator_freq() {
         let data: Vec<usize> = vec![1, 2, 3, 2, 1, 4, 5, 3, 2];
@@ -320,6 +437,19 @@ mod tests {
             data.par_iter()
                 .map(|&x| x - 1)
                 .into_unchecked_bounded_par_iter(4)
+                .freq()
+        };
+
+        assert_eq!(freq, vec![2, 3, 2, 1, 1]);
+    }
+
+    #[test]
+    fn test_unchecked_bounded_indexed_parallel_iterator_freq() {
+        let data: Vec<usize> = vec![1, 2, 3, 2, 1, 4, 5, 3, 2];
+        let freq: Vec<usize> = unsafe {
+            data.par_iter()
+                .map(|&x| x - 1)
+                .into_unchecked_bounded_indexed_par_iter(4)
                 .freq()
         };
 
@@ -349,6 +479,33 @@ mod tests {
     fn test_hashable_parallel_iterator_weighted_freq() {
         let data = vec![("a", 2usize), ("b", 3), ("a", 1), ("c", 5)];
         let freq: HashMap<&str, usize> = data.into_hash_per_iter().weighted_freq();
+
+        assert_eq!(freq.get("a"), Some(&3));
+        assert_eq!(freq.get("b"), Some(&3));
+        assert_eq!(freq.get("c"), Some(&5));
+        assert_eq!(freq.len(), 3);
+    }
+
+    #[test]
+    fn test_hashable_indexed_parallel_iterator_freq() {
+        let data = vec!["a", "b", "a", "c", "b", "a"];
+        let freq: HashMap<&str, usize> =
+            data.par_iter().copied().into_hash_indexed_par_iter().freq();
+
+        assert_eq!(freq.get("a"), Some(&3));
+        assert_eq!(freq.get("b"), Some(&2));
+        assert_eq!(freq.get("c"), Some(&1));
+        assert_eq!(freq.len(), 3);
+    }
+
+    #[test]
+    fn test_hashable_indexed_parallel_iterator_weighted_freq() {
+        let data = vec![("a", 2usize), ("b", 3), ("a", 1), ("c", 5)];
+        let freq: HashMap<&str, usize> = data
+            .par_iter()
+            .copied()
+            .into_hash_indexed_par_iter()
+            .weighted_freq();
 
         assert_eq!(freq.get("a"), Some(&3));
         assert_eq!(freq.get("b"), Some(&3));

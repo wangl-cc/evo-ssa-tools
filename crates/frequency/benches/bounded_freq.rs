@@ -1,29 +1,26 @@
-//! Benchmarking to compare different methods of calculating frequency for elements in a range
-
 mod baseline;
 
-use std::{collections::HashMap, sync::LazyLock};
+use std::{collections::HashMap, hint::black_box, sync::LazyLock, time::Duration};
 
 use baseline::*;
-use divan::Bencher;
+use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use frequency::prelude::*;
 use rand::{
     distr::{Uniform, uniform::SampleUniform},
     prelude::*,
     rngs::SmallRng,
 };
-#[cfg(feature = "parallel")]
-use rayon::prelude::*;
-use zerocopy::{FromBytes, Immutable, IntoBytes};
-
-fn main() {
-    divan::main();
-}
 
 const SIZES: &[usize] = &[1 << 16, 1 << 20, 1 << 24];
+const MAX_VALUE: usize = 4096;
 
 trait Sampleable: SampleUniform + Count {
     fn from_usize(value: usize) -> Self;
+}
+
+trait BenchData: Sampleable + Copy + Send + Sync + 'static {
+    fn from_canonical(value: u32) -> Self;
+    fn data(size: usize) -> &'static [Self];
 }
 
 macro_rules! impl_sampleable {
@@ -40,136 +37,199 @@ macro_rules! impl_sampleable {
 
 impl_sampleable!(u8, u16, u32, u64, usize);
 
-fn prepare_data<T>(size: usize) -> (Vec<T>, usize)
-where
-    T: SampleUniform + IntoBytes + FromBytes + Immutable + Copy,
-{
-    const MAX_VALUE: usize = 4096;
-
-    fn cast_vec<A, B>(src: &[A]) -> Vec<B>
-    where
-        A: IntoBytes + Immutable,
-        B: FromBytes + Immutable + Clone,
-    {
-        let transmute: &[B] = zerocopy::transmute_ref!(src);
-        transmute.to_vec()
-    }
-
-    fn gen_data<T: Sampleable>(size: usize) -> Vec<T> {
-        Uniform::new_inclusive(T::ZERO, T::from_usize(MAX_VALUE))
-            .unwrap()
-            .sample_iter(&mut SmallRng::seed_from_u64(42))
-            .take(size)
-            .collect()
-    }
-
-    // Use precomputed data to avoid generating data for each benchmark run
-    static BENCH_DATA: LazyLock<HashMap<(usize, &'static str), Vec<u8>>> = LazyLock::new(|| {
-        let mut data = HashMap::new();
-
-        for &size in SIZES {
-            // data.insert((size, "u8"), cast_vec(&gen_data::<u8>(size)));
-            data.insert((size, "u16"), cast_vec(&gen_data::<u16>(size)));
-            data.insert((size, "u32"), cast_vec(&gen_data::<u32>(size)));
-        }
-
-        data
-    });
-
-    (
-        cast_vec(BENCH_DATA.get(&(size, std::any::type_name::<T>())).unwrap()),
-        MAX_VALUE,
-    )
-}
-
-#[divan::bench_group(sample_count = 100, sample_size = 10)]
-mod compare_methods {
-
-    use super::*;
-
-    macro_rules! bench_bounded_freq {
-        ($name:ident, $func:expr) => {
-            #[divan::bench(args = SIZES, types = [u16, u32])]
-            fn $name<T>(bencher: Bencher, size: usize)
-            where
-                T: SampleUniform
-                    + ToUsize
-                    + Eq
-                    + std::hash::Hash
-                    + nohash_hasher::IsEnabled
-                    + IntoBytes
-                    + FromBytes
-                    + Immutable
-                    + Copy
-                    + Send
-                    + Sync,
-            {
-                bencher
-                    .with_inputs(|| prepare_data::<T>(size))
-                    .bench_local_refs($func)
-            }
-        };
-    }
-
-    bench_bounded_freq!(baseline, |(data, max_value)| bounded_freq::<T, usize>(
-        data, *max_value
-    ));
-    bench_bounded_freq!(baseline_unchecked, |(data, max_value)| unsafe {
-        bounded_freq_unchecked::<T, usize>(data, *max_value)
-    });
-
-    bench_bounded_freq!(par_baseline_par, |(data, max_value)| {
-        par_bounded_freq::<T, usize>(
-            data,
-            *max_value,
-            std::thread::available_parallelism().expect("Failed to get available parallelism"),
-        )
-    });
-    bench_bounded_freq!(par_baseline_unchecked, |(data, max_value)| unsafe {
-        par_bounded_freq_unchecked::<T, usize>(
-            data,
-            *max_value,
-            std::thread::available_parallelism().expect("Failed to get available parallelism"),
-        )
-    });
-
-    bench_bounded_freq!(bounded_iter, |(data, max_value)| {
-        let freq: Vec<usize> = data.iter().copied().into_bounded_iter(*max_value).freq();
-        freq
-    });
-
-    bench_bounded_freq!(bounded_iter_unchecked, |(data, max_value)| unsafe {
-        let freq: Vec<usize> = data
+fn canonical_data(size: usize) -> &'static [u32] {
+    static DATA: LazyLock<HashMap<usize, Vec<u32>>> = LazyLock::new(|| {
+        SIZES
             .iter()
             .copied()
-            .into_unchecked_bounded_iter(*max_value)
-            .freq();
-        freq
+            .map(|size| (size, gen_data::<u32>(size)))
+            .collect()
     });
 
-    // 10x slower than other implementations, so commented out to decrease benchmarking time.
-    // bench_bounded_freq!(hash_iter, |(data, _)| {
-    //     let freq: nohash_hasher::IntMap<T, usize> = data.iter().copied().into_hash_iter().freq();
-    //     freq
-    // });
-
-    #[cfg(feature = "parallel")]
-    bench_bounded_freq!(par_bounded_iter, |(data, max_value)| {
-        let freq: Vec<usize> = data
-            .par_iter()
-            .copied()
-            .into_bounded_par_iter(*max_value)
-            .freq();
-        freq
-    });
-
-    #[cfg(feature = "parallel")]
-    bench_bounded_freq!(par_bounded_iter_unchecked, |(data, max_value)| unsafe {
-        let freq: Vec<usize> = data
-            .par_iter()
-            .copied()
-            .into_unchecked_bounded_par_iter(*max_value)
-            .freq();
-        freq
-    });
+    DATA.get(&size).unwrap().as_slice()
 }
+
+impl BenchData for u16 {
+    fn from_canonical(value: u32) -> Self {
+        value as u16
+    }
+
+    fn data(size: usize) -> &'static [Self] {
+        static DATA: LazyLock<HashMap<usize, Vec<u16>>> = LazyLock::new(|| {
+            SIZES
+                .iter()
+                .copied()
+                .map(|size| {
+                    (
+                        size,
+                        canonical_data(size)
+                            .iter()
+                            .copied()
+                            .map(u16::from_canonical)
+                            .collect(),
+                    )
+                })
+                .collect()
+        });
+
+        DATA.get(&size).unwrap().as_slice()
+    }
+}
+
+impl BenchData for u32 {
+    fn from_canonical(value: u32) -> Self {
+        value
+    }
+
+    fn data(size: usize) -> &'static [Self] {
+        canonical_data(size)
+    }
+}
+
+fn gen_data<T: Sampleable>(size: usize) -> Vec<T> {
+    Uniform::new_inclusive(T::ZERO, T::from_usize(MAX_VALUE))
+        .unwrap()
+        .sample_iter(&mut SmallRng::seed_from_u64(42))
+        .take(size)
+        .collect()
+}
+
+fn bench_bounded_freq<T>(c: &mut Criterion)
+where
+    T: BenchData + ToUsize + Eq + std::hash::Hash + nohash_hasher::IsEnabled + Copy + Send + Sync,
+{
+    let mut group = c.benchmark_group(std::any::type_name::<T>());
+
+    for &size in SIZES {
+        let data = T::data(size);
+        group.throughput(Throughput::Elements(size as u64));
+
+        group.bench_function(BenchmarkId::new("baseline", size), |b| {
+            b.iter(|| {
+                black_box(bounded_freq::<T, usize>(
+                    black_box(data),
+                    black_box(MAX_VALUE),
+                ))
+            })
+        });
+
+        group.bench_function(BenchmarkId::new("baseline_unchecked", size), |b| {
+            b.iter(|| unsafe {
+                black_box(bounded_freq_unchecked::<T, usize>(
+                    black_box(data),
+                    black_box(MAX_VALUE),
+                ))
+            })
+        });
+
+        group.bench_function(BenchmarkId::new("bounded_iter", size), |b| {
+            b.iter(|| {
+                let freq: Vec<usize> = black_box(data)
+                    .iter()
+                    .copied()
+                    .into_bounded_iter(black_box(MAX_VALUE))
+                    .freq();
+                black_box(freq)
+            })
+        });
+
+        group.bench_function(BenchmarkId::new("bounded_iter_unchecked", size), |b| {
+            b.iter(|| unsafe {
+                let freq: Vec<usize> = black_box(data)
+                    .iter()
+                    .copied()
+                    .into_unchecked_bounded_iter(black_box(MAX_VALUE))
+                    .freq();
+                black_box(freq)
+            })
+        });
+
+        #[cfg(feature = "parallel")]
+        {
+            use baseline::parallel::*;
+            #[cfg(feature = "parallel")]
+            use rayon::prelude::*;
+
+            let n_threads =
+                std::thread::available_parallelism().expect("Failed to get available parallelism");
+
+            group.bench_function(BenchmarkId::new("par_baseline_par", size), |b| {
+                b.iter(|| {
+                    black_box(par_bounded_freq::<T, usize>(
+                        black_box(data),
+                        black_box(MAX_VALUE),
+                        n_threads,
+                    ))
+                })
+            });
+
+            group.bench_function(BenchmarkId::new("par_baseline_unchecked", size), |b| {
+                b.iter(|| unsafe {
+                    black_box(par_bounded_freq_unchecked::<T, usize>(
+                        black_box(data),
+                        black_box(MAX_VALUE),
+                        n_threads,
+                    ))
+                })
+            });
+
+            group.bench_function(BenchmarkId::new("par_bounded_iter", size), |b| {
+                b.iter(|| {
+                    let freq: Vec<usize> = black_box(data)
+                        .par_iter()
+                        .copied()
+                        .into_bounded_par_iter(black_box(MAX_VALUE))
+                        .freq();
+                    black_box(freq)
+                })
+            });
+
+            group.bench_function(BenchmarkId::new("par_bounded_iter_unchecked", size), |b| {
+                b.iter(|| unsafe {
+                    let freq: Vec<usize> = black_box(data)
+                        .par_iter()
+                        .copied()
+                        .into_unchecked_bounded_par_iter(black_box(MAX_VALUE))
+                        .freq();
+                    black_box(freq)
+                })
+            });
+
+            group.bench_function(BenchmarkId::new("par_bounded_indexed_iter", size), |b| {
+                b.iter(|| {
+                    let freq: Vec<usize> = black_box(data)
+                        .par_iter()
+                        .copied()
+                        .into_bounded_indexed_par_iter(black_box(MAX_VALUE))
+                        .freq();
+                    black_box(freq)
+                })
+            });
+
+            group.bench_function(
+                BenchmarkId::new("par_bounded_indexed_iter_unchecked", size),
+                |b| {
+                    b.iter(|| unsafe {
+                        let freq: Vec<usize> = black_box(data)
+                            .par_iter()
+                            .copied()
+                            .into_unchecked_bounded_indexed_par_iter(black_box(MAX_VALUE))
+                            .freq();
+                        black_box(freq)
+                    })
+                },
+            );
+        }
+    }
+
+    group.finish();
+}
+
+criterion_group! {
+    name = benches;
+    config = Criterion::default()
+        .warm_up_time(Duration::from_millis(500))
+        .measurement_time(Duration::from_secs(2));
+    targets = bench_bounded_freq::<u16>, bench_bounded_freq::<u32>,
+}
+criterion_main!(benches);

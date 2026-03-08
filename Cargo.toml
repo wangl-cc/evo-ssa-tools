@@ -10,6 +10,7 @@ license = "MIT OR Apache-2.0"
 [workspace.dependencies]
 bitcode = { version = "0.6", default-features = false, features = ["std"] }
 blake3 = { version = "1.8.2" }
+criterion = { version = "0.8.2" }
 divan = { version = "0.1.17" }
 evo-marker = { path = "crates/evo-marker" }
 fjall = { version = "3", default-features = false }

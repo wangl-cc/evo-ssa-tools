@@ -36,6 +36,10 @@ Guidance:
 - Keep rustdoc and README examples aligned with actual behavior and APIs.
 - Do not perform broad style-only rewrites in untouched code.
 
+## Document Guidelines
+
+- Do not manually hard-wrap paragraphs; one paragraph in one line.
+
 ## PR & Commit Expectations
 
 - Use Conventional Commits.

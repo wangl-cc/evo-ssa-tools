@@ -9,14 +9,17 @@ license.workspace = true
 harness = false
 name = "bounded_freq"
 
+[[bench]]
+harness = false
+name = "hash_freq"
+
 [dependencies]
 rayon = { workspace = true, optional = true }
 
 [dev-dependencies]
-divan = { workspace = true }
+criterion = { workspace = true }
 nohash-hasher = { workspace = true }
 rand = { workspace = true }
-zerocopy = { workspace = true }
 
 [features]
 parallel = ["dep:rayon"]
