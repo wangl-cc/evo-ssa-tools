@@ -3,13 +3,17 @@ mod common;
 use std::{hint::black_box, time::Duration};
 
 use common::{MAX_VALUE, SIZES, canonical_u32_data, str_data};
-use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
+use criterion::{
+    AxisScale, BenchmarkId, Criterion, PlotConfiguration, Throughput, criterion_group,
+    criterion_main,
+};
 use frequency::prelude::*;
 use nohash_hasher::IntMap;
 use rapidhash::RapidHashMap;
 
 fn bench_hash_freq_u32(c: &mut Criterion) {
     let mut group = c.benchmark_group("hash/u32");
+    group.plot_config(PlotConfiguration::default().summary_scale(AxisScale::Logarithmic));
 
     for &size in SIZES {
         let data = canonical_u32_data(size);
@@ -95,6 +99,7 @@ fn bench_hash_freq_u32(c: &mut Criterion) {
 
 fn bench_hash_freq_str(c: &mut Criterion) {
     let mut group = c.benchmark_group("hash/str");
+    group.plot_config(PlotConfiguration::default().summary_scale(AxisScale::Logarithmic));
 
     for &size in SIZES {
         let data = str_data(size);

@@ -5,7 +5,10 @@ use std::{hint::black_box, time::Duration};
 
 use baseline::*;
 use common::{BenchData, MAX_VALUE, SIZES};
-use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
+use criterion::{
+    AxisScale, BenchmarkId, Criterion, PlotConfiguration, Throughput, criterion_group,
+    criterion_main,
+};
 use frequency::prelude::*;
 
 fn bench_bounded_freq<T>(c: &mut Criterion)
@@ -13,6 +16,7 @@ where
     T: BenchData + ToUsize + Eq + std::hash::Hash + nohash_hasher::IsEnabled + Copy + Send + Sync,
 {
     let mut group = c.benchmark_group(format!("bounded/{}", std::any::type_name::<T>()));
+    group.plot_config(PlotConfiguration::default().summary_scale(AxisScale::Logarithmic));
 
     for &size in SIZES {
         let data = T::data(size);
