@@ -41,7 +41,6 @@ pub struct CompressedCodec<E, C, P = DefaultCompressPolicy> {
     frame: CompressFrame<C>,
     policy: P,
     max_encode_len: Option<NonZeroUsize>,
-    max_decode_len: Option<NonZeroUsize>,
 }
 
 impl<E, C, P> CompressedCodec<E, C, P> {
@@ -52,13 +51,12 @@ impl<E, C, P> CompressedCodec<E, C, P> {
             frame: CompressFrame::new(compressor),
             policy,
             max_encode_len: None,
-            max_decode_len: None,
         }
     }
 
     /// Replace the compressor while keeping the inner engine and policy.
     pub fn with_compressor(mut self, compressor: C) -> Self {
-        self.frame = CompressFrame::new(compressor);
+        self.frame = self.frame.with_compressor(compressor);
         self
     }
 
@@ -68,7 +66,6 @@ impl<E, C, P> CompressedCodec<E, C, P> {
             inner,
             frame,
             max_encode_len,
-            max_decode_len,
             ..
         } = self;
         CompressedCodec {
@@ -76,7 +73,6 @@ impl<E, C, P> CompressedCodec<E, C, P> {
             frame,
             policy,
             max_encode_len,
-            max_decode_len,
         }
     }
 
@@ -92,7 +88,9 @@ impl<E, C, P> CompressedCodec<E, C, P> {
     ///
     /// Passing `0` removes the limit.
     pub fn with_max_decode_len(mut self, max_decode_len: usize) -> Self {
-        self.max_decode_len = NonZeroUsize::new(max_decode_len);
+        self.frame = self
+            .frame
+            .with_max_decode_len(NonZeroUsize::new(max_decode_len));
         self
     }
 }
@@ -125,7 +123,6 @@ where
             frame,
             policy,
             max_encode_len,
-            max_decode_len: _,
         } = self;
         let raw = inner.encode(value)?;
         let raw_size = raw.len();
@@ -158,7 +155,7 @@ where
     }
 
     fn decode(&mut self, bytes: &[u8]) -> Result<T, CodecError> {
-        let raw = self.frame.decompress(bytes, self.max_decode_len)?;
+        let raw = self.frame.decompress(bytes)?;
         self.inner.decode(raw)
     }
 }

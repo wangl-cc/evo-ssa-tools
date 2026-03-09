@@ -49,9 +49,9 @@ use super::algorithm::Compress;
 pub const CHECKSUM_BYTES: usize = core::mem::size_of::<u32>();
 /// Bytes used by the stored original payload length in compressed frames.
 pub const ORIGINAL_LEN_BYTES: usize = core::mem::size_of::<u32>();
-/// Fixed framing overhead for a raw frame: header plus trailing checksum.
+/// Fixed framing overhead for a raw frame: header + trailing checksum.
 pub const RAW_FRAME_EXTRA_LEN: usize = Header::HEADER_BYTES + CHECKSUM_BYTES;
-/// Fixed framing overhead for a compressed frame: header, original length, and trailing checksum.
+/// Fixed framing overhead for a compressed frame: header + original length + trailing checksum.
 pub const COMPRESSED_FRAME_EXTRA_LEN: usize =
     Header::HEADER_BYTES + ORIGINAL_LEN_BYTES + CHECKSUM_BYTES;
 
@@ -143,6 +143,7 @@ impl Header {
 pub(super) struct CompressFrame<C> {
     scratch: Vec<u8>,
     compressor: C,
+    max_decode_len: Option<NonZeroUsize>,
 }
 
 impl<C> CompressFrame<C> {
@@ -150,7 +151,18 @@ impl<C> CompressFrame<C> {
         Self {
             scratch: Vec::new(),
             compressor,
+            max_decode_len: None,
         }
+    }
+
+    pub(super) fn with_compressor(mut self, compressor: C) -> Self {
+        self.compressor = compressor;
+        self
+    }
+
+    pub(super) fn with_max_decode_len(mut self, max_decode_len: Option<NonZeroUsize>) -> Self {
+        self.max_decode_len = max_decode_len;
+        self
     }
 }
 
@@ -222,11 +234,7 @@ impl<C: Compress> CompressFrame<C> {
     ///
     /// Raw frames borrow directly from the input slice. Compressed frames decompress into the
     /// reusable scratch buffer owned by this frame.
-    pub(super) fn decompress<'a>(
-        &'a mut self,
-        bytes: &'a [u8],
-        max_decode_len: Option<NonZeroUsize>,
-    ) -> Result<&'a [u8], Error> {
+    pub(super) fn decompress<'a>(&'a mut self, bytes: &'a [u8]) -> Result<&'a [u8], Error> {
         let (header_byte, payload) = bytes.split_first().ok_or(Error::EmptyInput)?;
         let header = Header::from_inner(*header_byte);
 
@@ -275,7 +283,7 @@ impl<C: Compress> CompressFrame<C> {
                         .try_into()
                         .expect("payload is checked to be at least ORIGINAL_LEN_BYTES"),
                 ) as usize;
-                if let Some(max_decode_len) = max_decode_len
+                if let Some(max_decode_len) = self.max_decode_len
                     && original_len > max_decode_len.get()
                 {
                     return Err(Error::ContentTooLarge);
@@ -409,8 +417,8 @@ mod tests {
     where
         C: Compress,
     {
-        let mut frame = CompressFrame::new(compressor);
-        match frame.decompress(bytes, max_decode_len) {
+        let mut frame = CompressFrame::new(compressor).with_max_decode_len(max_decode_len);
+        match frame.decompress(bytes) {
             Err(err) => err,
             Ok(_) => panic!("expected decode error"),
         }
@@ -539,8 +547,8 @@ mod tests {
     #[test]
     fn raw_frame_ignores_decode_limit() -> Result<(), Error> {
         let bytes = raw_frame(b"raw-bytes");
-        let mut frame = CompressFrame::new(TestCompress);
-        let decoded = frame.decompress(&bytes, NonZeroUsize::new(1))?;
+        let mut frame = CompressFrame::new(TestCompress).with_max_decode_len(NonZeroUsize::new(1));
+        let decoded = frame.decompress(&bytes)?;
         assert_eq!(decoded, b"raw-bytes");
         Ok(())
     }
