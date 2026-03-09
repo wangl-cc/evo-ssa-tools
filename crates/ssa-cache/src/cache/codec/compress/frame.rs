@@ -353,6 +353,26 @@ mod tests {
     }
 
     #[derive(Default)]
+    struct ErrorDecodeCompress;
+
+    impl Compress for ErrorDecodeCompress {
+        const ALGORITHM_ID: u8 = 13;
+
+        fn max_output_size(&self, input_len: usize) -> usize {
+            input_len
+        }
+
+        fn compress_into(&self, input: &[u8], output: &mut [u8]) -> usize {
+            output[..input.len()].copy_from_slice(input);
+            input.len()
+        }
+
+        fn decompress_into(&self, _input: &[u8], _output: &mut [u8]) -> Result<usize, Error> {
+            Err(Error::TruncatedInput)
+        }
+    }
+
+    #[derive(Default)]
     struct TestCompress;
 
     impl Compress for TestCompress {
@@ -465,6 +485,16 @@ mod tests {
     }
 
     #[test]
+    fn decompressor_errors_propagate() {
+        let header = Header::new_compressed(ErrorDecodeCompress::ALGORITHM_ID);
+        let bytes = compressed_frame(header, 8, &[1, 2, 3, 4]);
+        assert!(matches!(
+            decode_frame_error(&bytes, ErrorDecodeCompress, None),
+            Error::TruncatedInput
+        ));
+    }
+
+    #[test]
     fn unsupported_version_returns_error() {
         assert!(matches!(
             decode_frame_error(&[0b0010_0000], TestCompress, None),
@@ -551,5 +581,20 @@ mod tests {
         let decoded = frame.decompress(&bytes)?;
         assert_eq!(decoded, b"raw-bytes");
         Ok(())
+    }
+
+    #[test]
+    fn frame_reuses_scratch_without_resizing() {
+        let mut frame = CompressFrame::new(TestCompress);
+
+        frame.encode_raw(b"abcdef");
+        let raw_capacity = frame.scratch.len();
+        frame.encode_raw(b"a");
+        assert_eq!(frame.scratch.len(), raw_capacity);
+
+        frame.encode_compressed(&vec![7u8; 1024]);
+        let compressed_capacity = frame.scratch.len();
+        frame.encode_compressed(&[7u8; 8]);
+        assert_eq!(frame.scratch.len(), compressed_capacity);
     }
 }
