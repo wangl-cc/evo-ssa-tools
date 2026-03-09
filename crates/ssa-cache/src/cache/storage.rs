@@ -219,7 +219,7 @@ mod tests {
     #[test]
     fn test_hashmap_store_compressed_value_roundtrip() -> Result<()> {
         use crate::cache::codec::{
-            compress::{CompressedCodec, lz4::Lz4},
+            compress::{CompressedCodec, algorithm::Lz4},
             fixtures::FixtureEngine,
         };
         type Lz4Engine = CompressedCodec<FixtureEngine, Lz4>;
@@ -247,12 +247,12 @@ mod tests {
     #[test]
     fn test_hashmap_store_skips_oversize_compressed_value() -> Result<()> {
         use crate::cache::codec::compress::{
-            CompressedCodec, fixtures::SizedBytesEngine, lz4::Lz4,
+            CompressedCodec, algorithm::Lz4, fixtures::SizedBytesEngine,
         };
         type Lz4Engine = CompressedCodec<SizedBytesEngine, Lz4>;
 
         let store = DefaultHashMapStore::default();
-        let mut engine = Lz4Engine::default();
+        let mut engine = Lz4Engine::default().with_max_encode_len(64 * 1024 * 1024);
         let key = b"oversize";
         let value = 64 * 1024 * 1024 + 1;
 
