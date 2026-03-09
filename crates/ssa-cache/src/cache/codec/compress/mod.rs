@@ -16,6 +16,11 @@ use self::{
 
 /// Compression wrapper engine over a base serialization engine.
 ///
+/// Payloads larger than `u32::MAX` bytes are outside the supported design
+/// envelope of the framed compressed format. If compression is attempted for
+/// such a payload, encoding may panic while constructing the compressed frame
+/// header.
+///
 /// Encoding path:
 ///
 /// - Serialize `T` with the inner engine `E`.
@@ -139,7 +144,7 @@ where
                 Ok(frame.get_frame(raw_frame_size))
             }
             CompressionAction::Compress => {
-                let compressed_frame_size = frame.encode_compressed(raw)?;
+                let compressed_frame_size = frame.encode_compressed(raw);
                 let action = policy.after_compress(raw_frame_size, compressed_frame_size);
                 match action {
                     CompressionAction::Compress => Ok(frame.get_frame(compressed_frame_size)),
@@ -203,11 +208,10 @@ pub(crate) mod fixtures {
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
-    use super::{
-        fixtures::{PassthroughBytesEngine, SizedBytesEngine},
-        *,
-    };
-    use crate::cache::codec::{CodecEngine, SkipReason};
+    use fixtures::{PassthroughBytesEngine, SizedBytesEngine};
+
+    use super::*;
+    use crate::cache::codec::{CodecEngine, SkipReason, fixtures::Error as FixtureError};
 
     #[derive(Default)]
     struct TestCompress;
@@ -246,6 +250,41 @@ mod tests {
                 }
                 _ => Err(frame::Error::TruncatedInput),
             }
+        }
+    }
+
+    #[derive(Default)]
+    struct RejectingEncodeEngine;
+
+    impl CodecEngine<Vec<u8>> for RejectingEncodeEngine {
+        fn encode(&mut self, value: &Vec<u8>) -> Result<&[u8], SkipReason> {
+            Err(SkipReason::EncodedValueTooLarge {
+                encoded_len: value.len(),
+                max_len: 0,
+            })
+        }
+
+        fn decode(&mut self, bytes: &[u8]) -> Result<Vec<u8>, CodecError> {
+            Ok(bytes.to_vec())
+        }
+    }
+
+    #[derive(Default)]
+    struct RejectingDecodeEngine {
+        buffer: Vec<u8>,
+    }
+
+    impl CodecEngine<Vec<u8>> for RejectingDecodeEngine {
+        fn encode(&mut self, value: &Vec<u8>) -> Result<&[u8], SkipReason> {
+            self.buffer.clear();
+            self.buffer.extend_from_slice(value);
+            Ok(&self.buffer)
+        }
+
+        fn decode(&mut self, _: &[u8]) -> Result<Vec<u8>, CodecError> {
+            Err(CodecError::from(FixtureError::Invalid(
+                "inner decode rejected payload",
+            )))
         }
     }
 
@@ -323,6 +362,18 @@ mod tests {
     }
 
     #[test]
+    fn codec_propagates_inner_encode_skip_reason() {
+        let value = vec![1u8; 128];
+        let mut engine: CompressedCodec<RejectingEncodeEngine, TestCompress> =
+            CompressedCodec::new(RejectingEncodeEngine);
+
+        assert!(matches!(
+            engine.encode(&value),
+            Err(SkipReason::EncodedValueTooLarge { .. })
+        ));
+    }
+
+    #[test]
     fn runtime_policy_instance_can_compress_small_values() -> crate::Result<()> {
         let value = vec![b'a'; 1024];
         let mut engine: CompressedCodec<PassthroughBytesEngine, TestCompress, AggressivePolicy> =
@@ -351,6 +402,36 @@ mod tests {
 
         assert_eq!(decoded, value);
         Ok(())
+    }
+
+    #[test]
+    fn codec_maps_frame_decode_errors() {
+        let value = vec![b'a'; 96 * 1024];
+        let mut engine: CompressedCodec<PassthroughBytesEngine, TestCompress, AggressivePolicy> =
+            CompressedCodec::new(PassthroughBytesEngine::default()).with_policy(AggressivePolicy);
+
+        let mut encoded = engine.encode(&value).unwrap().to_vec();
+        let last = encoded.last_mut().expect("compressed frame is non-empty");
+        *last ^= 0xFF;
+
+        assert!(matches!(
+            engine.decode(&encoded),
+            Err(CodecError::Compress(_))
+        ));
+    }
+
+    #[test]
+    fn codec_propagates_inner_decode_errors() {
+        let value = vec![7u8; 1024];
+        let mut engine: CompressedCodec<RejectingDecodeEngine, TestCompress> =
+            CompressedCodec::new(RejectingDecodeEngine::default());
+
+        let encoded = engine.encode(&value).unwrap().to_vec();
+
+        assert!(matches!(
+            engine.decode(&encoded),
+            Err(CodecError::Fixture(_))
+        ));
     }
 
     #[test]

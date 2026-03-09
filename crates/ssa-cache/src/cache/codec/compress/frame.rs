@@ -43,7 +43,7 @@ use core::num::NonZeroUsize;
 
 use crc32c::crc32c;
 
-use super::{super::SkipReason, algorithm::Compress};
+use super::algorithm::Compress;
 
 /// Bytes used by the trailing CRC32C checksum in both raw and compressed frames.
 pub const CHECKSUM_BYTES: usize = core::mem::size_of::<u32>();
@@ -183,13 +183,14 @@ impl<C: Compress> CompressFrame<C> {
     ///
     /// The frame size of the encoded frame is `compressed_len + COMPRESSED_FRAME_EXTRA_LEN`.
     /// It can be accessed using [`frame`](Self::frame).
-    pub(super) fn encode_compressed(&mut self, raw: &[u8]) -> Result<usize, SkipReason> {
-        let Ok(original_len) = u32::try_from(raw.len()) else {
-            return Err(SkipReason::EncodedValueTooLarge {
-                encoded_len: raw.len(),
-                max_len: u32::MAX as usize,
-            });
-        };
+    ///
+    /// # Panics
+    ///
+    /// Payloads larger than `u32::MAX` are outside the supported framed format
+    /// and will panic here when writing the stored original length field.
+    pub(super) fn encode_compressed(&mut self, raw: &[u8]) -> usize {
+        let original_len = u32::try_from(raw.len())
+            .expect("compressed frame header requires raw.len() <= u32::MAX");
 
         let max_size = self.compressor.max_output_size(raw.len());
         let compressed_frame_capacity = Self::COMPRESSED_PREFIX_LEN + max_size + CHECKSUM_BYTES;
@@ -209,7 +210,7 @@ impl<C: Compress> CompressFrame<C> {
         self.scratch[Self::COMPRESSED_PREFIX_LEN + compressed_len..total_compressed_len]
             .copy_from_slice(&checksum.to_le_bytes());
 
-        Ok(total_compressed_len)
+        total_compressed_len
     }
 
     /// Get the frame bytes for the given size.
