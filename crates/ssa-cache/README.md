@@ -246,6 +246,50 @@ output.
 - `Pipeline` / `PipelineExt`: stage composition and per-stage caching.
 - `CacheStore`: cache backend interface and the in-memory implementation.
 
+## Compression Policy
+
+`CompressedCodec<E, C, P>` lets you customize compression decisions with a `CompressPolicy`. The policy decides whether a serialized payload should stay raw or attempt compression, and then decides whether a compressed frame is worth keeping after compression finishes.
+
+```rust
+# #[cfg(feature = "lz4")]
+# {
+use ssa_cache::{
+    cache::codec::compress::policy::{CompressionAction, CompressPolicy},
+    prelude::*,
+};
+
+struct TunedPolicy;
+
+impl CompressPolicy for TunedPolicy {
+    fn before_compress(&self, raw_size: usize) -> CompressionAction {
+        if raw_size < 8 * 1024 {
+            CompressionAction::Raw
+        } else {
+            CompressionAction::Compress
+        }
+    }
+
+    fn after_compress(
+        &self,
+        raw_frame_size: usize,
+        compressed_frame_size: usize,
+    ) -> CompressionAction {
+        if raw_frame_size.saturating_sub(compressed_frame_size) >= 512 {
+            CompressionAction::Compress
+        } else {
+            CompressionAction::Raw
+        }
+    }
+}
+
+let _engine = CompressedCodec::<Bitcode, Lz4>::new(Bitcode::default()).with_policy(TunedPolicy);
+# }
+```
+
+Encode-time size limits are configured on `CompressedCodec` itself with `.with_max_encode_len(...)`. Pass `0` to remove the limit.
+
+`CompressedCodec` can also enforce a decode-time compressed-payload guard via `.with_max_decode_len(...)` if you want to cap scratch allocation for compressed frames. Pass `0` to remove the limit. This guard is independent from `CompressPolicy` and does not apply to raw frames.
+
 ## Feature Flags
 
 - `bitcode` (enabled by default): `bitcode` serialization/deserialization.

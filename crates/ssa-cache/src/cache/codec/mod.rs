@@ -62,7 +62,7 @@ pub enum Error {
 
     #[cfg(feature = "compress")]
     #[error("Compression codec error")]
-    Compress(#[from] crate::cache::codec::compress::Error),
+    Compress(#[from] crate::cache::codec::compress::frame::Error),
 
     #[cfg(test)]
     #[error("Fixture codec error")]
