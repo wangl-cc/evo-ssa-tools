@@ -1,6 +1,9 @@
 use std::marker::PhantomData;
 
-use crate::{CacheStore, CanonicalEncode, Compute, Result, cache::codec::CodecEngine};
+use crate::{
+    CacheStore, CanonicalEncode, Compute, Result,
+    cache::{codec::CodecEngine, storage::WorkerForkStore},
+};
 
 /// Two-stage pipeline node.
 ///
@@ -50,11 +53,11 @@ impl<S, C, T, I, M, O> Pipeline<S, C, T, I, M, O> {
     }
 }
 
-impl<S: Clone, C: Clone, T: Clone, I, M, O> Clone for Pipeline<S, C, T, I, M, O> {
+impl<S: Clone, C: WorkerForkStore, T: Clone, I, M, O> Clone for Pipeline<S, C, T, I, M, O> {
     fn clone(&self) -> Self {
         Self {
             source: self.source.clone(),
-            cache: self.cache.clone(),
+            cache: self.cache.fork_store(),
             transform: self.transform.clone(),
             _phantom: PhantomData,
         }
@@ -87,7 +90,7 @@ where
         let source = &mut self.source;
         let transform = &self.transform;
 
-        cache.fetch_or_execute::<O, Self::Engine, _>(encoded, engine, |engine_buffer| {
+        cache.fetch_or_execute(encoded, engine, |engine_buffer| {
             let intermediate = source.execute_with_encoded_input(input, encoded, engine_buffer)?;
             transform(intermediate)
         })
@@ -204,28 +207,28 @@ mod tests {
     fn test_pipeline_source_and_transform_cache_split() -> Result<()> {
         let stage1_calls = Arc::new(AtomicUsize::new(0));
         let stage2_calls = Arc::new(AtomicUsize::new(0));
-        let stage1_cache = DefaultHashMapStore::default();
-
-        let stage1 = {
-            let stage1_calls = stage1_calls.clone();
-            DeterministicStep::new(
-                stage1_cache.clone(),
+        let stage1 = DeterministicStep::new(
+            DefaultHashMapStore::default(),
+            {
+                let stage1_calls = stage1_calls.clone();
                 move |input| {
                     stage1_calls.fetch_add(1, Ordering::SeqCst);
                     sleep(Duration::from_millis(10));
                     Ok(input * 2)
-                },
-                FixtureEngine::default,
-            )
-        };
+                }
+            },
+            FixtureEngine::default,
+        );
 
         let pipeline1 = {
             let stage2_calls = stage2_calls.clone();
-            stage1.pipe(DefaultHashMapStore::default(), move |intermediate| {
-                stage2_calls.fetch_add(1, Ordering::SeqCst);
-                sleep(Duration::from_millis(10));
-                Ok(format!("Result: {}", intermediate))
-            })
+            stage1
+                .clone()
+                .pipe(DefaultHashMapStore::default(), move |intermediate| {
+                    stage2_calls.fetch_add(1, Ordering::SeqCst);
+                    sleep(Duration::from_millis(10));
+                    Ok(format!("Result: {}", intermediate))
+                })
         };
 
         let results1 = pipeline1
@@ -237,21 +240,9 @@ mod tests {
         assert_eq!(stage1_calls.load(Ordering::SeqCst), 3);
         assert_eq!(stage2_calls.load(Ordering::SeqCst), 3);
 
-        let stage1_reused = {
-            let stage1_calls = stage1_calls.clone();
-            DeterministicStep::new(
-                stage1_cache,
-                move |input| {
-                    stage1_calls.fetch_add(1, Ordering::SeqCst);
-                    sleep(Duration::from_millis(10));
-                    Ok(input * 2)
-                },
-                FixtureEngine::default,
-            )
-        };
         let pipeline2 = {
             let stage2_calls = stage2_calls.clone();
-            stage1_reused.pipe(DefaultHashMapStore::default(), move |intermediate| {
+            stage1.pipe(DefaultHashMapStore::default(), move |intermediate| {
                 stage2_calls.fetch_add(1, Ordering::SeqCst);
                 sleep(Duration::from_millis(10));
                 Ok(format!("Result: {}", intermediate))

@@ -12,7 +12,11 @@ pub mod deterministic;
 pub mod pipeline;
 pub mod stochastic;
 
-use cache::{canonical_encode::CanonicalEncode, codec::CodecEngine, storage::CacheStore};
+pub use cache::{
+    canonical_encode::CanonicalEncode,
+    codec::{CodecEngine, EngineFactory},
+    storage::CacheStore,
+};
 use error::{Error, Result};
 
 /// Core trait for execution nodes.
@@ -160,6 +164,12 @@ pub mod prelude {
     pub use crate::cache::codec::compress::{CompressedCodec, policy::DefaultCompressPolicy};
     #[cfg(feature = "bitcode")]
     pub use crate::cache::codec::engine::bitcode::Bitcode;
+    #[cfg(feature = "fjall2")]
+    pub use crate::cache::storage::Fjall2Store;
+    #[cfg(feature = "fjall3")]
+    pub use crate::cache::storage::Fjall3Store;
+    #[cfg(feature = "redb")]
+    pub use crate::cache::storage::RedbStore;
     pub use crate::{
         Compute, ExecuteOptions,
         cache::{

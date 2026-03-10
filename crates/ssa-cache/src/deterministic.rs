@@ -2,7 +2,10 @@ use std::marker::PhantomData;
 
 use crate::{
     CacheStore, CanonicalEncode, Compute, Result,
-    cache::codec::{CodecEngine, EngineFactory},
+    cache::{
+        codec::{CodecEngine, EngineFactory},
+        storage::WorkerForkStore,
+    },
 };
 
 /// Deterministic compute node.
@@ -38,8 +41,7 @@ use crate::{
 /// return values written by another computation for identical input bytes.
 ///
 /// Keyspace compatibility is caller-managed: if you change the compute logic, input encoding, or
-/// output type in an incompatible way, use a fresh keyspace (e.g. a different store, or a
-/// different `fjall::Keyspace`).
+/// output type in an incompatible way, use a fresh keyspace (e.g. a different store wrapper).
 ///
 /// To disable caching entirely, pass `()` as the cache.
 #[derive(Debug)]
@@ -71,10 +73,10 @@ where
     }
 }
 
-impl<C: Clone, I, O, F: Clone, EF: Clone> Clone for DeterministicStep<C, I, O, F, EF> {
+impl<C: WorkerForkStore, I, O, F: Clone, EF: Clone> Clone for DeterministicStep<C, I, O, F, EF> {
     fn clone(&self) -> Self {
         Self {
-            cache: self.cache.clone(),
+            cache: self.cache.fork_store(),
             function: self.function.clone(),
             engine_factory: self.engine_factory.clone(),
             _phantom: PhantomData,
@@ -306,32 +308,20 @@ mod tests {
 
     #[test]
     fn test_explicit_shared_cache_behavior() -> Result<()> {
-        let shared_cache = DefaultHashMapStore::default();
         let call_count = Arc::new(AtomicUsize::new(0));
 
-        let mut compute_a = {
-            let call_count = call_count.clone();
-            DeterministicStep::new(
-                shared_cache.clone(),
+        let mut compute_a = DeterministicStep::new(
+            DefaultHashMapStore::default(),
+            {
+                let call_count = call_count.clone();
                 move |i: usize| {
                     call_count.fetch_add(1, Ordering::SeqCst);
                     Ok(i * 7)
-                },
-                FixtureEngine::default,
-            )
-        };
-
-        let mut compute_b = {
-            let call_count = call_count.clone();
-            DeterministicStep::new(
-                shared_cache,
-                move |i: usize| {
-                    call_count.fetch_add(1, Ordering::SeqCst);
-                    Ok(i * 7)
-                },
-                FixtureEngine::default,
-            )
-        };
+                }
+            },
+            FixtureEngine::default,
+        );
+        let mut compute_b = compute_a.clone();
 
         let output_a = execute_one(&mut compute_a, 4usize)?;
         let output_b = execute_one(&mut compute_b, 4usize)?;

@@ -19,12 +19,14 @@ Use these commands as the default validation set:
 cargo check
 cargo test
 cargo clippy --all-targets -- -D warnings
+cargo +nightly llvm-cov
 cargo +nightly fmt
 ```
 
 Guidance:
 
 - Prefer smallest-scope (`-p <crate>`) checks (check, clippy, test) first, then run workspace checks before final handoff.
+- Use `cargo +nightly llvm-cov` for coverage runs.
 - Run `cargo +nightly fmt` on touched Rust code before commit.
 
 ## Coding Guidelines (Rust 2024)
