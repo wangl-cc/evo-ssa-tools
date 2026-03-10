@@ -78,4 +78,21 @@ mod tests {
         );
         Ok(())
     }
+
+    #[test]
+    fn test_fjall3_store_fetch_encoded_and_fork() -> Result<()> {
+        let tmp = tempfile::tempdir().unwrap();
+        let db = ::fjall3::Database::builder(&tmp)
+            .open()
+            .map_err(StorageError::from)?;
+        let store = Fjall3Store::open(db, "raw", None)?;
+        let forked = store.fork_store();
+
+        store.store_encoded(b"k", b"payload")?;
+
+        let encoded = forked.fetch_encoded(b"k")?.expect("value should exist");
+        assert_eq!(encoded.as_ref(), b"payload");
+        assert!(forked.fetch_encoded(b"missing")?.is_none());
+        Ok(())
+    }
 }

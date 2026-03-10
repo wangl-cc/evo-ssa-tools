@@ -4,65 +4,25 @@ use redb::{ReadableDatabase, TableDefinition};
 
 use super::{CacheStore, StorageError, StorageResult, WorkerForkStore, private};
 
-#[derive(thiserror::Error, Debug)]
-enum RedbError {
-    #[error(transparent)]
-    Commit(#[from] redb::CommitError),
-
-    #[error(transparent)]
-    Database(#[from] redb::DatabaseError),
-
-    #[error(transparent)]
-    Storage(#[from] redb::StorageError),
-
-    #[error(transparent)]
-    Table(#[from] redb::TableError),
-
-    #[error(transparent)]
-    Transaction(#[from] redb::TransactionError),
+macro_rules! impl_storage_error_from_redb {
+    ($($ty:path),* $(,)?) => {
+        $(
+            impl From<$ty> for StorageError {
+                fn from(error: $ty) -> Self {
+                    Self::Redb(error.into())
+                }
+            }
+        )*
+    };
 }
 
-impl From<RedbError> for StorageError {
-    fn from(error: RedbError) -> Self {
-        match error {
-            RedbError::Commit(error) => Self::Redb(error.into()),
-            RedbError::Database(error) => Self::Redb(error.into()),
-            RedbError::Storage(error) => Self::Redb(error.into()),
-            RedbError::Table(error) => Self::Redb(error.into()),
-            RedbError::Transaction(error) => Self::Redb(error.into()),
-        }
-    }
-}
-
-impl From<redb::CommitError> for StorageError {
-    fn from(error: redb::CommitError) -> Self {
-        RedbError::from(error).into()
-    }
-}
-
-impl From<redb::DatabaseError> for StorageError {
-    fn from(error: redb::DatabaseError) -> Self {
-        RedbError::from(error).into()
-    }
-}
-
-impl From<redb::StorageError> for StorageError {
-    fn from(error: redb::StorageError) -> Self {
-        RedbError::from(error).into()
-    }
-}
-
-impl From<redb::TableError> for StorageError {
-    fn from(error: redb::TableError) -> Self {
-        RedbError::from(error).into()
-    }
-}
-
-impl From<redb::TransactionError> for StorageError {
-    fn from(error: redb::TransactionError) -> Self {
-        RedbError::from(error).into()
-    }
-}
+impl_storage_error_from_redb!(
+    redb::CommitError,
+    redb::DatabaseError,
+    redb::StorageError,
+    redb::TableError,
+    redb::TransactionError,
+);
 
 #[doc(hidden)]
 pub struct RedbEncoded<'a>(redb::AccessGuard<'a, &'static [u8]>);
@@ -144,6 +104,8 @@ mod tests {
     use super::*;
     use crate::{cache::codec::fixtures::FixtureEngine, error::Result as CrateResult};
 
+    const REDB_BYTES_TABLE: redb::TableDefinition<&[u8], u64> = redb::TableDefinition::new("test");
+
     #[test]
     fn test_redb_store() -> CrateResult<()> {
         let file = tempfile::NamedTempFile::new().unwrap();
@@ -166,6 +128,45 @@ mod tests {
                 .fetch::<u64, FixtureEngine>(b"k", &mut engine)
                 .is_err()
         );
+        Ok(())
+    }
+
+    #[test]
+    fn test_redb_store_fetch_encoded_and_fork() -> CrateResult<()> {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let db = Arc::new(::redb::Database::create(file.path()).map_err(StorageError::from)?);
+        let store = RedbStore::from_arc(db, "test")?;
+        let forked = store.fork_store();
+
+        store.store_encoded(b"raw", b"payload")?;
+
+        let encoded = forked.fetch_encoded(b"raw")?.expect("value should exist");
+        assert_eq!(encoded.as_ref(), b"payload");
+        assert!(forked.fetch_encoded(b"missing")?.is_none());
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_redb_store_open_type_mismatch_returns_storage_error() -> CrateResult<()> {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let db = ::redb::Database::create(file.path()).map_err(StorageError::from)?;
+
+        let tx = db.begin_write().map_err(StorageError::from)?;
+        {
+            let mut table = tx
+                .open_table(REDB_BYTES_TABLE)
+                .map_err(StorageError::from)?;
+            table
+                .insert(b"k".as_slice(), &1u64)
+                .map_err(StorageError::from)?;
+        }
+        tx.commit().map_err(StorageError::from)?;
+
+        assert!(matches!(
+            RedbStore::new(db, "test"),
+            Err(StorageError::Redb(_))
+        ));
         Ok(())
     }
 }
