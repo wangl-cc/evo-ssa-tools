@@ -82,6 +82,10 @@ pub enum Error {
     #[cfg(feature = "lz4")]
     #[error("Lz4 decompression error")]
     Lz4(#[from] lz4_flex::block::DecompressError),
+
+    #[cfg(feature = "zstd")]
+    #[error("Zstd decompression error")]
+    Zstd(#[from] std::io::Error),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -209,10 +213,14 @@ impl<C: Compress> CompressFrame<C> {
         if self.scratch.len() < compressed_frame_capacity {
             self.scratch.resize(compressed_frame_capacity, 0);
         }
-        let compressed_len = self.compressor.compress_into(
-            raw,
-            &mut self.scratch[Self::COMPRESSED_PREFIX_LEN..Self::COMPRESSED_PREFIX_LEN + max_size],
-        );
+        let compressed_len = unsafe {
+            // Safety: the destination slice is sized from `compressor.max_output_size(raw.len())`.
+            self.compressor.compress_into_unchecked(
+                raw,
+                &mut self.scratch
+                    [Self::COMPRESSED_PREFIX_LEN..Self::COMPRESSED_PREFIX_LEN + max_size],
+            )
+        };
         let total_compressed_len = compressed_len + COMPRESSED_FRAME_EXTRA_LEN;
 
         self.scratch[0] = const { Header::new_compressed(C::ALGORITHM_ID).into_inner() };
@@ -291,9 +299,15 @@ impl<C: Compress> CompressFrame<C> {
                 if scratch.len() < original_len {
                     scratch.resize(original_len, 0);
                 }
-                let decoded_len = self
-                    .compressor
-                    .decompress_into(compressed_payload, &mut scratch[..original_len])?;
+                let decoded_len = unsafe {
+                    // Safety: compressed frames declare `original_len`, and we size the output
+                    // slice to exactly that many bytes before delegating to the
+                    // algorithm.
+                    self.compressor.decompress_into_unchecked(
+                        compressed_payload,
+                        &mut scratch[..original_len],
+                    )?
+                };
                 if decoded_len != original_len {
                     return Err(Error::DecompressedLengthMismatch);
                 }
@@ -338,12 +352,16 @@ mod tests {
             input_len
         }
 
-        fn compress_into(&self, input: &[u8], output: &mut [u8]) -> usize {
+        unsafe fn compress_into_unchecked(&mut self, input: &[u8], output: &mut [u8]) -> usize {
             output[..input.len()].copy_from_slice(input);
             input.len()
         }
 
-        fn decompress_into(&self, _input: &[u8], output: &mut [u8]) -> Result<usize, Error> {
+        unsafe fn decompress_into_unchecked(
+            &mut self,
+            _input: &[u8],
+            output: &mut [u8],
+        ) -> Result<usize, Error> {
             if output.is_empty() {
                 Ok(0)
             } else {
@@ -362,12 +380,16 @@ mod tests {
             input_len
         }
 
-        fn compress_into(&self, input: &[u8], output: &mut [u8]) -> usize {
+        unsafe fn compress_into_unchecked(&mut self, input: &[u8], output: &mut [u8]) -> usize {
             output[..input.len()].copy_from_slice(input);
             input.len()
         }
 
-        fn decompress_into(&self, _input: &[u8], _output: &mut [u8]) -> Result<usize, Error> {
+        unsafe fn decompress_into_unchecked(
+            &mut self,
+            _input: &[u8],
+            _output: &mut [u8],
+        ) -> Result<usize, Error> {
             Err(Error::TruncatedInput)
         }
     }
@@ -382,7 +404,7 @@ mod tests {
             input_len.max(1)
         }
 
-        fn compress_into(&self, input: &[u8], output: &mut [u8]) -> usize {
+        unsafe fn compress_into_unchecked(&mut self, input: &[u8], output: &mut [u8]) -> usize {
             if input.is_empty() {
                 return 0;
             }
@@ -396,7 +418,11 @@ mod tests {
             }
         }
 
-        fn decompress_into(&self, input: &[u8], output: &mut [u8]) -> Result<usize, Error> {
+        unsafe fn decompress_into_unchecked(
+            &mut self,
+            input: &[u8],
+            output: &mut [u8],
+        ) -> Result<usize, Error> {
             match input.len() {
                 0 => Ok(0),
                 1 => {

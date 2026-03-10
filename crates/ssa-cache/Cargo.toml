@@ -15,6 +15,7 @@ rand = { workspace = true }
 rand_xoshiro = { workspace = true }
 rayon = { workspace = true }
 thiserror = { workspace = true }
+zstd = { workspace = true, optional = true }
 
 [dev-dependencies]
 evo-marker = { workspace = true, features = ["bitcode"] }
@@ -26,6 +27,7 @@ bitcode = ["dep:bitcode"]
 compress = ["dep:crc32c"]
 fjall = ["dep:fjall"]
 lz4 = ["compress", "dep:lz4_flex"]
+zstd = ["compress", "dep:zstd"]
 
 [lints]
 workspace = true

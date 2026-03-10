@@ -240,7 +240,7 @@ output.
 
 - `Compute`: core trait (`execute` for one input, `execute_many` for batched parallel inputs).
 - `ExecuteOptions`: execution controls (including `with_interrupt_signal`).
-- `CodecEngine<T>`: pluggable serialization engines (e.g. `Bitcode`, `CompressedCodec<Bitcode, Lz4>` when `compress`/`lz4` are enabled).
+- `CodecEngine<T>`: pluggable serialization engines (e.g. `Bitcode`, `CompressedCodec<Bitcode, Lz4>`, or `CompressedCodec<Bitcode, Zstd>` when the corresponding compression features are enabled).
 - `DeterministicStep`: deterministic compute with an owned cache.
 - `StochasticStep`: stochastic compute with reproducible per-repetition RNG streams.
 - `Pipeline` / `PipelineExt`: stage composition and per-stage caching.
@@ -293,8 +293,9 @@ Encode-time size limits are configured on `CompressedCodec` itself with `.with_m
 ## Feature Flags
 
 - `bitcode` (enabled by default): `bitcode` serialization/deserialization.
-- `compress` (enabled by `lz4`): framed compressed codec layer plus checksum support for custom compression engines.
-- `lz4` (enabled by default): `Lz4` compression engine.
+- `compress` (enabled by `lz4`/`zstd`): framed compressed codec layer plus checksum support for custom compression engines.
+- `lz4` (disabled by default): `Lz4` compression engine.
+- `zstd` (disabled by default): `Zstd` compression engine with runtime-configurable compression level.
 - `fjall` (disabled by default): `fjall` persistent backend.
 
 ## License

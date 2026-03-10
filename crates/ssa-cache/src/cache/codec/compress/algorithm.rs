@@ -15,7 +15,8 @@ pub trait Compress {
     ///
     /// - `0`: raw/uncompressed payload (reserved by the frame format)
     /// - `1`: [`Lz4`] when the `lz4` feature is enabled
-    /// - `2..=15`: currently unassigned
+    /// - `2`: [`Zstd`] when the `zstd` feature is enabled
+    /// - `3..=15`: currently unassigned
     const ALGORITHM_ID: u8;
 
     /// Return the maximum output size to compress `input_len` bytes.
@@ -30,21 +31,23 @@ pub trait Compress {
 
     /// Compress `input` into `output` and return the compressed length.
     ///
-    /// # Buffer contract
+    /// # Safety
     ///
-    /// The buffer `output` **must** be at least `Self::max_output_size(input.len())` length.
-    /// [`super::CompressedCodec`] upholds this invariant before every call;
-    /// implementations may panic if it is violated.
-    fn compress_into(&self, input: &[u8], output: &mut [u8]) -> usize;
+    /// `output` must be at least `Self::max_output_size(input.len())` bytes long.
+    /// [`super::CompressedCodec`] upholds this invariant before every call.
+    unsafe fn compress_into_unchecked(&mut self, input: &[u8], output: &mut [u8]) -> usize;
 
     /// Decompress `input` into `output` and return the decompressed length.
     ///
-    /// # Buffer contract
+    /// # Safety
     ///
-    /// The buffer `output` **must** be large enough to hold the decompressed data.
-    /// [`super::CompressedCodec`] upholds this invariant before every call;
-    /// implementations may panic if it is violated.
-    fn decompress_into(&self, input: &[u8], output: &mut [u8]) -> Result<usize, Error>;
+    /// `output` must be large enough to hold the full decompressed data for `input`.
+    /// [`super::CompressedCodec`] upholds this invariant before every call.
+    unsafe fn decompress_into_unchecked(
+        &mut self,
+        input: &[u8],
+        output: &mut [u8],
+    ) -> Result<usize, Error>;
 }
 
 #[cfg(feature = "lz4")]
@@ -62,12 +65,16 @@ mod lz4 {
             lz4_flex::block::get_maximum_output_size(input_len)
         }
 
-        fn compress_into(&self, input: &[u8], output: &mut [u8]) -> usize {
+        unsafe fn compress_into_unchecked(&mut self, input: &[u8], output: &mut [u8]) -> usize {
             lz4_flex::block::compress_into(input, output)
-                .expect("lz4 compress_into output buffer too small for max_output_size contract")
+                .expect("lz4 compress_into should succeed for a max_output_size-sized output")
         }
 
-        fn decompress_into(&self, input: &[u8], output: &mut [u8]) -> Result<usize, Error> {
+        unsafe fn decompress_into_unchecked(
+            &mut self,
+            input: &[u8],
+            output: &mut [u8],
+        ) -> Result<usize, Error> {
             Ok(lz4_flex::block::decompress_into(input, output)?)
         }
     }
@@ -80,20 +87,171 @@ mod lz4 {
 
         #[test]
         fn lz4_block_roundtrip() -> Result<(), CodecError> {
-            let compressor = Lz4;
+            let mut compressor = Lz4;
             let input = vec![7u8; 8 * 1024];
             let mut compressed = vec![0u8; compressor.max_output_size(input.len())];
-            let compressed_len = compressor.compress_into(&input, &mut compressed);
+            let compressed_len =
+                unsafe { compressor.compress_into_unchecked(&input, &mut compressed) };
 
             let mut decompressed = vec![0u8; input.len()];
-            let decompressed_len =
-                compressor.decompress_into(&compressed[..compressed_len], &mut decompressed)?;
+            let decompressed_len = unsafe {
+                compressor
+                    .decompress_into_unchecked(&compressed[..compressed_len], &mut decompressed)?
+            };
 
             assert_eq!(decompressed_len, input.len());
             assert_eq!(decompressed, input);
             Ok(())
         }
+
+        #[test]
+        fn lz4_invalid_block_returns_error() {
+            let mut compressor = Lz4;
+            let input = vec![5u8; 256];
+            let mut compressed = vec![0u8; compressor.max_output_size(input.len())];
+            let compressed_len =
+                unsafe { compressor.compress_into_unchecked(&input, &mut compressed) };
+            let mut output = vec![0u8; input.len() - 1];
+            assert!(matches!(
+                unsafe {
+                    compressor.decompress_into_unchecked(&compressed[..compressed_len], &mut output)
+                },
+                Err(Error::Lz4(_))
+            ));
+        }
     }
 }
 #[cfg(feature = "lz4")]
 pub use lz4::Lz4;
+
+#[cfg(feature = "zstd")]
+mod zstd_support {
+    use std::io;
+
+    use super::*;
+
+    pub struct Zstd {
+        compressor: zstd::bulk::Compressor<'static>,
+        decompressor: zstd::bulk::Decompressor<'static>,
+    }
+
+    impl std::fmt::Debug for Zstd {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.debug_struct("Zstd").finish_non_exhaustive()
+        }
+    }
+
+    impl Zstd {
+        pub fn new(level: i32) -> io::Result<Self> {
+            Ok(Self {
+                compressor: zstd::bulk::Compressor::new(level)?,
+                decompressor: zstd::bulk::Decompressor::new()?,
+            })
+        }
+    }
+
+    impl Compress for Zstd {
+        const ALGORITHM_ID: u8 = 2;
+
+        fn max_output_size(&self, input_len: usize) -> usize {
+            zstd::zstd_safe::compress_bound(input_len)
+        }
+
+        unsafe fn compress_into_unchecked(&mut self, input: &[u8], output: &mut [u8]) -> usize {
+            self.compressor
+                .compress_to_buffer(input, output)
+                .expect("zstd compress_to_buffer should succeed for a max_output_size-sized output")
+        }
+
+        unsafe fn decompress_into_unchecked(
+            &mut self,
+            input: &[u8],
+            output: &mut [u8],
+        ) -> Result<usize, Error> {
+            Ok(self.decompressor.decompress_to_buffer(input, output)?)
+        }
+    }
+
+    #[cfg(test)]
+    #[cfg_attr(coverage_nightly, coverage(off))]
+    mod tests {
+        use super::*;
+        use crate::cache::codec::Error as CodecError;
+
+        #[test]
+        fn zstd_block_roundtrip() -> Result<(), CodecError> {
+            let mut compressor = Zstd::new(3).expect("zstd config should be valid");
+            let input = vec![7u8; 8 * 1024];
+            let mut compressed = vec![0u8; compressor.max_output_size(input.len())];
+            let compressed_len =
+                unsafe { compressor.compress_into_unchecked(&input, &mut compressed) };
+
+            let mut decompressed = vec![0u8; input.len()];
+            let decompressed_len = unsafe {
+                compressor
+                    .decompress_into_unchecked(&compressed[..compressed_len], &mut decompressed)?
+            };
+
+            assert_eq!(decompressed_len, input.len());
+            assert_eq!(decompressed, input);
+            Ok(())
+        }
+
+        #[test]
+        fn zstd_roundtrip_uses_explicit_level() -> Result<(), CodecError> {
+            let mut compressor = Zstd::new(3).expect("zstd config should be valid");
+            let input = vec![9u8; 4 * 1024];
+            let mut compressed = vec![0u8; compressor.max_output_size(input.len())];
+            let compressed_len =
+                unsafe { compressor.compress_into_unchecked(&input, &mut compressed) };
+            let mut decompressed = vec![0u8; input.len()];
+            let decompressed_len = unsafe {
+                compressor
+                    .decompress_into_unchecked(&compressed[..compressed_len], &mut decompressed)?
+            };
+
+            assert_eq!(decompressed_len, input.len());
+            assert_eq!(decompressed, input);
+            Ok(())
+        }
+
+        #[test]
+        fn zstd_invalid_block_returns_error() {
+            let mut compressor = Zstd::new(3).expect("zstd config should be valid");
+            let mut output = vec![0u8; 32];
+            assert!(matches!(
+                unsafe { compressor.decompress_into_unchecked(b"not-zstd", &mut output) },
+                Err(Error::Zstd(_))
+            ));
+        }
+
+        #[test]
+        fn zstd_level_only_configuration_roundtrip() -> Result<(), CodecError> {
+            let mut compressor = Zstd::new(5).expect("zstd config should be valid");
+            let input = vec![11u8; 1024];
+            let mut compressed = vec![0u8; compressor.max_output_size(input.len())];
+            let compressed_len =
+                unsafe { compressor.compress_into_unchecked(&input, &mut compressed) };
+            let mut decompressed = vec![0u8; input.len()];
+            let decompressed_len = unsafe {
+                compressor
+                    .decompress_into_unchecked(&compressed[..compressed_len], &mut decompressed)?
+            };
+
+            assert_eq!(decompressed_len, input.len());
+            assert_eq!(decompressed, input);
+            Ok(())
+        }
+
+        #[test]
+        fn zstd_debug_reports_config() {
+            let compressor = Zstd::new(6).expect("zstd config should be valid");
+
+            let debug = format!("{compressor:?}");
+            assert!(debug.contains("Zstd"));
+        }
+    }
+}
+
+#[cfg(feature = "zstd")]
+pub use zstd_support::Zstd;

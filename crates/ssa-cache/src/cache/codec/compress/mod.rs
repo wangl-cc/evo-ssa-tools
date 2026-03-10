@@ -220,7 +220,7 @@ mod tests {
             input_len.max(1)
         }
 
-        fn compress_into(&self, input: &[u8], output: &mut [u8]) -> usize {
+        unsafe fn compress_into_unchecked(&mut self, input: &[u8], output: &mut [u8]) -> usize {
             if input.is_empty() {
                 return 0;
             }
@@ -234,7 +234,11 @@ mod tests {
             }
         }
 
-        fn decompress_into(&self, input: &[u8], output: &mut [u8]) -> Result<usize, frame::Error> {
+        unsafe fn decompress_into_unchecked(
+            &mut self,
+            input: &[u8],
+            output: &mut [u8],
+        ) -> Result<usize, frame::Error> {
             match input.len() {
                 0 => Ok(0),
                 1 => {
