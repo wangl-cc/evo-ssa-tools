@@ -9,9 +9,8 @@ pub enum Error {
     #[error(transparent)]
     Codec(#[from] crate::cache::codec::Error),
 
-    #[cfg(feature = "fjall")]
-    #[error("Fjall database error")]
-    Fjall(#[from] fjall::Error),
+    #[error(transparent)]
+    Storage(#[from] crate::cache::storage::Error),
 
     /// Cache index was out of bounds when selecting a cache from a collection of caches.
     #[error("Try to get cache #{want} but only {total} available")]

@@ -5,7 +5,10 @@ use rand_xoshiro::Xoshiro256PlusPlus;
 
 use crate::{
     CacheStore, CanonicalEncode, Compute, Result,
-    cache::codec::{CodecEngine, EngineFactory},
+    cache::{
+        codec::{CodecEngine, EngineFactory},
+        storage::WorkerForkStore,
+    },
 };
 
 const KEY_DOMAIN: &str = "ssa-cache/stochastic/key-material/v1";
@@ -162,10 +165,10 @@ where
     }
 }
 
-impl<C: Clone, P, O, F: Clone, EF: Clone> Clone for StochasticStep<C, P, O, F, EF> {
+impl<C: WorkerForkStore, P, O, F: Clone, EF: Clone> Clone for StochasticStep<C, P, O, F, EF> {
     fn clone(&self) -> Self {
         Self {
-            cache: self.cache.clone(),
+            cache: self.cache.fork_store(),
             seed_key: self.seed_key,
             function: self.function.clone(),
             engine_factory: self.engine_factory.clone(),
@@ -201,7 +204,7 @@ where
         let cache = &self.cache;
         let function = &self.function;
 
-        cache.fetch_or_execute::<O, Self::Engine, _>(encoded, engine, |_| {
+        cache.fetch_or_execute(encoded, engine, |_| {
             let mut rng = Xoshiro256PlusPlus::from_seed(seed);
             function(&mut rng, param)
         })

@@ -38,7 +38,8 @@ At the lowest level, everything reduces to:
 Key concepts:
 
 - `Compute`: the core trait for single-item and batched execution.
-- `CacheStore`: storage backend for `key -> bytes` (e.g. `HashMapStore`, or persistent `fjall`).
+- `CacheStore`: storage backend for `key -> bytes` (e.g. `HashMapStore`, `Fjall2Store`,
+  `Fjall3Store`, or `RedbStore`).
 - `DeterministicStep`: for deterministic computations (output depends only on input).
 - `StochasticStep`: for stochastic computations with reproducible per-repetition RNG streams.
   The input type is `StochasticInput { param, repetition_index }`.
@@ -290,13 +291,27 @@ Encode-time size limits are configured on `CompressedCodec` itself with `.with_m
 
 `CompressedCodec` can also enforce a decode-time compressed-payload guard via `.with_max_decode_len(...)` if you want to cap scratch allocation for compressed frames. Pass `0` to remove the limit. This guard is independent from `CompressPolicy` and does not apply to raw frames.
 
+## Persistent Store Wrappers
+
+Persistent backends are opened explicitly and then passed into a step or pipeline as a dedicated
+store:
+
+- `Fjall2Store::open(keyspace, partition_name, options)`
+- `Fjall3Store::open(database, keyspace_name, options)`
+- `RedbStore::new(database, table_name) -> storage::Result<RedbStore>` where `table_name: &'static str`; opening eagerly creates the table if needed
+
+Each wrapper is a store capability for one concrete keyspace/table. The wrapper itself does not
+implement `Clone`; internal worker sharing is handled by `ssa-cache`.
+
 ## Feature Flags
 
 - `bitcode` (enabled by default): `bitcode` serialization/deserialization.
 - `compress` (enabled by `lz4`/`zstd`): framed compressed codec layer plus checksum support for custom compression engines.
 - `lz4` (disabled by default): `Lz4` compression engine.
 - `zstd` (disabled by default): `Zstd` compression engine with runtime-configurable compression level.
-- `fjall` (disabled by default): `fjall` persistent backend.
+- `fjall2` (disabled by default): Fjall v2 persistent backend wrapper.
+- `fjall3` (disabled by default): Fjall v3 persistent backend wrapper.
+- `redb` (disabled by default): `redb` persistent backend wrapper.
 
 ## License
 
