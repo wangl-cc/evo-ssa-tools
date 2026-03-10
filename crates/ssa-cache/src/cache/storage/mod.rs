@@ -1,5 +1,5 @@
 use super::codec::CodecEngine;
-use crate::error as crate_error;
+use crate::error::Result;
 
 mod hashmap;
 pub use hashmap::{DefaultHashMapStore, HashMapStore};
@@ -21,7 +21,7 @@ pub use redb::RedbStore;
 
 /// Errors produced by storage backends.
 #[derive(thiserror::Error, Debug)]
-pub enum Error {
+pub enum StorageError {
     #[cfg(feature = "fjall2")]
     #[error("Fjall v2 database error")]
     Fjall2(#[from] ::fjall2::Error),
@@ -35,7 +35,7 @@ pub enum Error {
     Redb(#[from] ::redb::Error),
 }
 
-pub type Result<T, E = Error> = std::result::Result<T, E>;
+pub type StorageResult<T, E = StorageError> = std::result::Result<T, E>;
 
 #[doc(hidden)]
 pub trait WorkerForkStore: private::Sealed + Sync {
@@ -57,30 +57,30 @@ mod private {
 ///
 /// `()` implements `CacheStore` as a "no-cache" backend that always misses and discards writes.
 pub trait CacheStore: Sync {
-    /// Fetch the encoded bytes for `key` and pass them to `f`.
-    ///
-    /// Implementers are responsible only for locating the encoded value by `key`
-    /// and borrowing it for the duration of `f`.
-    fn fetch_encoded_with<T, E, F>(&self, key: &[u8], f: F) -> std::result::Result<T, E>
+    /// Borrowed view of an encoded value returned by this store.
+    type Encoded<'a>: AsRef<[u8]>
     where
-        F: FnOnce(Option<&[u8]>) -> std::result::Result<T, E>,
-        E: From<Error>;
+        Self: 'a;
+
+    /// Fetch the encoded bytes for `key`.
+    fn fetch_encoded(&self, key: &[u8]) -> StorageResult<Option<Self::Encoded<'_>>>;
 
     /// Store an already-encoded payload for `key`.
-    fn store_encoded(&self, key: &[u8], encoded: &[u8]) -> Result<()>;
+    fn store_encoded(&self, key: &[u8], encoded: &[u8]) -> StorageResult<()>;
 
     /// Attempts to fetch a value from the cache.
-    fn fetch<T, CE>(&self, key: &[u8], engine: &mut CE) -> crate_error::Result<Option<T>>
+    fn fetch<T, CE>(&self, key: &[u8], engine: &mut CE) -> Result<Option<T>>
     where
         CE: CodecEngine<T>,
     {
-        self.fetch_encoded_with(key, |encoded| {
-            Ok(encoded.map(|bytes| engine.decode(bytes)).transpose()?)
-        })
+        match self.fetch_encoded(key)? {
+            Some(encoded) => Ok(Some(engine.decode(encoded.as_ref())?)),
+            None => Ok(None),
+        }
     }
 
     /// Stores a value in the cache.
-    fn store<T, CE>(&self, key: &[u8], engine: &mut CE, value: &T) -> crate_error::Result<()>
+    fn store<T, CE>(&self, key: &[u8], engine: &mut CE, value: &T) -> Result<()>
     where
         CE: CodecEngine<T>,
     {
@@ -92,27 +92,21 @@ pub trait CacheStore: Sync {
             }
         };
 
-        self.store_encoded(key, encoded)
-            .map_err(crate_error::Error::from)
+        self.store_encoded(key, encoded)?;
+        Ok(())
     }
 
     /// Fetch value by key, or execute and store it on cache miss.
-    fn fetch_or_execute<T, CE, F, E>(
-        &self,
-        key: &[u8],
-        engine: &mut CE,
-        execute: F,
-    ) -> std::result::Result<T, E>
+    fn fetch_or_execute<T, CE, F>(&self, key: &[u8], engine: &mut CE, execute: F) -> Result<T>
     where
         CE: CodecEngine<T>,
-        F: FnOnce(&mut CE) -> std::result::Result<T, E>,
-        E: From<crate_error::Error>,
+        F: FnOnce(&mut CE) -> Result<T>,
     {
-        if let Some(cached) = self.fetch::<T, CE>(key, engine).map_err(E::from)? {
+        if let Some(cached) = self.fetch::<T, CE>(key, engine)? {
             Ok(cached)
         } else {
             let output = execute(engine)?;
-            self.store::<T, CE>(key, engine, &output).map_err(E::from)?;
+            self.store::<T, CE>(key, engine, &output)?;
             Ok(output)
         }
     }
@@ -127,22 +121,23 @@ impl WorkerForkStore for () {
 }
 
 impl CacheStore for () {
-    fn fetch_encoded_with<T, E, F>(&self, _: &[u8], f: F) -> std::result::Result<T, E>
+    type Encoded<'a>
+        = &'a [u8]
     where
-        F: FnOnce(Option<&[u8]>) -> std::result::Result<T, E>,
-        E: From<Error>,
-    {
-        f(None)
+        Self: 'a;
+
+    fn fetch_encoded(&self, _: &[u8]) -> StorageResult<Option<Self::Encoded<'_>>> {
+        Ok(None)
     }
 
-    fn store<T, CE>(&self, _: &[u8], _: &mut CE, _: &T) -> crate_error::Result<()>
+    fn store<T, CE>(&self, _: &[u8], _: &mut CE, _: &T) -> Result<()>
     where
         CE: CodecEngine<T>,
     {
         Ok(())
     }
 
-    fn store_encoded(&self, _: &[u8], _: &[u8]) -> Result<()> {
+    fn store_encoded(&self, _: &[u8], _: &[u8]) -> StorageResult<()> {
         Ok(())
     }
 }

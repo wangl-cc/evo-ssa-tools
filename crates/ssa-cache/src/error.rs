@@ -10,7 +10,7 @@ pub enum Error {
     Codec(#[from] crate::cache::codec::Error),
 
     #[error(transparent)]
-    Storage(#[from] crate::cache::storage::Error),
+    Storage(#[from] crate::cache::storage::StorageError),
 
     /// Cache index was out of bounds when selecting a cache from a collection of caches.
     #[error("Try to get cache #{want} but only {total} available")]

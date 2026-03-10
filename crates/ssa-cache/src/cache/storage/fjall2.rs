@@ -1,11 +1,8 @@
-use std::sync::Arc;
-
-use super::{CacheStore, Result, WorkerForkStore, private};
+use super::{CacheStore, StorageResult, WorkerForkStore, private};
 
 /// Fjall v2-backed cache store bound to a single partition.
 pub struct Fjall2Store {
     handle: fjall2::PartitionHandle,
-    _keyspace: Arc<fjall2::Keyspace>,
 }
 
 impl Fjall2Store {
@@ -13,21 +10,10 @@ impl Fjall2Store {
         keyspace: fjall2::Keyspace,
         partition_name: impl AsRef<str>,
         options: Option<fjall2::PartitionCreateOptions>,
-    ) -> Result<Self> {
-        Self::open_arc(Arc::new(keyspace), partition_name, options)
-    }
-
-    pub fn open_arc(
-        keyspace: Arc<fjall2::Keyspace>,
-        partition_name: impl AsRef<str>,
-        options: Option<fjall2::PartitionCreateOptions>,
-    ) -> Result<Self> {
+    ) -> StorageResult<Self> {
         let handle =
             keyspace.open_partition(partition_name.as_ref(), options.unwrap_or_default())?;
-        Ok(Self {
-            handle,
-            _keyspace: keyspace,
-        })
+        Ok(Self { handle })
     }
 }
 
@@ -37,26 +23,21 @@ impl WorkerForkStore for Fjall2Store {
     fn fork_store(&self) -> Self {
         Self {
             handle: self.handle.clone(),
-            _keyspace: self._keyspace.clone(),
         }
     }
 }
 
 impl CacheStore for Fjall2Store {
-    fn fetch_encoded_with<T, E, F>(&self, key: &[u8], f: F) -> std::result::Result<T, E>
+    type Encoded<'a>
+        = fjall2::UserValue
     where
-        F: FnOnce(Option<&[u8]>) -> std::result::Result<T, E>,
-        E: From<super::Error>,
-    {
-        let value = self
-            .handle
-            .get(key)
-            .map_err(super::Error::from)
-            .map_err(E::from)?;
-        f(value.as_ref().map(|bytes| bytes.as_ref()))
+        Self: 'a;
+
+    fn fetch_encoded(&self, key: &[u8]) -> StorageResult<Option<Self::Encoded<'_>>> {
+        Ok(self.handle.get(key)?)
     }
 
-    fn store_encoded(&self, key: &[u8], encoded: &[u8]) -> Result<()> {
+    fn store_encoded(&self, key: &[u8], encoded: &[u8]) -> StorageResult<()> {
         self.handle.insert(key, encoded)?;
         Ok(())
     }
@@ -67,7 +48,7 @@ impl CacheStore for Fjall2Store {
 mod tests {
     use super::*;
     use crate::{
-        cache::{codec::fixtures::FixtureEngine, storage::Error as StorageError},
+        cache::{codec::fixtures::FixtureEngine, storage::StorageError},
         error::Result,
     };
 

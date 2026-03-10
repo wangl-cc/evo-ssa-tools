@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use redb::{ReadableDatabase, TableDefinition};
 
-use super::{CacheStore, Error, Result, WorkerForkStore, private};
+use super::{CacheStore, StorageError, StorageResult, WorkerForkStore, private};
 
 #[derive(thiserror::Error, Debug)]
 enum RedbError {
@@ -22,7 +22,7 @@ enum RedbError {
     Transaction(#[from] redb::TransactionError),
 }
 
-impl From<RedbError> for Error {
+impl From<RedbError> for StorageError {
     fn from(error: RedbError) -> Self {
         match error {
             RedbError::Commit(error) => Self::Redb(error.into()),
@@ -34,33 +34,42 @@ impl From<RedbError> for Error {
     }
 }
 
-impl From<redb::CommitError> for Error {
+impl From<redb::CommitError> for StorageError {
     fn from(error: redb::CommitError) -> Self {
         RedbError::from(error).into()
     }
 }
 
-impl From<redb::DatabaseError> for Error {
+impl From<redb::DatabaseError> for StorageError {
     fn from(error: redb::DatabaseError) -> Self {
         RedbError::from(error).into()
     }
 }
 
-impl From<redb::StorageError> for Error {
+impl From<redb::StorageError> for StorageError {
     fn from(error: redb::StorageError) -> Self {
         RedbError::from(error).into()
     }
 }
 
-impl From<redb::TableError> for Error {
+impl From<redb::TableError> for StorageError {
     fn from(error: redb::TableError) -> Self {
         RedbError::from(error).into()
     }
 }
 
-impl From<redb::TransactionError> for Error {
+impl From<redb::TransactionError> for StorageError {
     fn from(error: redb::TransactionError) -> Self {
         RedbError::from(error).into()
+    }
+}
+
+#[doc(hidden)]
+pub struct RedbEncoded<'a>(redb::AccessGuard<'a, &'static [u8]>);
+
+impl AsRef<[u8]> for RedbEncoded<'_> {
+    fn as_ref(&self) -> &[u8] {
+        self.0.value()
     }
 }
 
@@ -72,17 +81,17 @@ pub struct RedbStore {
 }
 
 impl RedbStore {
-    pub fn new(db: redb::Database, table_name: &'static str) -> Result<Self> {
+    pub fn new(db: redb::Database, table_name: &'static str) -> StorageResult<Self> {
         Self::from_arc(Arc::new(db), table_name)
     }
 
-    pub fn from_arc(db: Arc<redb::Database>, table_name: &'static str) -> Result<Self> {
-        let tx = db.begin_write().map_err(Error::from)?;
+    pub fn from_arc(db: Arc<redb::Database>, table_name: &'static str) -> StorageResult<Self> {
+        let tx = db.begin_write()?;
         {
             let table: TableDefinition<'static, &[u8], &[u8]> = TableDefinition::new(table_name);
-            let _ = tx.open_table(table).map_err(Error::from)?;
+            let _ = tx.open_table(table)?;
         }
-        tx.commit().map_err(Error::from)?;
+        tx.commit()?;
 
         Ok(Self { db, table_name })
     }
@@ -100,35 +109,31 @@ impl WorkerForkStore for RedbStore {
 }
 
 impl CacheStore for RedbStore {
-    fn fetch_encoded_with<T, E, F>(&self, key: &[u8], f: F) -> std::result::Result<T, E>
+    type Encoded<'a>
+        = RedbEncoded<'a>
     where
-        F: FnOnce(Option<&[u8]>) -> std::result::Result<T, E>,
-        E: From<super::Error>,
-    {
-        let tx = self.db.begin_read().map_err(Error::from).map_err(E::from)?;
-        let table: TableDefinition<'static, &[u8], &[u8]> = TableDefinition::new(self.table_name);
+        Self: 'a;
 
-        match tx.open_table(table) {
-            Ok(table) => match table.get(key).map_err(Error::from).map_err(E::from)? {
-                Some(value) => f(Some(value.value())),
-                None => f(None),
-            },
-            Err(redb::TableError::TableDoesNotExist(_)) => f(None),
-            Err(error) => Err(E::from(Error::from(error))),
-        }
+    fn fetch_encoded(&self, key: &[u8]) -> StorageResult<Option<Self::Encoded<'_>>> {
+        let tx = self.db.begin_read()?;
+        let definition: TableDefinition<'static, &[u8], &[u8]> =
+            TableDefinition::new(self.table_name);
+        let table = tx.open_table(definition)?;
+        let value = table.get(key)?;
+        Ok(value.map(RedbEncoded))
     }
 
-    fn store_encoded(&self, key: &[u8], encoded: &[u8]) -> Result<()> {
-        let tx = self.db.begin_write().map_err(Error::from)?;
+    fn store_encoded(&self, key: &[u8], encoded: &[u8]) -> StorageResult<()> {
+        let tx = self.db.begin_write()?;
 
         {
-            let table: TableDefinition<'static, &[u8], &[u8]> =
+            let definition: TableDefinition<'static, &[u8], &[u8]> =
                 TableDefinition::new(self.table_name);
-            let mut table = tx.open_table(table).map_err(Error::from)?;
-            table.insert(key, encoded).map_err(Error::from)?;
+            let mut table = tx.open_table(definition)?;
+            table.insert(key, encoded)?;
         }
 
-        tx.commit().map_err(Error::from)?;
+        tx.commit()?;
         Ok(())
     }
 }
@@ -137,12 +142,12 @@ impl CacheStore for RedbStore {
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
-    use crate::{cache::codec::fixtures::FixtureEngine, error::Result};
+    use crate::{cache::codec::fixtures::FixtureEngine, error::Result as CrateResult};
 
     #[test]
-    fn test_redb_store() -> Result<()> {
+    fn test_redb_store() -> CrateResult<()> {
         let file = tempfile::NamedTempFile::new().unwrap();
-        let db = ::redb::Database::create(file.path()).map_err(Error::from)?;
+        let db = ::redb::Database::create(file.path()).map_err(StorageError::from)?;
         let store = RedbStore::new(db, "test")?;
         let mut engine = FixtureEngine::default();
 

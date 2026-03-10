@@ -1,9 +1,20 @@
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 
-use super::{CacheStore, Result, WorkerForkStore, private};
+use parking_lot::{MappedRwLockReadGuard, RwLock, RwLockReadGuard};
+
+use super::{CacheStore, StorageResult, WorkerForkStore, private};
 
 type RawHashMap<H> = std::collections::HashMap<Vec<u8>, Vec<u8>, H>;
 type HashMapShard<H> = Arc<RwLock<RawHashMap<H>>>;
+
+#[doc(hidden)]
+pub struct HashMapEncoded<'a>(MappedRwLockReadGuard<'a, [u8]>);
+
+impl AsRef<[u8]> for HashMapEncoded<'_> {
+    fn as_ref(&self) -> &[u8] {
+        &self.0
+    }
+}
 
 /// A simple in-memory cache store backed by a `HashMap`.
 ///
@@ -44,25 +55,22 @@ impl<H> CacheStore for HashMapStore<H>
 where
     H: std::hash::BuildHasher + Send + Sync,
 {
-    fn fetch_encoded_with<T, E, F>(&self, key: &[u8], f: F) -> std::result::Result<T, E>
+    type Encoded<'a>
+        = HashMapEncoded<'a>
     where
-        F: FnOnce(Option<&[u8]>) -> std::result::Result<T, E>,
-        E: From<super::Error>,
-    {
-        let map = self
-            .inner
-            .read()
-            .expect("cache read lock poisoned: HashMapStore should not panic while holding lock");
-        let encoded = map.get(key).cloned();
-        drop(map);
-        f(encoded.as_deref())
+        Self: 'a;
+
+    fn fetch_encoded(&self, key: &[u8]) -> StorageResult<Option<Self::Encoded<'_>>> {
+        let map = self.inner.read();
+
+        match RwLockReadGuard::try_map(map, |map| map.get(key).map(Vec::as_slice)) {
+            Ok(encoded) => Ok(Some(HashMapEncoded(encoded))),
+            Err(_) => Ok(None),
+        }
     }
 
-    fn store_encoded(&self, key: &[u8], encoded: &[u8]) -> Result<()> {
-        let mut map = self
-            .inner
-            .write()
-            .expect("cache write lock poisoned: HashMapStore should not panic while holding lock");
+    fn store_encoded(&self, key: &[u8], encoded: &[u8]) -> StorageResult<()> {
+        let mut map = self.inner.write();
         map.insert(key.to_owned(), encoded.to_vec());
         Ok(())
     }
@@ -118,7 +126,7 @@ mod tests {
             Some(value)
         );
 
-        let map = store.inner.read().unwrap();
+        let map = store.inner.read();
         let encoded = map.get(key.as_slice()).expect("value should be stored");
         assert!(!encoded.is_empty());
         assert_eq!(encoded[0] & 0b1111_0000, 0b0001_0000);

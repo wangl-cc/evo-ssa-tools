@@ -19,6 +19,7 @@ fjall3 = { package = "fjall", version = "3", default-features = false }
 frequency = { path = "crates/frequency", version = "0.1" }
 lz4_flex = { version = "0.12", default-features = false, features = ["std"] }
 nohash-hasher = { version = "0.2.0" }
+parking_lot = { version = "0.12" }
 rand = { version = "0.9" }
 rand_xoshiro = { version = "0.7" }
 rapidhash = { version = "4.2.2" }
