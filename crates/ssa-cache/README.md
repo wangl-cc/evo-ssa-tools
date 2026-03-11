@@ -38,8 +38,7 @@ At the lowest level, everything reduces to:
 Key concepts:
 
 - `Compute`: the core trait for single-item and batched execution.
-- `CacheStore`: storage backend for `key -> bytes` (e.g. `HashMapStore`, `Fjall2Store`,
-  `Fjall3Store`, or `RedbStore`).
+- `CacheStore`: storage backend for `key -> bytes` (e.g. `HashMapStore`, `Fjall2Store`, `Fjall3Store`, or `RedbStore`).
 - `DeterministicStep`: for deterministic computations (output depends only on input).
 - `StochasticStep`: for stochastic computations with reproducible per-repetition RNG streams.
   The input type is `StochasticInput { param, repetition_index }`.
@@ -293,15 +292,18 @@ Encode-time size limits are configured on `CompressedCodec` itself with `.with_m
 
 ## Persistent Store Wrappers
 
-Persistent backends are opened explicitly and then passed into a step or pipeline as a dedicated
-store:
+`CacheStore` is intentionally a low-level byte store. Step and pipeline types decide cache keys and codecs; the backend only controls where those bytes are stored.
 
-- `Fjall2Store::open(keyspace, partition_name, options)`
-- `Fjall3Store::open(database, keyspace_name, options)`
-- `RedbStore::new(database, table_name)`
+- `HashMapStore`: process-local, in-memory, zero setup. Best for tests, notebooks, benchmarks, and short-lived runs.
+- `Fjall2Store::open(keyspace, partition_name, options)`: persistent storage scoped to one Fjall v2 partition.
+- `Fjall3Store::open(database, keyspace_name, options)`: persistent storage scoped to one Fjall v3 keyspace.
+- `RedbStore::open(path, table_name) -> storage::Result<RedbStore>`: the common "one file, one store" setup; it opens an existing valid redb file or initializes a new one.
+- `RedbStore::from_database(database, table_name) -> storage::Result<RedbStore>`: advanced entry point when the caller already owns the `redb::Database`.
+- `RedbStore::from_database_arc(database, table_name) -> storage::Result<RedbStore>`: advanced entry point for sharing one `redb::Database` across multiple stores.
 
-Each wrapper is a store capability for one concrete keyspace/table. The wrapper itself does not
-implement `Clone`; internal worker sharing is handled by `ssa-cache`.
+Treat each partition, keyspace, or table as one cache namespace. If compute logic or encoding changes incompatibly, move to a new namespace instead of reusing the old one.
+
+Each wrapper is a store capability for one concrete keyspace/table. The wrapper itself does not implement `Clone`; internal worker sharing is handled by `ssa-cache`.
 
 ## Feature Flags
 

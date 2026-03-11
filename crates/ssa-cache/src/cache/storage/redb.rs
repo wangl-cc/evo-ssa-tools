@@ -1,4 +1,6 @@
-use std::sync::Arc;
+//! Persistent storage backend built on [`redb`].
+
+use std::{path::Path, sync::Arc};
 
 use redb::{ReadableDatabase, TableDefinition};
 
@@ -36,6 +38,9 @@ impl AsRef<[u8]> for RedbEncoded<'_> {
 }
 
 /// `redb`-backed cache store bound to a single table.
+///
+/// Each cache operation opens a read or write transaction against `table_name`. Use distinct table
+/// names for distinct cache semantics, even if the key and value byte formats happen to match.
 #[derive(Debug)]
 pub struct RedbStore {
     db: Arc<redb::Database>,
@@ -43,20 +48,48 @@ pub struct RedbStore {
 }
 
 impl RedbStore {
-    pub fn new(db: redb::Database, table_name: impl Into<String>) -> StorageResult<Self> {
-        Self::from_arc(Arc::new(db), table_name.into())
+    /// Open a database file and bind this store to `table_name`.
+    ///
+    /// This uses [`redb::Database::create`], so an empty or missing file is initialized on first
+    /// use and an existing valid redb file is opened.
+    pub fn open(path: impl AsRef<Path>, table_name: impl Into<String>) -> StorageResult<Self> {
+        let db = redb::Database::create(path)?;
+        Self::from_database(db, table_name)
     }
 
-    fn from_arc(db: Arc<redb::Database>, table_name: String) -> StorageResult<Self> {
+    /// Create a store from an owned [`redb::Database`] handle.
+    ///
+    /// The target table is opened during construction so configuration and type mismatches fail
+    /// early.
+    pub fn from_database(
+        db: redb::Database,
+        table_name: impl Into<String>,
+    ) -> StorageResult<Self> {
+        Self::from_database_arc(Arc::new(db), table_name)
+    }
+
+    /// Create a store from a shared [`Arc<redb::Database>`] handle.
+    ///
+    /// This is useful when multiple caches or subsystems need to share the same database file
+    /// while using different table names.
+    pub fn from_database_arc(
+        db: Arc<redb::Database>,
+        table_name: impl Into<String>,
+    ) -> StorageResult<Self> {
+        let table_name = table_name.into();
+        Self::init_table(&db, &table_name)?;
+        Ok(Self { db, table_name })
+    }
+
+    fn init_table(db: &redb::Database, table_name: &str) -> StorageResult<()> {
         let tx = db.begin_write()?;
         {
-            let table = BytesTable::new(&table_name);
+            let table = BytesTable::new(table_name);
             // Try to open the table, creating it if it doesn't exist.
             tx.open_table(table)?;
         }
         tx.commit()?;
-
-        Ok(Self { db, table_name })
+        Ok(())
     }
 }
 
@@ -111,7 +144,7 @@ mod tests {
     fn test_redb_store() -> CrateResult<()> {
         let file = tempfile::NamedTempFile::new().unwrap();
         let db = ::redb::Database::create(file.path()).map_err(StorageError::from)?;
-        let store = RedbStore::new(db, "test")?;
+        let store = RedbStore::from_database(db, "test")?;
         let mut engine = FixtureEngine::default();
 
         assert_eq!(
@@ -136,7 +169,7 @@ mod tests {
     fn test_redb_store_fetch_encoded_and_fork() -> CrateResult<()> {
         let file = tempfile::NamedTempFile::new().unwrap();
         let db = Arc::new(::redb::Database::create(file.path()).map_err(StorageError::from)?);
-        let store = RedbStore::from_arc(db, String::from("test"))?;
+        let store = RedbStore::from_database_arc(db, "test")?;
         let forked = store.fork_store();
 
         store.store_encoded(b"raw", b"payload")?;
@@ -165,9 +198,28 @@ mod tests {
         tx.commit().map_err(StorageError::from)?;
 
         assert!(matches!(
-            RedbStore::new(db, "test"),
+            RedbStore::from_database(db, "test"),
             Err(StorageError::Redb(_))
         ));
+        Ok(())
+    }
+
+    #[test]
+    fn test_redb_store_open_creates_and_reopens_database_file() -> CrateResult<()> {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cache.redb");
+
+        let mut engine = FixtureEngine::default();
+        {
+            let store = RedbStore::open(&path, "test")?;
+            store.store::<u32, FixtureEngine>(b"k", &mut engine, &7u32)?;
+        }
+
+        let reopened = RedbStore::open(&path, "test")?;
+        assert_eq!(
+            reopened.fetch::<u32, FixtureEngine>(b"k", &mut engine)?,
+            Some(7)
+        );
         Ok(())
     }
 }
