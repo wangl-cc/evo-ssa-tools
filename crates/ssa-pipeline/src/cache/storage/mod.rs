@@ -1,4 +1,4 @@
-//! Storage backends for `ssa-cache`.
+//! Storage backends for `ssa-pipeline`.
 //!
 //! All stores implement the same raw `key -> encoded bytes` contract exposed by [`CacheStore`].
 //! The higher-level step and pipeline types are responsible for canonical input encoding and value
@@ -65,7 +65,7 @@ mod private {
     pub trait Sealed {}
 }
 
-/// Storage backend for `key -> value` entries.
+/// Storage backend for memoized `key -> value` entries.
 ///
 /// Keys are opaque bytes produced by canonical input encoding
 /// ([`CanonicalEncode`](crate::cache::canonical_encode::CanonicalEncode)).
@@ -74,7 +74,7 @@ mod private {
 /// This trait is `Sync` because stores are shared across parallel workers.
 /// Implementations are expected to be thread-safe for concurrent reads and writes.
 ///
-/// `()` implements `CacheStore` as a "no-cache" backend that always misses and discards writes.
+/// `()` implements `CacheStore` as a "no-store" backend that always misses and discards writes.
 ///
 /// This trait deliberately does not define any keyspace or schema management. If multiple compute
 /// nodes share the same underlying backing store, the caller must ensure they also share identical
@@ -110,7 +110,7 @@ pub trait CacheStore: Sync {
         let encoded = match engine.encode(value) {
             Ok(encoded) => encoded,
             Err(reason) => {
-                eprintln!("[ssa-cache] skipping cache write: {reason}");
+                eprintln!("[ssa-pipeline] skipping cache write: {reason}");
                 return Ok(());
             }
         };

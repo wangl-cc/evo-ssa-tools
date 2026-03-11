@@ -4,13 +4,13 @@
 /// across many calls without external buffer management:
 ///
 /// ```rust
-/// use ssa_cache::prelude::*;
+/// use ssa_pipeline::prelude::*;
 ///
 /// let value = 0u8;
 /// let mut engine = Bitcode::default();
 /// let bytes = engine
 ///     .encode(&value)
-///     .expect("bitcode never skips cache")
+///     .expect("bitcode always encodes this value")
 ///     .to_vec();
 /// let value: u8 = engine.decode(&bytes).unwrap();
 /// ```

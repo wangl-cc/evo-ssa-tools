@@ -105,7 +105,7 @@ where
 /// # Example
 ///
 /// ```rust
-/// # use ssa_cache::prelude::*;
+/// # use ssa_pipeline::prelude::*;
 /// # #[cfg(feature = "bitcode")]
 /// # {
 /// type Store = HashMapStore<std::collections::hash_map::RandomState>;

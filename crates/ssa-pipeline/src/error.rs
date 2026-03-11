@@ -1,4 +1,4 @@
-//! Error and result types used throughout `ssa-cache`.
+//! Error and result types used throughout `ssa-pipeline`.
 //!
 //! In most APIs, errors are surfaced as [`Error`], and the crate uses [`Result`] as a convenience
 //! alias.

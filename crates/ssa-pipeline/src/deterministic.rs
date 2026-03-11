@@ -10,8 +10,8 @@ use crate::{
 
 /// Deterministic compute node.
 ///
-/// `DeterministicStep` is a cached `input -> output` mapping where the output is a pure function
-/// of the input (no randomness, no external state).
+/// `DeterministicStep` is a memoized `input -> output` mapping where the output is a pure
+/// function of the input (no randomness, no external state).
 ///
 /// # When to use
 ///
@@ -22,14 +22,14 @@ use crate::{
 /// # Example
 ///
 /// ```rust
-/// # use ssa_cache::prelude::*;
+/// # use ssa_pipeline::prelude::*;
 /// # use rayon::prelude::*;
-/// # fn main() -> ssa_cache::error::Result<()> {
+/// # fn main() -> ssa_pipeline::error::Result<()> {
 /// type Store = HashMapStore<std::collections::hash_map::RandomState>;
 /// let step = DeterministicStep::new(Store::default(), |i: i32| Ok(i.abs()), Bitcode::default);
 /// let results = step
 ///     .execute_many((0..10).into_par_iter(), ExecuteOptions::default())?
-///     .collect::<ssa_cache::error::Result<Vec<i32>>>()?;
+///     .collect::<ssa_pipeline::error::Result<Vec<i32>>>()?;
 /// # Ok(())
 /// # }
 /// ```

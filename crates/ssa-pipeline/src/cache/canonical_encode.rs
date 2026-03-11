@@ -5,7 +5,8 @@
 ///
 /// # Portability
 ///
-/// `ssa-cache` targets 64-bit platforms only. This avoids platform-dependent key encodings (e.g.
+/// `ssa-pipeline` targets 64-bit platforms only. This avoids platform-dependent key encodings
+/// (e.g.
 /// `usize` width) and makes cache keys stable across builds.
 ///
 /// # Implementations
@@ -48,7 +49,7 @@ pub trait CanonicalEncode {
 /// # Example
 ///
 /// ```
-/// use ssa_cache::{CanonicalEncode, CanonicalEncodeWriter};
+/// use ssa_pipeline::{CanonicalEncode, CanonicalEncodeWriter};
 ///
 /// struct Params {
 ///     rate: f64,
@@ -126,7 +127,7 @@ impl_encode_for_int!(u8 => 1, u16 => 2, u32 => 4, u64 => 8, usize => 8, u128 => 
 impl_encode_for_int!(i8 => 1, i16 => 2, i32 => 4, i64 => 8, isize => 8, i128 => 16);
 
 #[cfg(not(target_pointer_width = "64"))]
-compile_error!("ssa-cache supports only 64-bit targets");
+compile_error!("ssa-pipeline supports only 64-bit targets");
 
 macro_rules! impl_encode_for_float {
     ($($t:ident => $size:literal),+ $(,)?) => {

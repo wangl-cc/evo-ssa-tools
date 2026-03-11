@@ -24,8 +24,8 @@ use self::{
 /// Encoding path:
 ///
 /// - Serialize `T` with the inner engine `E`.
-/// - Optionally reject oversized serialized payloads with [`CompressedCodec::with_max_encode_len`]
-///   before building a cache frame.
+/// - Optionally reject oversized serialized payloads with [`CompressedCodec::with_max_len`] before
+///   building a cache frame.
 /// - Ask policy `P` whether the serialized form should stay raw or attempt compression with `C`.
 /// - If compression is attempted, ask `P` whether to keep the compressed frame or fall back to raw.
 ///
@@ -34,8 +34,8 @@ use self::{
 /// - Inspect the frame header.
 /// - Either borrow the raw payload directly or decompress it into scratch space.
 /// - Pass the recovered serialized bytes back to `E::decode`.
-/// - Optionally reject oversized compressed payloads with [`CompressedCodec::with_max_decode_len`]
-///   before allocating decode scratch space.
+/// - Optionally reject oversized compressed payloads with [`CompressedCodec::with_max_len`] before
+///   allocating decode scratch space.
 pub struct CompressedCodec<E, C, P = DefaultCompressPolicy> {
     inner: E,
     frame: CompressFrame<C>,
@@ -76,21 +76,14 @@ impl<E, C, P> CompressedCodec<E, C, P> {
         }
     }
 
-    /// Set an encode-time limit for serialized payloads before compression.
+    /// Set a size limit applied at both encode time (serialized payload) and decode time
+    /// (compressed payload).
     ///
     /// Passing `0` removes the limit.
-    pub fn with_max_encode_len(mut self, max_encode_len: usize) -> Self {
-        self.max_encode_len = NonZeroUsize::new(max_encode_len);
-        self
-    }
-
-    /// Set a decode-time limit for compressed payloads before scratch allocation.
-    ///
-    /// Passing `0` removes the limit.
-    pub fn with_max_decode_len(mut self, max_decode_len: usize) -> Self {
-        self.frame = self
-            .frame
-            .with_max_decode_len(NonZeroUsize::new(max_decode_len));
+    pub fn with_max_len(mut self, max_len: usize) -> Self {
+        let limit = NonZeroUsize::new(max_len);
+        self.max_encode_len = limit;
+        self.frame = self.frame.with_max_decode_len(limit);
         self
     }
 }
@@ -354,7 +347,7 @@ mod tests {
         let max_encode_len = 64 * 1024 * 1024;
         let oversize_len = max_encode_len + 1;
         let mut engine: CompressedCodec<SizedBytesEngine, TestCompress> =
-            CompressedCodec::new(SizedBytesEngine::default()).with_max_encode_len(max_encode_len);
+            CompressedCodec::new(SizedBytesEngine::default()).with_max_len(max_encode_len);
 
         assert!(matches!(
             engine.encode(&oversize_len),
@@ -441,10 +434,8 @@ mod tests {
         let mut engine: CompressedCodec<PassthroughBytesEngine, TestCompress, AggressivePolicy> =
             CompressedCodec::new(PassthroughBytesEngine::default())
                 .with_compressor(TestCompress)
-                .with_max_encode_len(1)
-                .with_max_encode_len(0)
-                .with_max_decode_len(1)
-                .with_max_decode_len(0)
+                .with_max_len(1)
+                .with_max_len(0)
                 .with_policy(AggressivePolicy);
 
         let encoded = engine.encode(&value).unwrap().to_vec();
