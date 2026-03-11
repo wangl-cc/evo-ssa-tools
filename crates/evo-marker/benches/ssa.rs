@@ -1,6 +1,6 @@
 use divan::black_box;
 use evo_marker::prelude::*;
-use rand::RngExt;
+use rand::{Rng, RngExt};
 
 fn max_size() -> usize {
     black_box(100000)
@@ -24,28 +24,23 @@ fn lambda() -> f64 {
 
 #[allow(dead_code)]
 #[inline]
-pub fn pure_birth<M: Marker>(rng: &mut impl rand::Rng) -> Vec<M> {
+pub fn pure_birth<M: Marker>(rng: &mut impl Rng) -> Vec<M> {
     birth_death_ssa(b(), d(), max_size(), rng)
 }
 
 #[inline]
-pub fn birth_death<M: Marker>(rng: &mut impl rand::Rng) -> Vec<M> {
+pub fn birth_death<M: Marker>(rng: &mut impl Rng) -> Vec<M> {
     birth_death_ssa(b(), d(), max_size(), rng)
 }
 
-pub fn build_tree<const N: u32>(cells: Vec<LineageNode>, rng: &mut impl rand::Rng) -> PhyloTree<N> {
+pub fn build_tree<const N: u32>(cells: Vec<LineageNode>, rng: &mut impl Rng) -> PhyloTree<N> {
     PhyloTree::poisson_builder(cells, lambda())
         .unwrap()
         .sample(rng, sample_size())
         .build(rng)
 }
 
-pub fn birth_death_ssa<M: Marker>(
-    b: f64,
-    d: f64,
-    max_n: usize,
-    rng: &mut impl rand::Rng,
-) -> Vec<M> {
+pub fn birth_death_ssa<M: Marker>(b: f64, d: f64, max_n: usize, rng: &mut impl Rng) -> Vec<M> {
     let mut cells = Vec::with_capacity(max_n);
     let mut state = M::State::default();
     cells.push(M::default());

@@ -36,7 +36,7 @@ pub struct PhyloTreeBuilder<const N: u32, D: Distribution<u16> = PoissonKnuth> {
 }
 
 impl<const N: u32, D: Distribution<u16>> PhyloTreeBuilder<N, D> {
-    pub fn sample(mut self, rng: &mut impl rand::Rng, amount: usize) -> Self {
+    pub fn sample(mut self, rng: &mut impl Rng, amount: usize) -> Self {
         let indices = {
             let mut indices = rand::seq::index::sample(rng, self.cells.len(), amount).into_vec();
             indices.sort_unstable();

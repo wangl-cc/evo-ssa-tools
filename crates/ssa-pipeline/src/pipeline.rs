@@ -151,6 +151,7 @@ mod tests {
         time::Duration,
     };
 
+    use rand::Rng;
     use rayon::prelude::*;
 
     use super::*;
@@ -345,8 +346,8 @@ mod tests {
                 let mut inside = 0usize;
 
                 for _ in 0..n_samples {
-                    let x = (rand::Rng::next_u64(rng) as f64) / (u64::MAX as f64);
-                    let y = (rand::Rng::next_u64(rng) as f64) / (u64::MAX as f64);
+                    let x = (rng.next_u64() as f64) / (u64::MAX as f64);
+                    let y = (rng.next_u64() as f64) / (u64::MAX as f64);
                     if x * x + y * y <= 1.0 {
                         inside += 1;
                     }

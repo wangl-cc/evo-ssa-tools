@@ -46,7 +46,7 @@ use rayon::prelude::*;
 use ssa_pipeline::prelude::*;
 
 fn simulate_population(
-    rng: &mut impl rand::Rng,
+    rng: &mut impl Rng,
     initial_cells: u32,
     steps: u32,
 ) -> Vec<u32> {
