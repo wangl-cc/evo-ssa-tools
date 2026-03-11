@@ -484,7 +484,7 @@ mod tests {
     }
 
     fn rng() -> SmallRng {
-        SmallRng::from_rng(&mut rand::rng())
+        SmallRng::seed_from_u64(0)
     }
 
     #[test]

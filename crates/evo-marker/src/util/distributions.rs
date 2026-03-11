@@ -59,7 +59,7 @@ mod tests {
         // For Poisson distribution, mean equals lambda
         let lambda = 5.0;
         let poisson = PoissonKnuth::new(lambda).unwrap();
-        let rng = SmallRng::from_rng(&mut rand::rng());
+        let rng = SmallRng::seed_from_u64(0);
 
         let samples: Vec<u64> = poisson
             .sample_iter(rng)
