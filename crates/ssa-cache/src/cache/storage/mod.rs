@@ -1,3 +1,21 @@
+//! Storage backends for `ssa-cache`.
+//!
+//! All stores implement the same raw `key -> encoded bytes` contract exposed by [`CacheStore`].
+//! The higher-level step and pipeline types are responsible for canonical input encoding and value
+//! serialization; storage backends only decide where those bytes live and how they are shared.
+//!
+//! Backend selection guidance:
+//!
+//! - [`HashMapStore`]: in-process, in-memory storage for tests, experiments, and short-lived jobs.
+//! - [`Fjall2Store`]: persistent Fjall v2 partition-backed storage when you already manage a
+//!   [`fjall2::Keyspace`] externally.
+//! - [`Fjall3Store`]: persistent Fjall v3 keyspace-backed storage when you already manage a
+//!   [`fjall3::Database`] externally.
+//! - [`RedbStore`]: persistent single-file storage scoped to one [`redb`] table.
+//!
+//! Stores do not add namespacing on top of the underlying database. Reuse the same partition,
+//! keyspace, or table only when the cached compute semantics are intentionally identical.
+
 use super::codec::CodecEngine;
 use crate::error::Result;
 
@@ -35,6 +53,7 @@ pub enum StorageError {
     Redb(#[from] ::redb::Error),
 }
 
+/// Result type returned by storage backends.
 pub type StorageResult<T, E = StorageError> = std::result::Result<T, E>;
 
 #[doc(hidden)]
@@ -56,6 +75,10 @@ mod private {
 /// Implementations are expected to be thread-safe for concurrent reads and writes.
 ///
 /// `()` implements `CacheStore` as a "no-cache" backend that always misses and discards writes.
+///
+/// This trait deliberately does not define any keyspace or schema management. If multiple compute
+/// nodes share the same underlying backing store, the caller must ensure they also share identical
+/// cache semantics.
 pub trait CacheStore: Sync {
     /// Borrowed view of an encoded value returned by this store.
     type Encoded<'a>: AsRef<[u8]>

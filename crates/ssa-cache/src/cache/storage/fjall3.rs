@@ -1,11 +1,19 @@
+//! Persistent storage backend built on Fjall v3 keyspaces.
+
 use super::{CacheStore, StorageResult, WorkerForkStore, private};
 
 /// Fjall v3-backed cache store bound to a single keyspace.
+///
+/// The caller owns the surrounding [`fjall3::Database`] handle and decides how different cache
+/// keyspaces map onto Fjall keyspace names.
 pub struct Fjall3Store {
     handle: fjall3::Keyspace,
 }
 
 impl Fjall3Store {
+    /// Open or create a keyspace-backed store inside an existing Fjall v3 database.
+    ///
+    /// `options` defaults to [`fjall3::KeyspaceCreateOptions::default`] when omitted.
     pub fn open(
         database: fjall3::Database,
         keyspace_name: impl AsRef<str>,

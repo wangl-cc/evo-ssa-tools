@@ -1,3 +1,5 @@
+//! Persistent storage backend built on Fjall v2 partitions.
+
 use super::{CacheStore, StorageResult, WorkerForkStore, private};
 
 /// Fjall v2-backed cache store bound to a single partition.
@@ -6,6 +8,10 @@ pub struct Fjall2Store {
 }
 
 impl Fjall2Store {
+    /// Open or create a partition-backed store inside an existing Fjall v2 keyspace.
+    ///
+    /// The surrounding [`fjall2::Keyspace`] lifecycle is managed by the caller. Use a distinct
+    /// partition per cache keyspace to avoid collisions between unrelated compute nodes.
     pub fn open(
         keyspace: fjall2::Keyspace,
         partition_name: impl AsRef<str>,

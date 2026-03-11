@@ -1,3 +1,5 @@
+//! In-memory storage backend backed by a shared [`std::collections::HashMap`].
+
 use std::sync::Arc;
 
 use parking_lot::{MappedRwLockReadGuard, RwLock, RwLockReadGuard};
@@ -18,7 +20,11 @@ impl AsRef<[u8]> for HashMapEncoded<'_> {
 
 /// A simple in-memory cache store backed by a `HashMap`.
 ///
-/// Clone is intentionally not exposed. Worker sharing is handled internally.
+/// This backend is process-local and does not persist data across runs. It is a good default for
+/// tests, benchmarks, and pipelines that only need cache reuse within one process.
+///
+/// Clone is intentionally not exposed. Parallel worker sharing is handled through
+/// [`WorkerForkStore`], which keeps all worker-local clones pointed at the same underlying map.
 #[derive(Debug)]
 pub struct HashMapStore<H> {
     pub(crate) inner: HashMapShard<H>,
@@ -28,6 +34,7 @@ impl<H> Default for HashMapStore<H>
 where
     H: std::hash::BuildHasher + Default,
 {
+    /// Create an empty in-memory store using the default hasher instance.
     fn default() -> Self {
         Self {
             inner: Arc::new(RwLock::new(RawHashMap::<H>::default())),
@@ -35,7 +42,10 @@ where
     }
 }
 
-/// Type alias for a [`HashMapStore`] using the default [`HashMap`] hasher.
+/// Type alias for a [`HashMapStore`] using [`std::collections::hash_map::RandomState`].
+///
+/// This is the easiest in-memory backend to reach for when you do not need a custom hashing
+/// strategy.
 pub type DefaultHashMapStore = HashMapStore<std::collections::hash_map::RandomState>;
 
 impl<H> private::Sealed for HashMapStore<H> {}
