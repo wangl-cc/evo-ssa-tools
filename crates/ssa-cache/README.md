@@ -298,7 +298,7 @@ store:
 
 - `Fjall2Store::open(keyspace, partition_name, options)`
 - `Fjall3Store::open(database, keyspace_name, options)`
-- `RedbStore::new(database, table_name) -> storage::Result<RedbStore>` where `table_name: &'static str`; opening eagerly creates the table if needed
+- `RedbStore::new(database, table_name)`
 
 Each wrapper is a store capability for one concrete keyspace/table. The wrapper itself does not
 implement `Clone`; internal worker sharing is handled by `ssa-cache`.

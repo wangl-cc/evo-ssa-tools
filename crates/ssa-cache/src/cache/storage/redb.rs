@@ -4,6 +4,8 @@ use redb::{ReadableDatabase, TableDefinition};
 
 use super::{CacheStore, StorageError, StorageResult, WorkerForkStore, private};
 
+type BytesTable<'name> = TableDefinition<'name, &'static [u8], &'static [u8]>;
+
 macro_rules! impl_storage_error_from_redb {
     ($($ty:path),* $(,)?) => {
         $(
@@ -37,19 +39,20 @@ impl AsRef<[u8]> for RedbEncoded<'_> {
 #[derive(Debug)]
 pub struct RedbStore {
     db: Arc<redb::Database>,
-    table_name: &'static str,
+    table_name: String,
 }
 
 impl RedbStore {
-    pub fn new(db: redb::Database, table_name: &'static str) -> StorageResult<Self> {
-        Self::from_arc(Arc::new(db), table_name)
+    pub fn new(db: redb::Database, table_name: impl Into<String>) -> StorageResult<Self> {
+        Self::from_arc(Arc::new(db), table_name.into())
     }
 
-    pub fn from_arc(db: Arc<redb::Database>, table_name: &'static str) -> StorageResult<Self> {
+    fn from_arc(db: Arc<redb::Database>, table_name: String) -> StorageResult<Self> {
         let tx = db.begin_write()?;
         {
-            let table: TableDefinition<'static, &[u8], &[u8]> = TableDefinition::new(table_name);
-            let _ = tx.open_table(table)?;
+            let table = BytesTable::new(&table_name);
+            // Try to open the table, creating it if it doesn't exist.
+            tx.open_table(table)?;
         }
         tx.commit()?;
 
@@ -63,7 +66,7 @@ impl WorkerForkStore for RedbStore {
     fn fork_store(&self) -> Self {
         Self {
             db: self.db.clone(),
-            table_name: self.table_name,
+            table_name: self.table_name.clone(),
         }
     }
 }
@@ -76,8 +79,7 @@ impl CacheStore for RedbStore {
 
     fn fetch_encoded(&self, key: &[u8]) -> StorageResult<Option<Self::Encoded<'_>>> {
         let tx = self.db.begin_read()?;
-        let definition: TableDefinition<'static, &[u8], &[u8]> =
-            TableDefinition::new(self.table_name);
+        let definition = BytesTable::new(self.table_name.as_ref());
         let table = tx.open_table(definition)?;
         let value = table.get(key)?;
         Ok(value.map(RedbEncoded))
@@ -87,8 +89,7 @@ impl CacheStore for RedbStore {
         let tx = self.db.begin_write()?;
 
         {
-            let definition: TableDefinition<'static, &[u8], &[u8]> =
-                TableDefinition::new(self.table_name);
+            let definition = BytesTable::new(self.table_name.as_ref());
             let mut table = tx.open_table(definition)?;
             table.insert(key, encoded)?;
         }
@@ -135,7 +136,7 @@ mod tests {
     fn test_redb_store_fetch_encoded_and_fork() -> CrateResult<()> {
         let file = tempfile::NamedTempFile::new().unwrap();
         let db = Arc::new(::redb::Database::create(file.path()).map_err(StorageError::from)?);
-        let store = RedbStore::from_arc(db, "test")?;
+        let store = RedbStore::from_arc(db, String::from("test"))?;
         let forked = store.fork_store();
 
         store.store_encoded(b"raw", b"payload")?;
