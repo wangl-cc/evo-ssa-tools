@@ -1,7 +1,6 @@
 use std::marker::PhantomData;
 
-use rand::SeedableRng;
-use rand_xoshiro::Xoshiro256PlusPlus;
+use rand::{SeedableRng, rngs::Xoshiro256PlusPlus};
 
 use crate::{
     CacheStore, CanonicalEncode, Compute, Result,
@@ -89,7 +88,7 @@ impl<P: CanonicalEncode> CanonicalEncode for StochasticInput<P> {
 /// ```rust
 /// # use ssa_pipeline::prelude::*;
 /// # use rayon::prelude::*;
-/// # use rand::Rng;
+/// # use rand::RngExt;
 /// # #[cfg(feature = "bitcode")]
 /// # fn main() -> ssa_pipeline::error::Result<()> {
 /// type Store = HashMapStore<std::collections::hash_map::RandomState>;
@@ -219,7 +218,7 @@ mod tests {
         atomic::{AtomicUsize, Ordering},
     };
 
-    use rand::RngCore;
+    use rand::Rng;
     use rayon::prelude::*;
 
     use super::*;

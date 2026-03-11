@@ -1,6 +1,6 @@
 use divan::black_box;
 use evo_marker::prelude::*;
-use rand::prelude::*;
+use rand::{Rng, RngExt};
 
 fn max_size() -> usize {
     black_box(100000)

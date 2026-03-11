@@ -151,7 +151,7 @@ mod tests {
         time::Duration,
     };
 
-    use rand::RngCore;
+    use rand::Rng;
     use rayon::prelude::*;
 
     use super::*;

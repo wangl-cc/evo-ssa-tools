@@ -41,12 +41,12 @@ It is designed as an execution and materialization layer, not a long-term result
 This example builds a two-stage pipeline — a stochastic simulation stage followed by a deterministic analysis stage — and runs it over eight repetitions. It demonstrates three core properties of the crate: parallel execution across Rayon workers, demand-driven caching (the second run reuses stored results without recomputing), and reproducibility (the same `(param, repetition_index)` input always produces the same output, whether computed fresh or retrieved from cache).
 
 ```rust
-use rand::Rng;
+use rand::{Rng, RngExt};
 use rayon::prelude::*;
 use ssa_pipeline::prelude::*;
 
 fn simulate_population(
-    rng: &mut impl rand::Rng,
+    rng: &mut impl Rng,
     initial_cells: u32,
     steps: u32,
 ) -> Vec<u32> {

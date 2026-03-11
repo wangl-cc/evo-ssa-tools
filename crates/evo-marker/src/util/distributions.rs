@@ -24,6 +24,8 @@ impl PoissonKnuth {
 // As lambda is small, so use u16 as the return type is fine.
 impl rand::prelude::Distribution<u16> for PoissonKnuth {
     fn sample<G: rand::Rng + ?Sized>(&self, rng: &mut G) -> u16 {
+        use rand::RngExt;
+
         // Knuth algorithm
         let mut k = 0;
         let mut p = 1.0;
@@ -57,13 +59,13 @@ mod tests {
         // For Poisson distribution, mean equals lambda
         let lambda = 5.0;
         let poisson = PoissonKnuth::new(lambda).unwrap();
-        let rng = SmallRng::from_os_rng();
+        let rng = SmallRng::seed_from_u64(0);
 
-        let samples = poisson
+        let samples: Vec<u64> = poisson
             .sample_iter(rng)
             .take(SAMPLE_SIZE)
             .map(|x| x as u64)
-            .collect::<Vec<_>>();
+            .collect();
 
         let mean = samples.iter().sum::<u64>() as f64 / samples.len() as f64;
         assert!((mean - lambda).abs() < 0.2); // Tolerance 0.1
