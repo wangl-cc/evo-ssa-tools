@@ -66,8 +66,8 @@ impl<P: CanonicalEncode> CanonicalEncode for StochasticInput<P> {
 
 /// Stochastic compute node with reproducible randomness.
 ///
-/// `StochasticStep` is a cached compute node where each input is executed with a deterministic RNG
-/// stream derived from `(key_material, encoded_input_bytes)`.
+/// `StochasticStep` is a memoized compute node where each input is executed with a deterministic
+/// RNG stream derived from `(key_material, encoded_input_bytes)`.
 ///
 /// # When to use
 ///
@@ -87,11 +87,11 @@ impl<P: CanonicalEncode> CanonicalEncode for StochasticInput<P> {
 /// # Example
 ///
 /// ```rust
-/// # use ssa_cache::prelude::*;
+/// # use ssa_pipeline::prelude::*;
 /// # use rayon::prelude::*;
 /// # use rand::Rng;
 /// # #[cfg(feature = "bitcode")]
-/// # fn main() -> ssa_cache::error::Result<()> {
+/// # fn main() -> ssa_pipeline::error::Result<()> {
 /// type Store = HashMapStore<std::collections::hash_map::RandomState>;
 /// let step = StochasticStep::new(
 ///     Store::default(),
@@ -109,7 +109,7 @@ impl<P: CanonicalEncode> CanonicalEncode for StochasticInput<P> {
 ///     .map(|idx| StochasticInput::new(10.0, idx));
 /// let results = step
 ///     .execute_many(inputs, ExecuteOptions::default())?
-///     .collect::<ssa_cache::error::Result<Vec<f64>>>()?;
+///     .collect::<ssa_pipeline::error::Result<Vec<f64>>>()?;
 /// # Ok(())
 /// # }
 /// # #[cfg(not(feature = "bitcode"))]

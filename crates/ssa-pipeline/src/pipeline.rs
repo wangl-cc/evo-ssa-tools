@@ -1,8 +1,8 @@
 use std::marker::PhantomData;
 
 use crate::{
-    CacheStore, CanonicalEncode, Compute, Result,
     cache::{codec::CodecEngine, storage::WorkerForkStore},
+    CacheStore, CanonicalEncode, Compute, Result,
 };
 
 /// Two-stage pipeline node.
@@ -105,7 +105,7 @@ where
 /// # Example
 ///
 /// ```rust
-/// # use ssa_cache::prelude::*;
+/// # use ssa_pipeline::prelude::*;
 /// # #[cfg(feature = "bitcode")]
 /// # {
 /// type Store = HashMapStore<std::collections::hash_map::RandomState>;
@@ -144,8 +144,8 @@ impl<T: Compute> PipelineExt for T {}
 mod tests {
     use std::{
         sync::{
-            Arc,
             atomic::{AtomicUsize, Ordering},
+            Arc,
         },
         thread::sleep,
         time::Duration,

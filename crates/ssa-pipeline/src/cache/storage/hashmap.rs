@@ -154,7 +154,7 @@ mod tests {
         type Lz4Engine = CompressedCodec<SizedBytesEngine, Lz4>;
 
         let store = DefaultHashMapStore::default();
-        let mut engine = Lz4Engine::default().with_max_encode_len(64 * 1024 * 1024);
+        let mut engine = Lz4Engine::default().with_max_len(64 * 1024 * 1024);
         let key = b"oversize";
         let value = 64 * 1024 * 1024 + 1;
 
