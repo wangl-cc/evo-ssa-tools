@@ -13,6 +13,7 @@
 /// - For integers, the encoding is big-endian;
 /// - For floats, NaN values are normalized to a canonical NaN, and -0.0 is treated as +0.0.
 /// - For tuples and arrays, the encoding is the concatenation of the encodings of each element.
+/// - For custom structs, [`CanonicalEncodeWriter`] can write each field in sequence.
 pub trait CanonicalEncode {
     const SIZE: usize;
 
@@ -35,6 +36,74 @@ pub trait CanonicalEncode {
     unsafe fn encode_with_buffer<'b>(&self, buffer: &'b mut [u8]) -> &'b [u8] {
         unsafe { self.encode_into(buffer) };
         &buffer[..Self::SIZE]
+    }
+}
+
+/// Sequential writer for building a [`CanonicalEncode`] implementation field by field.
+///
+/// This helper narrows the provided buffer to exactly `T::SIZE` bytes and then advances an
+/// internal cursor every time [`Self::write`] is called, so custom `struct` implementations do
+/// not need to manage slice offsets manually.
+///
+/// # Example
+///
+/// ```
+/// use ssa_cache::{CanonicalEncode, CanonicalEncodeWriter};
+///
+/// struct Params {
+///     rate: f64,
+///     grid: [u16; 2],
+/// }
+///
+/// impl CanonicalEncode for Params {
+///     const SIZE: usize = f64::SIZE + <[u16; 2]>::SIZE;
+///
+///     unsafe fn encode_into(&self, buffer: &mut [u8]) {
+///         CanonicalEncodeWriter::for_type::<Self>(buffer)
+///             .write(&self.rate)
+///             .write(&self.grid)
+///             .finish();
+///     }
+/// }
+/// ```
+#[derive(Debug)]
+pub struct CanonicalEncodeWriter<'a> {
+    buffer: &'a mut [u8],
+    offset: usize,
+}
+
+impl<'a> CanonicalEncodeWriter<'a> {
+    /// Create a writer over the exact `T::SIZE` prefix of `buffer`.
+    ///
+    /// This is the usual entry point inside `impl CanonicalEncode for MyType`.
+    #[inline]
+    pub fn for_type<T: CanonicalEncode>(buffer: &'a mut [u8]) -> Self {
+        let (prefix, _) = buffer.split_at_mut(T::SIZE);
+        Self {
+            buffer: prefix,
+            offset: 0,
+        }
+    }
+
+    /// Append one field using its [`CanonicalEncode`] implementation.
+    #[inline]
+    pub fn write<T: CanonicalEncode>(&mut self, value: &T) -> &mut Self {
+        let end = self.offset + T::SIZE;
+        let slot = &mut self.buffer[self.offset..end];
+        unsafe { value.encode_into(slot) };
+        self.offset = end;
+        self
+    }
+
+    /// Finish encoding.
+    ///
+    /// In debug builds this asserts that the implementation wrote exactly `Self::SIZE` bytes.
+    #[inline]
+    pub fn finish(&mut self) {
+        debug_assert!(
+            self.offset == self.buffer.len(),
+            "CanonicalEncodeWriter::finish called before filling the full buffer"
+        );
     }
 }
 
@@ -107,7 +176,25 @@ impl<T: CanonicalEncode, const N: usize> CanonicalEncode for [T; N] {
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
-    use super::CanonicalEncode;
+    use super::{CanonicalEncode, CanonicalEncodeWriter};
+
+    struct SearchKey {
+        generation: u64,
+        selection: f64,
+        counts: [u16; 3],
+    }
+
+    impl CanonicalEncode for SearchKey {
+        const SIZE: usize = u64::SIZE + f64::SIZE + <[u16; 3]>::SIZE;
+
+        unsafe fn encode_into(&self, buffer: &mut [u8]) {
+            CanonicalEncodeWriter::for_type::<Self>(buffer)
+                .write(&self.generation)
+                .write(&self.selection)
+                .write(&self.counts)
+                .finish();
+        }
+    }
 
     #[test]
     fn test_float_encode_size_matches_type_width() {
@@ -174,5 +261,36 @@ mod tests {
         expected.extend_from_slice(&0x0304u16.to_be_bytes());
         expected.extend_from_slice(&0x0506u16.to_be_bytes());
         assert_eq!(encoded, expected);
+    }
+
+    #[test]
+    fn test_writer_encodes_custom_struct_fields_in_order() {
+        let value = SearchKey {
+            generation: 0x0102_0304_0506_0708,
+            selection: -0.0,
+            counts: [0x090a, 0x0b0c, 0x0d0e],
+        };
+        let mut buffer = vec![0u8; SearchKey::SIZE];
+        let encoded = unsafe { value.encode_with_buffer(&mut buffer) };
+
+        let mut expected = Vec::new();
+        expected.extend_from_slice(&value.generation.to_be_bytes());
+        expected.extend_from_slice(&0f64.to_bits().to_be_bytes());
+        expected.extend_from_slice(&0x090au16.to_be_bytes());
+        expected.extend_from_slice(&0x0b0cu16.to_be_bytes());
+        expected.extend_from_slice(&0x0d0eu16.to_be_bytes());
+        assert_eq!(encoded, expected);
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(
+        expected = "CanonicalEncodeWriter::finish called before filling the full buffer"
+    )]
+    fn test_writer_finish_panics_when_bytes_remain() {
+        let mut buffer = [0u8; SearchKey::SIZE];
+        let mut writer = CanonicalEncodeWriter::for_type::<SearchKey>(&mut buffer);
+        writer.write(&1u64);
+        writer.finish();
     }
 }

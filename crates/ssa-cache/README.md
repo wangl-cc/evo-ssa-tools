@@ -241,6 +241,7 @@ output.
 
 - `Compute`: core trait (`execute` for one input, `execute_many` for batched parallel inputs).
 - `ExecuteOptions`: execution controls (including `with_interrupt_signal`).
+- `CanonicalEncode` / `CanonicalEncodeWriter`: canonical cache-key encoding and a helper for custom input structs.
 - `CodecEngine<T>`: pluggable serialization engines (e.g. `Bitcode`, `CompressedCodec<Bitcode, Lz4>`, or `CompressedCodec<Bitcode, Zstd>` when the corresponding compression features are enabled).
 - `DeterministicStep`: deterministic compute with an owned cache.
 - `StochasticStep`: stochastic compute with reproducible per-repetition RNG streams.

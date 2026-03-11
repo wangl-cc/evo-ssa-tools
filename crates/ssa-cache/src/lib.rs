@@ -13,7 +13,7 @@ pub mod pipeline;
 pub mod stochastic;
 
 pub use cache::{
-    canonical_encode::CanonicalEncode,
+    canonical_encode::{CanonicalEncode, CanonicalEncodeWriter},
     codec::{CodecEngine, EngineFactory},
     storage::CacheStore,
 };
@@ -173,7 +173,7 @@ pub mod prelude {
     pub use crate::{
         Compute, ExecuteOptions,
         cache::{
-            canonical_encode::CanonicalEncode,
+            canonical_encode::{CanonicalEncode, CanonicalEncodeWriter},
             codec::{CodecEngine, EngineFactory},
             storage::{CacheStore, DefaultHashMapStore, HashMapStore},
         },
