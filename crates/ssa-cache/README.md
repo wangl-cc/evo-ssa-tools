@@ -248,32 +248,6 @@ output.
 - `Pipeline` / `PipelineExt`: stage composition and per-stage caching.
 - `CacheStore`: cache backend interface and the in-memory implementation.
 
-## Custom Input Types
-
-For a custom input `struct`, implement [`CanonicalEncode`](https://docs.rs/ssa-cache/latest/ssa_cache/trait.CanonicalEncode.html) and use `CanonicalEncodeWriter` to append each field in order without manually slicing the buffer.
-
-```rust
-use ssa_cache::{CanonicalEncode, CanonicalEncodeWriter};
-
-struct Params {
-    seed: u64,
-    rate: f64,
-    bins: [u16; 2],
-}
-
-impl CanonicalEncode for Params {
-    const SIZE: usize = u64::SIZE + f64::SIZE + <[u16; 2]>::SIZE;
-
-    unsafe fn encode_into(&self, buffer: &mut [u8]) {
-        CanonicalEncodeWriter::for_type::<Self>(buffer)
-            .write(&self.seed)
-            .write(&self.rate)
-            .write(&self.bins)
-            .finish();
-    }
-}
-```
-
 ## Compression Policy
 
 `CompressedCodec<E, C, P>` lets you customize compression decisions with a `CompressPolicy`. The policy decides whether a serialized payload should stay raw or attempt compression, and then decides whether a compressed frame is worth keeping after compression finishes.

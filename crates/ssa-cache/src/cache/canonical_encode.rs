@@ -51,17 +51,15 @@ pub trait CanonicalEncode {
 /// use ssa_cache::{CanonicalEncode, CanonicalEncodeWriter};
 ///
 /// struct Params {
-///     seed: u64,
 ///     rate: f64,
 ///     grid: [u16; 2],
 /// }
 ///
 /// impl CanonicalEncode for Params {
-///     const SIZE: usize = u64::SIZE + f64::SIZE + <[u16; 2]>::SIZE;
+///     const SIZE: usize = f64::SIZE + <[u16; 2]>::SIZE;
 ///
 ///     unsafe fn encode_into(&self, buffer: &mut [u8]) {
 ///         CanonicalEncodeWriter::for_type::<Self>(buffer)
-///             .write(&self.seed)
 ///             .write(&self.rate)
 ///             .write(&self.grid)
 ///             .finish();
