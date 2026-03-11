@@ -484,7 +484,7 @@ mod tests {
     }
 
     fn rng() -> SmallRng {
-        SmallRng::from_os_rng()
+        SmallRng::from_rng(&mut rand::rng())
     }
 
     #[test]

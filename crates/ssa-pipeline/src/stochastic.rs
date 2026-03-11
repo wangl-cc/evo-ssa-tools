@@ -1,7 +1,6 @@
 use std::marker::PhantomData;
 
-use rand::SeedableRng;
-use rand_xoshiro::Xoshiro256PlusPlus;
+use rand::{SeedableRng, rngs::Xoshiro256PlusPlus};
 
 use crate::{
     CacheStore, CanonicalEncode, Compute, Result,
@@ -89,7 +88,7 @@ impl<P: CanonicalEncode> CanonicalEncode for StochasticInput<P> {
 /// ```rust
 /// # use ssa_pipeline::prelude::*;
 /// # use rayon::prelude::*;
-/// # use rand::Rng;
+/// # use rand::RngExt;
 /// # #[cfg(feature = "bitcode")]
 /// # fn main() -> ssa_pipeline::error::Result<()> {
 /// type Store = HashMapStore<std::collections::hash_map::RandomState>;
@@ -219,7 +218,6 @@ mod tests {
         atomic::{AtomicUsize, Ordering},
     };
 
-    use rand::RngCore;
     use rayon::prelude::*;
 
     use super::*;
@@ -236,10 +234,10 @@ mod tests {
             b"experiment-A",
             |rng, param| {
                 Ok([
-                    rng.next_u64() ^ param,
-                    rng.next_u64(),
-                    rng.next_u64(),
-                    rng.next_u64(),
+                    rand::Rng::next_u64(rng) ^ param,
+                    rand::Rng::next_u64(rng),
+                    rand::Rng::next_u64(rng),
+                    rand::Rng::next_u64(rng),
                 ])
             },
             FixtureEngine::default,
@@ -258,10 +256,10 @@ mod tests {
             b"experiment-A",
             |rng, param| {
                 Ok([
-                    rng.next_u64() ^ param,
-                    rng.next_u64(),
-                    rng.next_u64(),
-                    rng.next_u64(),
+                    rand::Rng::next_u64(rng) ^ param,
+                    rand::Rng::next_u64(rng),
+                    rand::Rng::next_u64(rng),
+                    rand::Rng::next_u64(rng),
                 ])
             },
             FixtureEngine::default,
@@ -280,10 +278,10 @@ mod tests {
             b"experiment-A",
             |rng, param| {
                 Ok([
-                    rng.next_u64() ^ param,
-                    rng.next_u64(),
-                    rng.next_u64(),
-                    rng.next_u64(),
+                    rand::Rng::next_u64(rng) ^ param,
+                    rand::Rng::next_u64(rng),
+                    rand::Rng::next_u64(rng),
+                    rand::Rng::next_u64(rng),
                 ])
             },
             FixtureEngine::default,
@@ -293,10 +291,10 @@ mod tests {
             b"experiment-B",
             |rng, param| {
                 Ok([
-                    rng.next_u64() ^ param,
-                    rng.next_u64(),
-                    rng.next_u64(),
-                    rng.next_u64(),
+                    rand::Rng::next_u64(rng) ^ param,
+                    rand::Rng::next_u64(rng),
+                    rand::Rng::next_u64(rng),
+                    rand::Rng::next_u64(rng),
                 ])
             },
             FixtureEngine::default,
@@ -320,7 +318,7 @@ mod tests {
             b"experiment-A",
             move |rng, param| {
                 calls_a_clone.fetch_add(1, Ordering::SeqCst);
-                Ok(rng.next_u64() ^ param)
+                Ok(rand::Rng::next_u64(rng) ^ param)
             },
             FixtureEngine::default,
         );
@@ -329,7 +327,7 @@ mod tests {
             b"experiment-B",
             move |rng, param| {
                 calls_b_clone.fetch_add(1, Ordering::SeqCst);
-                Ok(rng.next_u64() ^ param)
+                Ok(rand::Rng::next_u64(rng) ^ param)
             },
             FixtureEngine::default,
         );
@@ -353,13 +351,13 @@ mod tests {
         let step1 = StochasticStep::new(
             DefaultHashMapStore::default(),
             b"experiment-A",
-            |rng, param| Ok(rng.next_u64() ^ param),
+            |rng, param| Ok(rand::Rng::next_u64(rng) ^ param),
             FixtureEngine::default,
         );
         let step2 = StochasticStep::new(
             DefaultHashMapStore::default(),
             b"experiment-A",
-            |rng, param| Ok(rng.next_u64() ^ param),
+            |rng, param| Ok(rand::Rng::next_u64(rng) ^ param),
             FixtureEngine::default,
         );
 
@@ -390,7 +388,7 @@ mod tests {
             b"experiment-A",
             move |rng, param| {
                 stage1_calls_clone.fetch_add(1, Ordering::SeqCst);
-                Ok((rng.next_u64() as usize) ^ param)
+                Ok((rand::Rng::next_u64(rng) as usize) ^ param)
             },
             FixtureEngine::default,
         );
