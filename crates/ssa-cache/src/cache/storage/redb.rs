@@ -61,10 +61,7 @@ impl RedbStore {
     ///
     /// The target table is opened during construction so configuration and type mismatches fail
     /// early.
-    pub fn from_database(
-        db: redb::Database,
-        table_name: impl Into<String>,
-    ) -> StorageResult<Self> {
+    pub fn from_database(db: redb::Database, table_name: impl Into<String>) -> StorageResult<Self> {
         Self::from_database_arc(Arc::new(db), table_name)
     }
 
