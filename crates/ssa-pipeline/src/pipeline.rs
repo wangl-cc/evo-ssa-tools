@@ -1,8 +1,8 @@
 use std::marker::PhantomData;
 
 use crate::{
-    cache::{codec::CodecEngine, storage::WorkerForkStore},
     CacheStore, CanonicalEncode, Compute, Result,
+    cache::{codec::CodecEngine, storage::WorkerForkStore},
 };
 
 /// Two-stage pipeline node.
@@ -144,8 +144,8 @@ impl<T: Compute> PipelineExt for T {}
 mod tests {
     use std::{
         sync::{
-            atomic::{AtomicUsize, Ordering},
             Arc,
+            atomic::{AtomicUsize, Ordering},
         },
         thread::sleep,
         time::Duration,
