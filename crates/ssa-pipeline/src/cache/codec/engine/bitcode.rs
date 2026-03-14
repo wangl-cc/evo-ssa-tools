@@ -2,11 +2,10 @@ use super::super::{CodecEngine, Error as CodecError, SkipReason};
 
 /// A codec engine that uses the `bitcode 0.6` wire format for encoding and decoding.
 ///
-/// This type is tied to the currently supported `bitcode` crate major/minor line and is intended
-/// for ephemeral caches where producer and consumer are upgraded together.
+/// This type pins the built-in `bitcode` backend to the current `0.6` format generation.
 ///
-/// It is not recommended for persistent storage that must survive crate upgrades or schema
-/// evolution without an application-managed migration plan.
+/// Use [`Bitcode06`] when the on-disk format should stay on this built-in generation instead of
+/// following whatever backend [`Bitcode`] points to in a future crate release.
 #[derive(Default)]
 pub struct Bitcode06 {
     buffer: bitcode::Buffer,

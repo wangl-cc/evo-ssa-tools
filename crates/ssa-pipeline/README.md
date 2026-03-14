@@ -135,7 +135,7 @@ If you pair a persistent backend with a `bitcode` engine, prefer a versioned eng
 
 The built-in `bitcode` engines are enabled by the `bitcode` feature:
 
-- `Bitcode06` pins this crate to the current `bitcode 0.6` format generation. Use this when the exact built-in `bitcode` generation matters.
+- `Bitcode06` pins this crate to the current `bitcode 0.6` format generation. Use this when the exact built-in `bitcode` generation matters, including persistent caches that intentionally target that generation.
 - `Bitcode` is a convenience alias to the latest built-in `bitcode` backend, currently `Bitcode06`. Use this only for ephemeral caches where upgrading the application and invalidating old cache entries is acceptable.
 
 Examples in this crate use `Bitcode06::default` because the docs should point at a stable name, not a drifting alias.
@@ -144,9 +144,9 @@ Rule of thumb:
 
 - If the cache is process-local, disposable, or easy to invalidate on upgrade, `Bitcode` is acceptable.
 - If the cache is stored on disk and you care which built-in `bitcode` generation wrote it, use `Bitcode06`.
-- If the cache must remain readable across application upgrades without coordinated migration, do not rely on `bitcode` format compatibility at all.
+- If you move a persistent cache to a different bitcode generation later, treat that as an explicit migration step rather than something `Bitcode` will handle for you.
 
-`Bitcode::default` remains available for short-lived caches, but it intentionally tracks the latest built-in backend and therefore does not provide wire-format compatibility guarantees across crate upgrades. `Bitcode06` gives you a stable API name for the current built-in `bitcode 0.6` generation, not a long-term persistence guarantee. Neither `Bitcode` nor `Bitcode06` should be treated as a format with guaranteed cross-upgrade readability unless your application manages cache invalidation or migration explicitly.
+`Bitcode::default` remains available for short-lived caches, but it intentionally tracks the latest built-in backend and therefore does not provide wire-format compatibility guarantees across crate upgrades. `Bitcode06` gives you a stable API name for the current built-in `bitcode 0.6` generation, so code and stored data can intentionally stay on that generation until you choose to migrate.
 
 For workloads where storage size matters, `CompressedCodec<E, C, P>` wraps any existing engine with a framed compression layer. The `lz4` and `zstd` features provide ready-made compression algorithms. You can also plug in a custom `CompressPolicy` to decide at runtime whether compression is worth applying for a given payload:
 
