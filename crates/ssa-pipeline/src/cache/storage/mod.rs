@@ -97,7 +97,14 @@ pub trait CacheStore: Sync {
         CE: CodecEngine<T>,
     {
         match self.fetch_encoded(key)? {
-            Some(encoded) => Ok(Some(engine.decode(encoded.as_ref())?)),
+            Some(encoded) => match engine.decode(encoded.as_ref()) {
+                Ok(value) => Ok(Some(value)),
+                Err(error) if error.is_cache_corruption() => {
+                    eprintln!("[ssa-pipeline] ignoring corrupted cache entry during read: {error}");
+                    Ok(None)
+                }
+                Err(error) => Err(error.into()),
+            },
             None => Ok(None),
         }
     }

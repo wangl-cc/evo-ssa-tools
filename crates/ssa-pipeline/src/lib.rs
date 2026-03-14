@@ -156,6 +156,8 @@ impl ExecuteOptions {
 }
 
 pub mod prelude {
+    #[cfg(feature = "checked")]
+    pub use crate::cache::codec::CheckedCodec;
     #[cfg(feature = "lz4")]
     pub use crate::cache::codec::compress::algorithm::Lz4;
     #[cfg(feature = "zstd")]
