@@ -1,3 +1,8 @@
+#[cfg(feature = "checked")]
+pub mod checked;
+#[cfg(feature = "checked")]
+pub use checked::CheckedCodec;
+
 /// A codec engine that can encode/decode `T`
 ///
 /// Engines can carry their own scratch space, so the same instance can be reused
@@ -60,6 +65,10 @@ pub enum Error {
     #[error("Bitcode codec error")]
     BitCode(#[from] bitcode::Error),
 
+    #[cfg(feature = "checked")]
+    #[error("Checked codec error")]
+    Checked(#[from] crate::cache::codec::checked::Error),
+
     #[cfg(feature = "compress")]
     #[error("Compression codec error")]
     Compress(#[from] crate::cache::codec::compress::frame::Error),
@@ -67,6 +76,19 @@ pub enum Error {
     #[cfg(test)]
     #[error("Fixture codec error")]
     Fixture(#[from] fixtures::Error),
+}
+
+impl Error {
+    pub(crate) const fn is_cache_corruption(self: &Self) -> bool {
+        #[allow(unreachable_patterns)]
+        match self {
+            #[cfg(feature = "checked")]
+            Self::Checked(err) => err.is_cache_corruption(),
+            #[cfg(feature = "compress")]
+            Self::Compress(err) => err.is_cache_corruption(),
+            _ => false,
+        }
+    }
 }
 
 pub mod engine;
