@@ -26,7 +26,7 @@ use crate::{
 /// # use rayon::prelude::*;
 /// # fn main() -> ssa_pipeline::error::Result<()> {
 /// type Store = HashMapStore<std::collections::hash_map::RandomState>;
-/// let step = DeterministicStep::new(Store::default(), |i: i32| Ok(i.abs()), Bitcode::default);
+/// let step = DeterministicStep::new(Store::default(), |i: i32| Ok(i.abs()), Bitcode06::default);
 /// let results = step
 ///     .execute_many((0..10).into_par_iter(), ExecuteOptions::default())?
 ///     .collect::<ssa_pipeline::error::Result<Vec<i32>>>()?;

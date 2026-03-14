@@ -75,7 +75,7 @@ fn main() -> ssa_pipeline::error::Result<()> {
         DefaultHashMapStore::default(),   // per-stage cache
         "population-trajectory",          // key material: seeds the RNG; changing this changes all outputs
         |rng, (initial_cells, steps): (u32, u32)| Ok(simulate_population(rng, initial_cells, steps)),
-        Bitcode::default,                 // engine factory: one Bitcode codec engine per Rayon worker
+        Bitcode06::default,               // engine factory: one Bitcode06 codec engine per Rayon worker
     )
     // Stage 2: deterministic analysis.
     // Chained onto stage 1 with its own cache. The cache key is the same encoded input,
@@ -127,11 +127,26 @@ To use a persistent backend, open it explicitly and pass it to a step or pipelin
 
 Treat each partition, keyspace, or table as one cache namespace. If compute logic or encoding changes incompatibly, use a new namespace rather than the old one. The crate handles worker-local handle sharing internally through each store's fork behavior; you do not clone store handles yourself.
 
+If you pair a persistent backend with a `bitcode` engine, prefer a versioned engine such as `Bitcode06`. Do not use the `Bitcode` alias for persistent caches where the exact on-disk format matters, because that alias is allowed to retarget a newer built-in backend in a future crate release.
+
 ## Codec
 
 `CodecEngine<T>` handles encoding and decoding of node outputs for storage. Each Rayon worker gets its own engine instance, constructed by an `EngineFactory` — any zero-argument callable that returns a fresh engine. Pass the factory as the last argument to `StochasticStep::new` or `DeterministicStep::new`.
 
-The built-in engine is `Bitcode`, enabled by the `bitcode` feature. `Bitcode::default` serves as a ready-made factory and is what the Quick Start example uses.
+The built-in `bitcode` engines are enabled by the `bitcode` feature:
+
+- `Bitcode06` pins this crate to the current `bitcode 0.6` format generation. Use this when the exact built-in `bitcode` generation matters.
+- `Bitcode` is a convenience alias to the latest built-in `bitcode` backend, currently `Bitcode06`. Use this only for ephemeral caches where upgrading the application and invalidating old cache entries is acceptable.
+
+Examples in this crate use `Bitcode06::default` because the docs should point at a stable name, not a drifting alias.
+
+Rule of thumb:
+
+- If the cache is process-local, disposable, or easy to invalidate on upgrade, `Bitcode` is acceptable.
+- If the cache is stored on disk and you care which built-in `bitcode` generation wrote it, use `Bitcode06`.
+- If the cache must remain readable across application upgrades without coordinated migration, do not rely on `bitcode` format compatibility at all.
+
+`Bitcode::default` remains available for short-lived caches, but it intentionally tracks the latest built-in backend and therefore does not provide wire-format compatibility guarantees across crate upgrades. `Bitcode06` gives you a stable API name for the current built-in `bitcode 0.6` generation, not a long-term persistence guarantee. Neither `Bitcode` nor `Bitcode06` should be treated as a format with guaranteed cross-upgrade readability unless your application manages cache invalidation or migration explicitly.
 
 For workloads where storage size matters, `CompressedCodec<E, C, P>` wraps any existing engine with a framed compression layer. The `lz4` and `zstd` features provide ready-made compression algorithms. You can also plug in a custom `CompressPolicy` to decide at runtime whether compression is worth applying for a given payload:
 
@@ -167,7 +182,7 @@ impl CompressPolicy for TunedPolicy {
     }
 }
 
-let _engine = CompressedCodec::<Bitcode, Lz4>::new(Bitcode::default()).with_policy(TunedPolicy);
+let _engine = CompressedCodec::<Bitcode06, Lz4>::new(Bitcode06::default()).with_policy(TunedPolicy);
 # }
 ```
 
@@ -175,7 +190,7 @@ let _engine = CompressedCodec::<Bitcode, Lz4>::new(Bitcode::default()).with_poli
 
 ## Feature Flags
 
-- `bitcode` (enabled by default): `bitcode` serialization/deserialization.
+- `bitcode` (enabled by default): `bitcode` serialization/deserialization via `Bitcode` / `Bitcode06`.
 - `compress` (automatically enabled by `lz4`/`zstd`; can also be enabled directly for custom engines): framed compressed codec layer and checksum support.
 - `lz4` (disabled by default): `Lz4` compression engine.
 - `zstd` (disabled by default): `Zstd` compression engine with runtime-configurable compression level.

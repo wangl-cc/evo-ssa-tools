@@ -7,7 +7,7 @@
 /// use ssa_pipeline::prelude::*;
 ///
 /// let value = 0u8;
-/// let mut engine = Bitcode::default();
+/// let mut engine = Bitcode06::default();
 /// let bytes = engine
 ///     .encode(&value)
 ///     .expect("bitcode always encodes this value")
