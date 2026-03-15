@@ -127,26 +127,26 @@ To use a persistent backend, open it explicitly and pass it to a step or pipelin
 
 Treat each partition, keyspace, or table as one cache namespace. If compute logic or encoding changes incompatibly, use a new namespace rather than the old one. The crate handles worker-local handle sharing internally through each store's fork behavior; you do not clone store handles yourself.
 
-If you pair a persistent backend with a `bitcode` engine, prefer a versioned engine such as `Bitcode06`. Do not use the `Bitcode` alias for persistent caches where the exact on-disk format matters, because that alias is allowed to retarget a newer built-in backend in a future crate release.
+If you pair a persistent backend with a `bitcode` engine, use `Bitcode06`. Do not use the `Bitcode` alias for any persistent storage; that alias is only for in-memory or other volatile caches.
 
 ## Codec
 
-`CodecEngine<T>` handles encoding and decoding of node outputs for storage. Each Rayon worker gets its own engine instance, constructed by an `EngineFactory` — any zero-argument callable that returns a fresh engine. Pass the factory as the last argument to `StochasticStep::new` or `DeterministicStep::new`.
+`CodecEngine<T>` is the abstraction for serializing and deserializing node outputs. Each Rayon worker gets its own engine instance, constructed by an `EngineFactory` — any zero-argument callable that returns a fresh engine. Pass the factory as the last argument to `StochasticStep::new` or `DeterministicStep::new`.
 
-The built-in `bitcode` engines are enabled by the `bitcode` feature:
+This API is intentionally backend-agnostic: the crate can support multiple serialization backends over time, and callers can also provide their own engine implementations.
 
-- `Bitcode06` pins this crate to the current `bitcode 0.6` format generation. Use this when the exact built-in `bitcode` generation matters, including persistent caches that intentionally target that generation.
-- `Bitcode` is a convenience alias to the latest built-in `bitcode` backend, currently `Bitcode06`. Use this only for ephemeral caches where upgrading the application and invalidating old cache entries is acceptable.
+At the moment, the only built-in serialization backend is `bitcode`, enabled by the `bitcode` feature:
 
-Examples in this crate use `Bitcode06::default` because the docs should point at a stable name, not a drifting alias.
+- `Bitcode06` names the `bitcode v0.6` backend explicitly. Prefer this by default.
+- `Bitcode` is a convenience alias to the latest `bitcode` backend, currently `Bitcode06`. Use this only for in-memory or other volatile caches.
 
-Rule of thumb:
+Rule of thumb for the current built-in backend:
 
-- If the cache is process-local, disposable, or easy to invalidate on upgrade, `Bitcode` is acceptable.
-- If the cache is stored on disk and you care which built-in `bitcode` generation wrote it, use `Bitcode06`.
-- If you move a persistent cache to a different bitcode generation later, treat that as an explicit migration step rather than something `Bitcode` will handle for you.
+- Default to `Bitcode06`.
+- Use `Bitcode` only when the cache is in memory or otherwise volatile.
+- If you later move stored data to another `bitcode` version, treat that as an explicit migration step.
 
-`Bitcode::default` remains available for short-lived caches, but it intentionally tracks the latest built-in backend and therefore does not provide wire-format compatibility guarantees across crate upgrades. `Bitcode06` gives you a stable API name for the current built-in `bitcode 0.6` generation, so code and stored data can intentionally stay on that generation until you choose to migrate.
+`Bitcode::default` remains available for short-lived caches, but it intentionally tracks the latest built-in backend and therefore has no persistence story. `Bitcode06` gives you a stable API name for the current built-in `bitcode 0.6` backend; if you later adopt another built-in `bitcode` version, handle that transition explicitly.
 
 For workloads where storage size matters, `CompressedCodec<E, C, P>` wraps any existing engine with a framed compression layer. The `lz4` and `zstd` features provide ready-made compression algorithms. You can also plug in a custom `CompressPolicy` to decide at runtime whether compression is worth applying for a given payload:
 

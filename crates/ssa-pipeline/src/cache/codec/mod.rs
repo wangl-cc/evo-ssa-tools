@@ -1,4 +1,4 @@
-/// A codec engine that can encode/decode `T`
+/// A codec engine that can serialize/deserialize `T`.
 ///
 /// Engines can carry their own scratch space, so the same instance can be reused
 /// across many calls without external buffer management:

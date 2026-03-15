@@ -1,28 +1,21 @@
 use super::super::{CodecEngine, Error as CodecError, SkipReason};
 
-/// A codec engine that uses the `bitcode 0.6` wire format for encoding and decoding.
+/// A codec engine that uses the `bitcode v0.6` for encoding and decoding.
 ///
-/// This type pins the built-in `bitcode` backend to the current `0.6` format generation.
-///
-/// Use [`Bitcode06`] when the on-disk format should stay on this built-in generation instead of
-/// following whatever backend [`Bitcode`] points to in a future crate release.
+/// Prefer [`Bitcode06`] by default to avoid compatibility issues. If you later move stored data to
+/// another `bitcode` version, treat that as an explicit migration step.
 #[derive(Default)]
 pub struct Bitcode06 {
     buffer: bitcode::Buffer,
 }
 
-/// Alias for the latest built-in `bitcode` backend.
+/// Alias for the latest `bitcode` backend.
 ///
 /// `Bitcode` tracks the newest `bitcode` backend exposed by this crate. It is provided for
-/// convenience, not as a stable wire-format name.
-///
-/// Compatibility notes:
-///
-/// - No wire-format compatibility is guaranteed across `bitcode` crate upgrades.
-/// - Not recommended for persistent storage intended to outlive application upgrades.
-/// - Do not use this alias when the exact on-disk format matters.
-/// - Prefer versioned names such as [`Bitcode06`] when you need to pin the built-in bitcode format
-///   generation in code.
+/// convenience, no wire-format compatibility is guaranteed across `bitcode` crate upgrades.
+/// **DO NOT** use this alias for **any persistent storage**. Use this only for in-memory or other
+/// volatile caches where data can be discarded freely. Prefer versioned names such as [`Bitcode06`]
+/// everywhere else.
 pub type Bitcode = Bitcode06;
 
 impl<T> CodecEngine<T> for Bitcode06
