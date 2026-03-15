@@ -75,7 +75,7 @@ fn main() -> ssa_pipeline::error::Result<()> {
         DefaultHashMapStore::default(),   // per-stage cache
         "population-trajectory",          // key material: seeds the RNG; changing this changes all outputs
         |rng, (initial_cells, steps): (u32, u32)| Ok(simulate_population(rng, initial_cells, steps)),
-        Bitcode::default,                 // engine factory: one Bitcode codec engine per Rayon worker
+        Bitcode06::default,               // engine factory: one Bitcode06 codec engine per Rayon worker
     )
     // Stage 2: deterministic analysis.
     // Chained onto stage 1 with its own cache. The cache key is the same encoded input,
@@ -127,11 +127,27 @@ To use a persistent backend, open it explicitly and pass it to a step or pipelin
 
 Treat each partition, keyspace, or table as one cache namespace. If compute logic or encoding changes incompatibly, use a new namespace rather than the old one. The crate handles worker-local handle sharing internally through each store's fork behavior; you do not clone store handles yourself.
 
+If you pair a persistent backend with a `bitcode` engine, use `Bitcode06`. Do not use the `Bitcode` alias for any persistent storage; that alias is only for in-memory or other volatile caches.
+
 ## Codec
 
-`CodecEngine<T>` handles encoding and decoding of node outputs for storage. Each Rayon worker gets its own engine instance, constructed by an `EngineFactory` — any zero-argument callable that returns a fresh engine. Pass the factory as the last argument to `StochasticStep::new` or `DeterministicStep::new`.
+`CodecEngine<T>` is the abstraction for serializing and deserializing node outputs. Each Rayon worker gets its own engine instance, constructed by an `EngineFactory` — any zero-argument callable that returns a fresh engine. Pass the factory as the last argument to `StochasticStep::new` or `DeterministicStep::new`.
 
-The built-in engine is `Bitcode`, enabled by the `bitcode` feature. `Bitcode::default` serves as a ready-made factory and is what the Quick Start example uses.
+This API is intentionally backend-agnostic. The crate can support multiple serialization backends over time, and callers may also provide their own engine implementations.
+
+At the moment, the only built-in serialization backend is `bitcode`, enabled by the `bitcode` feature:
+
+- `Bitcode06` explicitly names the `bitcode v0.6` backend. Prefer this by default.
+- `Bitcode` is a convenience alias for the latest `bitcode` backend
+  (currently `Bitcode06`). Use it only for in-memory or other volatile caches.
+
+Rule of thumb for the current built-in backend:
+
+- Default to `Bitcode06`.
+- Use `Bitcode` only when the cache is in memory or otherwise volatile.
+- If you later move stored data to another `bitcode` version, treat that as an explicit migration step.
+
+### Compressed Codec
 
 For workloads where storage size matters, `CompressedCodec<E, C, P>` wraps any existing engine with a framed compression layer. The `lz4` and `zstd` features provide ready-made compression algorithms. You can also plug in a custom `CompressPolicy` to decide at runtime whether compression is worth applying for a given payload:
 
@@ -167,7 +183,7 @@ impl CompressPolicy for TunedPolicy {
     }
 }
 
-let _engine = CompressedCodec::<Bitcode, Lz4>::new(Bitcode::default()).with_policy(TunedPolicy);
+let _engine = CompressedCodec::<Bitcode06, Lz4>::new(Bitcode06::default()).with_policy(TunedPolicy);
 # }
 ```
 
@@ -175,7 +191,7 @@ let _engine = CompressedCodec::<Bitcode, Lz4>::new(Bitcode::default()).with_poli
 
 ## Feature Flags
 
-- `bitcode` (enabled by default): `bitcode` serialization/deserialization.
+- `bitcode` (enabled by default): `bitcode` serialization/deserialization via `Bitcode` / `Bitcode06`.
 - `compress` (automatically enabled by `lz4`/`zstd`; can also be enabled directly for custom engines): framed compressed codec layer and checksum support.
 - `lz4` (disabled by default): `Lz4` compression engine.
 - `zstd` (disabled by default): `Zstd` compression engine with runtime-configurable compression level.

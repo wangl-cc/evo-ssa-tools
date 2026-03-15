@@ -109,7 +109,7 @@ where
 /// # #[cfg(feature = "bitcode")]
 /// # {
 /// type Store = HashMapStore<std::collections::hash_map::RandomState>;
-/// let stage1 = DeterministicStep::new(Store::default(), |i: usize| Ok(i + 1), Bitcode::default);
+/// let stage1 = DeterministicStep::new(Store::default(), |i: usize| Ok(i + 1), Bitcode06::default);
 /// let pipeline = stage1
 ///     .pipe(Store::default(), |i| Ok(i * 2))
 ///     .pipe(Store::default(), |i| Ok(format!("Result: {}", i)));

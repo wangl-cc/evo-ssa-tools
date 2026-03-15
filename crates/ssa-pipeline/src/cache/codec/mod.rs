@@ -1,4 +1,4 @@
-/// A codec engine that can encode/decode `T`
+/// A codec engine that can serialize/deserialize `T`.
 ///
 /// Engines can carry their own scratch space, so the same instance can be reused
 /// across many calls without external buffer management:
@@ -7,7 +7,7 @@
 /// use ssa_pipeline::prelude::*;
 ///
 /// let value = 0u8;
-/// let mut engine = Bitcode::default();
+/// let mut engine = Bitcode06::default();
 /// let bytes = engine
 ///     .encode(&value)
 ///     .expect("bitcode always encodes this value")

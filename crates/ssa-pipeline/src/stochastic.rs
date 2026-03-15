@@ -99,7 +99,7 @@ impl<P: CanonicalEncode> CanonicalEncode for StochasticInput<P> {
 ///         let noise: f64 = rng.random_range(-1.0..1.0);
 ///         Ok(param + noise)
 ///     },
-///     Bitcode::default,
+///     Bitcode06::default,
 /// );
 ///
 /// // Create 5 repetitions for param 10.0
