@@ -133,12 +133,13 @@ If you pair a persistent backend with a `bitcode` engine, use `Bitcode06`. Do no
 
 `CodecEngine<T>` is the abstraction for serializing and deserializing node outputs. Each Rayon worker gets its own engine instance, constructed by an `EngineFactory` — any zero-argument callable that returns a fresh engine. Pass the factory as the last argument to `StochasticStep::new` or `DeterministicStep::new`.
 
-This API is intentionally backend-agnostic: the crate can support multiple serialization backends over time, and callers can also provide their own engine implementations.
+This API is intentionally backend-agnostic. The crate can support multiple serialization backends over time, and callers may also provide their own engine implementations.
 
 At the moment, the only built-in serialization backend is `bitcode`, enabled by the `bitcode` feature:
 
-- `Bitcode06` names the `bitcode v0.6` backend explicitly. Prefer this by default.
-- `Bitcode` is a convenience alias to the latest `bitcode` backend, currently `Bitcode06`. Use this only for in-memory or other volatile caches.
+- `Bitcode06` explicitly names the `bitcode v0.6` backend. Prefer this by default.
+- `Bitcode` is a convenience alias for the latest `bitcode` backend
+  (currently `Bitcode06`). Use it only for in-memory or other volatile caches.
 
 Rule of thumb for the current built-in backend:
 
@@ -146,7 +147,7 @@ Rule of thumb for the current built-in backend:
 - Use `Bitcode` only when the cache is in memory or otherwise volatile.
 - If you later move stored data to another `bitcode` version, treat that as an explicit migration step.
 
-`Bitcode::default` remains available for short-lived caches, but it intentionally tracks the latest built-in backend and therefore has no persistence story. `Bitcode06` gives you a stable API name for the current built-in `bitcode 0.6` backend; if you later adopt another built-in `bitcode` version, handle that transition explicitly.
+### Compressed Codec
 
 For workloads where storage size matters, `CompressedCodec<E, C, P>` wraps any existing engine with a framed compression layer. The `lz4` and `zstd` features provide ready-made compression algorithms. You can also plug in a custom `CompressPolicy` to decide at runtime whether compression is worth applying for a given payload:
 
