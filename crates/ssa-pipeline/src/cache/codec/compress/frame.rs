@@ -88,6 +88,18 @@ pub enum Error {
     Zstd(#[from] std::io::Error),
 }
 
+impl Error {
+    pub(crate) const fn is_cache_corruption(&self) -> bool {
+        matches!(
+            self,
+            Self::EmptyInput
+                | Self::TruncatedInput
+                | Self::DecompressedLengthMismatch
+                | Self::ChecksumMismatch
+        )
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct Header {
     value: u8,

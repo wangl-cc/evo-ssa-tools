@@ -69,6 +69,9 @@ pub enum Error {
     #[error("Postcard codec error")]
     Postcard(#[from] postcard::Error),
 
+    #[error("Checked codec error")]
+    Checked(#[from] crate::cache::codec::checked::Error),
+
     #[cfg(feature = "compress")]
     #[error("Compression codec error")]
     Compress(#[from] crate::cache::codec::compress::frame::Error),
@@ -78,7 +81,21 @@ pub enum Error {
     Fixture(#[from] fixtures::Error),
 }
 
+impl Error {
+    pub(crate) const fn is_cache_corruption(&self) -> bool {
+        #[allow(unreachable_patterns)]
+        match self {
+            Self::Checked(err) => err.is_cache_corruption(),
+            #[cfg(feature = "compress")]
+            Self::Compress(err) => err.is_cache_corruption(),
+            _ => false,
+        }
+    }
+}
+
 pub mod engine;
+
+pub mod checked;
 
 #[cfg(feature = "compress")]
 pub mod compress;
