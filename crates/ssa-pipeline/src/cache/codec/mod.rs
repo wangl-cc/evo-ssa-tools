@@ -46,11 +46,16 @@ where
     }
 }
 
+type BoxedCodecError = Box<dyn std::error::Error + Send + Sync + 'static>;
+
 /// Reasons why a value may be skipped from the cache.
 #[derive(thiserror::Error, Debug)]
 pub enum SkipReason {
     #[error("encoded value size {encoded_len} exceeds cache limit {max_len}")]
     EncodedValueTooLarge { encoded_len: usize, max_len: usize },
+
+    #[error("codec could not encode value")]
+    EncodeFailure(#[source] BoxedCodecError),
 }
 
 /// Errors produced by codec engines and codec adapters.
@@ -59,6 +64,10 @@ pub enum Error {
     #[cfg(feature = "bitcode")]
     #[error("Bitcode codec error")]
     BitCode(#[from] bitcode::Error),
+
+    #[cfg(feature = "postcard")]
+    #[error("Postcard codec error")]
+    Postcard(#[from] postcard::Error),
 
     #[cfg(feature = "compress")]
     #[error("Compression codec error")]
