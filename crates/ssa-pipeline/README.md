@@ -137,17 +137,19 @@ This API is intentionally backend-agnostic. The crate can support multiple seria
 
 The built-in serialization backends currently available are:
 
-- `Bitcode06` explicitly names the `bitcode v0.6` backend. Prefer this by default when you want the current built-in high-performance backend.
+- `Bitcode06` explicitly names the `bitcode v0.6` backend. Suitable for in-memory or volatile caches where high throughput matters and data is never persisted.
 - `Bitcode` is a convenience alias for the latest `bitcode` backend
   (currently `Bitcode06`). Use it only for in-memory or other volatile caches.
-- `Postcard` is the built-in serde-based backend, enabled by the `postcard` feature.
+- `Postcard` is the built-in serde-based backend, enabled by the `postcard` feature. Unlike `bitcode`,
+  `postcard`'s wire format is a [published specification](https://postcard.jamesmunns.com/wire-format),
+  so it is stable across crate versions and suitable for persistent storage without explicit migration steps.
 
 Rule of thumb:
 
-- Default to `Bitcode06`.
-- Use `Postcard` when your cached types already derive serde traits and you want a serde-based backend.
-- Use `Bitcode` only when the cache is in memory or otherwise volatile.
-- If you later move stored data to another `bitcode` version, treat that as an explicit migration step.
+- Use `Postcard` for persistent storage. Its wire format is a published specification and remains stable
+  across crate upgrades, so no explicit migration is needed when the dependency is updated.
+- Use `Bitcode` / `Bitcode06` for in-memory or other volatile caches where data is never persisted.
+  If you do use `Bitcode06` for persistent storage, treat any `bitcode` version upgrade as a data migration.
 
 ### Compressed Codec
 

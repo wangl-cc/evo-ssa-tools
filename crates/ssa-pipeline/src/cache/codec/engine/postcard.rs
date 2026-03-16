@@ -22,7 +22,7 @@ impl<'a> ReuseVecFlavor<'a> {
 }
 
 impl postcard::ser_flavors::Flavor for ReuseVecFlavor<'_> {
-    type Output = usize;
+    type Output = ();
 
     #[inline(always)]
     fn try_push(&mut self, data: u8) -> postcard::Result<()> {
@@ -38,7 +38,7 @@ impl postcard::ser_flavors::Flavor for ReuseVecFlavor<'_> {
 
     #[inline(always)]
     fn finalize(self) -> postcard::Result<Self::Output> {
-        Ok(self.buffer.len())
+        Ok(())
     }
 }
 
@@ -48,9 +48,9 @@ where
 {
     fn encode(&mut self, value: &T) -> Result<&[u8], SkipReason> {
         self.buffer.clear();
-        let used = postcard::serialize_with_flavor(value, ReuseVecFlavor::new(&mut self.buffer))
+        postcard::serialize_with_flavor(value, ReuseVecFlavor::new(&mut self.buffer))
             .map_err(|err| SkipReason::EncodeFailure(Box::new(err)))?;
-        Ok(&self.buffer[..used])
+        Ok(&self.buffer)
     }
 
     fn decode(&mut self, bytes: &[u8]) -> Result<T, CodecError> {
@@ -115,20 +115,21 @@ mod tests {
         let err = engine.encode(&EncodeFails).unwrap_err();
         match err {
             SkipReason::EncodeFailure(source) => {
-                assert_eq!(source.to_string(), "Serde Serialization Error");
+                // Verify the postcard error is preserved in the chain; avoid asserting on its
+                // Display string, which is an internal postcard implementation detail.
+                assert!(source.downcast_ref::<postcard::Error>().is_some());
             }
             other => panic!("expected EncodeFailure, got {other:?}"),
         }
     }
 
     #[test]
-    fn reuse_vec_flavor_appends_and_reports_used_len() {
+    fn reuse_vec_flavor_appends_bytes() {
         let mut buffer = Vec::new();
         let mut flavor = ReuseVecFlavor::new(&mut buffer);
         flavor.try_push(1).unwrap();
         flavor.try_extend(&[2, 3]).unwrap();
-        let used = flavor.finalize().unwrap();
-        assert_eq!(used, 3);
+        flavor.finalize().unwrap();
         assert_eq!(buffer, [1, 2, 3]);
     }
 }
