@@ -8,10 +8,11 @@
 //!
 //! - [`HashMapStore`]: in-process, in-memory storage for tests, experiments, and short-lived jobs.
 //! - [`Fjall2Store`]: persistent Fjall v2 partition-backed storage when you already manage a
-//!   [`fjall2::Keyspace`] externally.
+//!   [`fjall::Keyspace`](::fjall2::Keyspace) externally.
 //! - [`Fjall3Store`]: persistent Fjall v3 keyspace-backed storage when you already manage a
-//!   [`fjall3::Database`] externally.
-//! - [`RedbStore`]: persistent single-file storage scoped to one [`redb`] table.
+//!   [`fjall::Database`](::fjall3::Database) externally.
+//! - [`RedbStore`]: persistent single-file storage scoped to a [`redb::Database`](::redb::Database)
+//!   table.
 //!
 //! Stores do not add namespacing on top of the underlying database. Reuse the same partition,
 //! keyspace, or table only when the cached compute semantics are intentionally identical.
