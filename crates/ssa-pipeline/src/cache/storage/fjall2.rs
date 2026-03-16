@@ -4,7 +4,7 @@ use super::{CacheStore, StorageResult, WorkerForkStore, private};
 
 /// Fjall v2-backed cache store bound to a single partition.
 pub struct Fjall2Store {
-    handle: fjall2::PartitionHandle,
+    pub(crate) handle: fjall2::PartitionHandle,
 }
 
 impl Fjall2Store {

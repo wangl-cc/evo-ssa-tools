@@ -43,8 +43,8 @@ impl AsRef<[u8]> for RedbEncoded<'_> {
 /// names for distinct cache semantics, even if the key and value byte formats happen to match.
 #[derive(Debug)]
 pub struct RedbStore {
-    db: Arc<redb::Database>,
-    table_name: String,
+    pub(crate) db: Arc<redb::Database>,
+    pub(crate) table_name: String,
 }
 
 impl RedbStore {

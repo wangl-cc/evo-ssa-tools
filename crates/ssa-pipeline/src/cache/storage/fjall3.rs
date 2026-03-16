@@ -7,7 +7,7 @@ use super::{CacheStore, StorageResult, WorkerForkStore, private};
 /// The caller owns the surrounding [`fjall3::Database`] handle and decides how different cache
 /// keyspaces map onto Fjall keyspace names.
 pub struct Fjall3Store {
-    handle: fjall3::Keyspace,
+    pub(crate) handle: fjall3::Keyspace,
 }
 
 impl Fjall3Store {

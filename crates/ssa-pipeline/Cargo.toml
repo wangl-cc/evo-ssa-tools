@@ -33,6 +33,7 @@ fjall3 = ["dep:fjall3"]
 lz4 = ["compress", "dep:lz4_flex"]
 postcard = ["dep:postcard", "dep:serde"]
 zstd = ["compress", "dep:zstd"]
+migrate = []
 redb = ["dep:redb"]
 
 [lints]
