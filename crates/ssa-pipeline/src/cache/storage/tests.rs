@@ -303,7 +303,8 @@ fn test_fetch_treats_compress_corruption_as_miss() -> Result<()> {
         }
     }
 
-    let mut encode_engine = CompressedCodec::<crate::cache::codec::engine::bitcode::Bitcode, Lz4>::default();
+    let mut encode_engine =
+        CompressedCodec::<crate::cache::codec::engine::bitcode::Bitcode, Lz4>::default();
     let mut encoded = encode_engine
         .encode(&42u64)
         .expect("encoding should succeed")
@@ -312,7 +313,8 @@ fn test_fetch_treats_compress_corruption_as_miss() -> Result<()> {
     encoded[0] ^= 0x01;
 
     let store = SingleValueStore { value: encoded };
-    let mut read_engine = CompressedCodec::<crate::cache::codec::engine::bitcode::Bitcode, Lz4>::default();
+    let mut read_engine =
+        CompressedCodec::<crate::cache::codec::engine::bitcode::Bitcode, Lz4>::default();
     assert_eq!(store.fetch::<u64, _>(b"ignored", &mut read_engine)?, None);
     Ok(())
 }
