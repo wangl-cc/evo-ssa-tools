@@ -164,6 +164,8 @@ pub mod prelude {
     pub use crate::cache::codec::compress::{CompressedCodec, policy::DefaultCompressPolicy};
     #[cfg(feature = "bitcode")]
     pub use crate::cache::codec::engine::bitcode::{Bitcode, Bitcode06};
+    #[cfg(feature = "postcard")]
+    pub use crate::cache::codec::engine::postcard::Postcard;
     #[cfg(feature = "fjall2")]
     pub use crate::cache::storage::Fjall2Store;
     #[cfg(feature = "fjall3")]

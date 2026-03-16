@@ -135,17 +135,17 @@ If you pair a persistent backend with a `bitcode` engine, use `Bitcode06`. Do no
 
 This API is intentionally backend-agnostic. The crate can support multiple serialization backends over time, and callers may also provide their own engine implementations.
 
-At the moment, the only built-in serialization backend is `bitcode`, enabled by the `bitcode` feature:
+The built-in serialization backends currently available are:
 
-- `Bitcode06` explicitly names the `bitcode v0.6` backend. Prefer this by default.
-- `Bitcode` is a convenience alias for the latest `bitcode` backend
-  (currently `Bitcode06`). Use it only for in-memory or other volatile caches.
+- `Postcard` is the built-in serde-based backend, enabled by the `postcard` feature. Its wire format is a [published specification](https://postcard.jamesmunns.com/wire-format), stable within the same major version; a breaking wire-format change requires a new `postcard` major version.
+- `Bitcode06` explicitly names the `bitcode v0.6` backend. Suitable for both persistent and volatile caches; treat any future `bitcode` major-version upgrade as a data migration step.
+- `Bitcode` is a convenience alias for the latest `bitcode` backend (currently `Bitcode06`). **Do not** use for persistent storage — it silently tracks the latest version.
 
-Rule of thumb for the current built-in backend:
+Rule of thumb:
 
-- Default to `Bitcode06`.
-- Use `Bitcode` only when the cache is in memory or otherwise volatile.
-- If you later move stored data to another `bitcode` version, treat that as an explicit migration step.
+- Use `Postcard` for persistent storage if your types already derive `serde` traits. Minor/patch upgrades of `postcard` are always wire-compatible; only a major version bump would require migration.
+- Use `Bitcode06` for persistent storage when throughput matters. Treat any future `bitcode` major version upgrade as a data migration step.
+- Never use `Bitcode` for persistent storage; it silently follows the latest `bitcode` backend.
 
 ### Compressed Codec
 
@@ -194,6 +194,7 @@ let _engine = CompressedCodec::<Bitcode06, Lz4>::new(Bitcode06::default()).with_
 - `bitcode` (enabled by default): `bitcode` serialization/deserialization via `Bitcode` / `Bitcode06`.
 - `compress` (automatically enabled by `lz4`/`zstd`; can also be enabled directly for custom engines): framed compressed codec layer and checksum support.
 - `lz4` (disabled by default): `Lz4` compression engine.
+- `postcard` (disabled by default): `postcard` + `serde` serialization/deserialization via `Postcard`.
 - `zstd` (disabled by default): `Zstd` compression engine with runtime-configurable compression level.
 - `fjall2` (disabled by default): Fjall v2 persistent backend wrapper.
 - `fjall3` (disabled by default): Fjall v3 persistent backend wrapper.

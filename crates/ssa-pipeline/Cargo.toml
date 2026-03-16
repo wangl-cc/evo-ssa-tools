@@ -13,9 +13,11 @@ fjall2 = { workspace = true, default-features = false, optional = true }
 fjall3 = { workspace = true, default-features = false, optional = true }
 lz4_flex = { workspace = true, optional = true }
 parking_lot = { workspace = true }
+postcard = { workspace = true, optional = true }
 rand = { workspace = true }
 rayon = { workspace = true }
 redb = { workspace = true, optional = true }
+serde = { workspace = true, optional = true }
 thiserror = { workspace = true }
 zstd = { workspace = true, optional = true }
 
@@ -29,6 +31,7 @@ compress = ["dep:crc32c"]
 fjall2 = ["dep:fjall2"]
 fjall3 = ["dep:fjall3"]
 lz4 = ["compress", "dep:lz4_flex"]
+postcard = ["dep:postcard", "dep:serde"]
 zstd = ["compress", "dep:zstd"]
 redb = ["dep:redb"]
 
