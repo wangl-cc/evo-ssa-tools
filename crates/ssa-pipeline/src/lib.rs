@@ -176,7 +176,7 @@ pub mod prelude {
         Compute, ExecuteOptions,
         cache::{
             canonical_encode::{CanonicalEncode, CanonicalEncodeWriter},
-            codec::{CodecEngine, EngineFactory},
+            codec::{CodecEngine, EngineFactory, checked::CheckedCodec},
             storage::{CacheStore, DefaultHashMapStore, HashMapStore},
         },
         deterministic::DeterministicStep,

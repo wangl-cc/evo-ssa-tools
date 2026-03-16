@@ -88,6 +88,18 @@ pub enum Error {
     Zstd(#[from] std::io::Error),
 }
 
+impl Error {
+    pub(crate) const fn is_cache_corruption(&self) -> bool {
+        matches!(
+            self,
+            Self::EmptyInput
+                | Self::TruncatedInput
+                | Self::DecompressedLengthMismatch
+                | Self::ChecksumMismatch
+        )
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct Header {
     value: u8,
@@ -622,5 +634,16 @@ mod tests {
         let compressed_capacity = frame.scratch.len();
         frame.encode_compressed(&[7u8; 8]);
         assert_eq!(frame.scratch.len(), compressed_capacity);
+    }
+
+    #[test]
+    fn corruption_classification_matches_policy() {
+        assert!(Error::EmptyInput.is_cache_corruption());
+        assert!(Error::TruncatedInput.is_cache_corruption());
+        assert!(Error::DecompressedLengthMismatch.is_cache_corruption());
+        assert!(Error::ChecksumMismatch.is_cache_corruption());
+        assert!(!Error::UnsupportedVersion(0).is_cache_corruption());
+        assert!(!Error::CompressionAlgorithmMismatch.is_cache_corruption());
+        assert!(!Error::ContentTooLarge.is_cache_corruption());
     }
 }
