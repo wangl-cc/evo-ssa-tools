@@ -28,8 +28,8 @@ redb = { version = "3" }
 serde = { version = "1", default-features = false }
 tempfile = { version = "3.20.0" }
 thiserror = { version = "2" }
-zstd = { version = "0.13", default-features = false }
 zerocopy = { version = "0.8.26" }
+zstd = { version = "0.13", default-features = false }
 
 [workspace.lints]
 rust.unexpected_cfgs = { level = "warn", check-cfg = [

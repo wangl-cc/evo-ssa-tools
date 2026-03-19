@@ -1,6 +1,6 @@
 [package]
 name = "ssa-pipeline"
-version = "0.4.0"
+version = "0.5.0"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -25,16 +25,16 @@ zstd = { workspace = true, optional = true }
 tempfile = { workspace = true }
 
 [features]
-default = ["bitcode"]
+default = []
 bitcode = ["dep:bitcode"]
 compress = []
 fjall2 = ["dep:fjall2"]
 fjall3 = ["dep:fjall3"]
 lz4 = ["compress", "dep:lz4_flex"]
-postcard = ["dep:postcard", "dep:serde"]
-zstd = ["compress", "dep:zstd"]
 migrate = []
+postcard = ["dep:postcard", "dep:serde"]
 redb = ["dep:redb"]
+zstd = ["compress", "dep:zstd"]
 
 [lints]
 workspace = true
