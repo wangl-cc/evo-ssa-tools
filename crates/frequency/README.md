@@ -1,6 +1,6 @@
 # Frequency
 
-`frequency` is a small crate for counting how many times each value appears in an iterator. It supports both fixed-range counting with arrays and general-purpose counting with hash maps, plus weighted and parallel variants of the same APIs.
+`frequency` is a small crate for counting how many times each value appears in an iterator. It supports fixed-range counting with arrays, histogram-style binning for continuous values, and general-purpose counting with hash maps, plus weighted and parallel variants of the same APIs.
 
 ## Choosing An Approach
 
@@ -41,6 +41,21 @@ assert_eq!(frequencies["orange"], 1);
 
 The examples use `std::collections::HashMap` for simplicity, but the standard library default hasher is usually not a good fit for this crate's performance-oriented use cases. For integer keys, prefer `nohash_hasher::IntMap`. For general keys, prefer a faster non-cryptographic hasher such as `rapidhash`.
 
+### Binned Frequency
+
+Use binned counting when your input values are continuous but you still want a fixed-size `Vec` result. This is useful for histogram-style summaries over a known range such as distances, probabilities, or normalized scores.
+
+```rust
+use frequency::prelude::*;
+
+let distances = vec![0.02, 0.10, 0.31, 0.50, 0.74, 0.99];
+let frequencies: Vec<usize> = distances.into_binned_iter(4, 0.0, 1.0).freq();
+assert_eq!(frequencies, vec![2, 1, 2, 1]);
+```
+
+This path divides `[min, max]` into equal-width bins. Values below `min` are placed into the first bin, and values above `max` are placed into the last bin.
+`n_bins` must be greater than zero, and the range must satisfy `max > min`.
+
 ## Weighted Frequency
 
 The default `freq()` API adds `1` for every item. When each item should contribute a different amount, use `weighted_freq()` instead.
@@ -57,7 +72,7 @@ let frequencies = weighted_data
 assert_eq!(frequencies, vec![0.5, 2.0, 2.5]);
 ```
 
-The weighted APIs follow the same split as the normal ones: use bounded iterators when keys fit a dense range, and hash iterators otherwise.
+The weighted APIs follow the same split as the normal ones: use bounded iterators when keys fit a dense range, binned iterators when your inputs are continuous values over a known range, and hash iterators otherwise.
 
 ## Parallel Iterator
 
