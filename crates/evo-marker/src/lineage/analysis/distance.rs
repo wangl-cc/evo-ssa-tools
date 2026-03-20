@@ -263,11 +263,7 @@ impl<const N: u32> LineageTree<N> {
         convolve: &impl Fn(&[u32], &[u32], usize, usize, usize, &mut [u64]),
     ) -> Vec<u32> {
         let Some([c1, c2]) = self.children(node) else {
-            return if node != 0 && node <= self.n_leaves {
-                vec![1]
-            } else {
-                vec![]
-            };
+            return vec![1];
         };
 
         let w1 = self.unique_mutations[c1 as usize] as usize;
