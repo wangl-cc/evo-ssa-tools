@@ -1,4 +1,6 @@
-use std::{fmt::Debug, num::NonZero, ops::Range};
+mod distance;
+
+use std::{fmt::Debug, num::NonZero};
 
 use frequency::prelude::*;
 use rand::{Rng, distr::Distribution};
@@ -16,26 +18,32 @@ use crate::util::{distributions::PoissonKnuth, hashers::NoHashMap};
 /// Here we use euler tour to represent the tree, which is good for serialization and analysis.
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "bitcode", derive(bitcode::Decode, bitcode::Encode))]
-pub struct PhyloTree<const N: u32> {
+pub struct LineageTree<const N: u32> {
     // Basic information
     n_leaves: usize,
     max_n_mutations: u16,
     // Nodes
-    unique_mutations: Vec<u16>, // Number of unique mutations of each node in the tree
-    total_mutations: Vec<u16>,  // Number of all mutations of each node in the tree
+    unique_mutations: Vec<u16>,
+    total_mutations: Vec<u16>,
     // Euler tour
-    euler_tour: Vec<u32>,        // Euler tour of the tree
-    rmq_table: BlockRMQ<N>,      // Range Minimum Query table, used to find the LCA
-    first_occurrences: Vec<u32>, // Position of first occurrence of each node in the Euler tour
-    last_occurrences: Vec<u32>,  // Position of last occurrence of each node in the Euler tour
+    euler_tour: Vec<u32>,
+    rmq_table: BlockRMQ<N>,
+    first_occurrences: Vec<u32>,
+    last_occurrences: Vec<u32>,
 }
 
-pub struct PhyloTreeBuilder<const N: u32, D: Distribution<u16> = PoissonKnuth> {
+#[deprecated(note = "use LineageTree instead")]
+pub type PhyloTree<const N: u32> = LineageTree<N>;
+
+pub struct LineageTreeBuilder<const N: u32, D: Distribution<u16> = PoissonKnuth> {
     cells: Vec<LineageNode>,
     dist: D,
 }
 
-impl<const N: u32, D: Distribution<u16>> PhyloTreeBuilder<N, D> {
+impl<const N: u32, D: Distribution<u16>> LineageTreeBuilder<N, D> {
+    /// Do a random sample of `amount` cells from the population.
+    ///
+    /// This is useful for downsampling a large population before building a phylogenetic tree.
     pub fn sample(mut self, rng: &mut impl Rng, amount: usize) -> Self {
         let indices = {
             let mut indices = rand::seq::index::sample(rng, self.cells.len(), amount).into_vec();
@@ -49,7 +57,7 @@ impl<const N: u32, D: Distribution<u16>> PhyloTreeBuilder<N, D> {
         self
     }
 
-    /// Create a new phylogenetic tree from a list of cells.
+    /// Build a new phylogenetic tree from a list of cells.
     ///
     /// # Panics
     ///
@@ -62,7 +70,7 @@ impl<const N: u32, D: Distribution<u16>> PhyloTreeBuilder<N, D> {
     /// # Undefined Behavior
     ///
     /// If those cells not belonging to the same lineage, i.e. they have multiple root nodes.
-    pub fn build(self, rng: &mut impl Rng) -> PhyloTree<N> {
+    pub fn build(self, rng: &mut impl Rng) -> LineageTree<N> {
         let cells = self.cells;
         let dist = self.dist;
         let n_leaves = cells.len();
@@ -237,7 +245,7 @@ impl<const N: u32, D: Distribution<u16>> PhyloTreeBuilder<N, D> {
             last_occurrences[node as usize] = euler_tour.len() as u32 - 1;
         }
 
-        PhyloTree {
+        LineageTree {
             n_leaves,
             max_n_mutations,
             unique_mutations,
@@ -250,24 +258,24 @@ impl<const N: u32, D: Distribution<u16>> PhyloTreeBuilder<N, D> {
     }
 }
 
-impl<const N: u32> PhyloTree<N> {
+impl<const N: u32> LineageTree<N> {
     pub fn builder<D: Distribution<u16>>(
         cells: Vec<LineageNode>,
         dist: D,
-    ) -> PhyloTreeBuilder<N, D> {
-        PhyloTreeBuilder { cells, dist }
+    ) -> LineageTreeBuilder<N, D> {
+        LineageTreeBuilder { cells, dist }
     }
 
     pub fn poisson_builder(
         cells: Vec<LineageNode>,
         lambda: f64,
-    ) -> Option<PhyloTreeBuilder<N, PoissonKnuth>> {
+    ) -> Option<LineageTreeBuilder<N, PoissonKnuth>> {
         Some(Self::builder(cells, PoissonKnuth::new(lambda)?))
     }
 }
 
 // Util methods
-impl<const N: u32> PhyloTree<N> {
+impl<const N: u32> LineageTree<N> {
     /// Get the number of leaves in a subtree rooted at the given node.
     ///
     /// This is based on one fact that for a full binary tree, the length of the Euler tour `E`
@@ -312,7 +320,7 @@ impl<const N: u32> PhyloTree<N> {
     }
 }
 
-impl<const N: u32> PhyloTree<N> {
+impl<const N: u32> LineageTree<N> {
     /// Calculate the site frequency spectrum of the tree
     pub fn sfs(&self) -> Vec<u32> {
         self.unique_mutations
@@ -373,48 +381,6 @@ impl<const N: u32> PhyloTree<N> {
             .collect();
 
         (balance_mean, normalized_balance_mean)
-    }
-
-    /// Calculate the pairwise distance distribution between `nodes`
-    pub fn distance_dist<T: Count + Sync + Send>(&self, nodes: Range<usize>) -> Vec<T> {
-        // Avoid calculating distances between the same node, so end at nodes.end - 1
-        (nodes.start..(nodes.end - 1))
-            .flat_map(|node_i| {
-                let nm_i = self.total_mutations[node_i];
-                ((node_i + 1)..nodes.end).map(move |node_j| {
-                    let nm_j = self.total_mutations[node_j];
-                    let lca = self.lca_query(node_i, node_j);
-                    let nm_lca = self.total_mutations[lca];
-                    nm_i + nm_j - 2 * nm_lca
-                })
-            })
-            .into_bounded_iter(2 * self.max_n_mutations as usize)
-            .freq()
-    }
-
-    /// Calculate the pairwise distance distribution between all leaves
-    pub fn distance_dist_leaves<T: Count + Sync + Send>(&self) -> Vec<T> {
-        self.distance_dist(1..(self.n_leaves + 1)) // 0 is reserved for the root
-    }
-
-    /// Calculate the pairwise distance distribution between all nodes in the tree
-    pub fn distance_dist_with_ancestors<T: Count + Sync + Send>(&self) -> Vec<T> {
-        self.distance_dist(0..self.total_mutations.len())
-    }
-
-    /// Calculate the pairwise distance distribution between ancestors only
-    pub fn distance_dist_ancestors_only<T: Count + Sync + Send>(&self) -> Vec<T> {
-        let offset = self.n_leaves + 1;
-        // All non-root inner nodes
-        let mut freq = self.distance_dist(offset..self.total_mutations.len());
-
-        // Count distances root and other ancestors
-        let root_total_mutation = self.total_mutations[0];
-        for &n in &self.total_mutations[offset..] {
-            freq[(n - root_total_mutation) as usize] += T::ONE;
-        }
-
-        freq
     }
 }
 
@@ -496,7 +462,7 @@ mod tests {
         divide_at(cells_mut_ref, 1); // cell_2 divide, [11, 21, 12, 22]
         divide_at(cells_mut_ref, 0); // cell_11 divide, [111, 21, 12, 22, 112]
         divide_at(cells_mut_ref, 1); // cell_21 divide, [111, 211, 12, 22, 112, 212]
-        let phylo: PhyloTree<8> = PhyloTree::builder(cells, Const(1)).build(&mut rng());
+        let phylo: LineageTree<8> = LineageTree::builder(cells, Const(1)).build(&mut rng());
         assert_eq!(phylo.sfs(), vec![
             0, // mutation shared by no cells, always 0
             6, // each cell has one unique mutation
@@ -511,10 +477,6 @@ mod tests {
         );
         let ddl: Vec<u32> = phylo.distance_dist_leaves();
         assert_eq!(ddl, vec![0, 0, 2, 4, 1, 4, 4]);
-        let ddwa: Vec<u32> = phylo.distance_dist_with_ancestors();
-        assert_eq!(ddwa, vec![0, 10, 13, 12, 8, 8, 4]);
-        let dda: Vec<u32> = phylo.distance_dist_ancestors_only();
-        assert_eq!(dda, vec![0, 4, 3, 2, 1]);
     }
 
     #[test]
@@ -526,7 +488,7 @@ mod tests {
         divide_at(cells_mut_ref, 1); // cell_2 divide, [11, 21, 12, 22]
         divide_at(cells_mut_ref, 0); // cell_11 divide, [111, 21, 12, 22, 112]
         divide_at(cells_mut_ref, 1); // cell_21 divide, [111, 211, 12, 22, 112, 212]
-        let phylo: PhyloTree<8> = PhyloTree::builder(cells, Const(1))
+        let phylo: LineageTree<8> = LineageTree::builder(cells, Const(1))
             .sample(&mut rng(), 3)
             .build(&mut rng());
 
@@ -547,7 +509,7 @@ mod tests {
         divide_at(cells_mut_ref, 0); // cell_11 divide, [111, 21, 12, 22, 112]
         divide_at(cells_mut_ref, 1); // cell_21 divide, [111, 211, 12, 22, 112, 212]
         cells_mut_ref.remove(0); // cell_111 died, [211, 12, 22, 112, 212]
-        let phylo: PhyloTree<8> = PhyloTree::builder(cells, Const(1)).build(&mut rng());
+        let phylo: LineageTree<8> = LineageTree::builder(cells, Const(1)).build(&mut rng());
         assert_eq!(phylo.sfs(), vec![
             0, // mutation shared by no cells, always 0
             6, // each cell has one unique mutation
@@ -576,7 +538,7 @@ mod tests {
         divide_at(cells_mut_ref, 0); // cell_r divide, [1, 2]
         divide_at(cells_mut_ref, 0); // cell_1 divide, [11, 2, 12]
         cells_mut_ref.remove(1); // cell_2 died, [11, 12]
-        let phylo: PhyloTree<2> = PhyloTree::builder(cells, Const(1)).build(&mut rng());
+        let phylo: LineageTree<2> = LineageTree::builder(cells, Const(1)).build(&mut rng());
         assert_eq!(phylo.sfs(), vec![
             0, // mutation shared by no cells, always 0
             2, // each cell has one unique mutation
@@ -587,10 +549,6 @@ mod tests {
         assert_eq!(phylo.bbm(), (vec![0.0, 0.0, 0.00], vec![0.0, 0.0, 0.0]));
         let ddl: Vec<u32> = phylo.distance_dist_leaves();
         assert_eq!(ddl, vec![0, 0, 1]);
-        let ddwa: Vec<u32> = phylo.distance_dist_with_ancestors();
-        assert_eq!(ddwa, vec![0, 2, 1]);
-        let dda: Vec<u32> = phylo.distance_dist_ancestors_only();
-        assert_eq!(dda, vec![]);
     }
 
     #[test]
@@ -603,7 +561,7 @@ mod tests {
         divide_at(cells_mut_ref, 0); // cell_11 divide, [111, 12, 112]
         divide_at(cells_mut_ref, 1); // cell_12 divide, [111, 121, 112, 122]
         cells_mut_ref.remove(0); // cell_111 died, [121, 112, 122]
-        let phylo: PhyloTree<2> = PhyloTree::builder(cells, Const(1)).build(&mut rng());
+        let phylo: LineageTree<2> = LineageTree::builder(cells, Const(1)).build(&mut rng());
         assert_eq!(phylo.sfs(), vec![
             0, // mutation shared by no cells, always 0
             4, // each cell has one unique mutation, and 11 is observed in 112
@@ -630,7 +588,7 @@ mod tests {
         let m1 = dist.sample(&mut rng) as usize;
         let m2 = dist.sample(&mut rng) as usize;
         let mut rng = SmallRng::seed_from_u64(0);
-        let phylo: PhyloTree<2> = PhyloTree::poisson_builder(cells, 10.0)
+        let phylo: LineageTree<2> = LineageTree::poisson_builder(cells, 10.0)
             .unwrap()
             .build(&mut rng);
         assert_eq!(phylo.sfs(), vec![0, (m1 + m2) as u32]);
@@ -657,9 +615,9 @@ mod tests {
         let mut cells = vec![LineageNode::default()];
         let cells_mut_ref = &mut cells;
         divide_at(cells_mut_ref, 0); // cell_r divide, [1, 2]
-        let phylo: PhyloTree<2> = PhyloTree::builder(cells, Const(1)).build(&mut rng());
+        let phylo: LineageTree<2> = LineageTree::builder(cells, Const(1)).build(&mut rng());
         let serialized = bitcode::encode(&phylo);
-        let deserialized: PhyloTree<2> = bitcode::decode(&serialized).unwrap();
+        let deserialized: LineageTree<2> = bitcode::decode(&serialized).unwrap();
 
         assert_eq!(deserialized.mbd(), phylo.mbd());
         assert_eq!(deserialized.umbd(), phylo.umbd());

@@ -5,10 +5,15 @@ mod util;
 // Cell Lineage tracking as a marker
 pub mod lineage;
 
+#[cfg(any(test, feature = "testutils"))]
+pub mod testutils;
+
 pub mod prelude {
+    #[allow(deprecated)]
+    pub use super::lineage::analysis::PhyloTree;
     pub use super::{
         Marker, NoMarker, divide_at,
-        lineage::{analysis::PhyloTree, node::LineageNode},
+        lineage::{analysis::LineageTree, node::LineageNode},
         util::distributions::PoissonKnuth,
     };
 }

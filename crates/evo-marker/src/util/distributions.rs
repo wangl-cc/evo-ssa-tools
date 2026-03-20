@@ -1,4 +1,4 @@
-/// APoisson distribution sampler using Knuth's algorithm.
+/// A Poisson distribution sampler using Knuth's algorithm.
 ///
 /// This is only suitable for small lambda values (lambda < 30.0).
 #[derive(Clone, Copy, Debug, PartialEq)]

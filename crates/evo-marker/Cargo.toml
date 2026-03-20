@@ -1,13 +1,24 @@
 [package]
 name = "evo-marker"
-version = "0.3.0"
+version = "0.4.0"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
 [[bench]]
 harness = false
-name = "tree_analysis"
+name = "basic"
+required-features = ["testutils"]
+
+[[bench]]
+harness = false
+name = "distance"
+required-features = ["testutils"]
+
+[[bench]]
+harness = false
+name = "jaccard"
+required-features = ["testutils"]
 
 [dependencies]
 bitcode = { workspace = true, features = ["derive"], optional = true }
@@ -16,11 +27,12 @@ rand = { workspace = true }
 rayon = { workspace = true }
 
 [dev-dependencies]
-divan = { workspace = true }
+criterion = { workspace = true }
 rand = { workspace = true }
 
 [features]
 bitcode = ["dep:bitcode"]
+testutils = []
 
 [lints]
 workspace = true
