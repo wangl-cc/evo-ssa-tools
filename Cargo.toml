@@ -16,7 +16,7 @@ divan = { version = "0.1.17" }
 evo-marker = { path = "crates/evo-marker" }
 fjall2 = { package = "fjall", version = "2", default-features = false }
 fjall3 = { package = "fjall", version = "3", default-features = false }
-frequency = { path = "crates/frequency", version = "0.1" }
+frequency = { path = "crates/frequency", version = "0.2" }
 lz4_flex = { version = "0.12", default-features = false, features = ["std"] }
 nohash-hasher = { version = "0.2.0" }
 parking_lot = { version = "0.12" }
