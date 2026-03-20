@@ -24,6 +24,7 @@ use crate::{
 /// ```rust
 /// # use ssa_pipeline::prelude::*;
 /// # use rayon::prelude::*;
+/// # #[cfg(feature = "bitcode")]
 /// # fn main() -> ssa_pipeline::error::Result<()> {
 /// type Store = HashMapStore<std::collections::hash_map::RandomState>;
 /// let step = DeterministicStep::new(Store::default(), |i: i32| Ok(i.abs()), Bitcode06::default);
@@ -32,6 +33,8 @@ use crate::{
 ///     .collect::<ssa_pipeline::error::Result<Vec<i32>>>()?;
 /// # Ok(())
 /// # }
+/// # #[cfg(not(feature = "bitcode"))]
+/// # fn main() {}
 /// ```
 ///
 /// # Caching / keyspace contract

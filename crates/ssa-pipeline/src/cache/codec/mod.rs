@@ -6,6 +6,8 @@
 /// ```rust
 /// use ssa_pipeline::prelude::*;
 ///
+/// # #[cfg(feature = "bitcode")]
+/// # {
 /// let value = 0u8;
 /// let mut engine = Bitcode06::default();
 /// let bytes = engine
@@ -13,6 +15,7 @@
 ///     .expect("bitcode always encodes this value")
 ///     .to_vec();
 /// let value: u8 = engine.decode(&bytes).unwrap();
+/// # }
 /// ```
 pub trait CodecEngine<T> {
     /// Encode `value` and return the encoded bytes, or `Err(SkipReason)` to skip caching.

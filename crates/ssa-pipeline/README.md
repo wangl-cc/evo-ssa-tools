@@ -45,6 +45,7 @@ use rand::{Rng, RngExt};
 use rayon::prelude::*;
 use ssa_pipeline::prelude::*;
 
+# #[cfg(feature = "bitcode")]
 fn simulate_population(
     rng: &mut impl Rng,
     initial_cells: u32,
@@ -66,6 +67,7 @@ fn simulate_population(
     trajectory
 }
 
+# #[cfg(feature = "bitcode")]
 fn main() -> ssa_pipeline::error::Result<()> {
     // Stage 1: stochastic simulation.
     // Each (param, repetition_index) pair gets a deterministic RNG stream derived from
@@ -104,6 +106,9 @@ fn main() -> ssa_pipeline::error::Result<()> {
     assert_eq!(first_run, second_run);
     Ok(())
 }
+
+# #[cfg(not(feature = "bitcode"))]
+# fn main() {}
 ```
 
 ## Keyspace Contract
@@ -152,7 +157,7 @@ Rule of thumb:
 For workloads where storage size matters, `CompressedCodec<E, C, P>` wraps any existing engine with a framed compression layer. The `lz4` and `zstd` features provide ready-made compression algorithms. You can also plug in a custom `CompressPolicy` to decide at runtime whether compression is worth applying for a given payload:
 
 ```rust
-# #[cfg(feature = "lz4")]
+# #[cfg(all(feature = "lz4", feature = "bitcode"))]
 # {
 use ssa_pipeline::{
     cache::codec::compress::policy::{CompressionAction, CompressPolicy},
@@ -191,7 +196,7 @@ let _engine = CompressedCodec::<Bitcode06, Lz4>::new(Bitcode06::default()).with_
 
 ## Feature Flags
 
-- `bitcode` (enabled by default): `bitcode` serialization/deserialization via `Bitcode` / `Bitcode06`.
+- `bitcode` (disabled by default): `bitcode` serialization/deserialization via `Bitcode` / `Bitcode06`.
 - `compress` (automatically enabled by `lz4`/`zstd`; can also be enabled directly for custom engines): framed compressed codec layer and checksum support.
 - `lz4` (disabled by default): `Lz4` compression engine.
 - `postcard` (disabled by default): `postcard` + `serde` serialization/deserialization via `Postcard`.
