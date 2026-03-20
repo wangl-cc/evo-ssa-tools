@@ -321,7 +321,7 @@ fn truncate_trailing_zeros<T: Count>(freq: &mut Vec<T>) {
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
-    use rand::{rngs::SmallRng, SeedableRng};
+    use rand::{SeedableRng, rngs::SmallRng};
 
     use super::super::*;
 
