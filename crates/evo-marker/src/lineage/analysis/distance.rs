@@ -217,9 +217,9 @@ impl<const N: u32> LineageTree<N> {
                     } else if b >= n_bins {
                         u64::MAX
                     } else {
-                        let numer = b as u64 * nm_v;
-                        let denom = (n_bins - b) as u64;
-                        numer.div_ceil(denom)
+                        let numerator = b as u64 * nm_v;
+                        let denominator = (n_bins - b) as u64;
+                        numerator.div_ceil(denominator)
                     }
                 })
                 .collect();
@@ -321,7 +321,7 @@ fn truncate_trailing_zeros<T: Count>(freq: &mut Vec<T>) {
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
-    use rand::{SeedableRng, rngs::SmallRng};
+    use rand::{rngs::SmallRng, SeedableRng};
 
     use super::super::*;
 
