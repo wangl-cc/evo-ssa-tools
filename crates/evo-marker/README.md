@@ -10,3 +10,7 @@ When running stochastic simulations, we often need to track cell lineages or use
 ## Features
 
 - `bitcode`: Enables serialization and deserialization for markers using the `bitcode` crate.
+
+## Tips
+
+- If your workload spends a lot of time simulating `LineageNode` trees or building `LineageTree`s, enabling `mimalloc` in the final binary or benchmark target may improve performance noticeably.
