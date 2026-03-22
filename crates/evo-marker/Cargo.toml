@@ -20,6 +20,21 @@ harness = false
 name = "jaccard"
 required-features = ["testutils"]
 
+[[bench]]
+harness = false
+name = "alloc_default"
+required-features = ["testutils"]
+
+[[bench]]
+harness = false
+name = "alloc_jemalloc"
+required-features = ["testutils"]
+
+[[bench]]
+harness = false
+name = "alloc_mimalloc"
+required-features = ["testutils"]
+
 [dependencies]
 bitcode = { workspace = true, features = ["derive"], optional = true }
 frequency = { workspace = true }
@@ -28,6 +43,8 @@ rayon = { workspace = true }
 
 [dev-dependencies]
 criterion = { workspace = true }
+jemallocator = { package = "tikv-jemallocator", version = "0.6" }
+mimalloc = "0.1"
 rand = { workspace = true }
 
 [features]
