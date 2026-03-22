@@ -95,7 +95,8 @@ impl<const N: u32, D: Distribution<u16>> LineageTreeBuilder<N, D> {
 
         // Index for all inner nodes, zero is reserved for the root node, and 1..=n_leaves are
         // reserved for the leaves, so for inner nodes, we start from n_leaves + 1
-        let mut id2index = NoHashMap::default();
+        let mut id2index =
+            NoHashMap::with_capacity_and_hasher(n_leaves.saturating_sub(1), Default::default());
 
         let mut max_n_mutations = 0;
 
