@@ -42,6 +42,12 @@ impl postcard::ser_flavors::Flavor for ReuseVecFlavor<'_> {
     }
 }
 
+impl crate::cache::Fork for Postcard {
+    fn fork(&self) -> Self {
+        Self::default()
+    }
+}
+
 impl<T> CodecEngine<T> for Postcard
 where
     T: Serialize + DeserializeOwned,
@@ -121,6 +127,17 @@ mod tests {
             }
             other => panic!("expected EncodeFailure, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn fork_produces_independent_engine() -> Result<()> {
+        use crate::cache::Fork;
+        let original = Postcard::default();
+        let mut forked = original.fork();
+        let encoded = forked.encode(&42u64).unwrap().to_vec();
+        let decoded: u64 = forked.decode(&encoded)?;
+        assert_eq!(decoded, 42);
+        Ok(())
     }
 
     #[test]

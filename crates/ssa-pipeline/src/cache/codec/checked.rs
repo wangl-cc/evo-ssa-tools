@@ -49,6 +49,15 @@ impl<E> CheckedCodec<E> {
     }
 }
 
+impl<E: crate::cache::Fork> crate::cache::Fork for CheckedCodec<E> {
+    fn fork(&self) -> Self {
+        Self {
+            inner: self.inner.fork(),
+            scratch: Vec::new(),
+        }
+    }
+}
+
 impl<E: Default> Default for CheckedCodec<E> {
     fn default() -> Self {
         Self::new(E::default())
@@ -102,6 +111,12 @@ mod tests {
     #[derive(Debug, Default)]
     struct PassthroughBytesEngine {
         buffer: Vec<u8>,
+    }
+
+    impl crate::cache::Fork for PassthroughBytesEngine {
+        fn fork(&self) -> Self {
+            Self::default()
+        }
     }
 
     impl CodecEngine<Vec<u8>> for PassthroughBytesEngine {
@@ -249,5 +264,20 @@ mod tests {
             }
             other => panic!("expected fixture error, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn fork_produces_independent_engine() {
+        use crate::cache::Fork;
+        let payload = b"fork test".to_vec();
+        let original = CheckedCodec::new(PassthroughBytesEngine::default());
+        let mut forked = original.fork();
+
+        let encoded = forked
+            .encode(&payload)
+            .expect("encoding should succeed")
+            .to_vec();
+        let decoded = forked.decode(&encoded).expect("decoding should succeed");
+        assert_eq!(decoded, payload);
     }
 }

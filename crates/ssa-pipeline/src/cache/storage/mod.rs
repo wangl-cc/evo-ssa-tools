@@ -6,7 +6,6 @@
 //!
 //! Backend selection guidance:
 //!
-//! - [`HashMapStore`]: in-process, in-memory storage for tests, experiments, and short-lived jobs.
 //! - [`Fjall2Store`]: persistent Fjall v2 partition-backed storage when you already manage a
 //!   [`fjall::Keyspace`](::fjall2::Keyspace) externally.
 //! - [`Fjall3Store`]: persistent Fjall v3 keyspace-backed storage when you already manage a
@@ -17,11 +16,8 @@
 //! Stores do not add namespacing on top of the underlying database. Reuse the same partition,
 //! keyspace, or table only when the cached compute semantics are intentionally identical.
 
-use super::codec::CodecEngine;
+use super::{Cache, Fork, codec::CodecEngine};
 use crate::error::Result;
-
-mod hashmap;
-pub use hashmap::{DefaultHashMapStore, HashMapStore};
 
 #[cfg(feature = "fjall2")]
 mod fjall2;
@@ -57,15 +53,6 @@ pub enum StorageError {
 /// Result type returned by storage backends.
 pub type StorageResult<T, E = StorageError> = std::result::Result<T, E>;
 
-#[doc(hidden)]
-pub trait WorkerForkStore: private::Sealed + Sync {
-    fn fork_store(&self) -> Self;
-}
-
-mod private {
-    pub trait Sealed {}
-}
-
 /// Storage backend for memoized `key -> value` entries.
 ///
 /// Keys are opaque bytes produced by canonical input encoding
@@ -74,8 +61,6 @@ mod private {
 ///
 /// This trait is `Sync` because stores are shared across parallel workers.
 /// Implementations are expected to be thread-safe for concurrent reads and writes.
-///
-/// `()` implements `CacheStore` as a "no-store" backend that always misses and discards writes.
 ///
 /// This trait deliberately does not define any keyspace or schema management. If multiple compute
 /// nodes share the same underlying backing store, the caller must ensure they also share identical
@@ -143,33 +128,49 @@ pub trait CacheStore: Sync {
     }
 }
 
-impl private::Sealed for () {}
+/// A cache backed by a raw [`CacheStore`] and a [`CodecEngine`].
+///
+/// `EncodedCache` owns both a storage backend and a codec engine. When passed to `execute_many`,
+/// each worker gets its own instance: the store is forked into a shared handle (all workers
+/// read and write the same underlying data), and the codec is forked into an independent engine
+/// with its own encode buffer.
+#[derive(Debug)]
+pub struct EncodedCache<S, CE> {
+    store: S,
+    engine: CE,
+}
 
-impl WorkerForkStore for () {
-    fn fork_store(&self) -> Self {
-        *self
+impl<S, CE> EncodedCache<S, CE> {
+    /// Create an encoded cache from a raw store and a codec engine.
+    pub fn new(store: S, engine: CE) -> Self {
+        Self { store, engine }
     }
 }
 
-impl CacheStore for () {
-    type Encoded<'a>
-        = &'a [u8]
-    where
-        Self: 'a;
-
-    fn fetch_encoded(&self, _: &[u8]) -> StorageResult<Option<Self::Encoded<'_>>> {
-        Ok(None)
+impl<S: Fork, CE: Fork> Fork for EncodedCache<S, CE> {
+    fn fork(&self) -> Self {
+        Self {
+            store: self.store.fork(),
+            engine: self.engine.fork(),
+        }
     }
+}
 
-    fn store<T, CE>(&self, _: &[u8], _: &mut CE, _: &T) -> Result<()>
+impl<S, CE, T> Cache<T> for EncodedCache<S, CE>
+where
+    S: CacheStore,
+    CE: CodecEngine<T>,
+{
+    fn fetch_or_execute<F>(&mut self, key: &[u8], execute: F) -> Result<T>
     where
-        CE: CodecEngine<T>,
+        F: FnOnce() -> Result<T>,
     {
-        Ok(())
-    }
-
-    fn store_encoded(&self, _: &[u8], _: &[u8]) -> StorageResult<()> {
-        Ok(())
+        if let Some(cached) = self.store.fetch::<T, CE>(key, &mut self.engine)? {
+            return Ok(cached);
+        }
+        let output = execute()?;
+        self.store.store::<T, CE>(key, &mut self.engine, &output)?;
+        Ok(output)
     }
 }
 

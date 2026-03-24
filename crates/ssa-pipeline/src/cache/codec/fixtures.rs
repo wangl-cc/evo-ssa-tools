@@ -2,7 +2,7 @@ use super::{CodecEngine, Error as CodecError, SkipReason};
 
 type Result<T, E = CodecError> = ::core::result::Result<T, E>;
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub(crate) struct FixtureEngine {
     buffer: Vec<u8>,
 }
@@ -63,6 +63,12 @@ trait FixtureScalar: Sized {
 
     fn encode_scalar(&self, output: &mut Vec<u8>);
     fn decode_scalar(bytes: &[u8]) -> Result<Self>;
+}
+
+impl crate::cache::Fork for FixtureEngine {
+    fn fork(&self) -> Self {
+        Self::default()
+    }
 }
 
 impl<T: FixtureValue> CodecEngine<T> for FixtureEngine {

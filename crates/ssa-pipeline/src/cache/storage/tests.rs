@@ -1,40 +1,13 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use super::{CacheStore, WorkerForkStore};
+use super::CacheStore;
 use crate::{
-    cache::codec::{
-        CodecEngine, SkipReason, checked::CheckedCodec, fixtures::Error as FixtureError,
+    cache::{
+        Fork,
+        codec::{CodecEngine, SkipReason, checked::CheckedCodec, fixtures::Error as FixtureError},
     },
     error::Result,
 };
-
-#[test]
-fn test_unit_store_fetch_encoded_is_none() -> Result<()> {
-    let store = ();
-    assert!(store.fetch_encoded(b"ignored")?.is_none());
-    Ok(())
-}
-
-#[test]
-fn test_unit_store_skips_encode_in_no_cache_mode() -> Result<()> {
-    #[derive(Default)]
-    struct PanicOnEncode;
-
-    impl CodecEngine<u32> for PanicOnEncode {
-        fn encode(&mut self, _: &u32) -> std::result::Result<&[u8], SkipReason> {
-            panic!("no-cache store should not encode values");
-        }
-
-        fn decode(&mut self, _: &[u8]) -> Result<u32, crate::cache::codec::Error> {
-            unreachable!("no-cache fetch always misses")
-        }
-    }
-
-    let store = ();
-    let mut engine = PanicOnEncode;
-    store.store::<u32, PanicOnEncode>(b"ignored", &mut engine, &42)?;
-    Ok(())
-}
 
 #[test]
 fn test_default_store_skips_write_when_encode_is_rejected() -> Result<()> {
@@ -82,38 +55,6 @@ fn test_default_store_skips_write_when_encode_is_rejected() -> Result<()> {
 
     store.store(b"ignored", &mut engine, &42u32)?;
     assert!(!write_called.load(Ordering::Relaxed));
-    Ok(())
-}
-
-#[test]
-fn test_unit_store_encoded_is_noop() -> Result<()> {
-    let store = ();
-    store.store_encoded(b"ignored", b"payload")?;
-    Ok(())
-}
-
-#[test]
-fn test_unit_store_fetch_or_execute_runs_execute() -> Result<()> {
-    #[derive(Default)]
-    struct BytesEngine(Vec<u8>);
-
-    impl CodecEngine<u32> for BytesEngine {
-        fn encode(&mut self, value: &u32) -> std::result::Result<&[u8], SkipReason> {
-            self.0.clear();
-            self.0.extend_from_slice(&value.to_le_bytes());
-            Ok(&self.0)
-        }
-
-        fn decode(&mut self, bytes: &[u8]) -> Result<u32, crate::cache::codec::Error> {
-            let bytes: [u8; 4] = bytes.try_into().expect("u32 payload");
-            Ok(u32::from_le_bytes(bytes))
-        }
-    }
-
-    let store = ();
-    let mut engine = BytesEngine::default();
-    let value = store.fetch_or_execute(b"ignored", &mut engine, |_| Ok(7u32))?;
-    assert_eq!(value, 7);
     Ok(())
 }
 
@@ -304,7 +245,7 @@ fn test_fetch_treats_compress_corruption_as_miss() -> Result<()> {
     }
 
     let mut encode_engine =
-        CompressedCodec::<crate::cache::codec::engine::bitcode::Bitcode, Lz4>::default();
+        CompressedCodec::<crate::cache::codec::engine::bitcode::Bitcode06, Lz4>::default();
     let mut encoded = encode_engine
         .encode(&42u64)
         .expect("encoding should succeed")
@@ -314,13 +255,166 @@ fn test_fetch_treats_compress_corruption_as_miss() -> Result<()> {
 
     let store = SingleValueStore { value: encoded };
     let mut read_engine =
-        CompressedCodec::<crate::cache::codec::engine::bitcode::Bitcode, Lz4>::default();
+        CompressedCodec::<crate::cache::codec::engine::bitcode::Bitcode06, Lz4>::default();
     assert_eq!(store.fetch::<u64, _>(b"ignored", &mut read_engine)?, None);
+    Ok(())
+}
+
+#[test]
+fn test_fetch_or_execute_returns_cached_value_on_hit() -> Result<()> {
+    #[derive(Default)]
+    struct BytesEngine(Vec<u8>);
+
+    impl CodecEngine<u32> for BytesEngine {
+        fn encode(&mut self, value: &u32) -> std::result::Result<&[u8], SkipReason> {
+            self.0.clear();
+            self.0.extend_from_slice(&value.to_le_bytes());
+            Ok(&self.0)
+        }
+
+        fn decode(&mut self, bytes: &[u8]) -> Result<u32, crate::cache::codec::Error> {
+            let bytes: [u8; 4] = bytes.try_into().expect("u32 payload");
+            Ok(u32::from_le_bytes(bytes))
+        }
+    }
+
+    // Pre-encode a value to seed the store.
+    let mut seed_engine = BytesEngine::default();
+    let encoded_value = seed_engine.encode(&99u32).unwrap().to_vec();
+
+    struct PreloadedStore {
+        payload: Vec<u8>,
+    }
+
+    impl CacheStore for PreloadedStore {
+        type Encoded<'a>
+            = &'a [u8]
+        where
+            Self: 'a;
+
+        fn fetch_encoded(&self, _: &[u8]) -> super::StorageResult<Option<Self::Encoded<'_>>> {
+            Ok(Some(self.payload.as_slice()))
+        }
+
+        fn store_encoded(&self, _: &[u8], _: &[u8]) -> super::StorageResult<()> {
+            Ok(())
+        }
+    }
+
+    let store = PreloadedStore {
+        payload: encoded_value,
+    };
+    let mut engine = BytesEngine::default();
+    let value = store.fetch_or_execute(b"key", &mut engine, |_| Ok(0u32))?;
+    assert_eq!(value, 99);
     Ok(())
 }
 
 #[test]
 fn test_unit_store_fork_is_noop() {
     let store = ();
-    store.fork_store();
+    store.fork();
+}
+
+// -- CacheStore + compressed codec tests ------------------------------------
+//
+// These tests use an inline shared-bytes store so that raw encoded bytes can
+// be inspected after a store/fetch roundtrip.
+
+use std::sync::{Arc, Mutex};
+
+struct SharedBytesStore {
+    inner: Arc<Mutex<std::collections::HashMap<Vec<u8>, Vec<u8>>>>,
+}
+
+impl SharedBytesStore {
+    fn new() -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(std::collections::HashMap::new())),
+        }
+    }
+
+    fn get_raw(&self, key: &[u8]) -> Option<Vec<u8>> {
+        self.inner.lock().unwrap().get(key).cloned()
+    }
+}
+
+impl super::CacheStore for SharedBytesStore {
+    type Encoded<'a>
+        = Vec<u8>
+    where
+        Self: 'a;
+
+    fn fetch_encoded(&self, key: &[u8]) -> super::StorageResult<Option<Self::Encoded<'_>>> {
+        Ok(self.inner.lock().unwrap().get(key).cloned())
+    }
+
+    fn store_encoded(&self, key: &[u8], encoded: &[u8]) -> super::StorageResult<()> {
+        self.inner
+            .lock()
+            .unwrap()
+            .insert(key.to_owned(), encoded.to_vec());
+        Ok(())
+    }
+}
+
+#[test]
+fn test_store_basic_roundtrip() -> crate::error::Result<()> {
+    let store = SharedBytesStore::new();
+    let mut engine = crate::cache::codec::fixtures::FixtureEngine::default();
+
+    let value = 42u32;
+    let key = b"test_sig";
+    store.store::<u32, _>(key, &mut engine, &value)?;
+    assert_eq!(store.fetch::<u32, _>(key, &mut engine)?, Some(value));
+    assert_eq!(store.fetch::<u32, _>(b"non_existent", &mut engine)?, None);
+    assert!(store.fetch::<u64, _>(key, &mut engine).is_err());
+    Ok(())
+}
+
+#[cfg(feature = "lz4")]
+#[test]
+fn test_compressed_value_frame_layout() -> crate::error::Result<()> {
+    use crate::cache::codec::{
+        compress::{CompressedCodec, algorithm::Lz4},
+        fixtures::FixtureEngine,
+    };
+
+    type Lz4Engine = CompressedCodec<FixtureEngine, Lz4>;
+
+    let store = SharedBytesStore::new();
+    let mut engine = Lz4Engine::default();
+    let key = b"compressible";
+    let value = "a".repeat(96 * 1024);
+
+    store.store::<String, Lz4Engine>(key, &mut engine, &value)?;
+    assert_eq!(
+        store.fetch::<String, Lz4Engine>(key, &mut engine)?,
+        Some(value)
+    );
+
+    let encoded = store.get_raw(key).expect("value should be stored");
+    assert!(!encoded.is_empty());
+    assert_eq!(encoded[0] & 0b1111_0000, 0b0001_0000);
+    assert_eq!(encoded[0] & 0b0000_1111, 0b0001);
+    Ok(())
+}
+
+#[cfg(all(feature = "lz4", feature = "bitcode06"))]
+#[test]
+fn test_compressed_value_skips_oversize() -> crate::error::Result<()> {
+    use crate::cache::codec::compress::{
+        CompressedCodec, algorithm::Lz4, fixtures::SizedBytesEngine,
+    };
+
+    type Lz4Engine = CompressedCodec<SizedBytesEngine, Lz4>;
+
+    let store = SharedBytesStore::new();
+    let mut engine = Lz4Engine::default().with_max_len(64 * 1024 * 1024);
+    let key = b"oversize";
+    let value = 64 * 1024 * 1024 + 1;
+
+    store.store::<usize, Lz4Engine>(key, &mut engine, &value)?;
+    assert_eq!(store.fetch::<usize, Lz4Engine>(key, &mut engine)?, None);
+    Ok(())
 }

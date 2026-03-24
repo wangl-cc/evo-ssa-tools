@@ -1,11 +1,14 @@
 //! Persistent storage backend built on Fjall v3 keyspaces.
 
-use super::{CacheStore, StorageResult, WorkerForkStore, private};
+use super::{CacheStore, StorageResult};
 
 /// Fjall v3-backed cache store bound to a single keyspace.
 ///
 /// The caller owns the surrounding [`fjall3::Database`] handle and decides how different cache
 /// keyspaces map onto Fjall keyspace names.
+///
+/// All workers share the same keyspace handle: a value written by one worker is immediately
+/// visible to the others.
 pub struct Fjall3Store {
     pub(crate) handle: fjall3::Keyspace,
 }
@@ -25,10 +28,8 @@ impl Fjall3Store {
     }
 }
 
-impl private::Sealed for Fjall3Store {}
-
-impl WorkerForkStore for Fjall3Store {
-    fn fork_store(&self) -> Self {
+impl crate::cache::Fork for Fjall3Store {
+    fn fork(&self) -> Self {
         Self {
             handle: self.handle.clone(),
         }
@@ -56,7 +57,7 @@ impl CacheStore for Fjall3Store {
 mod tests {
     use super::*;
     use crate::{
-        cache::{codec::fixtures::FixtureEngine, storage::StorageError},
+        cache::{Fork, codec::fixtures::FixtureEngine, storage::StorageError},
         error::Result,
     };
 
@@ -94,7 +95,7 @@ mod tests {
             .open()
             .map_err(StorageError::from)?;
         let store = Fjall3Store::open(db, "raw", None)?;
-        let forked = store.fork_store();
+        let forked = store.fork();
 
         store.store_encoded(b"k", b"payload")?;
 

@@ -162,6 +162,16 @@ pub(super) struct CompressFrame<C> {
     max_decode_len: Option<NonZeroUsize>,
 }
 
+impl<C: crate::cache::Fork> CompressFrame<C> {
+    pub(super) fn fork(&self) -> Self {
+        Self {
+            scratch: Vec::new(),
+            compressor: self.compressor.fork(),
+            max_decode_len: self.max_decode_len,
+        }
+    }
+}
+
 impl<C> CompressFrame<C> {
     pub(super) fn new(compressor: C) -> Self {
         Self {

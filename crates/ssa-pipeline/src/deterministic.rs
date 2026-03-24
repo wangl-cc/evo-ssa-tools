@@ -1,12 +1,6 @@
 use std::marker::PhantomData;
 
-use crate::{
-    CacheStore, CanonicalEncode, Compute, Result,
-    cache::{
-        codec::{CodecEngine, EngineFactory},
-        storage::WorkerForkStore,
-    },
-};
+use crate::{Cache, CanonicalEncode, Compute, Result, cache::Fork};
 
 /// Deterministic compute node.
 ///
@@ -24,17 +18,16 @@ use crate::{
 /// ```rust
 /// # use ssa_pipeline::prelude::*;
 /// # use rayon::prelude::*;
-/// # #[cfg(feature = "bitcode")]
 /// # fn main() -> ssa_pipeline::error::Result<()> {
-/// type Store = HashMapStore<std::collections::hash_map::RandomState>;
-/// let step = DeterministicStep::new(Store::default(), |i: i32| Ok(i.abs()), Bitcode06::default);
+/// let step = DeterministicStep::new(
+///     DefaultHashObjectCache::default(),
+///     |i: i32| Ok(i.abs()),
+/// );
 /// let results = step
 ///     .execute_many((0..10).into_par_iter(), ExecuteOptions::default())?
 ///     .collect::<ssa_pipeline::error::Result<Vec<i32>>>()?;
 /// # Ok(())
 /// # }
-/// # #[cfg(not(feature = "bitcode"))]
-/// # fn main() {}
 /// ```
 ///
 /// # Caching / keyspace contract
@@ -48,79 +41,68 @@ use crate::{
 ///
 /// To disable caching entirely, pass `()` as the cache.
 #[derive(Debug)]
-pub struct DeterministicStep<C, I, O, F, EF> {
+pub struct DeterministicStep<C, I, O, F> {
     cache: C,
     function: F,
-    engine_factory: EF,
     _phantom: PhantomData<(I, O)>,
 }
 
-impl<C, I, O, F, EF> DeterministicStep<C, I, O, F, EF>
+impl<C, I, O, F> DeterministicStep<C, I, O, F>
 where
     F: Fn(I) -> Result<O>,
-    EF: EngineFactory,
-    EF::Engine: CodecEngine<O>,
 {
     /// Create a deterministic step from `cache` and `function`.
     ///
     /// Pass `()` as `cache` to disable caching.
     ///
     /// `cache` should be dedicated to this step (see cache keyspace contract).
-    pub fn new(cache: C, function: F, engine_factory: EF) -> Self {
+    pub fn new(cache: C, function: F) -> Self {
         Self {
             cache,
             function,
-            engine_factory,
             _phantom: PhantomData,
         }
     }
 }
 
-impl<C: WorkerForkStore, I, O, F: Clone, EF: Clone> Clone for DeterministicStep<C, I, O, F, EF> {
+impl<C: Fork, I, O, F: Clone> Clone for DeterministicStep<C, I, O, F> {
     fn clone(&self) -> Self {
         Self {
-            cache: self.cache.fork_store(),
+            cache: self.cache.fork(),
             function: self.function.clone(),
-            engine_factory: self.engine_factory.clone(),
             _phantom: PhantomData,
         }
     }
 }
 
-impl<C, I, O, F, EF> Compute for DeterministicStep<C, I, O, F, EF>
+impl<C, I, O, F> Compute for DeterministicStep<C, I, O, F>
 where
     F: Fn(I) -> Result<O>,
-    C: CacheStore,
+    C: Cache<O>,
     I: CanonicalEncode,
-    EF: EngineFactory,
-    EF::Engine: CodecEngine<O>,
 {
-    type Engine = EF::Engine;
     type Input = I;
     type Output = O;
-
-    fn make_engine(&self) -> Self::Engine {
-        self.engine_factory.make_engine()
-    }
 
     fn execute_with_encoded_input(
         &mut self,
         input: Self::Input,
         encoded: &[u8],
-        engine: &mut Self::Engine,
     ) -> Result<Self::Output> {
-        let cache = &self.cache;
+        let cache = &mut self.cache;
         let function = &self.function;
-        cache.fetch_or_execute(encoded, engine, |_| function(input))
+        cache.fetch_or_execute(encoded, || function(input))
     }
 }
 
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
+    #[cfg(feature = "lru")]
+    use std::num::NonZeroUsize;
     use std::{
         sync::{
-            Arc,
+            Arc, Mutex,
             atomic::{AtomicBool, AtomicUsize, Ordering},
         },
         thread::{sleep, spawn},
@@ -131,10 +113,40 @@ mod tests {
 
     use super::*;
     use crate::{
-        cache::codec::{Error as CodecError, SkipReason, fixtures::FixtureEngine},
+        cache::{
+            Fork,
+            codec::{Error as CodecError, SkipReason},
+            storage::{CacheStore, EncodedCache, StorageResult},
+        },
         prelude::*,
         test_utils::execute_one,
     };
+
+    /// Minimal in-memory `CacheStore` + `Fork` for tests that need `EncodedCache`.
+    #[derive(Default)]
+    struct SimpleStore(Arc<Mutex<std::collections::HashMap<Vec<u8>, Vec<u8>>>>);
+
+    impl Fork for SimpleStore {
+        fn fork(&self) -> Self {
+            Self(Arc::clone(&self.0))
+        }
+    }
+
+    impl CacheStore for SimpleStore {
+        type Encoded<'a>
+            = Vec<u8>
+        where
+            Self: 'a;
+
+        fn fetch_encoded(&self, key: &[u8]) -> StorageResult<Option<Self::Encoded<'_>>> {
+            Ok(self.0.lock().unwrap().get(key).cloned())
+        }
+
+        fn store_encoded(&self, key: &[u8], encoded: &[u8]) -> StorageResult<()> {
+            self.0.lock().unwrap().insert(key.to_owned(), encoded.to_vec());
+            Ok(())
+        }
+    }
 
     struct TaggedUsizeEngine {
         tag: u8,
@@ -147,6 +159,12 @@ mod tests {
                 tag,
                 buffer: Vec::new(),
             }
+        }
+    }
+
+    impl Fork for TaggedUsizeEngine {
+        fn fork(&self) -> Self {
+            Self::new(self.tag)
         }
     }
 
@@ -169,19 +187,61 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "lru")]
+    struct CountingUsizeEngine {
+        buffer: Vec<u8>,
+        encode_calls: Arc<AtomicUsize>,
+        decode_calls: Arc<AtomicUsize>,
+    }
+
+    #[cfg(feature = "lru")]
+    impl CountingUsizeEngine {
+        fn new(encode_calls: Arc<AtomicUsize>, decode_calls: Arc<AtomicUsize>) -> Self {
+            Self {
+                buffer: Vec::new(),
+                encode_calls,
+                decode_calls,
+            }
+        }
+    }
+
+    #[cfg(feature = "lru")]
+    impl Clone for CountingUsizeEngine {
+        fn clone(&self) -> Self {
+            Self {
+                buffer: Vec::new(),
+                encode_calls: self.encode_calls.clone(),
+                decode_calls: self.decode_calls.clone(),
+            }
+        }
+    }
+
+    #[cfg(feature = "lru")]
+    impl CodecEngine<usize> for CountingUsizeEngine {
+        fn encode(&mut self, value: &usize) -> std::result::Result<&[u8], SkipReason> {
+            self.encode_calls.fetch_add(1, Ordering::SeqCst);
+            self.buffer.clear();
+            self.buffer.extend_from_slice(&value.to_le_bytes());
+            Ok(&self.buffer)
+        }
+
+        fn decode(&mut self, bytes: &[u8]) -> Result<usize, CodecError> {
+            self.decode_calls.fetch_add(1, Ordering::SeqCst);
+            let value_bytes: [u8; core::mem::size_of::<usize>()] =
+                bytes.try_into().expect("payload should store one usize");
+            Ok(usize::from_le_bytes(value_bytes))
+        }
+    }
+
     #[test]
     fn test_deterministic_caching() -> Result<()> {
         let call_count = Arc::new(AtomicUsize::new(0));
         let call_count_clone = call_count.clone();
 
-        let compute = DeterministicStep::new(
-            DefaultHashMapStore::default(),
-            move |i: usize| {
-                call_count_clone.fetch_add(1, Ordering::SeqCst);
-                Ok(i * 3)
-            },
-            FixtureEngine::default,
-        );
+        let compute = DeterministicStep::new(DefaultHashObjectCache::default(), move |i: usize| {
+            call_count_clone.fetch_add(1, Ordering::SeqCst);
+            Ok(i * 3)
+        });
 
         let n_inputs = 5;
 
@@ -205,14 +265,10 @@ mod tests {
 
     #[test]
     fn test_deterministic_interrupt() -> Result<()> {
-        let compute = DeterministicStep::new(
-            DefaultHashMapStore::default(),
-            |i: usize| {
-                sleep(Duration::from_millis(100));
-                Ok(i + 1)
-            },
-            FixtureEngine::default,
-        );
+        let compute = DeterministicStep::new(DefaultHashObjectCache::default(), |i: usize| {
+            sleep(Duration::from_millis(100));
+            Ok(i + 1)
+        });
 
         let interrupted = Arc::new(AtomicBool::new(false));
         let interrupted_clone = interrupted.clone();
@@ -240,17 +296,13 @@ mod tests {
 
     #[test]
     fn test_deterministic_error_propagation() -> Result<()> {
-        let mut compute = DeterministicStep::new(
-            DefaultHashMapStore::default(),
-            |i: usize| {
-                if i == 5 {
-                    Err(crate::error::Error::Interrupted)
-                } else {
-                    Ok(i * 2)
-                }
-            },
-            FixtureEngine::default,
-        );
+        let mut compute = DeterministicStep::new(DefaultHashObjectCache::default(), |i: usize| {
+            if i == 5 {
+                Err(crate::error::Error::Interrupted)
+            } else {
+                Ok(i * 2)
+            }
+        });
 
         let result = execute_one(&mut compute, 3)?;
         assert_eq!(result, 6);
@@ -263,14 +315,10 @@ mod tests {
 
     #[test]
     fn test_deterministic_execution_order() -> Result<()> {
-        let compute = DeterministicStep::new(
-            DefaultHashMapStore::default(),
-            |i: usize| {
-                sleep(Duration::from_millis(20 - (i % 20) as u64));
-                Ok(i + 100)
-            },
-            FixtureEngine::default,
-        );
+        let compute = DeterministicStep::new(DefaultHashObjectCache::default(), |i: usize| {
+            sleep(Duration::from_millis(20 - (i % 20) as u64));
+            Ok(i + 100)
+        });
 
         let n_inputs = 20;
 
@@ -291,14 +339,10 @@ mod tests {
         let call_count = Arc::new(AtomicUsize::new(0));
         let call_count_clone = call_count.clone();
 
-        let mut compute = DeterministicStep::new(
-            (),
-            move |i: usize| {
-                call_count_clone.fetch_add(1, Ordering::SeqCst);
-                Ok(i * 11)
-            },
-            FixtureEngine::default,
-        );
+        let mut compute = DeterministicStep::new((), move |i: usize| {
+            call_count_clone.fetch_add(1, Ordering::SeqCst);
+            Ok(i * 11)
+        });
 
         let output1 = execute_one(&mut compute, 3)?;
         let output2 = execute_one(&mut compute, 3)?;
@@ -313,17 +357,13 @@ mod tests {
     fn test_explicit_shared_cache_behavior() -> Result<()> {
         let call_count = Arc::new(AtomicUsize::new(0));
 
-        let mut compute_a = DeterministicStep::new(
-            DefaultHashMapStore::default(),
-            {
-                let call_count = call_count.clone();
-                move |i: usize| {
-                    call_count.fetch_add(1, Ordering::SeqCst);
-                    Ok(i * 7)
-                }
-            },
-            FixtureEngine::default,
-        );
+        let mut compute_a = DeterministicStep::new(DefaultHashObjectCache::default(), {
+            let call_count = call_count.clone();
+            move |i: usize| {
+                call_count.fetch_add(1, Ordering::SeqCst);
+                Ok(i * 7)
+            }
+        });
         let mut compute_b = compute_a.clone();
 
         let output_a = execute_one(&mut compute_a, 4usize)?;
@@ -336,17 +376,16 @@ mod tests {
     }
 
     #[test]
-    fn test_engine_factory_supports_non_default_non_clone_engine() -> Result<()> {
+    fn test_fork_engine_supports_non_clone_engine() -> Result<()> {
         let call_count = Arc::new(AtomicUsize::new(0));
         let call_count_clone = call_count.clone();
 
         let compute = DeterministicStep::new(
-            DefaultHashMapStore::default(),
+            EncodedCache::new(SimpleStore::default(), TaggedUsizeEngine::new(0xA5)),
             move |i: usize| {
                 call_count_clone.fetch_add(1, Ordering::SeqCst);
                 Ok(i + 10)
             },
-            || TaggedUsizeEngine::new(0xA5),
         );
 
         let outputs1 = compute
@@ -364,16 +403,63 @@ mod tests {
     }
 
     #[test]
-    fn test_engine_factory_can_capture_runtime_configuration() -> Result<()> {
+    fn test_encoded_cache_captures_engine_config() -> Result<()> {
         let tag = 0x3C;
         let mut compute = DeterministicStep::new(
-            DefaultHashMapStore::default(),
+            EncodedCache::new(SimpleStore::default(), TaggedUsizeEngine::new(tag)),
             |i: usize| Ok(i * 5),
-            move || TaggedUsizeEngine::new(tag),
         );
 
         assert_eq!(execute_one(&mut compute, 4usize)?, 20);
         assert_eq!(execute_one(&mut compute, 4usize)?, 20);
+        Ok(())
+    }
+
+    #[cfg(feature = "lru")]
+    #[test]
+    fn test_deterministic_lru_object_cache_skips_codec_roundtrip_on_hit() -> Result<()> {
+        let encode_calls = Arc::new(AtomicUsize::new(0));
+        let decode_calls = Arc::new(AtomicUsize::new(0));
+        let compute_calls = Arc::new(AtomicUsize::new(0));
+
+        let mut raw_compute = DeterministicStep::new(
+            EncodedCache::new(
+                SimpleStore::default(),
+                CountingUsizeEngine::new(encode_calls.clone(), decode_calls.clone()),
+            ),
+            {
+                let compute_calls = compute_calls.clone();
+                move |i: usize| {
+                    compute_calls.fetch_add(1, Ordering::SeqCst);
+                    Ok(i * 2)
+                }
+            },
+        );
+
+        assert_eq!(execute_one(&mut raw_compute, 3usize)?, 6);
+        assert_eq!(execute_one(&mut raw_compute, 3usize)?, 6);
+        assert_eq!(compute_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(encode_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(decode_calls.load(Ordering::SeqCst), 1);
+
+        let lru_compute_calls = Arc::new(AtomicUsize::new(0));
+        let mut object_compute = DeterministicStep::new(
+            DefaultLruObjectCache::new(NonZeroUsize::new(16).expect("capacity is non-zero")),
+            {
+                let compute_calls = lru_compute_calls.clone();
+                move |i: usize| {
+                    compute_calls.fetch_add(1, Ordering::SeqCst);
+                    Ok(i * 2)
+                }
+            },
+        );
+
+        assert_eq!(execute_one(&mut object_compute, 3usize)?, 6);
+        assert_eq!(execute_one(&mut object_compute, 3usize)?, 6);
+        assert_eq!(lru_compute_calls.load(Ordering::SeqCst), 1);
+        // LRU does not use the codec engine at all
+        assert_eq!(encode_calls.load(Ordering::SeqCst), 1); // unchanged from raw_compute
+        assert_eq!(decode_calls.load(Ordering::SeqCst), 1); // unchanged from raw_compute
         Ok(())
     }
 }

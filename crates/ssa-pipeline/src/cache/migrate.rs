@@ -23,22 +23,6 @@ pub trait IterableStore {
         F: FnMut(&[u8], &[u8]) -> Result<()>;
 }
 
-impl<H> IterableStore for storage::HashMapStore<H>
-where
-    H: std::hash::BuildHasher + Send + Sync,
-{
-    fn iter_encoded<F>(&self, mut f: F) -> Result<()>
-    where
-        F: FnMut(&[u8], &[u8]) -> Result<()>,
-    {
-        let map = self.inner.read();
-        for (key, value) in map.iter() {
-            f(key, value)?;
-        }
-        Ok(())
-    }
-}
-
 #[cfg(feature = "fjall2")]
 impl IterableStore for storage::Fjall2Store {
     fn iter_encoded<F>(&self, mut f: F) -> Result<()>
@@ -108,27 +92,17 @@ pub struct MigrateStats {
 /// # Undefined Behavior
 ///
 /// `src` and `dst` must be distinct stores. Passing the same store for both is unsound:
-/// some backends (e.g. [`HashMapStore`](super::storage::HashMapStore)) hold a read lock for the
-/// entire iteration, so any write attempted by the closure will deadlock.
+/// backends that hold a read lock for the entire iteration will deadlock on any write within
+/// the closure.
 ///
 /// # Example
 ///
-/// ```rust
+/// ```no_run
 /// use ssa_pipeline::{cache::migrate::copy, prelude::*};
 ///
-/// let src = DefaultHashMapStore::default();
-/// let mut engine = Bitcode06::default();
-/// src.store(b"k1", &mut engine, &1u32).unwrap();
-/// src.store(b"k2", &mut engine, &2u32).unwrap();
-///
-/// // In practice, `dst` would be a different storage backend (e.g. a database).
-/// let dst = DefaultHashMapStore::default();
-/// let stats = copy(&src, &dst).unwrap();
-///
-/// assert_eq!(stats.migrated, 2);
-/// assert_eq!(stats.skipped, 0);
-/// assert_eq!(dst.fetch::<u32, _>(b"k1", &mut engine).unwrap(), Some(1));
-/// assert_eq!(dst.fetch::<u32, _>(b"k2", &mut engine).unwrap(), Some(2));
+/// // Open src and dst using any `IterableStore` + `CacheStore` implementations,
+/// // e.g. Fjall3Store::open(...) or RedbStore::open(...).
+/// // let stats = copy(&src, &dst).unwrap();
 /// ```
 pub fn copy<Src, Dst>(src: &Src, dst: &Dst) -> Result<MigrateStats>
 where
@@ -155,33 +129,20 @@ where
 /// # Panics / deadlocks
 ///
 /// `src` and `dst` must be distinct stores. Passing the same store for both is unsound:
-/// some backends (e.g. [`HashMapStore`](super::storage::HashMapStore)) hold a read lock for the
-/// entire iteration, so any write attempted by the closure will deadlock.
+/// backends that hold a read lock for the entire iteration will deadlock on any write within
+/// the closure.
 ///
 /// In-place transcoding is intentionally not provided: a failure partway through would leave
 /// the store in a mixed-codec state that cannot be rolled back.
 ///
 /// # Example
 ///
-/// ```
+/// ```no_run
 /// use ssa_pipeline::{cache::migrate::copy_transcoded, prelude::*};
 ///
-/// let src = DefaultHashMapStore::default();
-/// let mut from_engine = Bitcode06::default();
-/// src.store(b"key", &mut from_engine, &100u64).unwrap();
-///
-/// let dst = DefaultHashMapStore::default();
-/// // Add crc32c checksums to the encoded values
-/// let mut to_engine = CheckedCodec::new(Bitcode06::default());
-/// let stats =
-///     copy_transcoded::<u64, _, _, _, _>(&src, &mut from_engine, &dst, &mut to_engine).unwrap();
-///
-/// assert_eq!(stats.migrated, 1);
-/// assert_eq!(stats.skipped, 0);
-/// assert_eq!(
-///     dst.fetch::<u64, _>(b"key", &mut to_engine).unwrap(),
-///     Some(100)
-/// );
+/// // Open src and dst using any `IterableStore` + `CacheStore` implementations,
+/// // e.g. Fjall3Store::open(...) or RedbStore::open(...).
+/// // let stats = copy_transcoded::<MyType, _, _, _, _>(&src, &mut from_engine, &dst, &mut to_engine).unwrap();
 /// ```
 pub fn copy_transcoded<T, Src, Dst, FromCE, ToCE>(
     src: &Src,
@@ -216,14 +177,51 @@ where
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
+    use std::sync::{Arc, Mutex};
+
     use super::*;
     use crate::cache::{
         codec::{CodecEngine, Error as CodecError, SkipReason, fixtures::FixtureEngine},
-        storage::{CacheStore, DefaultHashMapStore},
+        storage::{CacheStore, StorageResult},
     };
 
-    fn make_store(entries: &[(&[u8], u32)]) -> DefaultHashMapStore {
-        let store = DefaultHashMapStore::default();
+    /// Minimal in-memory store that implements both `CacheStore` and `IterableStore`.
+    #[derive(Default, Clone)]
+    struct TestStore(Arc<Mutex<std::collections::HashMap<Vec<u8>, Vec<u8>>>>);
+
+    impl CacheStore for TestStore {
+        type Encoded<'a>
+            = Vec<u8>
+        where
+            Self: 'a;
+
+        fn fetch_encoded(&self, key: &[u8]) -> StorageResult<Option<Self::Encoded<'_>>> {
+            Ok(self.0.lock().unwrap().get(key).cloned())
+        }
+
+        fn store_encoded(&self, key: &[u8], encoded: &[u8]) -> StorageResult<()> {
+            self.0
+                .lock()
+                .unwrap()
+                .insert(key.to_owned(), encoded.to_vec());
+            Ok(())
+        }
+    }
+
+    impl IterableStore for TestStore {
+        fn iter_encoded<F>(&self, mut f: F) -> Result<()>
+        where
+            F: FnMut(&[u8], &[u8]) -> Result<()>,
+        {
+            for (k, v) in self.0.lock().unwrap().iter() {
+                f(k, v)?;
+            }
+            Ok(())
+        }
+    }
+
+    fn make_store(entries: &[(&[u8], u32)]) -> TestStore {
+        let store = TestStore::default();
         let mut engine = FixtureEngine::default();
         for &(key, value) in entries {
             store.store::<u32, _>(key, &mut engine, &value).unwrap();
@@ -236,7 +234,7 @@ mod tests {
     #[test]
     fn copy_copies_all_entries() -> Result<()> {
         let src = make_store(&[(b"k1", 1), (b"k2", 2), (b"k3", 3)]);
-        let dst = DefaultHashMapStore::default();
+        let dst = TestStore::default();
         let stats = copy(&src, &dst)?;
         assert_eq!(stats.migrated, 3);
         assert_eq!(stats.skipped, 0);
@@ -250,8 +248,8 @@ mod tests {
 
     #[test]
     fn copy_empty_source() -> Result<()> {
-        let src = DefaultHashMapStore::default();
-        let dst = DefaultHashMapStore::default();
+        let src = TestStore::default();
+        let dst = TestStore::default();
         let stats = copy(&src, &dst)?;
         assert_eq!(stats, MigrateStats::default());
         Ok(())
@@ -262,7 +260,7 @@ mod tests {
     #[test]
     fn copy_transcoded_roundtrips() -> Result<()> {
         let src = make_store(&[(b"k1", 1), (b"k2", 2), (b"k3", 3)]);
-        let dst = DefaultHashMapStore::default();
+        let dst = TestStore::default();
         let stats = copy_transcoded::<u32, _, _, _, _>(
             &src,
             &mut FixtureEngine::default(),
@@ -281,10 +279,10 @@ mod tests {
 
     #[test]
     fn copy_transcoded_aborts_on_decode_error() {
-        let src = DefaultHashMapStore::default();
+        let src = TestStore::default();
         src.store_encoded(b"bad", b"not valid fixture encoding")
             .unwrap();
-        let dst = DefaultHashMapStore::default();
+        let dst = TestStore::default();
         let result = copy_transcoded::<u32, _, _, _, _>(
             &src,
             &mut FixtureEngine::default(),
@@ -312,7 +310,7 @@ mod tests {
         }
 
         let src = make_store(&[(b"k1", 1), (b"k2", 2), (b"k3", 3)]);
-        let dst = DefaultHashMapStore::default();
+        let dst = TestStore::default();
         let stats = copy_transcoded::<u32, _, _, _, _>(
             &src,
             &mut FixtureEngine::default(),
@@ -326,8 +324,8 @@ mod tests {
 
     #[test]
     fn copy_transcoded_empty_source() -> Result<()> {
-        let src = DefaultHashMapStore::default();
-        let dst = DefaultHashMapStore::default();
+        let src = TestStore::default();
+        let dst = TestStore::default();
         let stats = copy_transcoded::<u32, _, _, _, _>(
             &src,
             &mut FixtureEngine::default(),

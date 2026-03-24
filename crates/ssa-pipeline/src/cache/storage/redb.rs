@@ -4,7 +4,7 @@ use std::{path::Path, sync::Arc};
 
 use redb::{ReadableDatabase, TableDefinition};
 
-use super::{CacheStore, StorageError, StorageResult, WorkerForkStore, private};
+use super::{CacheStore, StorageError, StorageResult};
 
 type BytesTable<'name> = TableDefinition<'name, &'static [u8], &'static [u8]>;
 
@@ -90,10 +90,8 @@ impl RedbStore {
     }
 }
 
-impl private::Sealed for RedbStore {}
-
-impl WorkerForkStore for RedbStore {
-    fn fork_store(&self) -> Self {
+impl crate::cache::Fork for RedbStore {
+    fn fork(&self) -> Self {
         Self {
             db: self.db.clone(),
             table_name: self.table_name.clone(),
@@ -133,7 +131,10 @@ impl CacheStore for RedbStore {
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
-    use crate::{cache::codec::fixtures::FixtureEngine, error::Result as CrateResult};
+    use crate::{
+        cache::{Fork, codec::fixtures::FixtureEngine},
+        error::Result as CrateResult,
+    };
 
     const REDB_BYTES_TABLE: redb::TableDefinition<&[u8], u64> = redb::TableDefinition::new("test");
 
@@ -167,7 +168,7 @@ mod tests {
         let file = tempfile::NamedTempFile::new().unwrap();
         let db = Arc::new(::redb::Database::create(file.path()).map_err(StorageError::from)?);
         let store = RedbStore::from_database_arc(db, "test")?;
-        let forked = store.fork_store();
+        let forked = store.fork();
 
         store.store_encoded(b"raw", b"payload")?;
 
