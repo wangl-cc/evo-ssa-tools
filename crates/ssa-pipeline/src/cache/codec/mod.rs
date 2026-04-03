@@ -4,7 +4,7 @@
 /// across many calls without external buffer management:
 ///
 /// ```rust
-/// use ssa_pipeline::prelude::*;
+/// use ssa_pipeline::{cache::codec::CodecEngine, prelude::*};
 ///
 /// # #[cfg(feature = "bitcode06")]
 /// # {
@@ -52,11 +52,11 @@ pub enum Error {
     Postcard(#[from] postcard::Error),
 
     #[error("Checked codec error")]
-    Checked(#[from] crate::cache::codec::checked::Error),
+    Checked(#[from] crate::cache::codec::CheckedError),
 
     #[cfg(feature = "compress")]
     #[error("Compression codec error")]
-    Compress(#[from] crate::cache::codec::compress::frame::Error),
+    Compress(#[from] crate::cache::codec::compress::CompressError),
 
     #[cfg(test)]
     #[error("Fixture codec error")]
@@ -75,9 +75,14 @@ impl Error {
     }
 }
 
-pub mod engine;
+pub use checked::{CheckedCodec, Error as CheckedError};
+#[cfg(feature = "bitcode06")]
+pub use engine::bitcode::Bitcode06;
+#[cfg(feature = "postcard")]
+pub use engine::postcard::Postcard;
 
-pub mod checked;
+mod checked;
+mod engine;
 
 #[cfg(feature = "compress")]
 pub mod compress;

@@ -1,6 +1,9 @@
 use std::marker::PhantomData;
 
-use crate::{Cache, CanonicalEncode, Compute, Result, cache::Fork};
+use crate::{
+    Compute, Result,
+    cache::{Cache, CanonicalEncode, Fork},
+};
 
 /// Deterministic compute node.
 ///
@@ -19,10 +22,7 @@ use crate::{Cache, CanonicalEncode, Compute, Result, cache::Fork};
 /// # use ssa_pipeline::prelude::*;
 /// # use rayon::prelude::*;
 /// # fn main() -> ssa_pipeline::error::Result<()> {
-/// let step = DeterministicStep::new(
-///     DefaultHashObjectCache::default(),
-///     |i: i32| Ok(i.abs()),
-/// );
+/// let step = DeterministicStep::new(DefaultHashObjectCache::default(), |i: i32| Ok(i.abs()));
 /// let results = step
 ///     .execute_many((0..10).into_par_iter(), ExecuteOptions::default())?
 ///     .collect::<ssa_pipeline::error::Result<Vec<i32>>>()?;
@@ -114,9 +114,9 @@ mod tests {
     use super::*;
     use crate::{
         cache::{
-            Fork,
-            codec::{Error as CodecError, SkipReason},
-            storage::{CacheStore, EncodedCache, StorageResult},
+            EncodedCache, Fork,
+            codec::{CodecEngine, Error as CodecError, SkipReason},
+            storage::{CacheStore, StorageResult},
         },
         prelude::*,
         test_utils::execute_one,
@@ -143,7 +143,10 @@ mod tests {
         }
 
         fn store_encoded(&self, key: &[u8], encoded: &[u8]) -> StorageResult<()> {
-            self.0.lock().unwrap().insert(key.to_owned(), encoded.to_vec());
+            self.0
+                .lock()
+                .unwrap()
+                .insert(key.to_owned(), encoded.to_vec());
             Ok(())
         }
     }

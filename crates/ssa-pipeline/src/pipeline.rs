@@ -2,7 +2,7 @@ use std::marker::PhantomData;
 
 use crate::{
     Compute,
-    cache::{Cache, Fork, canonical_encode::CanonicalEncode},
+    cache::{Cache, CanonicalEncode, Fork},
     error::Result,
 };
 
@@ -99,13 +99,12 @@ where
 ///
 /// ```rust
 /// # use ssa_pipeline::prelude::*;
-/// let stage1 = DeterministicStep::new(
-///     DefaultHashObjectCache::default(),
-///     |i: usize| Ok(i + 1),
-/// );
+/// let stage1 = DeterministicStep::new(DefaultHashObjectCache::default(), |i: usize| Ok(i + 1));
 /// let _pipeline = stage1
 ///     .pipe(DefaultHashObjectCache::default(), |i: usize| Ok(i * 2))
-///     .pipe(DefaultHashObjectCache::default(), |i: usize| Ok(format!("Result: {i}")));
+///     .pipe(DefaultHashObjectCache::default(), |i: usize| {
+///         Ok(format!("Result: {i}"))
+///     });
 /// ```
 pub trait PipelineExt: Compute + Sized {
     /// Chain a new transform stage onto this compute node.
@@ -127,6 +126,8 @@ impl<T: Compute> PipelineExt for T {}
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
+    #[cfg(feature = "lru")]
+    use std::num::NonZeroUsize;
     use std::{
         sync::{
             Arc,
@@ -135,9 +136,6 @@ mod tests {
         thread::sleep,
         time::Duration,
     };
-
-    #[cfg(feature = "lru")]
-    use std::num::NonZeroUsize;
 
     use rand::Rng;
     use rayon::prelude::*;
@@ -152,22 +150,16 @@ mod tests {
         let stage2_calls = Arc::new(AtomicUsize::new(0));
         let stage2_calls_clone = stage2_calls.clone();
 
-        let pipeline = DeterministicStep::new(
-            DefaultHashObjectCache::default(),
-            move |input| {
-                stage1_calls_clone.fetch_add(1, Ordering::SeqCst);
-                sleep(Duration::from_millis(10));
-                Ok(input * 2)
-            },
-        )
-        .pipe(
-            DefaultHashObjectCache::default(),
-            move |intermediate| {
-                stage2_calls_clone.fetch_add(1, Ordering::SeqCst);
-                sleep(Duration::from_millis(10));
-                Ok(intermediate + 10)
-            },
-        );
+        let pipeline = DeterministicStep::new(DefaultHashObjectCache::default(), move |input| {
+            stage1_calls_clone.fetch_add(1, Ordering::SeqCst);
+            sleep(Duration::from_millis(10));
+            Ok(input * 2)
+        })
+        .pipe(DefaultHashObjectCache::default(), move |intermediate| {
+            stage2_calls_clone.fetch_add(1, Ordering::SeqCst);
+            sleep(Duration::from_millis(10));
+            Ok(intermediate + 10)
+        });
 
         let results1 = pipeline
             .execute_many((0..5usize).into_par_iter(), ExecuteOptions::default())?
@@ -193,28 +185,24 @@ mod tests {
     fn test_pipeline_source_and_transform_cache_split() -> Result<()> {
         let stage1_calls = Arc::new(AtomicUsize::new(0));
         let stage2_calls = Arc::new(AtomicUsize::new(0));
-        let stage1 = DeterministicStep::new(
-            DefaultHashObjectCache::default(),
-            {
-                let stage1_calls = stage1_calls.clone();
-                move |input| {
-                    stage1_calls.fetch_add(1, Ordering::SeqCst);
-                    sleep(Duration::from_millis(10));
-                    Ok(input * 2)
-                }
-            },
-        );
+        let stage1 = DeterministicStep::new(DefaultHashObjectCache::default(), {
+            let stage1_calls = stage1_calls.clone();
+            move |input| {
+                stage1_calls.fetch_add(1, Ordering::SeqCst);
+                sleep(Duration::from_millis(10));
+                Ok(input * 2)
+            }
+        });
 
         let pipeline1 = {
             let stage2_calls = stage2_calls.clone();
-            stage1.clone().pipe(
-                DefaultHashObjectCache::default(),
-                move |intermediate| {
+            stage1
+                .clone()
+                .pipe(DefaultHashObjectCache::default(), move |intermediate| {
                     stage2_calls.fetch_add(1, Ordering::SeqCst);
                     sleep(Duration::from_millis(10));
                     Ok(format!("Result: {}", intermediate))
-                },
-            )
+                })
         };
 
         let results1 = pipeline1
@@ -228,14 +216,11 @@ mod tests {
 
         let pipeline2 = {
             let stage2_calls = stage2_calls.clone();
-            stage1.pipe(
-                DefaultHashObjectCache::default(),
-                move |intermediate| {
-                    stage2_calls.fetch_add(1, Ordering::SeqCst);
-                    sleep(Duration::from_millis(10));
-                    Ok(format!("Result: {}", intermediate))
-                },
-            )
+            stage1.pipe(DefaultHashObjectCache::default(), move |intermediate| {
+                stage2_calls.fetch_add(1, Ordering::SeqCst);
+                sleep(Duration::from_millis(10));
+                Ok(format!("Result: {}", intermediate))
+            })
         };
 
         let results2 = pipeline2
@@ -251,14 +236,12 @@ mod tests {
 
     #[test]
     fn test_pipeline_with_different_types() -> Result<()> {
-        let pipeline = DeterministicStep::new(
-            DefaultHashObjectCache::default(),
-            |input: u32| Ok(input as u64 * 100),
-        )
-        .pipe(
-            DefaultHashObjectCache::default(),
-            |intermediate: u64| Ok(format!("Value: {}", intermediate)),
-        );
+        let pipeline = DeterministicStep::new(DefaultHashObjectCache::default(), |input: u32| {
+            Ok(input as u64 * 100)
+        })
+        .pipe(DefaultHashObjectCache::default(), |intermediate: u64| {
+            Ok(format!("Value: {}", intermediate))
+        });
 
         let results = pipeline
             .execute_many((0..5u32).into_par_iter(), ExecuteOptions::default())?
@@ -272,20 +255,16 @@ mod tests {
 
     #[test]
     fn test_pipeline_error_propagation() -> Result<()> {
-        let mut pipeline = DeterministicStep::new(
-            DefaultHashObjectCache::default(),
-            |input| {
-                if input == 3 {
-                    Err(crate::error::Error::Interrupted)
-                } else {
-                    Ok(input * 2)
-                }
-            },
-        )
-        .pipe(
-            DefaultHashObjectCache::default(),
-            |intermediate| Ok(intermediate + 10),
-        );
+        let mut pipeline = DeterministicStep::new(DefaultHashObjectCache::default(), |input| {
+            if input == 3 {
+                Err(crate::error::Error::Interrupted)
+            } else {
+                Ok(input * 2)
+            }
+        })
+        .pipe(DefaultHashObjectCache::default(), |intermediate| {
+            Ok(intermediate + 10)
+        });
 
         let result = execute_one(&mut pipeline, 2usize)?;
         assert_eq!(result, 14);
@@ -298,20 +277,17 @@ mod tests {
 
     #[test]
     fn test_pipeline_stage2_error_propagation() -> Result<()> {
-        let mut pipeline = DeterministicStep::new(
-            DefaultHashObjectCache::default(),
-            |input| Ok(input * 2),
-        )
-        .pipe(
-            DefaultHashObjectCache::default(),
-            |intermediate| {
-                if intermediate == 6 {
-                    Err(crate::error::Error::Interrupted)
-                } else {
-                    Ok(intermediate + 10)
-                }
-            },
-        );
+        let mut pipeline =
+            DeterministicStep::new(DefaultHashObjectCache::default(), |input| Ok(input * 2)).pipe(
+                DefaultHashObjectCache::default(),
+                |intermediate| {
+                    if intermediate == 6 {
+                        Err(crate::error::Error::Interrupted)
+                    } else {
+                        Ok(intermediate + 10)
+                    }
+                },
+            );
 
         let result = execute_one(&mut pipeline, 2usize)?;
         assert_eq!(result, 14);

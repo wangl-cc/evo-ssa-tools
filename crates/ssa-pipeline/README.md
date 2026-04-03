@@ -21,8 +21,9 @@ The flow is straightforward:
 
 - You provide inputs — plain values for `DeterministicStep`, or `StochasticInput { param, repetition_index }` for `StochasticStep`
 - You call `execute_many` on a step or pipeline
-- Work fans out across worker threads; each worker holds its own encode buffer and codec engine instance
+- Work fans out across worker threads; each worker holds its own input-encoding buffer and its own cloned execution state
 - For each input, the worker encodes it into canonical bytes and uses those bytes as the cache key; a hit returns the stored value, a miss runs the function and stores the result
+- If the cache is an `EncodedCache<S, CE>`, each worker also gets its own codec engine instance; typed object caches such as `HashObjectCache<T>` and `LruObjectCache<T>` do not involve a codec engine at all
 
 The working model is: submit inputs, get outputs, reuse what was already computed.
 
@@ -165,7 +166,7 @@ let _cache = LruObjectCache::<String>::new(NonZeroUsize::new(256).expect("capaci
 
 ## Codec
 
-`CodecEngine<T>` is the abstraction for serializing and deserializing node outputs for persistent storage. `EncodedCache<S, CE>` owns one engine per worker; when the cache is forked for a new worker, `CodecEngine::fork` produces a fresh engine instance with the same configuration.
+`CodecEngine<T>` is the abstraction for serializing and deserializing node outputs for persistent storage. `EncodedCache<S, CE>` owns one engine per worker; when the cache is forked for a new worker, the engine's `Fork` implementation produces a fresh instance with the same configuration.
 
 The built-in serialization backends currently available are:
 

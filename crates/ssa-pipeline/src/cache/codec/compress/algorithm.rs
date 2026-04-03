@@ -133,8 +133,7 @@ mod lz4 {
             let mut forked = original.fork();
             let input = vec![7u8; 4 * 1024];
             let mut compressed = vec![0u8; forked.max_output_size(input.len())];
-            let compressed_len =
-                unsafe { forked.compress_into_unchecked(&input, &mut compressed) };
+            let compressed_len = unsafe { forked.compress_into_unchecked(&input, &mut compressed) };
             let mut decompressed = vec![0u8; input.len()];
             let decompressed_len = unsafe {
                 forked
@@ -179,7 +178,8 @@ mod zstd_support {
 
     impl crate::cache::Fork for Zstd {
         fn fork(&self) -> Self {
-            Self::new(self.level).expect("zstd context creation should succeed for a previously valid level")
+            Self::new(self.level)
+                .expect("zstd context creation should succeed for a previously valid level")
         }
     }
 
@@ -291,8 +291,7 @@ mod zstd_support {
             let mut forked = original.fork();
             let input = vec![7u8; 4 * 1024];
             let mut compressed = vec![0u8; forked.max_output_size(input.len())];
-            let compressed_len =
-                unsafe { forked.compress_into_unchecked(&input, &mut compressed) };
+            let compressed_len = unsafe { forked.compress_into_unchecked(&input, &mut compressed) };
             let mut decompressed = vec![0u8; input.len()];
             let decompressed_len = unsafe {
                 forked

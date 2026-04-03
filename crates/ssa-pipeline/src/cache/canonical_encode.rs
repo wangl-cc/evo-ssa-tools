@@ -49,7 +49,7 @@ pub trait CanonicalEncode {
 /// # Example
 ///
 /// ```
-/// use ssa_pipeline::{CanonicalEncode, CanonicalEncodeWriter};
+/// use ssa_pipeline::cache::{CanonicalEncode, CanonicalEncodeWriter};
 ///
 /// struct Params {
 ///     rate: f64,

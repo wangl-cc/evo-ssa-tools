@@ -4,7 +4,7 @@ use super::CacheStore;
 use crate::{
     cache::{
         Fork,
-        codec::{CodecEngine, SkipReason, checked::CheckedCodec, fixtures::Error as FixtureError},
+        codec::{CheckedCodec, CodecEngine, SkipReason, fixtures::Error as FixtureError},
     },
     error::Result,
 };
@@ -222,7 +222,7 @@ fn test_fetch_or_execute_recomputes_when_checked_entry_is_corrupted() -> Result<
 #[cfg(feature = "lz4")]
 #[test]
 fn test_fetch_treats_compress_corruption_as_miss() -> Result<()> {
-    use crate::cache::codec::compress::{CompressedCodec, algorithm::Lz4};
+    use crate::cache::codec::compress::{CompressedCodec, Lz4};
 
     #[derive(Default)]
     struct SingleValueStore {
@@ -244,8 +244,7 @@ fn test_fetch_treats_compress_corruption_as_miss() -> Result<()> {
         }
     }
 
-    let mut encode_engine =
-        CompressedCodec::<crate::cache::codec::engine::bitcode::Bitcode06, Lz4>::default();
+    let mut encode_engine = CompressedCodec::<crate::cache::codec::Bitcode06, Lz4>::default();
     let mut encoded = encode_engine
         .encode(&42u64)
         .expect("encoding should succeed")
@@ -254,8 +253,7 @@ fn test_fetch_treats_compress_corruption_as_miss() -> Result<()> {
     encoded[0] ^= 0x01;
 
     let store = SingleValueStore { value: encoded };
-    let mut read_engine =
-        CompressedCodec::<crate::cache::codec::engine::bitcode::Bitcode06, Lz4>::default();
+    let mut read_engine = CompressedCodec::<crate::cache::codec::Bitcode06, Lz4>::default();
     assert_eq!(store.fetch::<u64, _>(b"ignored", &mut read_engine)?, None);
     Ok(())
 }
@@ -376,7 +374,7 @@ fn test_store_basic_roundtrip() -> crate::error::Result<()> {
 #[test]
 fn test_compressed_value_frame_layout() -> crate::error::Result<()> {
     use crate::cache::codec::{
-        compress::{CompressedCodec, algorithm::Lz4},
+        compress::{CompressedCodec, Lz4},
         fixtures::FixtureEngine,
     };
 
@@ -403,9 +401,7 @@ fn test_compressed_value_frame_layout() -> crate::error::Result<()> {
 #[cfg(all(feature = "lz4", feature = "bitcode06"))]
 #[test]
 fn test_compressed_value_skips_oversize() -> crate::error::Result<()> {
-    use crate::cache::codec::compress::{
-        CompressedCodec, algorithm::Lz4, fixtures::SizedBytesEngine,
-    };
+    use crate::cache::codec::compress::{CompressedCodec, Lz4, fixtures::SizedBytesEngine};
 
     type Lz4Engine = CompressedCodec<SizedBytesEngine, Lz4>;
 

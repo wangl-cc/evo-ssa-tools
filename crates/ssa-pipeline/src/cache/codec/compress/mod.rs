@@ -2,18 +2,25 @@
 
 use core::num::NonZeroUsize;
 
-use crate::cache::Fork;
 use super::{CodecEngine, Error as CodecError, SkipReason};
+use crate::cache::Fork;
 
-pub mod algorithm;
-pub mod frame;
 pub mod policy;
+#[cfg(feature = "lz4")]
+pub use algorithm::Lz4;
+#[cfg(feature = "zstd")]
+pub use algorithm::Zstd;
 
-use self::{
+pub use self::{
     algorithm::Compress,
-    frame::CompressFrame,
+    frame::Error as CompressError,
     policy::{CompressPolicy, CompressionAction, DefaultCompressPolicy},
 };
+
+mod algorithm;
+mod frame;
+
+use self::frame::CompressFrame;
 
 /// Compression wrapper engine over a base serialization engine.
 ///

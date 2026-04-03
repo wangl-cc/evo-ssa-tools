@@ -1,3 +1,6 @@
+pub use canonical_encode::{CanonicalEncode, CanonicalEncodeWriter};
+pub use encoded::EncodedCache;
+
 use crate::Result;
 
 /// Execution-facing cache abstraction keyed by canonical input bytes.
@@ -17,23 +20,26 @@ impl<T> Cache<T> for () {
     }
 }
 
-/// Produces a per-worker instance for parallel execution.
+/// Produces a per-worker execution instance.
 ///
-/// Called once per worker before dispatching work via `execute_many`. Each worker gets its
-/// own instance so that per-call state is never shared across threads.
+/// Called once per worker before dispatching work via `execute_many`.
 ///
-/// What `fork` actually does differs by type:
+/// `fork` does not necessarily mean "deep copy everything". It means "produce the worker-local
+/// execution state this type needs". Depending on the type, that worker-local state may still
+/// point at shared backing data.
 ///
-/// - **Caches** (`HashObjectCache`, `LruObjectCache`, `Fjall2Store`, `Fjall3Store`, `RedbStore`):
-///   returns a new handle that shares the same underlying data via `Arc`. A result stored by one
-///   worker is immediately visible to all others.
+/// Typical patterns:
 ///
-/// - **Codec engines** (`Bitcode06`, `Postcard`, `CheckedCodec`, `CompressedCodec`): creates a
-///   fresh engine with the same settings but its own independent encode buffer. Workers never touch
-///   each other's codec state.
+/// - **Object caches / raw stores** (`HashObjectCache`, `LruObjectCache`, `Fjall2Store`,
+///   `Fjall3Store`, `RedbStore`): return a fresh handle that still shares the same underlying
+///   storage via `Arc`. Values written by one worker are immediately visible to others.
 ///
-/// `EncodedCache` combines both: its store side shares data across workers, its codec side is
-/// per-worker.
+/// - **Codec engines** (`Bitcode06`, `Postcard`, `CheckedCodec`, `CompressedCodec`): create a
+///   fresh engine with the same configuration but independent scratch space. Workers never touch
+///   each other's codec buffers.
+///
+/// `EncodedCache` combines both: its store side shares backing storage across workers, while its
+/// codec side is worker-local.
 pub trait Fork: Sized {
     fn fork(&self) -> Self;
 }
@@ -42,8 +48,9 @@ impl Fork for () {
     fn fork(&self) -> Self {}
 }
 
-pub mod canonical_encode;
+mod canonical_encode;
 pub mod codec;
+mod encoded;
 pub mod memory;
 pub mod storage;
 

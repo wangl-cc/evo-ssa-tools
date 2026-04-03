@@ -2,7 +2,10 @@ use std::marker::PhantomData;
 
 use rand::{SeedableRng, rngs::Xoshiro256PlusPlus};
 
-use crate::{Cache, CanonicalEncode, Compute, Result, cache::Fork};
+use crate::{
+    Compute, Result,
+    cache::{Cache, CanonicalEncode, Fork},
+};
 
 const KEY_DOMAIN: &str = "ssa-cache/stochastic/key-material/v1";
 
@@ -188,13 +191,12 @@ where
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
+    #[cfg(feature = "lru")]
+    use std::num::NonZeroUsize;
     use std::sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
     };
-
-    #[cfg(feature = "lru")]
-    use std::num::NonZeroUsize;
 
     use rand::Rng;
     use rayon::prelude::*;

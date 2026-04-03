@@ -1,4 +1,4 @@
 #[cfg(feature = "bitcode06")]
-pub mod bitcode;
+pub(super) mod bitcode;
 #[cfg(feature = "postcard")]
-pub mod postcard;
+pub(super) mod postcard;

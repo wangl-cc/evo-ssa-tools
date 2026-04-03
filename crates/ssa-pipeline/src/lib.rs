@@ -5,19 +5,14 @@ use std::sync::{Arc, atomic};
 
 use rayon::prelude::*;
 
+use crate::cache::CanonicalEncode;
+
 pub mod cache;
 pub mod error;
 
 pub mod deterministic;
 pub mod pipeline;
 pub mod stochastic;
-
-pub use cache::{
-    Cache, Fork,
-    canonical_encode::{CanonicalEncode, CanonicalEncodeWriter},
-    codec::CodecEngine,
-    storage::{CacheStore, EncodedCache},
-};
 use error::{Error, Result};
 
 /// Core trait for execution nodes.
@@ -38,8 +33,8 @@ use error::{Error, Result};
 /// Internally, execution is structured to minimize allocations:
 ///
 /// - One encode buffer (`Vec<u8>`) per worker, reused across items.
-/// - One `self.clone()` per worker; implementers should keep `Clone` cheap (using [`Fork`] for the
-///   cache field ensures this).
+/// - One `self.clone()` per worker; implementers should keep `Clone` cheap and move any
+///   worker-local execution state behind lightweight handles or [`Fork`]-style helpers.
 ///
 /// # Interrupts
 ///
@@ -143,16 +138,16 @@ impl ExecuteOptions {
 }
 
 pub mod prelude {
+    #[cfg(feature = "bitcode06")]
+    pub use crate::cache::codec::Bitcode06;
+    #[cfg(feature = "postcard")]
+    pub use crate::cache::codec::Postcard;
     #[cfg(feature = "lz4")]
-    pub use crate::cache::codec::compress::algorithm::Lz4;
+    pub use crate::cache::codec::compress::Lz4;
     #[cfg(feature = "zstd")]
-    pub use crate::cache::codec::compress::algorithm::Zstd;
+    pub use crate::cache::codec::compress::Zstd;
     #[cfg(feature = "compress")]
     pub use crate::cache::codec::compress::{CompressedCodec, policy::DefaultCompressPolicy};
-    #[cfg(feature = "bitcode06")]
-    pub use crate::cache::codec::engine::bitcode::Bitcode06;
-    #[cfg(feature = "postcard")]
-    pub use crate::cache::codec::engine::postcard::Postcard;
     #[cfg(feature = "lru")]
     pub use crate::cache::memory::{DefaultLruObjectCache, LruObjectCache};
     #[cfg(feature = "fjall2")]
@@ -164,11 +159,8 @@ pub mod prelude {
     pub use crate::{
         Compute, ExecuteOptions,
         cache::{
-            Cache, Fork,
-            canonical_encode::{CanonicalEncode, CanonicalEncodeWriter},
-            codec::{CodecEngine, checked::CheckedCodec},
+            CanonicalEncode, EncodedCache,
             memory::{DefaultHashObjectCache, HashObjectCache},
-            storage::{CacheStore, EncodedCache},
         },
         deterministic::DeterministicStep,
         pipeline::{Pipeline, PipelineExt},
@@ -179,7 +171,7 @@ pub mod prelude {
 #[cfg(test)]
 pub(crate) mod test_utils {
     use super::{Compute, Result};
-    use crate::cache::canonical_encode::CanonicalEncode;
+    use crate::cache::CanonicalEncode;
 
     pub(crate) fn execute_one<C>(compute: &mut C, input: C::Input) -> Result<C::Output>
     where

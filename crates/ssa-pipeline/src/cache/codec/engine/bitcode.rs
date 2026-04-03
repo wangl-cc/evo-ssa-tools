@@ -21,7 +21,6 @@ impl Fork for Bitcode06 {
     }
 }
 
-
 impl<T> CodecEngine<T> for Bitcode06
 where
     T: bitcode::Encode + for<'b> bitcode::Decode<'b>,

@@ -2,7 +2,10 @@ use std::{collections::hash_map::RandomState, hash::BuildHasher, num::NonZeroUsi
 
 use parking_lot::Mutex;
 
-use crate::{Result, cache::{Cache, Fork}};
+use crate::{
+    Result,
+    cache::{Cache, Fork},
+};
 
 type LruCache<T, H> = lru::LruCache<Box<[u8]>, T, H>;
 
