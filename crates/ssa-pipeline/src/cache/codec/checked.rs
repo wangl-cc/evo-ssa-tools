@@ -49,10 +49,10 @@ impl<E> CheckedCodec<E> {
     }
 }
 
-impl<E: crate::cache::Fork> crate::cache::Fork for CheckedCodec<E> {
-    fn fork(&self) -> Self {
+impl<E: crate::cache::CloneFresh> crate::cache::CloneFresh for CheckedCodec<E> {
+    fn clone_fresh(&self) -> Self {
         Self {
-            inner: self.inner.fork(),
+            inner: self.inner.clone_fresh(),
             scratch: Vec::new(),
         }
     }
@@ -113,8 +113,8 @@ mod tests {
         buffer: Vec<u8>,
     }
 
-    impl crate::cache::Fork for PassthroughBytesEngine {
-        fn fork(&self) -> Self {
+    impl crate::cache::CloneFresh for PassthroughBytesEngine {
+        fn clone_fresh(&self) -> Self {
             Self::default()
         }
     }
@@ -267,11 +267,11 @@ mod tests {
     }
 
     #[test]
-    fn fork_produces_independent_engine() {
-        use crate::cache::Fork;
+    fn clone_fresh_produces_independent_engine() {
+        use crate::cache::CloneFresh;
         let payload = b"fork test".to_vec();
         let original = CheckedCodec::new(PassthroughBytesEngine::default());
-        let mut forked = original.fork();
+        let mut forked = original.clone_fresh();
 
         let encoded = forked
             .encode(&payload)

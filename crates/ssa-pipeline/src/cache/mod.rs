@@ -20,32 +20,33 @@ impl<T> Cache<T> for () {
     }
 }
 
-/// Produces a per-worker execution instance.
+/// Clone a new handle that shares the same backing state.
 ///
-/// Called once per worker before dispatching work via `execute_many`.
+/// This is the contract for caches and raw stores whose worker-local instance should keep pointing
+/// at the same underlying data. Cloning is shallow at the logical level: one worker can populate
+/// the cache or store and other workers immediately observe the same entries.
 ///
-/// `fork` does not necessarily mean "deep copy everything". It means "produce the worker-local
-/// execution state this type needs". Depending on the type, that worker-local state may still
-/// point at shared backing data.
-///
-/// Typical patterns:
-///
-/// - **Object caches / raw stores** (`HashObjectCache`, `LruObjectCache`, `Fjall2Store`,
-///   `Fjall3Store`, `RedbStore`): return a fresh handle that still shares the same underlying
-///   storage via `Arc`. Values written by one worker are immediately visible to others.
-///
-/// - **Codec engines** (`Bitcode06`, `Postcard`, `CheckedCodec`, `CompressedCodec`): create a
-///   fresh engine with the same configuration but independent scratch space. Workers never touch
-///   each other's codec buffers.
-///
-/// `EncodedCache` combines both: its store side shares backing storage across workers, while its
-/// codec side is worker-local.
-pub trait Fork: Sized {
-    fn fork(&self) -> Self;
+/// Typical implementations wrap an `Arc` or another shared database handle.
+pub trait CloneShared: Sized {
+    fn clone_shared(&self) -> Self;
 }
 
-impl Fork for () {
-    fn fork(&self) -> Self {}
+impl CloneShared for () {
+    fn clone_shared(&self) -> Self {}
+}
+
+/// Clone a fresh worker-local instance from the same configuration.
+///
+/// This is the contract for codecs and compression helpers whose worker-local instance should
+/// reuse configuration while resetting scratch buffers, encode state, or compression contexts.
+///
+/// Cloning is fresh at the logical level: workers should not contend on shared mutable codec state.
+pub trait CloneFresh: Sized {
+    fn clone_fresh(&self) -> Self;
+}
+
+impl CloneFresh for () {
+    fn clone_fresh(&self) -> Self {}
 }
 
 mod canonical_encode;

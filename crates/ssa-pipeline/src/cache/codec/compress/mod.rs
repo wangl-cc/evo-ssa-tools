@@ -3,7 +3,7 @@
 use core::num::NonZeroUsize;
 
 use super::{CodecEngine, Error as CodecError, SkipReason};
-use crate::cache::Fork;
+use crate::cache::CloneFresh;
 
 pub mod policy;
 #[cfg(feature = "lz4")]
@@ -109,11 +109,11 @@ impl<E, C> CompressedCodec<E, C, DefaultCompressPolicy> {
     }
 }
 
-impl<E: Fork, C: Fork, P: Clone> Fork for CompressedCodec<E, C, P> {
-    fn fork(&self) -> Self {
+impl<E: CloneFresh, C: CloneFresh, P: Clone> CloneFresh for CompressedCodec<E, C, P> {
+    fn clone_fresh(&self) -> Self {
         Self {
-            inner: self.inner.fork(),
-            frame: self.frame.fork(),
+            inner: self.inner.clone_fresh(),
+            frame: self.frame.clone_fresh(),
             policy: self.policy.clone(),
             max_encode_len: self.max_encode_len,
         }
@@ -187,8 +187,8 @@ pub(crate) mod fixtures {
         buffer: Vec<u8>,
     }
 
-    impl crate::cache::Fork for PassthroughBytesEngine {
-        fn fork(&self) -> Self {
+    impl crate::cache::CloneFresh for PassthroughBytesEngine {
+        fn clone_fresh(&self) -> Self {
             Self::default()
         }
     }
@@ -234,8 +234,8 @@ mod tests {
     #[derive(Default, Copy, Clone)]
     struct TestCompress;
 
-    impl crate::cache::Fork for TestCompress {
-        fn fork(&self) -> Self {
+    impl crate::cache::CloneFresh for TestCompress {
+        fn clone_fresh(&self) -> Self {
             *self
         }
     }
@@ -480,12 +480,12 @@ mod tests {
     }
 
     #[test]
-    fn forked_codec_encodes_and_decodes_independently() -> crate::Result<()> {
-        use crate::cache::Fork;
+    fn clone_fresh_codec_encodes_and_decodes_independently() -> crate::Result<()> {
+        use crate::cache::CloneFresh;
         let value = vec![b'a'; 96 * 1024];
         let original: CompressedCodec<PassthroughBytesEngine, TestCompress, AggressivePolicy> =
             CompressedCodec::new(PassthroughBytesEngine::default()).with_policy(AggressivePolicy);
-        let mut forked = original.fork();
+        let mut forked = original.clone_fresh();
 
         let encoded = forked.encode(&value).unwrap().to_vec();
         let decoded = forked.decode(&encoded)?;
@@ -495,13 +495,13 @@ mod tests {
     }
 
     #[test]
-    fn forked_codec_is_independent_from_original() -> crate::Result<()> {
-        use crate::cache::Fork;
+    fn clone_fresh_codec_is_independent_from_original() -> crate::Result<()> {
+        use crate::cache::CloneFresh;
         let value_a = vec![b'a'; 96 * 1024];
         let value_b = vec![b'b'; 96 * 1024];
         let original: CompressedCodec<PassthroughBytesEngine, TestCompress, AggressivePolicy> =
             CompressedCodec::new(PassthroughBytesEngine::default()).with_policy(AggressivePolicy);
-        let mut forked = original.fork();
+        let mut forked = original.clone_fresh();
         let mut original = original;
 
         let encoded_a = original.encode(&value_a).unwrap().to_vec();

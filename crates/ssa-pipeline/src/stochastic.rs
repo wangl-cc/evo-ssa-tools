@@ -4,7 +4,7 @@ use rand::{SeedableRng, rngs::Xoshiro256PlusPlus};
 
 use crate::{
     Compute, Result,
-    cache::{Cache, CanonicalEncode, Fork},
+    cache::{Cache, CanonicalEncode, CloneShared},
 };
 
 const KEY_DOMAIN: &str = "ssa-cache/stochastic/key-material/v1";
@@ -152,10 +152,10 @@ where
     }
 }
 
-impl<C: Fork, P, O, F: Clone> Clone for StochasticStep<C, P, O, F> {
+impl<C: CloneShared, P, O, F: Clone> Clone for StochasticStep<C, P, O, F> {
     fn clone(&self) -> Self {
         Self {
-            cache: self.cache.fork(),
+            cache: self.cache.clone_shared(),
             seed_key: self.seed_key,
             function: self.function.clone(),
             _phantom: PhantomData,

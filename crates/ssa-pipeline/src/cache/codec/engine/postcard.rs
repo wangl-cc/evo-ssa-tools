@@ -42,8 +42,8 @@ impl postcard::ser_flavors::Flavor for ReuseVecFlavor<'_> {
     }
 }
 
-impl crate::cache::Fork for Postcard {
-    fn fork(&self) -> Self {
+impl crate::cache::CloneFresh for Postcard {
+    fn clone_fresh(&self) -> Self {
         Self::default()
     }
 }
@@ -130,10 +130,10 @@ mod tests {
     }
 
     #[test]
-    fn fork_produces_independent_engine() -> Result<()> {
-        use crate::cache::Fork;
+    fn clone_fresh_produces_independent_engine() -> Result<()> {
+        use crate::cache::CloneFresh;
         let original = Postcard::default();
-        let mut forked = original.fork();
+        let mut forked = original.clone_fresh();
         let encoded = forked.encode(&42u64).unwrap().to_vec();
         let decoded: u64 = forked.decode(&encoded)?;
         assert_eq!(decoded, 42);

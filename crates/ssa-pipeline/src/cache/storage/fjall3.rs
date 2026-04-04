@@ -28,8 +28,8 @@ impl Fjall3Store {
     }
 }
 
-impl crate::cache::Fork for Fjall3Store {
-    fn fork(&self) -> Self {
+impl crate::cache::CloneShared for Fjall3Store {
+    fn clone_shared(&self) -> Self {
         Self {
             handle: self.handle.clone(),
         }
@@ -57,7 +57,7 @@ impl CacheStore for Fjall3Store {
 mod tests {
     use super::*;
     use crate::{
-        cache::{Fork, codec::fixtures::FixtureEngine, storage::StorageError},
+        cache::{CloneShared, codec::fixtures::FixtureEngine, storage::StorageError},
         error::Result,
     };
 
@@ -89,13 +89,13 @@ mod tests {
     }
 
     #[test]
-    fn test_fjall3_store_fetch_encoded_and_fork() -> Result<()> {
+    fn test_fjall3_store_fetch_encoded_and_clone_shared() -> Result<()> {
         let tmp = tempfile::tempdir().unwrap();
         let db = ::fjall3::Database::builder(&tmp)
             .open()
             .map_err(StorageError::from)?;
         let store = Fjall3Store::open(db, "raw", None)?;
-        let forked = store.fork();
+        let forked = store.clone_shared();
 
         store.store_encoded(b"k", b"payload")?;
 

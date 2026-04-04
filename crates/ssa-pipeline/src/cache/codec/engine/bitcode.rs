@@ -1,5 +1,5 @@
 use super::super::{CodecEngine, Error as CodecError, SkipReason};
-use crate::cache::Fork;
+use crate::cache::CloneFresh;
 
 /// A codec engine using `bitcode v0.6` for serialization and deserialization.
 ///
@@ -15,8 +15,8 @@ pub struct Bitcode06 {
     buffer: bitcode::Buffer,
 }
 
-impl Fork for Bitcode06 {
-    fn fork(&self) -> Self {
+impl CloneFresh for Bitcode06 {
+    fn clone_fresh(&self) -> Self {
         Self::default()
     }
 }
@@ -68,10 +68,10 @@ mod tests {
     }
 
     #[test]
-    fn fork_produces_independent_engine() -> Result<()> {
-        use crate::cache::Fork;
+    fn clone_fresh_produces_independent_engine() -> Result<()> {
+        use crate::cache::CloneFresh;
         let engine = Bitcode06::default();
-        let mut forked = engine.fork();
+        let mut forked = engine.clone_fresh();
         let encoded = forked.encode(&42u32).unwrap().to_vec();
         let decoded: u32 = forked.decode(&encoded)?;
         assert_eq!(decoded, 42);

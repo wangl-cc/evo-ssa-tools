@@ -33,8 +33,9 @@ use error::{Error, Result};
 /// Internally, execution is structured to minimize allocations:
 ///
 /// - One encode buffer (`Vec<u8>`) per worker, reused across items.
-/// - One `self.clone()` per worker; implementers should keep `Clone` cheap and move any
-///   worker-local execution state behind lightweight handles or [`Fork`]-style helpers.
+/// - One `self.clone()` per worker; implementers should keep `Clone` cheap and move shared backing
+///   state or fresh worker-local state behind lightweight helpers such as [`cache::CloneShared`] or
+///   [`cache::CloneFresh`].
 ///
 /// # Interrupts
 ///

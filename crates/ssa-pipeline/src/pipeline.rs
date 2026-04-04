@@ -2,7 +2,7 @@ use std::marker::PhantomData;
 
 use crate::{
     Compute,
-    cache::{Cache, CanonicalEncode, Fork},
+    cache::{Cache, CanonicalEncode, CloneShared},
     error::Result,
 };
 
@@ -54,11 +54,11 @@ impl<S, C, T, I, M, O> Pipeline<S, C, T, I, M, O> {
     }
 }
 
-impl<S: Clone, C: Fork, T: Clone, I, M, O> Clone for Pipeline<S, C, T, I, M, O> {
+impl<S: Clone, C: CloneShared, T: Clone, I, M, O> Clone for Pipeline<S, C, T, I, M, O> {
     fn clone(&self) -> Self {
         Self {
             source: self.source.clone(),
-            cache: self.cache.fork(),
+            cache: self.cache.clone_shared(),
             transform: self.transform.clone(),
             _phantom: PhantomData,
         }

@@ -1,14 +1,13 @@
 //! Typed cache adapter backed by a raw [`CacheStore`](crate::cache::storage::CacheStore).
 
-use super::{Cache, Fork, codec::CodecEngine, storage::CacheStore};
+use super::{Cache, CloneFresh, CloneShared, codec::CodecEngine, storage::CacheStore};
 use crate::error::Result;
 
 /// A cache backed by a raw [`CacheStore`] and a [`CodecEngine`].
 ///
 /// `EncodedCache` owns both a storage backend and a codec engine. When passed to `execute_many`,
-/// each worker gets its own instance: the store is forked into a shared handle (all workers read
-/// and write the same underlying data), and the codec is forked into an independent engine with
-/// its own encode buffer.
+/// each worker gets its own cache handle: the store is cloned as a shared handle, while the codec
+/// is cloned fresh with independent worker-local state.
 #[derive(Debug)]
 pub struct EncodedCache<S, CE> {
     store: S,
@@ -22,11 +21,11 @@ impl<S, CE> EncodedCache<S, CE> {
     }
 }
 
-impl<S: Fork, CE: Fork> Fork for EncodedCache<S, CE> {
-    fn fork(&self) -> Self {
+impl<S: CloneShared, CE: CloneFresh> CloneShared for EncodedCache<S, CE> {
+    fn clone_shared(&self) -> Self {
         Self {
-            store: self.store.fork(),
-            engine: self.engine.fork(),
+            store: self.store.clone_shared(),
+            engine: self.engine.clone_fresh(),
         }
     }
 }

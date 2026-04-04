@@ -13,7 +13,7 @@ You describe your workflow as a graph of compute nodes — stochastic simulation
 - `Pipeline` / `.pipe(...)` — chains an upstream node to a deterministic transform closure. Use `DeterministicStep` directly when you need a standalone deterministic node not attached to an upstream stage.
 - `Cache<T>` — the execution-facing cache abstraction used by steps and pipelines. It can be backed by `HashObjectCache<T>` (unbounded in-memory), `LruObjectCache<T>` (bounded with LRU eviction, requires `lru` feature), `EncodedCache<S, CE>` (raw store + codec for persistent storage), or `()` to disable caching.
 - `CacheStore` — the low-level `key -> encoded bytes` storage abstraction behind raw backends like `Fjall2Store`, `Fjall3Store`, and `RedbStore`.
-- `CodecEngine<T>` — controls how node outputs are serialized for persistent storage. Each worker gets its own engine instance, obtained via `Fork::fork`.
+- `CodecEngine<T>` — controls how node outputs are serialized for persistent storage. Engines are `CloneFresh`: each worker gets a fresh instance with the same configuration but independent scratch state.
 
 ## Execution Model
 
@@ -117,7 +117,7 @@ If compute logic, encoding, or output type changes incompatibly, use a fresh key
 
 Use these cache choices depending on what you need:
 
-- `HashObjectCache<T>` — process-local unbounded typed object cache. Zero extra dependencies; the default for tests, benchmarks, and short-lived runs. Fork clones the underlying `Arc` so all workers share the same map.
+- `HashObjectCache<T>` — process-local unbounded typed object cache. Zero extra dependencies; the default for tests, benchmarks, and short-lived runs. It is `CloneShared`, so all workers share the same underlying map.
 - `LruObjectCache<T>` (requires `lru` feature) — process-local bounded typed object cache with LRU eviction. Best when you need a cap on memory usage.
 - `EncodedCache<S, CE>` — wraps any `CacheStore` with a `CodecEngine` for persistent or encoded-byte storage. Pairs with `Fjall2Store`, `Fjall3Store`, or `RedbStore`.
 - `()` — disables caching entirely; every input is always recomputed.
@@ -143,7 +143,7 @@ Available persistent store constructors:
 - `RedbStore::from_database(database, table_name)`
 - `RedbStore::from_database_arc(database, table_name)`
 
-Treat each partition, keyspace, or table as one cache namespace. If compute logic or encoding changes incompatibly, use a new namespace rather than the old one. The crate handles worker-local handle sharing internally through each store's `Fork` behavior; you do not clone store handles yourself.
+Treat each partition, keyspace, or table as one cache namespace. If compute logic or encoding changes incompatibly, use a new namespace rather than the old one. Stores are `CloneShared`: worker-local handles keep pointing at the same underlying backing store, so you do not clone store handles yourself.
 
 For unbounded typed in-memory caching (always available):
 
@@ -166,7 +166,7 @@ let _cache = LruObjectCache::<String>::new(NonZeroUsize::new(256).expect("capaci
 
 ## Codec
 
-`CodecEngine<T>` is the abstraction for serializing and deserializing node outputs for persistent storage. `EncodedCache<S, CE>` owns one engine per worker; when the cache is forked for a new worker, the engine's `Fork` implementation produces a fresh instance with the same configuration.
+`CodecEngine<T>` is the abstraction for serializing and deserializing node outputs for persistent storage. `EncodedCache<S, CE>` combines a `CloneShared` raw store with a `CloneFresh` codec engine, so workers share persisted data while each worker keeps its own codec buffers and contexts.
 
 The built-in serialization backends currently available are:
 

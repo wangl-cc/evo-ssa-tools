@@ -8,7 +8,7 @@ use parking_lot::RwLock;
 
 use crate::{
     Result,
-    cache::{Cache, Fork},
+    cache::{Cache, CloneShared},
 };
 
 type RawMap<T, H> = HashMap<Box<[u8]>, T, H>;
@@ -51,12 +51,12 @@ where
 /// [`HashObjectCache`] with the default hasher.
 pub type DefaultHashObjectCache<T> = HashObjectCache<T, RandomState>;
 
-impl<T, H> Fork for HashObjectCache<T, H>
+impl<T, H> CloneShared for HashObjectCache<T, H>
 where
     T: Send + Sync,
     H: Send + Sync,
 {
-    fn fork(&self) -> Self {
+    fn clone_shared(&self) -> Self {
         Self {
             inner: self.inner.clone(),
         }
@@ -131,9 +131,9 @@ mod tests {
     }
 
     #[test]
-    fn test_hash_object_cache_fork_shares_state() -> Result<()> {
+    fn test_hash_object_cache_clone_shared_shares_state() -> Result<()> {
         let cache = DefaultHashObjectCache::default();
-        let mut forked = cache.fork();
+        let mut forked = cache.clone_shared();
         let mut cache = cache;
         let calls = Arc::new(AtomicUsize::new(0));
 

@@ -65,8 +65,8 @@ trait FixtureScalar: Sized {
     fn decode_scalar(bytes: &[u8]) -> Result<Self>;
 }
 
-impl crate::cache::Fork for FixtureEngine {
-    fn fork(&self) -> Self {
+impl crate::cache::CloneFresh for FixtureEngine {
+    fn clone_fresh(&self) -> Self {
         Self::default()
     }
 }

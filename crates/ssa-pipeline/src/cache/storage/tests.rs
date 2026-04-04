@@ -3,7 +3,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use super::CacheStore;
 use crate::{
     cache::{
-        Fork,
+        CloneShared,
         codec::{CheckedCodec, CodecEngine, SkipReason, fixtures::Error as FixtureError},
     },
     error::Result,
@@ -309,9 +309,9 @@ fn test_fetch_or_execute_returns_cached_value_on_hit() -> Result<()> {
 }
 
 #[test]
-fn test_unit_store_fork_is_noop() {
+fn test_unit_store_clone_shared_is_noop() {
     let store = ();
-    store.fork();
+    store.clone_shared();
 }
 
 // -- CacheStore + compressed codec tests ------------------------------------
@@ -330,10 +330,6 @@ impl SharedBytesStore {
         Self {
             inner: Arc::new(Mutex::new(std::collections::HashMap::new())),
         }
-    }
-
-    fn get_raw(&self, key: &[u8]) -> Option<Vec<u8>> {
-        self.inner.lock().unwrap().get(key).cloned()
     }
 }
 

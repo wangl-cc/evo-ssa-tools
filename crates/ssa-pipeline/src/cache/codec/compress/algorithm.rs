@@ -57,8 +57,8 @@ mod lz4 {
     #[derive(Debug, Clone, Copy, Default)]
     pub struct Lz4;
 
-    impl crate::cache::Fork for Lz4 {
-        fn fork(&self) -> Self {
+    impl crate::cache::CloneFresh for Lz4 {
+        fn clone_fresh(&self) -> Self {
             *self
         }
     }
@@ -127,10 +127,10 @@ mod lz4 {
         }
 
         #[test]
-        fn lz4_fork_produces_working_compressor() -> Result<(), CodecError> {
-            use crate::cache::Fork;
+        fn lz4_clone_fresh_produces_working_compressor() -> Result<(), CodecError> {
+            use crate::cache::CloneFresh;
             let original = Lz4;
-            let mut forked = original.fork();
+            let mut forked = original.clone_fresh();
             let input = vec![7u8; 4 * 1024];
             let mut compressed = vec![0u8; forked.max_output_size(input.len())];
             let compressed_len = unsafe { forked.compress_into_unchecked(&input, &mut compressed) };
@@ -149,15 +149,19 @@ mod lz4 {
 pub use lz4::Lz4;
 
 #[cfg(feature = "zstd")]
-mod zstd_support {
+mod zstd {
     use std::io;
+
+    use ::zstd::bulk::{Compressor, Decompressor};
 
     use super::*;
 
     pub struct Zstd {
         level: i32,
-        compressor: zstd::bulk::Compressor<'static>,
-        decompressor: zstd::bulk::Decompressor<'static>,
+        // NOTE: the lifetime of the compressor and decompressor is for prepared_dictionary.
+        // As we do not own the dictionary data, 'static lifetime should be safe.
+        compressor: Compressor<'static>,
+        decompressor: Decompressor<'static>,
     }
 
     impl std::fmt::Debug for Zstd {
@@ -167,17 +171,23 @@ mod zstd_support {
     }
 
     impl Zstd {
+        /// Creates a new Zstd compressor/decompressor with the given compression level.
+        ///
+        /// # Errors
+        ///
+        /// Returns an `io::Error` if the compression level is invalid or the context cannot be
+        /// created.
         pub fn new(level: i32) -> io::Result<Self> {
             Ok(Self {
                 level,
-                compressor: zstd::bulk::Compressor::new(level)?,
-                decompressor: zstd::bulk::Decompressor::new()?,
+                compressor: Compressor::new(level)?,
+                decompressor: Decompressor::new()?,
             })
         }
     }
 
-    impl crate::cache::Fork for Zstd {
-        fn fork(&self) -> Self {
+    impl crate::cache::CloneFresh for Zstd {
+        fn clone_fresh(&self) -> Self {
             Self::new(self.level)
                 .expect("zstd context creation should succeed for a previously valid level")
         }
@@ -187,7 +197,7 @@ mod zstd_support {
         const ALGORITHM_ID: u8 = 2;
 
         fn max_output_size(&self, input_len: usize) -> usize {
-            zstd::zstd_safe::compress_bound(input_len)
+            ::zstd::zstd_safe::compress_bound(input_len)
         }
 
         unsafe fn compress_into_unchecked(&mut self, input: &[u8], output: &mut [u8]) -> usize {
@@ -285,10 +295,10 @@ mod zstd_support {
         }
 
         #[test]
-        fn zstd_fork_produces_working_compressor() -> Result<(), CodecError> {
-            use crate::cache::Fork;
+        fn zstd_clone_fresh_produces_working_compressor() -> Result<(), CodecError> {
+            use crate::cache::CloneFresh;
             let original = Zstd::new(3).expect("zstd config should be valid");
-            let mut forked = original.fork();
+            let mut forked = original.clone_fresh();
             let input = vec![7u8; 4 * 1024];
             let mut compressed = vec![0u8; forked.max_output_size(input.len())];
             let compressed_len = unsafe { forked.compress_into_unchecked(&input, &mut compressed) };
@@ -305,4 +315,4 @@ mod zstd_support {
 }
 
 #[cfg(feature = "zstd")]
-pub use zstd_support::Zstd;
+pub use zstd::Zstd;

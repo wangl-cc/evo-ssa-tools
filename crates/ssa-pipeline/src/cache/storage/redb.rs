@@ -90,8 +90,8 @@ impl RedbStore {
     }
 }
 
-impl crate::cache::Fork for RedbStore {
-    fn fork(&self) -> Self {
+impl crate::cache::CloneShared for RedbStore {
+    fn clone_shared(&self) -> Self {
         Self {
             db: self.db.clone(),
             table_name: self.table_name.clone(),
@@ -132,7 +132,7 @@ impl CacheStore for RedbStore {
 mod tests {
     use super::*;
     use crate::{
-        cache::{Fork, codec::fixtures::FixtureEngine},
+        cache::{CloneShared, codec::fixtures::FixtureEngine},
         error::Result as CrateResult,
     };
 
@@ -164,11 +164,11 @@ mod tests {
     }
 
     #[test]
-    fn test_redb_store_fetch_encoded_and_fork() -> CrateResult<()> {
+    fn test_redb_store_fetch_encoded_and_clone_shared() -> CrateResult<()> {
         let file = tempfile::NamedTempFile::new().unwrap();
         let db = Arc::new(::redb::Database::create(file.path()).map_err(StorageError::from)?);
         let store = RedbStore::from_database_arc(db, "test")?;
-        let forked = store.fork();
+        let forked = store.clone_shared();
 
         store.store_encoded(b"raw", b"payload")?;
 

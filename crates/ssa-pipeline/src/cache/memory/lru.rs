@@ -4,7 +4,7 @@ use parking_lot::Mutex;
 
 use crate::{
     Result,
-    cache::{Cache, Fork},
+    cache::{Cache, CloneShared},
 };
 
 type LruCache<T, H> = lru::LruCache<Box<[u8]>, T, H>;
@@ -48,12 +48,12 @@ where
 /// [`LruObjectCache`] with the default hasher.
 pub type DefaultLruObjectCache<T> = LruObjectCache<T, RandomState>;
 
-impl<T, H> Fork for LruObjectCache<T, H>
+impl<T, H> CloneShared for LruObjectCache<T, H>
 where
     T: Send + Sync,
     H: Send + Sync,
 {
-    fn fork(&self) -> Self {
+    fn clone_shared(&self) -> Self {
         Self {
             inner: self.inner.clone(),
         }
@@ -143,10 +143,10 @@ mod tests {
     }
 
     #[test]
-    fn test_lru_object_cache_fork_shares_state() -> Result<()> {
-        use crate::cache::Fork;
+    fn test_lru_object_cache_clone_shared_shares_state() -> Result<()> {
+        use crate::cache::CloneShared;
         let cache = DefaultLruObjectCache::new(NonZeroUsize::new(2).expect("capacity is non-zero"));
-        let mut forked = cache.fork();
+        let mut forked = cache.clone_shared();
         let mut cache = cache;
         let calls = Arc::new(AtomicUsize::new(0));
 

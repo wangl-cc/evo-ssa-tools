@@ -2,7 +2,7 @@ use std::marker::PhantomData;
 
 use crate::{
     Compute, Result,
-    cache::{Cache, CanonicalEncode, Fork},
+    cache::{Cache, CanonicalEncode, CloneShared},
 };
 
 /// Deterministic compute node.
@@ -65,10 +65,10 @@ where
     }
 }
 
-impl<C: Fork, I, O, F: Clone> Clone for DeterministicStep<C, I, O, F> {
+impl<C: CloneShared, I, O, F: Clone> Clone for DeterministicStep<C, I, O, F> {
     fn clone(&self) -> Self {
         Self {
-            cache: self.cache.fork(),
+            cache: self.cache.clone_shared(),
             function: self.function.clone(),
             _phantom: PhantomData,
         }
@@ -114,7 +114,7 @@ mod tests {
     use super::*;
     use crate::{
         cache::{
-            EncodedCache, Fork,
+            CloneFresh, CloneShared, EncodedCache,
             codec::{CodecEngine, Error as CodecError, SkipReason},
             storage::{CacheStore, StorageResult},
         },
@@ -122,12 +122,12 @@ mod tests {
         test_utils::execute_one,
     };
 
-    /// Minimal in-memory `CacheStore` + `Fork` for tests that need `EncodedCache`.
+    /// Minimal in-memory `CacheStore` + `CloneShared` for tests that need `EncodedCache`.
     #[derive(Default)]
     struct SimpleStore(Arc<Mutex<std::collections::HashMap<Vec<u8>, Vec<u8>>>>);
 
-    impl Fork for SimpleStore {
-        fn fork(&self) -> Self {
+    impl CloneShared for SimpleStore {
+        fn clone_shared(&self) -> Self {
             Self(Arc::clone(&self.0))
         }
     }
@@ -165,8 +165,8 @@ mod tests {
         }
     }
 
-    impl Fork for TaggedUsizeEngine {
-        fn fork(&self) -> Self {
+    impl CloneFresh for TaggedUsizeEngine {
+        fn clone_fresh(&self) -> Self {
             Self::new(self.tag)
         }
     }
@@ -379,7 +379,7 @@ mod tests {
     }
 
     #[test]
-    fn test_fork_engine_supports_non_clone_engine() -> Result<()> {
+    fn test_clone_fresh_engine_supports_non_clone_engine() -> Result<()> {
         let call_count = Arc::new(AtomicUsize::new(0));
         let call_count_clone = call_count.clone();
 
