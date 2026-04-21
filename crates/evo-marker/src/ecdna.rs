@@ -117,6 +117,15 @@ mod tests {
         assert!((mean - 100.0).abs() < 1.5);
     }
 
+    #[cfg(feature = "bitcode")]
+    #[test]
+    fn encode_decode_roundtrip() {
+        let marker = EcDna::new(123);
+        let encoded = bitcode::encode(&marker);
+        let decoded: EcDna = bitcode::decode(&encoded).unwrap();
+        assert_eq!(decoded, marker);
+    }
+
     #[test]
     #[should_panic(expected = "call divide instead of gen_marker")]
     fn gen_marker_is_not_supported() {
