@@ -2,6 +2,8 @@
 
 mod util;
 
+pub mod ecdna;
+
 // Cell Lineage tracking as a marker
 pub mod lineage;
 
@@ -13,6 +15,7 @@ pub mod prelude {
     pub use super::lineage::analysis::PhyloTree;
     pub use super::{
         Marker, NoMarker, divide_at,
+        ecdna::{EcDna, EcDnaState},
         lineage::{analysis::LineageTree, node::LineageNode},
         util::distributions::PoissonKnuth,
     };
@@ -21,12 +24,15 @@ pub mod prelude {
 /// A trait used to represent a marker that can be used to trace the lineage of cells.
 pub trait Marker: Sized + Default {
     /// Global state of the simulation used to generate new markers
-    type State: Default;
+    type State;
 
     /// Called when a cell divides
     ///
     /// There are two daughter cells whose markers are derived from the mother cell.
     /// One daughter cell should replace the mother cell, the another should be returned.
+    ///
+    /// Markers whose two daughters must be sampled jointly should override this method directly
+    /// instead of trying to express the split through two independent `gen_marker` calls.
     fn divide(&mut self, state: &mut Self::State) -> Self {
         let daughter1 = self.gen_marker(state);
         let daughter2 = self.gen_marker(state);
