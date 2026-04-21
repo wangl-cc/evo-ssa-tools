@@ -6,6 +6,7 @@ When running stochastic simulations, we often need to track cell lineages or use
 
 - `NoMarker`: A marker that doesn't track any information and should be optimized away by the compiler, which is useful as a placeholder for simulations that don't require marker tracking.
 - `LineageNode`: A marker that tracks cell lineages, allowing reconstruction of evolutionary history and calculation of statistics such as single cell mutation burden distribution (scMBD), site frequency spectrum (SFS), and pairwise genetic distance.
+- `EcDna`: A marker that tracks ecDNA copy number, replicates `N` copies to `2N` before division, and then partitions the `2N` copies between two daughters by sampling one daughter from `Binomial(2N, 0.5)` and giving the other daughter the remainder.
 
 ## Features
 
