@@ -1,8 +1,11 @@
 //! Persistent storage backend built on Fjall v2 partitions.
 
-use super::{CacheStore, StorageResult, WorkerForkStore, private};
+use super::{CacheStore, StorageResult};
 
 /// Fjall v2-backed cache store bound to a single partition.
+///
+/// All workers share the same partition handle: a value written by one worker is
+/// immediately visible to the others.
 pub struct Fjall2Store {
     pub(crate) handle: fjall2::PartitionHandle,
 }
@@ -23,10 +26,8 @@ impl Fjall2Store {
     }
 }
 
-impl private::Sealed for Fjall2Store {}
-
-impl WorkerForkStore for Fjall2Store {
-    fn fork_store(&self) -> Self {
+impl crate::cache::CloneShared for Fjall2Store {
+    fn clone_shared(&self) -> Self {
         Self {
             handle: self.handle.clone(),
         }
@@ -54,7 +55,7 @@ impl CacheStore for Fjall2Store {
 mod tests {
     use super::*;
     use crate::{
-        cache::{codec::fixtures::FixtureEngine, storage::StorageError},
+        cache::{CloneShared, codec::fixtures::FixtureEngine, storage::StorageError},
         error::Result,
     };
 
@@ -86,13 +87,13 @@ mod tests {
     }
 
     #[test]
-    fn test_fjall2_store_fetch_encoded_and_fork() -> Result<()> {
+    fn test_fjall2_store_fetch_encoded_and_clone_shared() -> Result<()> {
         let tmp = tempfile::tempdir().unwrap();
         let db = ::fjall2::Config::new(&tmp)
             .open()
             .map_err(StorageError::from)?;
         let store = Fjall2Store::open(db, "raw", None)?;
-        let forked = store.fork_store();
+        let forked = store.clone_shared();
 
         store.store_encoded(b"k", b"payload")?;
 

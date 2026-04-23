@@ -5,18 +5,14 @@ use std::sync::{Arc, atomic};
 
 use rayon::prelude::*;
 
+use crate::cache::CanonicalEncode;
+
 pub mod cache;
 pub mod error;
 
 pub mod deterministic;
 pub mod pipeline;
 pub mod stochastic;
-
-pub use cache::{
-    canonical_encode::{CanonicalEncode, CanonicalEncodeWriter},
-    codec::{CodecEngine, EngineFactory},
-    storage::CacheStore,
-};
 use error::{Error, Result};
 
 /// Core trait for execution nodes.
@@ -37,8 +33,9 @@ use error::{Error, Result};
 /// Internally, execution is structured to minimize allocations:
 ///
 /// - One encode buffer (`Vec<u8>`) per worker, reused across items.
-/// - One engine per worker (created via [`Self::make_engine`]), owns its scratch buffer.
-/// - One `self.clone()` per worker; implementers should keep `Clone` cheap.
+/// - One `self.clone()` per worker; implementers should keep `Clone` cheap and move shared backing
+///   state or fresh worker-local state behind lightweight helpers such as [`cache::CloneShared`] or
+///   [`cache::CloneFresh`].
 ///
 /// # Interrupts
 ///
@@ -50,11 +47,6 @@ pub trait Compute {
     type Input: CanonicalEncode;
     /// Output type emitted by this node.
     type Output;
-    /// Serialization engine used for caching this node's output.
-    type Engine: CodecEngine<Self::Output>;
-
-    /// Construct a fresh cache engine for one worker.
-    fn make_engine(&self) -> Self::Engine;
 
     /// Low-level API for executing with pre-encoded input bytes.
     ///
@@ -66,7 +58,6 @@ pub trait Compute {
         &mut self,
         input: Self::Input,
         encoded: &[u8],
-        engine: &mut Self::Engine,
     ) -> Result<Self::Output>;
 
     /// Low-level API for executing one input.
@@ -83,11 +74,10 @@ pub trait Compute {
         &mut self,
         input: Self::Input,
         encode_buffer: &mut [u8],
-        engine: &mut Self::Engine,
     ) -> Result<Self::Output> {
         // Safety: The safety is guaranteed by the caller.
         let encoded = unsafe { input.encode_with_buffer(encode_buffer) };
-        self.execute_with_encoded_input(input, encoded, engine)
+        self.execute_with_encoded_input(input, encoded)
     }
 
     /// Execute many inputs in parallel.
@@ -111,15 +101,8 @@ pub trait Compute {
     {
         let signal = opts.signal;
         Ok(inputs.map_init(
-            move || {
-                (
-                    vec![0u8; Self::Input::SIZE],
-                    self.make_engine(),
-                    self.clone(),
-                    signal.clone(),
-                )
-            },
-            move |(encode_buffer, engine, c, signal), input| {
+            move || (vec![0u8; Self::Input::SIZE], self.clone(), signal.clone()),
+            move |(encode_buffer, c, signal), input| {
                 if let Some(signal) = signal
                     && signal.load(atomic::Ordering::Acquire)
                 {
@@ -127,7 +110,7 @@ pub trait Compute {
                 };
 
                 // Safety: The buffer is initialized with length Self::Input::SIZE.
-                unsafe { c.execute(input, encode_buffer, engine) }
+                unsafe { c.execute(input, encode_buffer) }
             },
         ))
     }
@@ -156,16 +139,18 @@ impl ExecuteOptions {
 }
 
 pub mod prelude {
+    #[cfg(feature = "bitcode06")]
+    pub use crate::cache::codec::Bitcode06;
+    #[cfg(feature = "postcard")]
+    pub use crate::cache::codec::Postcard;
     #[cfg(feature = "lz4")]
-    pub use crate::cache::codec::compress::algorithm::Lz4;
+    pub use crate::cache::codec::compress::Lz4;
     #[cfg(feature = "zstd")]
-    pub use crate::cache::codec::compress::algorithm::Zstd;
+    pub use crate::cache::codec::compress::Zstd;
     #[cfg(feature = "compress")]
     pub use crate::cache::codec::compress::{CompressedCodec, policy::DefaultCompressPolicy};
-    #[cfg(feature = "bitcode")]
-    pub use crate::cache::codec::engine::bitcode::{Bitcode, Bitcode06};
-    #[cfg(feature = "postcard")]
-    pub use crate::cache::codec::engine::postcard::Postcard;
+    #[cfg(feature = "lru")]
+    pub use crate::cache::memory::{DefaultLruObjectCache, LruObjectCache};
     #[cfg(feature = "fjall2")]
     pub use crate::cache::storage::Fjall2Store;
     #[cfg(feature = "fjall3")]
@@ -175,9 +160,8 @@ pub mod prelude {
     pub use crate::{
         Compute, ExecuteOptions,
         cache::{
-            canonical_encode::{CanonicalEncode, CanonicalEncodeWriter},
-            codec::{CodecEngine, EngineFactory, checked::CheckedCodec},
-            storage::{CacheStore, DefaultHashMapStore, HashMapStore},
+            CanonicalEncode, EncodedCache,
+            memory::{DefaultHashObjectCache, HashObjectCache},
         },
         deterministic::DeterministicStep,
         pipeline::{Pipeline, PipelineExt},
@@ -188,14 +172,13 @@ pub mod prelude {
 #[cfg(test)]
 pub(crate) mod test_utils {
     use super::{Compute, Result};
-    use crate::cache::canonical_encode::CanonicalEncode;
+    use crate::cache::CanonicalEncode;
 
     pub(crate) fn execute_one<C>(compute: &mut C, input: C::Input) -> Result<C::Output>
     where
         C: Compute,
     {
         let mut encode_buffer = vec![0u8; C::Input::SIZE];
-        let mut engine = compute.make_engine();
-        unsafe { compute.execute(input, &mut encode_buffer, &mut engine) }
+        unsafe { compute.execute(input, &mut encode_buffer) }
     }
 }

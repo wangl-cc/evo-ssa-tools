@@ -57,6 +57,12 @@ mod lz4 {
     #[derive(Debug, Clone, Copy, Default)]
     pub struct Lz4;
 
+    impl crate::cache::CloneFresh for Lz4 {
+        fn clone_fresh(&self) -> Self {
+            *self
+        }
+    }
+
     #[cfg(feature = "lz4")]
     impl Compress for Lz4 {
         const ALGORITHM_ID: u8 = 1;
@@ -119,34 +125,71 @@ mod lz4 {
                 Err(Error::Lz4(_))
             ));
         }
+
+        #[test]
+        fn lz4_clone_fresh_produces_working_compressor() -> Result<(), CodecError> {
+            use crate::cache::CloneFresh;
+            let original = Lz4;
+            let mut forked = original.clone_fresh();
+            let input = vec![7u8; 4 * 1024];
+            let mut compressed = vec![0u8; forked.max_output_size(input.len())];
+            let compressed_len = unsafe { forked.compress_into_unchecked(&input, &mut compressed) };
+            let mut decompressed = vec![0u8; input.len()];
+            let decompressed_len = unsafe {
+                forked
+                    .decompress_into_unchecked(&compressed[..compressed_len], &mut decompressed)?
+            };
+            assert_eq!(decompressed_len, input.len());
+            assert_eq!(decompressed, input);
+            Ok(())
+        }
     }
 }
 #[cfg(feature = "lz4")]
 pub use lz4::Lz4;
 
 #[cfg(feature = "zstd")]
-mod zstd_support {
+mod zstd {
     use std::io;
+
+    use ::zstd::bulk::{Compressor, Decompressor};
 
     use super::*;
 
     pub struct Zstd {
-        compressor: zstd::bulk::Compressor<'static>,
-        decompressor: zstd::bulk::Decompressor<'static>,
+        level: i32,
+        // NOTE: the lifetime of the compressor and decompressor is for prepared_dictionary.
+        // As we do not own the dictionary data, 'static lifetime should be safe.
+        compressor: Compressor<'static>,
+        decompressor: Decompressor<'static>,
     }
 
     impl std::fmt::Debug for Zstd {
         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            f.debug_struct("Zstd").finish_non_exhaustive()
+            f.debug_struct("Zstd").field("level", &self.level).finish()
         }
     }
 
     impl Zstd {
+        /// Creates a new Zstd compressor/decompressor with the given compression level.
+        ///
+        /// # Errors
+        ///
+        /// Returns an `io::Error` if the compression level is invalid or the context cannot be
+        /// created.
         pub fn new(level: i32) -> io::Result<Self> {
             Ok(Self {
-                compressor: zstd::bulk::Compressor::new(level)?,
-                decompressor: zstd::bulk::Decompressor::new()?,
+                level,
+                compressor: Compressor::new(level)?,
+                decompressor: Decompressor::new()?,
             })
+        }
+    }
+
+    impl crate::cache::CloneFresh for Zstd {
+        fn clone_fresh(&self) -> Self {
+            Self::new(self.level)
+                .expect("zstd context creation should succeed for a previously valid level")
         }
     }
 
@@ -154,7 +197,7 @@ mod zstd_support {
         const ALGORITHM_ID: u8 = 2;
 
         fn max_output_size(&self, input_len: usize) -> usize {
-            zstd::zstd_safe::compress_bound(input_len)
+            ::zstd::zstd_safe::compress_bound(input_len)
         }
 
         unsafe fn compress_into_unchecked(&mut self, input: &[u8], output: &mut [u8]) -> usize {
@@ -250,8 +293,26 @@ mod zstd_support {
             let debug = format!("{compressor:?}");
             assert!(debug.contains("Zstd"));
         }
+
+        #[test]
+        fn zstd_clone_fresh_produces_working_compressor() -> Result<(), CodecError> {
+            use crate::cache::CloneFresh;
+            let original = Zstd::new(3).expect("zstd config should be valid");
+            let mut forked = original.clone_fresh();
+            let input = vec![7u8; 4 * 1024];
+            let mut compressed = vec![0u8; forked.max_output_size(input.len())];
+            let compressed_len = unsafe { forked.compress_into_unchecked(&input, &mut compressed) };
+            let mut decompressed = vec![0u8; input.len()];
+            let decompressed_len = unsafe {
+                forked
+                    .decompress_into_unchecked(&compressed[..compressed_len], &mut decompressed)?
+            };
+            assert_eq!(decompressed_len, input.len());
+            assert_eq!(decompressed, input);
+            Ok(())
+        }
     }
 }
 
 #[cfg(feature = "zstd")]
-pub use zstd_support::Zstd;
+pub use zstd::Zstd;

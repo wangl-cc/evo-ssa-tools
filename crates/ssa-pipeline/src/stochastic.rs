@@ -3,11 +3,8 @@ use std::marker::PhantomData;
 use rand::{SeedableRng, rngs::Xoshiro256PlusPlus};
 
 use crate::{
-    CacheStore, CanonicalEncode, Compute, Result,
-    cache::{
-        codec::{CodecEngine, EngineFactory},
-        storage::WorkerForkStore,
-    },
+    Compute, Result,
+    cache::{Cache, CanonicalEncode, CloneShared},
 };
 
 const KEY_DOMAIN: &str = "ssa-cache/stochastic/key-material/v1";
@@ -89,17 +86,14 @@ impl<P: CanonicalEncode> CanonicalEncode for StochasticInput<P> {
 /// # use ssa_pipeline::prelude::*;
 /// # use rayon::prelude::*;
 /// # use rand::RngExt;
-/// # #[cfg(feature = "bitcode")]
 /// # fn main() -> ssa_pipeline::error::Result<()> {
-/// type Store = HashMapStore<std::collections::hash_map::RandomState>;
 /// let step = StochasticStep::new(
-///     Store::default(),
+///     DefaultHashObjectCache::default(),
 ///     "my-experiment-seed",
 ///     |rng, param: f64| {
 ///         let noise: f64 = rng.random_range(-1.0..1.0);
 ///         Ok(param + noise)
 ///     },
-///     Bitcode06::default,
 /// );
 ///
 /// // Create 5 repetitions for param 10.0
@@ -111,8 +105,6 @@ impl<P: CanonicalEncode> CanonicalEncode for StochasticInput<P> {
 ///     .collect::<ssa_pipeline::error::Result<Vec<f64>>>()?;
 /// # Ok(())
 /// # }
-/// # #[cfg(not(feature = "bitcode"))]
-/// # fn main() {}
 /// ```
 ///
 /// # Caching / keyspace contract
@@ -126,36 +118,32 @@ impl<P: CanonicalEncode> CanonicalEncode for StochasticInput<P> {
 /// Note: `key_material` only affects random seed derivation. It is not used as a cache-key
 /// namespace.
 #[derive(Debug)]
-pub struct StochasticStep<C, P, O, F, EF> {
+pub struct StochasticStep<C, P, O, F> {
     cache: C,
     seed_key: [u8; 32],
     function: F,
-    engine_factory: EF,
     _phantom: PhantomData<(P, O)>,
 }
 
-impl<C, P, O, F, EF> StochasticStep<C, P, O, F, EF>
+impl<C, P, O, F> StochasticStep<C, P, O, F>
 where
     F: Fn(&mut Xoshiro256PlusPlus, P) -> Result<O>,
-    EF: EngineFactory,
-    EF::Engine: CodecEngine<O>,
 {
     /// Create a stochastic step from `cache`, `key_material`, and `function`.
     ///
     /// `cache` should be dedicated to this step (see [`StochasticStep`] cache keyspace contract).
     /// `key_material` affects seed derivation only; it does not namespace cache keys.
-    pub fn new(cache: C, key_material: impl AsRef<[u8]>, function: F, engine_factory: EF) -> Self {
+    pub fn new(cache: C, key_material: impl AsRef<[u8]>, function: F) -> Self {
         Self {
             cache,
             seed_key: blake3::derive_key(KEY_DOMAIN, key_material.as_ref()),
             function,
-            engine_factory,
             _phantom: PhantomData,
         }
     }
 }
 
-impl<C, P, O, F, EF> StochasticStep<C, P, O, F, EF>
+impl<C, P, O, F> StochasticStep<C, P, O, F>
 where
     F: Fn(&mut Xoshiro256PlusPlus, P) -> Result<O>,
 {
@@ -164,46 +152,36 @@ where
     }
 }
 
-impl<C: WorkerForkStore, P, O, F: Clone, EF: Clone> Clone for StochasticStep<C, P, O, F, EF> {
+impl<C: CloneShared, P, O, F: Clone> Clone for StochasticStep<C, P, O, F> {
     fn clone(&self) -> Self {
         Self {
-            cache: self.cache.fork_store(),
+            cache: self.cache.clone_shared(),
             seed_key: self.seed_key,
             function: self.function.clone(),
-            engine_factory: self.engine_factory.clone(),
             _phantom: PhantomData,
         }
     }
 }
 
-impl<C, P, O, F, EF> Compute for StochasticStep<C, P, O, F, EF>
+impl<C, P, O, F> Compute for StochasticStep<C, P, O, F>
 where
     F: Fn(&mut Xoshiro256PlusPlus, P) -> Result<O>,
-    C: CacheStore,
+    C: Cache<O>,
     P: CanonicalEncode,
-    EF: EngineFactory,
-    EF::Engine: CodecEngine<O>,
 {
-    type Engine = EF::Engine;
     type Input = StochasticInput<P>;
     type Output = O;
-
-    fn make_engine(&self) -> Self::Engine {
-        self.engine_factory.make_engine()
-    }
 
     fn execute_with_encoded_input(
         &mut self,
         input: Self::Input,
         encoded: &[u8],
-        engine: &mut Self::Engine,
     ) -> Result<Self::Output> {
         let seed = self.derive_seed(encoded);
         let param = input.param;
-        let cache = &self.cache;
+        let cache = &mut self.cache;
         let function = &self.function;
-
-        cache.fetch_or_execute(encoded, engine, |_| {
+        cache.fetch_or_execute(encoded, || {
             let mut rng = Xoshiro256PlusPlus::from_seed(seed);
             function(&mut rng, param)
         })
@@ -213,6 +191,8 @@ where
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
+    #[cfg(feature = "lru")]
+    use std::num::NonZeroUsize;
     use std::sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
@@ -222,27 +202,18 @@ mod tests {
     use rayon::prelude::*;
 
     use super::*;
-    use crate::{
-        cache::{codec::fixtures::FixtureEngine, storage::DefaultHashMapStore},
-        prelude::*,
-        test_utils::execute_one,
-    };
+    use crate::{prelude::*, test_utils::execute_one};
 
     #[test]
     fn test_stochastic_reproducible_with_owned_cache() -> Result<()> {
-        let mut step = StochasticStep::new(
-            (),
-            b"experiment-A",
-            |rng, param| {
-                Ok([
-                    rng.next_u64() ^ param,
-                    rng.next_u64(),
-                    rng.next_u64(),
-                    rng.next_u64(),
-                ])
-            },
-            FixtureEngine::default,
-        );
+        let mut step = StochasticStep::new((), b"experiment-A", |rng, param| {
+            Ok([
+                rng.next_u64() ^ param,
+                rng.next_u64(),
+                rng.next_u64(),
+                rng.next_u64(),
+            ])
+        });
         let output1 = execute_one(&mut step, StochasticInput::new(42, 7))?;
         let output2 = execute_one(&mut step, StochasticInput::new(42, 7))?;
 
@@ -252,19 +223,14 @@ mod tests {
 
     #[test]
     fn test_stochastic_diff_repetition_index_changes_stream() -> Result<()> {
-        let mut step = StochasticStep::new(
-            (),
-            b"experiment-A",
-            |rng, param| {
-                Ok([
-                    rng.next_u64() ^ param,
-                    rng.next_u64(),
-                    rng.next_u64(),
-                    rng.next_u64(),
-                ])
-            },
-            FixtureEngine::default,
-        );
+        let mut step = StochasticStep::new((), b"experiment-A", |rng, param| {
+            Ok([
+                rng.next_u64() ^ param,
+                rng.next_u64(),
+                rng.next_u64(),
+                rng.next_u64(),
+            ])
+        });
         let output1 = execute_one(&mut step, StochasticInput::new(42, 1))?;
         let output2 = execute_one(&mut step, StochasticInput::new(42, 2))?;
 
@@ -274,32 +240,22 @@ mod tests {
 
     #[test]
     fn test_stochastic_diff_seed_material_isolated() -> Result<()> {
-        let mut step1 = StochasticStep::new(
-            (),
-            b"experiment-A",
-            |rng, param| {
-                Ok([
-                    rng.next_u64() ^ param,
-                    rng.next_u64(),
-                    rng.next_u64(),
-                    rng.next_u64(),
-                ])
-            },
-            FixtureEngine::default,
-        );
-        let mut step2 = StochasticStep::new(
-            (),
-            b"experiment-B",
-            |rng, param| {
-                Ok([
-                    rng.next_u64() ^ param,
-                    rng.next_u64(),
-                    rng.next_u64(),
-                    rng.next_u64(),
-                ])
-            },
-            FixtureEngine::default,
-        );
+        let mut step1 = StochasticStep::new((), b"experiment-A", |rng, param| {
+            Ok([
+                rng.next_u64() ^ param,
+                rng.next_u64(),
+                rng.next_u64(),
+                rng.next_u64(),
+            ])
+        });
+        let mut step2 = StochasticStep::new((), b"experiment-B", |rng, param| {
+            Ok([
+                rng.next_u64() ^ param,
+                rng.next_u64(),
+                rng.next_u64(),
+                rng.next_u64(),
+            ])
+        });
         let output1 = execute_one(&mut step1, StochasticInput::new(42, 7))?;
         let output2 = execute_one(&mut step2, StochasticInput::new(42, 7))?;
 
@@ -315,22 +271,20 @@ mod tests {
         let calls_b_clone = calls_b.clone();
 
         let mut step_a = StochasticStep::new(
-            DefaultHashMapStore::default(),
+            DefaultHashObjectCache::default(),
             b"experiment-A",
             move |rng, param| {
                 calls_a_clone.fetch_add(1, Ordering::SeqCst);
                 Ok(rng.next_u64() ^ param)
             },
-            FixtureEngine::default,
         );
         let mut step_b = StochasticStep::new(
-            DefaultHashMapStore::default(),
+            DefaultHashObjectCache::default(),
             b"experiment-B",
             move |rng, param| {
                 calls_b_clone.fetch_add(1, Ordering::SeqCst);
                 Ok(rng.next_u64() ^ param)
             },
-            FixtureEngine::default,
         );
 
         let input = StochasticInput::new(42, 7);
@@ -350,16 +304,14 @@ mod tests {
     #[test]
     fn test_stochastic_execute_many_parallel_reproducible() -> Result<()> {
         let step1 = StochasticStep::new(
-            DefaultHashMapStore::default(),
+            DefaultHashObjectCache::default(),
             b"experiment-A",
             |rng, param| Ok(rng.next_u64() ^ param),
-            FixtureEngine::default,
         );
         let step2 = StochasticStep::new(
-            DefaultHashMapStore::default(),
+            DefaultHashObjectCache::default(),
             b"experiment-A",
             |rng, param| Ok(rng.next_u64() ^ param),
-            FixtureEngine::default,
         );
 
         let inputs: Vec<_> = (0..128u64)
@@ -385,18 +337,17 @@ mod tests {
         let stage2_calls_clone = stage2_calls.clone();
 
         let stage1 = StochasticStep::new(
-            DefaultHashMapStore::default(),
+            DefaultHashObjectCache::default(),
             b"experiment-A",
             move |rng, param| {
                 stage1_calls_clone.fetch_add(1, Ordering::SeqCst);
                 Ok((rng.next_u64() as usize) ^ param)
             },
-            FixtureEngine::default,
         );
 
         let pipeline = Pipeline::new(
             stage1,
-            DefaultHashMapStore::default(),
+            DefaultHashObjectCache::default(),
             move |intermediate| {
                 stage2_calls_clone.fetch_add(1, Ordering::SeqCst);
                 Ok(intermediate + 10)
@@ -432,5 +383,30 @@ mod tests {
         let encoded_tuple = unsafe { from_tuple.encode_with_buffer(&mut buffer_tuple) };
 
         assert_eq!(encoded_new, encoded_tuple);
+    }
+
+    #[cfg(feature = "lru")]
+    #[test]
+    fn test_stochastic_supports_lru_object_cache() -> Result<()> {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let mut step = StochasticStep::new(
+            DefaultLruObjectCache::new(NonZeroUsize::new(8).expect("capacity is non-zero")),
+            b"experiment-A",
+            {
+                let calls = calls.clone();
+                move |rng, param| {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    Ok(rng.next_u64() ^ param)
+                }
+            },
+        );
+
+        let input = StochasticInput::new(42u64, 7);
+        let output1 = execute_one(&mut step, input.clone())?;
+        let output2 = execute_one(&mut step, input)?;
+
+        assert_eq!(output1, output2);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        Ok(())
     }
 }

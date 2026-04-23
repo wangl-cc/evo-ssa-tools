@@ -11,6 +11,7 @@ blake3 = { workspace = true }
 crc32c = { workspace = true }
 fjall2 = { workspace = true, default-features = false, optional = true }
 fjall3 = { workspace = true, default-features = false, optional = true }
+lru = { workspace = true, optional = true }
 lz4_flex = { workspace = true, optional = true }
 parking_lot = { workspace = true }
 postcard = { workspace = true, optional = true }
@@ -26,10 +27,11 @@ tempfile = { workspace = true }
 
 [features]
 default = []
-bitcode = ["dep:bitcode"]
+bitcode06 = ["dep:bitcode"]
 compress = []
 fjall2 = ["dep:fjall2"]
 fjall3 = ["dep:fjall3"]
+lru = ["dep:lru"]
 lz4 = ["compress", "dep:lz4_flex"]
 migrate = []
 postcard = ["dep:postcard", "dep:serde"]

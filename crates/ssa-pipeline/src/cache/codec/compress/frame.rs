@@ -44,6 +44,7 @@ use core::num::NonZeroUsize;
 use crc32c::crc32c;
 
 use super::algorithm::Compress;
+use crate::cache::CloneFresh;
 
 /// Bytes used by the trailing CRC32C checksum in both raw and compressed frames.
 pub const CHECKSUM_BYTES: usize = core::mem::size_of::<u32>();
@@ -160,6 +161,16 @@ pub(super) struct CompressFrame<C> {
     scratch: Vec<u8>,
     compressor: C,
     max_decode_len: Option<NonZeroUsize>,
+}
+
+impl<C: CloneFresh> CloneFresh for CompressFrame<C> {
+    fn clone_fresh(&self) -> Self {
+        Self {
+            scratch: Vec::new(),
+            compressor: self.compressor.clone_fresh(),
+            max_decode_len: self.max_decode_len,
+        }
+    }
 }
 
 impl<C> CompressFrame<C> {

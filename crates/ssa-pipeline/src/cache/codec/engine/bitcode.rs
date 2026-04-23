@@ -1,4 +1,5 @@
 use super::super::{CodecEngine, Error as CodecError, SkipReason};
+use crate::cache::CloneFresh;
 
 /// A codec engine using `bitcode v0.6` for serialization and deserialization.
 ///
@@ -7,20 +8,18 @@ use super::super::{CodecEngine, Error as CodecError, SkipReason};
 /// explicitly.
 ///
 /// Migrating stored data to a different `bitcode` version should be treated as a data migration.
+///
+/// Each worker gets its own independent engine instance with a fresh encode buffer.
 #[derive(Default)]
 pub struct Bitcode06 {
     buffer: bitcode::Buffer,
 }
 
-/// Alias for the latest `bitcode` codec implementation.
-///
-/// `Bitcode` always refers to the latest `bitcode` codec exposed by this crate. It is provided for
-/// convenience and no wire-format compatibility is guaranteed across `bitcode` crate upgrades.
-///
-/// This alias must **NOT** be use this alias for **persistent storage**. Use this only for
-/// in-memory or other volatile caches where data can be discarded freely. Prefer versioned names
-/// such as [`Bitcode06`] everywhere else.
-pub type Bitcode = Bitcode06;
+impl CloneFresh for Bitcode06 {
+    fn clone_fresh(&self) -> Self {
+        Self::default()
+    }
+}
 
 impl<T> CodecEngine<T> for Bitcode06
 where
@@ -61,10 +60,21 @@ mod tests {
 
     #[test]
     fn alias_matches_versioned_engine() -> Result<()> {
-        let mut engine = Bitcode::default();
+        let mut engine = Bitcode06::default();
         let encoded = engine.encode(&1024u64).unwrap().to_vec();
         let decoded: u64 = engine.decode(&encoded)?;
         assert_eq!(decoded, 1024);
+        Ok(())
+    }
+
+    #[test]
+    fn clone_fresh_produces_independent_engine() -> Result<()> {
+        use crate::cache::CloneFresh;
+        let engine = Bitcode06::default();
+        let mut forked = engine.clone_fresh();
+        let encoded = forked.encode(&42u32).unwrap().to_vec();
+        let decoded: u32 = forked.decode(&encoded)?;
+        assert_eq!(decoded, 42);
         Ok(())
     }
 }

@@ -3,18 +3,29 @@
 use core::num::NonZeroUsize;
 
 use super::{CodecEngine, Error as CodecError, SkipReason};
+use crate::cache::CloneFresh;
 
-pub mod algorithm;
-pub mod frame;
 pub mod policy;
+#[cfg(feature = "lz4")]
+pub use algorithm::Lz4;
+#[cfg(feature = "zstd")]
+pub use algorithm::Zstd;
 
-use self::{
+pub use self::{
     algorithm::Compress,
-    frame::CompressFrame,
+    frame::Error as CompressError,
     policy::{CompressPolicy, CompressionAction, DefaultCompressPolicy},
 };
 
+mod algorithm;
+mod frame;
+
+use self::frame::CompressFrame;
+
 /// Compression wrapper engine over a base serialization engine.
+///
+/// Each worker gets its own independent engine instance with a fresh inner engine and
+/// scratch buffers; the compression policy is cloned rather than shared.
 ///
 /// Payloads larger than `u32::MAX` bytes are outside the supported design
 /// envelope of the framed compressed format. If compression is attempted for
@@ -98,6 +109,17 @@ impl<E, C> CompressedCodec<E, C, DefaultCompressPolicy> {
     }
 }
 
+impl<E: CloneFresh, C: CloneFresh, P: Clone> CloneFresh for CompressedCodec<E, C, P> {
+    fn clone_fresh(&self) -> Self {
+        Self {
+            inner: self.inner.clone_fresh(),
+            frame: self.frame.clone_fresh(),
+            policy: self.policy.clone(),
+            max_encode_len: self.max_encode_len,
+        }
+    }
+}
+
 impl<E: Default, C: Default, P: Default> Default for CompressedCodec<E, C, P> {
     fn default() -> Self {
         Self::from_parts(E::default(), C::default(), P::default())
@@ -165,6 +187,12 @@ pub(crate) mod fixtures {
         buffer: Vec<u8>,
     }
 
+    impl crate::cache::CloneFresh for PassthroughBytesEngine {
+        fn clone_fresh(&self) -> Self {
+            Self::default()
+        }
+    }
+
     impl CodecEngine<Vec<u8>> for PassthroughBytesEngine {
         fn encode(&mut self, value: &Vec<u8>) -> std::result::Result<&[u8], SkipReason> {
             self.buffer.clear();
@@ -203,8 +231,14 @@ mod tests {
     use super::*;
     use crate::cache::codec::{CodecEngine, SkipReason, fixtures::Error as FixtureError};
 
-    #[derive(Default)]
+    #[derive(Default, Copy, Clone)]
     struct TestCompress;
+
+    impl crate::cache::CloneFresh for TestCompress {
+        fn clone_fresh(&self) -> Self {
+            *self
+        }
+    }
 
     impl Compress for TestCompress {
         const ALGORITHM_ID: u8 = 15;
@@ -282,7 +316,7 @@ mod tests {
         }
     }
 
-    #[derive(Default)]
+    #[derive(Default, Clone)]
     struct AggressivePolicy;
 
     impl CompressPolicy for AggressivePolicy {
@@ -442,6 +476,39 @@ mod tests {
         let decoded = engine.decode(&encoded)?;
 
         assert_eq!(decoded, value);
+        Ok(())
+    }
+
+    #[test]
+    fn clone_fresh_codec_encodes_and_decodes_independently() -> crate::Result<()> {
+        use crate::cache::CloneFresh;
+        let value = vec![b'a'; 96 * 1024];
+        let original: CompressedCodec<PassthroughBytesEngine, TestCompress, AggressivePolicy> =
+            CompressedCodec::new(PassthroughBytesEngine::default()).with_policy(AggressivePolicy);
+        let mut forked = original.clone_fresh();
+
+        let encoded = forked.encode(&value).unwrap().to_vec();
+        let decoded = forked.decode(&encoded)?;
+
+        assert_eq!(decoded, value);
+        Ok(())
+    }
+
+    #[test]
+    fn clone_fresh_codec_is_independent_from_original() -> crate::Result<()> {
+        use crate::cache::CloneFresh;
+        let value_a = vec![b'a'; 96 * 1024];
+        let value_b = vec![b'b'; 96 * 1024];
+        let original: CompressedCodec<PassthroughBytesEngine, TestCompress, AggressivePolicy> =
+            CompressedCodec::new(PassthroughBytesEngine::default()).with_policy(AggressivePolicy);
+        let mut forked = original.clone_fresh();
+        let mut original = original;
+
+        let encoded_a = original.encode(&value_a).unwrap().to_vec();
+        let encoded_b = forked.encode(&value_b).unwrap().to_vec();
+
+        assert_eq!(original.decode(&encoded_a)?, value_a);
+        assert_eq!(forked.decode(&encoded_b)?, value_b);
         Ok(())
     }
 }

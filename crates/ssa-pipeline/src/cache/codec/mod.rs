@@ -4,9 +4,9 @@
 /// across many calls without external buffer management:
 ///
 /// ```rust
-/// use ssa_pipeline::prelude::*;
+/// use ssa_pipeline::{cache::codec::CodecEngine, prelude::*};
 ///
-/// # #[cfg(feature = "bitcode")]
+/// # #[cfg(feature = "bitcode06")]
 /// # {
 /// let value = 0u8;
 /// let mut engine = Bitcode06::default();
@@ -28,27 +28,6 @@ pub trait CodecEngine<T> {
     fn decode(&mut self, bytes: &[u8]) -> Result<T, Error>;
 }
 
-/// Factory for per-worker codec engines.
-///
-/// `execute_many` uses one engine instance per worker thread, created by calling this factory.
-/// Factories may be stateful and can capture runtime configuration.
-pub trait EngineFactory {
-    type Engine;
-
-    fn make_engine(&self) -> Self::Engine;
-}
-
-impl<F, E> EngineFactory for F
-where
-    F: Fn() -> E,
-{
-    type Engine = E;
-
-    fn make_engine(&self) -> Self::Engine {
-        (self)()
-    }
-}
-
 type BoxedCodecError = Box<dyn std::error::Error + Send + Sync + 'static>;
 
 /// Reasons why a value may be skipped from the cache.
@@ -64,7 +43,7 @@ pub enum SkipReason {
 /// Errors produced by codec engines and codec adapters.
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
-    #[cfg(feature = "bitcode")]
+    #[cfg(feature = "bitcode06")]
     #[error("Bitcode codec error")]
     BitCode(#[from] bitcode::Error),
 
@@ -73,11 +52,11 @@ pub enum Error {
     Postcard(#[from] postcard::Error),
 
     #[error("Checked codec error")]
-    Checked(#[from] crate::cache::codec::checked::Error),
+    Checked(#[from] crate::cache::codec::CheckedError),
 
     #[cfg(feature = "compress")]
     #[error("Compression codec error")]
-    Compress(#[from] crate::cache::codec::compress::frame::Error),
+    Compress(#[from] crate::cache::codec::compress::CompressError),
 
     #[cfg(test)]
     #[error("Fixture codec error")]
@@ -96,9 +75,14 @@ impl Error {
     }
 }
 
-pub mod engine;
+pub use checked::{CheckedCodec, Error as CheckedError};
+#[cfg(feature = "bitcode06")]
+pub use engine::bitcode::Bitcode06;
+#[cfg(feature = "postcard")]
+pub use engine::postcard::Postcard;
 
-pub mod checked;
+mod checked;
+mod engine;
 
 #[cfg(feature = "compress")]
 pub mod compress;

@@ -6,7 +6,6 @@
 //!
 //! Backend selection guidance:
 //!
-//! - [`HashMapStore`]: in-process, in-memory storage for tests, experiments, and short-lived jobs.
 //! - [`Fjall2Store`]: persistent Fjall v2 partition-backed storage when you already manage a
 //!   [`fjall::Keyspace`](::fjall2::Keyspace) externally.
 //! - [`Fjall3Store`]: persistent Fjall v3 keyspace-backed storage when you already manage a
@@ -19,9 +18,6 @@
 
 use super::codec::CodecEngine;
 use crate::error::Result;
-
-mod hashmap;
-pub use hashmap::{DefaultHashMapStore, HashMapStore};
 
 #[cfg(feature = "fjall2")]
 mod fjall2;
@@ -57,25 +53,14 @@ pub enum StorageError {
 /// Result type returned by storage backends.
 pub type StorageResult<T, E = StorageError> = std::result::Result<T, E>;
 
-#[doc(hidden)]
-pub trait WorkerForkStore: private::Sealed + Sync {
-    fn fork_store(&self) -> Self;
-}
-
-mod private {
-    pub trait Sealed {}
-}
-
 /// Storage backend for memoized `key -> value` entries.
 ///
 /// Keys are opaque bytes produced by canonical input encoding
-/// ([`CanonicalEncode`](crate::cache::canonical_encode::CanonicalEncode)).
+/// ([`CanonicalEncode`](crate::cache::CanonicalEncode)).
 /// Values are encoded byte payloads managed by the configured [`CodecEngine`].
 ///
 /// This trait is `Sync` because stores are shared across parallel workers.
 /// Implementations are expected to be thread-safe for concurrent reads and writes.
-///
-/// `()` implements `CacheStore` as a "no-store" backend that always misses and discards writes.
 ///
 /// This trait deliberately does not define any keyspace or schema management. If multiple compute
 /// nodes share the same underlying backing store, the caller must ensure they also share identical
@@ -140,36 +125,6 @@ pub trait CacheStore: Sync {
             self.store::<T, CE>(key, engine, &output)?;
             Ok(output)
         }
-    }
-}
-
-impl private::Sealed for () {}
-
-impl WorkerForkStore for () {
-    fn fork_store(&self) -> Self {
-        *self
-    }
-}
-
-impl CacheStore for () {
-    type Encoded<'a>
-        = &'a [u8]
-    where
-        Self: 'a;
-
-    fn fetch_encoded(&self, _: &[u8]) -> StorageResult<Option<Self::Encoded<'_>>> {
-        Ok(None)
-    }
-
-    fn store<T, CE>(&self, _: &[u8], _: &mut CE, _: &T) -> Result<()>
-    where
-        CE: CodecEngine<T>,
-    {
-        Ok(())
-    }
-
-    fn store_encoded(&self, _: &[u8], _: &[u8]) -> StorageResult<()> {
-        Ok(())
     }
 }
 
