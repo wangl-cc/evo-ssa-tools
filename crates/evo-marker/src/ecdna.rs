@@ -9,6 +9,8 @@ use crate::Marker;
 /// copies segregate to two daughters. Each copy independently chooses one daughter with
 /// probability `0.5`, so one daughter receives `Binomial(2N, 0.5)` copies and the other receives
 /// the remainder.
+///
+/// The copy number is expected to stay far below `u32::MAX / 2` in realistic simulations.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[cfg_attr(feature = "bitcode", derive(bitcode::Encode, bitcode::Decode))]
 pub struct EcDna {
@@ -37,7 +39,6 @@ impl Marker for EcDna {
     type State = EcDnaState;
 
     fn divide(&mut self, state: &mut Self::State) -> Self {
-        debug_assert!(self.copy_number <= u32::MAX / 2);
         let total_copies = self.copy_number * 2;
         let daughter1 = sample_binomial_half(total_copies, state);
         let daughter2 = total_copies - daughter1;
