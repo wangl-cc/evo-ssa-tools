@@ -8,11 +8,14 @@ You describe your workflow as a graph of compute nodes — stochastic simulation
 
 - `Compute` — the common trait for any node: given an input, produce an output.
 - `StochasticInput<P>` — wraps a parameter value and a `repetition_index`; together they form the cache key and determine the RNG stream for that run.
-- `StochasticStep` — a simulation node; the RNG for each input is seeded deterministically from `(key_material, encoded_input)`.
+- `StochasticStep` — a simulation node; the default RNG for each input is seeded deterministically from `(seed_material, encoded_input)`.
+- `StochasticStep::new_with_domain_streams` — construction for simulations that need named, domain-separated RNG streams.
 - `DeterministicStep` — a pure `input → output` node with no randomness, for standalone analysis or transform stages.
 - `Pipeline` / `.pipe(...)` — chains an upstream node to a deterministic transform closure. Use `DeterministicStep` directly when you need a standalone deterministic node not attached to an upstream stage.
 - `CacheStore` — where materialized results live: `HashMapStore` (in-memory), `Fjall2Store`, `Fjall3Store`, `RedbStore` (persistent), or `()` to disable caching.
 - `CodecEngine<T>` — control how node outputs are serialized for storage; one engine instance is created per Rayon worker. See the [Codec](#codec) section for details.
+
+For the domain-separated RNG stream design, see [Random Streams Design](./RANDOM_STREAMS.md).
 
 ## Execution Model
 
@@ -71,11 +74,11 @@ fn simulate_population(
 fn main() -> ssa_pipeline::error::Result<()> {
     // Stage 1: stochastic simulation.
     // Each (param, repetition_index) pair gets a deterministic RNG stream derived from
-    // key_material and the encoded input, so every run produces the same trajectory for
+    // seed_material and the encoded input, so every run produces the same trajectory for
     // the same input. Results are cached in the attached store.
     let peak_population = StochasticStep::new(
         DefaultHashMapStore::default(),   // per-stage cache
-        "population-trajectory",          // key material: seeds the RNG; changing this changes all outputs
+        "population-trajectory",          // seed material: changing this changes all stochastic outputs
         |rng, (initial_cells, steps): (u32, u32)| Ok(simulate_population(rng, initial_cells, steps)),
         Bitcode06::default,               // engine factory: one Bitcode06 codec engine per Rayon worker
     )
