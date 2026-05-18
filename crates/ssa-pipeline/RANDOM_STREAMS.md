@@ -98,7 +98,7 @@ let step = StochasticStep::new(
 );
 ```
 
-This uses `DEFAULT_SEED_DOMAIN` to derive the root seed, then derives the one RNG stream directly from the encoded input.
+This uses `STOCHASTIC_ROOT_SEED_DOMAIN` to derive the root seed, then derives the one RNG stream directly from the encoded input.
 
 The domain-stream constructor is:
 

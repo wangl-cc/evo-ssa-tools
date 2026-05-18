@@ -74,7 +74,7 @@ use rand::rngs::Xoshiro256PlusPlus;
 pub mod seed;
 
 pub use seed::{
-    DEFAULT_SEED_DOMAIN, DomainSeed, DomainSeeds, RootSeed, SeedDomain, StochasticStreams,
+    DomainSeed, DomainSeeds, RootSeed, STOCHASTIC_ROOT_SEED_DOMAIN, SeedDomain, StochasticStreams,
     StreamDomain,
 };
 
@@ -175,14 +175,14 @@ where
     EF: EngineFactory,
     EF::Engine: CodecEngine<O>,
 {
-    /// Create a stochastic step with one default RNG stream.
+    /// Create a stochastic step with a single RNG stream.
     ///
     /// `cache` should be dedicated to this step (see [`StochasticStep`] cache keyspace contract).
     /// `seed_material` affects seed derivation only; it does not namespace cache keys.
     pub fn new(cache: C, seed_material: impl AsRef<[u8]>, function: F, engine_factory: EF) -> Self {
         Self {
             cache,
-            seed: RootSeed::from_domain(DEFAULT_SEED_DOMAIN, seed_material),
+            seed: RootSeed::from_domain(STOCHASTIC_ROOT_SEED_DOMAIN, seed_material),
             function,
             engine_factory,
             _phantom: PhantomData,
@@ -207,7 +207,7 @@ where
         function: F,
         engine_factory: EF,
     ) -> Self {
-        let root_seed = RootSeed::from_domain(DEFAULT_SEED_DOMAIN, seed_material);
+        let root_seed = RootSeed::from_domain(STOCHASTIC_ROOT_SEED_DOMAIN, seed_material);
 
         Self {
             cache,

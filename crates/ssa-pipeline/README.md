@@ -8,7 +8,7 @@ You describe your workflow as a graph of compute nodes — stochastic simulation
 
 - `Compute` — the common trait for any node: given an input, produce an output.
 - `StochasticInput<P>` — wraps a parameter value and a `repetition_index`; together they form the cache key and determine the RNG stream for that run.
-- `StochasticStep` — a simulation node; the default RNG for each input is seeded deterministically from `(seed_material, encoded_input)`.
+- `StochasticStep` — a simulation node; the single RNG stream for each input is seeded deterministically from `(seed_material, encoded_input)`.
 - `StochasticStep::new_with_domain_streams` — construction for simulations that need named, domain-separated RNG streams.
 - `DeterministicStep` — a pure `input → output` node with no randomness, for standalone analysis or transform stages.
 - `Pipeline` / `.pipe(...)` — chains an upstream node to a deterministic transform closure. Use `DeterministicStep` directly when you need a standalone deterministic node not attached to an upstream stage.

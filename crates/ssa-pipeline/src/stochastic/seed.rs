@@ -1,7 +1,8 @@
 use rand::{SeedableRng, rngs::Xoshiro256PlusPlus};
 
-/// Default seed-domain used by [`super::StochasticStep`] constructors.
-pub const DEFAULT_SEED_DOMAIN: SeedDomain = SeedDomain::new("ssa-pipeline/stochastic/root-seed/v1");
+/// Seed domain used by [`super::StochasticStep`] constructors to derive their root seed.
+pub const STOCHASTIC_ROOT_SEED_DOMAIN: SeedDomain =
+    SeedDomain::new("ssa-pipeline/stochastic/root-seed/v1");
 
 /// Stable identifier for deriving a root seed from caller-provided seed material.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
