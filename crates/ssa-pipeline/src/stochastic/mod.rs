@@ -11,16 +11,27 @@
 //! # use rand::Rng;
 //! # #[cfg(feature = "bitcode")]
 //! # {
-//! const EVENT_STREAM: StreamDomain = StreamDomain::new("model/event/v1");
-//! const MUTATION_STREAM: StreamDomain = StreamDomain::new("model/mutation/v1");
+//! const DIVISION_EVENT_STREAM: StreamDomain = StreamDomain::new("cell-model/division-event/v1");
+//! const COPY_NUMBER_SEGREGATION_STREAM: StreamDomain =
+//!     StreamDomain::new("cell-model/copy-number-segregation/v1");
 //!
 //! let _step = StochasticStep::new_with_domain_streams(
 //!     DefaultHashMapStore::default(),
 //!     "experiment-seed",
-//!     [EVENT_STREAM, MUTATION_STREAM],
-//!     |streams, param: u64| {
-//!         let [event_rng, mutation_rng] = streams.as_mut();
-//!         Ok((event_rng.random::<u64>() ^ mutation_rng.random::<u64>()) ^ param)
+//!     [DIVISION_EVENT_STREAM, COPY_NUMBER_SEGREGATION_STREAM],
+//!     |streams, parent_copy_number: u64| {
+//!         let [division_rng, segregation_rng] = streams.as_mut();
+//!
+//!         let divides = division_rng.random::<u64>() % 4 == 0;
+//!         if !divides {
+//!             return Ok((parent_copy_number, 0));
+//!         }
+//!
+//!         let replicated = parent_copy_number * 2;
+//!         let left_daughter = segregation_rng.random_range(0..=replicated);
+//!         let right_daughter = replicated - left_daughter;
+//!
+//!         Ok((left_daughter, right_daughter))
 //!     },
 //!     Bitcode06::default,
 //! );

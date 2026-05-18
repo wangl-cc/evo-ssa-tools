@@ -103,14 +103,27 @@ This uses `DEFAULT_SEED_DOMAIN` to derive the root seed, then derives the one RN
 The domain-stream constructor is:
 
 ```rust
+pub const DIVISION_EVENT_STREAM: StreamDomain = StreamDomain::new("cell-model/division-event/v1");
+pub const COPY_NUMBER_SEGREGATION_STREAM: StreamDomain =
+    StreamDomain::new("cell-model/copy-number-segregation/v1");
+
 let step = StochasticStep::new_with_domain_streams(
     store,
     seed_material,
-    [MAIN_STREAM, SEGREGATION_STREAM],
-    |rngs, param| {
-        let [main_rng, segregation_rng] = rngs.as_mut();
-        // simulation logic using named domain streams
-        Ok(output)
+    [DIVISION_EVENT_STREAM, COPY_NUMBER_SEGREGATION_STREAM],
+    |rngs, parent_copy_number| {
+        let [division_rng, segregation_rng] = rngs.as_mut();
+
+        let divides = sample_division_event(division_rng);
+        if !divides {
+            return Ok((parent_copy_number, 0));
+        }
+
+        let replicated = parent_copy_number * 2;
+        let left_daughter = sample_copy_number_split(segregation_rng, replicated);
+        let right_daughter = replicated - left_daughter;
+
+        Ok((left_daughter, right_daughter))
     },
     engine_factory,
 );
@@ -138,9 +151,11 @@ pub struct StreamDomain(&'static str);
 Domains should be constants, not ad hoc strings spread through simulation code:
 
 ```rust
-pub const MAIN_STREAM: StreamDomain = StreamDomain::new("ssa/main/v1");
-pub const SEGREGATION_STREAM: StreamDomain = StreamDomain::new("model/segregation/v1");
-pub const MUTATION_STREAM: StreamDomain = StreamDomain::new("model/mutation/v1");
+pub const DIVISION_EVENT_STREAM: StreamDomain = StreamDomain::new("cell-model/division-event/v1");
+pub const COPY_NUMBER_SEGREGATION_STREAM: StreamDomain =
+    StreamDomain::new("cell-model/copy-number-segregation/v1");
+pub const MUTATION_SAMPLING_STREAM: StreamDomain =
+    StreamDomain::new("cell-model/mutation-sampling/v1");
 ```
 
 Domain names should include the owning crate or system, the subsystem, and a version. Changing the random protocol for a subsystem should use a new domain version instead of silently changing the meaning of an existing domain.
@@ -159,7 +174,7 @@ domain_stream_seed = keyed_hash(domain_seed, encoded_input_bytes)
 domain_stream_rng = Xoshiro256PlusPlus::from_seed(domain_stream_seed)
 ```
 
-This is intentionally seed derivation, not RNG sampling. The domain `model/segregation/v1` maps to the same domain seed regardless of whether other domains are requested before or after it.
+This is intentionally seed derivation, not RNG sampling. The domain `cell-model/copy-number-segregation/v1` maps to the same domain seed regardless of whether other domains are requested before or after it.
 
 This also means `SeedableRng::fork` is not the right core primitive for domain streams. `fork` is useful for creating another RNG from a current RNG state, but it is order-sensitive. Adding a new fork before an existing fork changes the later child stream.
 
@@ -169,7 +184,7 @@ This also means `SeedableRng::fork` is not the right core primitive for domain s
 
 This design guarantees that different domains do not consume from each other's streams once the caller creates one stream bundle for the simulation. Reordering uses of different RNGs from that bundle should not change the sequence produced by any individual domain.
 
-This design does not guarantee that refactoring inside a single domain preserves that domain's results. If `model/segregation/v1` consumes one extra random value, the later segregation values in that same domain can change. That is expected because the domain represents one random protocol.
+This design does not guarantee that refactoring inside a single domain preserves that domain's results. If `cell-model/copy-number-segregation/v1` consumes one extra random value, the later segregation values in that same domain can change. That is expected because the domain represents one random protocol.
 
 Repeatedly calling `make_stream` with the same domain and encoded input restarts that domain from the same seed each time. That is deterministic, but usually incorrect. Create streams once at the relevant simulation boundary.
 
@@ -187,7 +202,7 @@ For a copy-number segregation component, the intended usage is:
 let step = StochasticStep::new_with_domain_streams(
     store,
     seed_material,
-    [SEGREGATION_STREAM],
+    [COPY_NUMBER_SEGREGATION_STREAM],
     |rngs, param| {
         let [segregation_rng] = rngs.as_mut();
 
