@@ -8,7 +8,9 @@ You describe your workflow as a graph of compute nodes — stochastic simulation
 
 - `Compute` — the common trait for any node: given an input, produce an output.
 - `StochasticInput<P>` — wraps a parameter value and a `repetition_index`; together they form the cache key and determine the RNG stream for that run.
-- `StochasticStep` — a simulation node; the RNG for each input is seeded deterministically from `(key_material, encoded_input)`.
+- `SimulationModel` — a stable, versioned identifier for one stochastic simulation model.
+- `StochasticStep` — a simulation node; the single RNG stream for each input is derived deterministically from `(simulation_model, encoded_input)`.
+- `StochasticStep::new_with_streams` — construction for simulations that need named RNG streams for model random variables.
 - `DeterministicStep` — a pure `input → output` node with no randomness, for standalone analysis or transform stages.
 - `Pipeline` / `.pipe(...)` — chains an upstream node to a deterministic transform closure. Use `DeterministicStep` directly when you need a standalone deterministic node not attached to an upstream stage.
 - `CacheStore` — where materialized results live: `HashMapStore` (in-memory), `Fjall2Store`, `Fjall3Store`, `RedbStore` (persistent), or `()` to disable caching.
@@ -38,7 +40,7 @@ It is designed as an execution and materialization layer, not a long-term result
 
 ## Quick Start
 
-This example builds a two-stage pipeline — a stochastic simulation stage followed by a deterministic analysis stage — and runs it over eight repetitions. It demonstrates three core properties of the crate: parallel execution across Rayon workers, demand-driven caching (the second run reuses stored results without recomputing), and reproducibility (the same `(param, repetition_index)` input always produces the same output, whether computed fresh or retrieved from cache).
+This example builds a two-stage pipeline — a birth-death SSA simulation stage followed by a deterministic analysis stage — and runs it over eight repetitions. It demonstrates three core properties of the crate: parallel execution across Rayon workers, demand-driven caching (the second run reuses stored results without recomputing), and reproducibility (the same `(param, repetition_index)` input always produces the same output, whether computed fresh or retrieved from cache).
 
 ```rust
 use rand::{Rng, RngExt};
@@ -46,22 +48,36 @@ use rayon::prelude::*;
 use ssa_pipeline::prelude::*;
 
 # #[cfg(feature = "bitcode")]
-fn simulate_population(
+fn simulate_birth_death_ssa(
     rng: &mut impl Rng,
     initial_cells: u32,
-    steps: u32,
-) -> Vec<u32> {
-    let mut n = initial_cells.max(1);
-    let mut trajectory = Vec::with_capacity(steps as usize + 1);
-    trajectory.push(n);
+    max_events: u32,
+) -> Vec<(f64, u32)> {
+    let birth_rate = 0.8;
+    let death_rate = 0.4;
+    let mut cells = initial_cells.max(1);
+    let mut time = 0.0;
+    let mut trajectory = Vec::with_capacity(max_events as usize + 1);
+    trajectory.push((time, cells));
 
-    for _ in 0..steps {
-        if rng.random::<f64>() < 0.6 {
-            n = n.saturating_add(1);
-        } else {
-            n = n.saturating_sub(1);
+    for _ in 0..max_events {
+        let birth_propensity = birth_rate * cells as f64;
+        let death_propensity = death_rate * cells as f64;
+        let total_propensity = birth_propensity + death_propensity;
+        if total_propensity == 0.0 {
+            break;
         }
-        trajectory.push(n);
+
+        let u = rng.random::<f64>().clamp(f64::MIN_POSITIVE, 1.0);
+        time += -u.ln() / total_propensity;
+
+        let reaction_threshold = rng.random::<f64>() * total_propensity;
+        if reaction_threshold < birth_propensity {
+            cells = cells.saturating_add(1);
+        } else {
+            cells = cells.saturating_sub(1);
+        }
+        trajectory.push((time, cells));
     }
 
     trajectory
@@ -70,24 +86,32 @@ fn simulate_population(
 # #[cfg(feature = "bitcode")]
 fn main() -> ssa_pipeline::error::Result<()> {
     // Stage 1: stochastic simulation.
-    // Each (param, repetition_index) pair gets a deterministic RNG stream derived from
-    // key_material and the encoded input, so every run produces the same trajectory for
-    // the same input. Results are cached in the attached store.
+    const MODEL: SimulationModel = SimulationModel::new("birth-death-ssa/v1");
+
+    // Each (param, repetition_index) pair gets a deterministic RNG stream derived from the
+    // simulation model and the encoded input, so every run produces the same trajectory for the
+    // same input. Results are cached in the attached store.
     let peak_population = StochasticStep::new(
         DefaultHashMapStore::default(),   // per-stage cache
-        "population-trajectory",          // key material: seeds the RNG; changing this changes all outputs
-        |rng, (initial_cells, steps): (u32, u32)| Ok(simulate_population(rng, initial_cells, steps)),
+        MODEL,                            // stable simulation model identifier
+        |rng, (initial_cells, max_events): (u32, u32)| {
+            Ok(simulate_birth_death_ssa(rng, initial_cells, max_events))
+        },
         Bitcode06::default,               // engine factory: one Bitcode06 codec engine per Rayon worker
     )
     // Stage 2: deterministic analysis.
     // Chained onto stage 1 with its own cache. The cache key is the same encoded input,
     // so stage 2 results are also reused automatically on repeated calls.
-    .pipe(DefaultHashMapStore::default(), |trajectory: Vec<u32>| {
-        Ok(trajectory.into_iter().max().unwrap_or(0))
+    .pipe(DefaultHashMapStore::default(), |trajectory: Vec<(f64, u32)>| {
+        Ok(trajectory
+            .into_iter()
+            .map(|(_, cells)| cells)
+            .max()
+            .unwrap_or(0))
     });
 
     // Each StochasticInput pairs a parameter value with a repetition index.
-    // The pair determines both the cache key and the RNG seed for that run.
+    // The pair determines both the cache key and the RNG stream for that run.
     let inputs: Vec<_> = (0..8u64)
         .map(|rep| StochasticInput::new((25u32, 100u32), rep))
         .collect();

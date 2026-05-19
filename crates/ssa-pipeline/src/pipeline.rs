@@ -340,7 +340,7 @@ mod tests {
 
         let pipeline = StochasticStep::new(
             DefaultHashMapStore::default(),
-            b"mc-pi-experiment",
+            SimulationModel::new("experiment/mc-pi/v1"),
             move |rng, n_samples| {
                 experiment_calls_clone.fetch_add(1, Ordering::SeqCst);
                 let mut inside = 0usize;
