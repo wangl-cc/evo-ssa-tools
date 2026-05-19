@@ -8,7 +8,8 @@ You describe your workflow as a graph of compute nodes — stochastic simulation
 
 - `Compute` — the common trait for any node: given an input, produce an output.
 - `StochasticInput<P>` — wraps a parameter value and a `repetition_index`; together they form the cache key and determine the RNG stream for that run.
-- `StochasticStep` — a simulation node; the single RNG stream for each input is seeded deterministically from `(seed_material, encoded_input)`.
+- `ExperimentDomain` — a stable, versioned namespace for one stochastic experiment or model protocol.
+- `StochasticStep` — a simulation node; the single RNG stream for each input is derived deterministically from `(experiment_domain, encoded_input)`.
 - `StochasticStep::new_with_domain_streams` — construction for simulations that need named, domain-separated RNG streams.
 - `DeterministicStep` — a pure `input → output` node with no randomness, for standalone analysis or transform stages.
 - `Pipeline` / `.pipe(...)` — chains an upstream node to a deterministic transform closure. Use `DeterministicStep` directly when you need a standalone deterministic node not attached to an upstream stage.
@@ -73,12 +74,15 @@ fn simulate_population(
 # #[cfg(feature = "bitcode")]
 fn main() -> ssa_pipeline::error::Result<()> {
     // Stage 1: stochastic simulation.
-    // Each (param, repetition_index) pair gets a deterministic RNG stream derived from
-    // seed_material and the encoded input, so every run produces the same trajectory for
-    // the same input. Results are cached in the attached store.
+    const EXPERIMENT: ExperimentDomain =
+        ExperimentDomain::new("experiment/population-trajectory/v1");
+
+    // Each (param, repetition_index) pair gets a deterministic RNG stream derived from the
+    // experiment domain and the encoded input, so every run produces the same trajectory for the
+    // same input. Results are cached in the attached store.
     let peak_population = StochasticStep::new(
         DefaultHashMapStore::default(),   // per-stage cache
-        "population-trajectory",          // seed material: changing this changes all stochastic outputs
+        EXPERIMENT,                       // stable experiment/model random protocol namespace
         |rng, (initial_cells, steps): (u32, u32)| Ok(simulate_population(rng, initial_cells, steps)),
         Bitcode06::default,               // engine factory: one Bitcode06 codec engine per Rayon worker
     )

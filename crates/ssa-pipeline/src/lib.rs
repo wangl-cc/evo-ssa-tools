@@ -182,7 +182,7 @@ pub mod prelude {
         deterministic::DeterministicStep,
         pipeline::{Pipeline, PipelineExt},
         stochastic::{
-            DomainSeed, DomainSeeds, RootSeed, SeedDomain, StochasticInput, StochasticStep,
+            DomainSeed, DomainSeeds, ExperimentDomain, StochasticInput, StochasticStep,
             StochasticStreams, StreamDomain,
         },
     };

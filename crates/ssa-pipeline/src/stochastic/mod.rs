@@ -11,13 +11,14 @@
 //! # use rand::Rng;
 //! # #[cfg(feature = "bitcode")]
 //! # {
+//! const EXPERIMENT: ExperimentDomain = ExperimentDomain::new("experiment/cell-copy-number/v1");
 //! const DIVISION_EVENT_STREAM: StreamDomain = StreamDomain::new("cell-model/division-event/v1");
 //! const COPY_NUMBER_SEGREGATION_STREAM: StreamDomain =
 //!     StreamDomain::new("cell-model/copy-number-segregation/v1");
 //!
 //! let _step = StochasticStep::new_with_domain_streams(
 //!     DefaultHashMapStore::default(),
-//!     "experiment-seed",
+//!     EXPERIMENT,
 //!     [DIVISION_EVENT_STREAM, COPY_NUMBER_SEGREGATION_STREAM],
 //!     |streams, parent_copy_number: u64| {
 //!         let [division_rng, segregation_rng] = streams.as_mut();
@@ -45,9 +46,11 @@
 //! # use rand::Rng;
 //! # #[cfg(feature = "bitcode")]
 //! # {
+//! const EXPERIMENT: ExperimentDomain = ExperimentDomain::new("experiment/single-stream-model/v1");
+//!
 //! let _step = StochasticStep::new(
 //!     DefaultHashMapStore::default(),
-//!     "experiment-seed",
+//!     EXPERIMENT,
 //!     |rng, param: u64| Ok(rng.random::<u64>() ^ param),
 //!     Bitcode06::default,
 //! );
@@ -57,11 +60,10 @@
 //! Seed derivation differs by mode:
 //!
 //! ```text
-//! single stream: SeedDomain + seed_material -> RootSeed
-//! single stream: RootSeed + encoded_input -> Xoshiro256PlusPlus
+//! single stream: ExperimentDomain + internal single-stream domain -> DomainSeed
+//! single stream: DomainSeed + encoded_input -> Xoshiro256PlusPlus
 //!
-//! domain streams: SeedDomain + seed_material -> RootSeed
-//! domain streams: RootSeed + StreamDomain -> DomainSeed
+//! domain streams: ExperimentDomain + StreamDomain -> DomainSeed
 //! domain streams: DomainSeed + encoded_input -> Xoshiro256PlusPlus
 //! ```
 //!
@@ -73,10 +75,7 @@ use rand::rngs::Xoshiro256PlusPlus;
 
 pub mod seed;
 
-pub use seed::{
-    DomainSeed, DomainSeeds, RootSeed, STOCHASTIC_ROOT_SEED_DOMAIN, SeedDomain, StochasticStreams,
-    StreamDomain,
-};
+pub use seed::{DomainSeed, DomainSeeds, ExperimentDomain, StochasticStreams, StreamDomain};
 
 use crate::{
     CacheStore, CanonicalEncode, Compute, Result,
@@ -142,8 +141,8 @@ impl<P: CanonicalEncode> CanonicalEncode for StochasticInput<P> {
 /// `StochasticStep` is shared by the single-stream and domain-stream constructors. The stored
 /// `seed` field is generic:
 ///
-/// - `StochasticStep<C, P, O, RootSeed, F, EF>` is created by [`StochasticStep::new`] and stores
-///   one [`RootSeed`]. Each input uses `RootSeed + encoded_input -> Xoshiro256PlusPlus`.
+/// - `StochasticStep<C, P, O, DomainSeed, F, EF>` is created by [`StochasticStep::new`] and stores
+///   one [`DomainSeed`] derived from the experiment domain and the internal single-stream domain.
 /// - `StochasticStep<C, P, O, DomainSeeds<N>, F, EF>` is created by
 ///   [`StochasticStep::new_with_domain_streams`] and stores pre-derived [`DomainSeeds<N>`]. Each
 ///   input uses `DomainSeeds<N> + encoded_input -> StochasticStreams<N>`.
@@ -158,8 +157,8 @@ impl<P: CanonicalEncode> CanonicalEncode for StochasticInput<P> {
 /// Keyspace compatibility is caller-managed: when seed derivation, stochastic algorithm, or
 /// encoding semantics change in an incompatible way, use a new keyspace.
 ///
-/// Note: `seed_material` only affects random seed derivation. It is not used as a cache-key
-/// namespace.
+/// Note: the experiment domain only affects random stream derivation. It is not used as a
+/// cache-key namespace.
 #[derive(Debug)]
 pub struct StochasticStep<C, P, O, S, F, EF> {
     cache: C,
@@ -169,7 +168,7 @@ pub struct StochasticStep<C, P, O, S, F, EF> {
     _phantom: PhantomData<(P, O)>,
 }
 
-impl<C, P, O, F, EF> StochasticStep<C, P, O, RootSeed, F, EF>
+impl<C, P, O, F, EF> StochasticStep<C, P, O, DomainSeed, F, EF>
 where
     F: Fn(&mut Xoshiro256PlusPlus, P) -> Result<O>,
     EF: EngineFactory,
@@ -178,11 +177,11 @@ where
     /// Create a stochastic step with a single RNG stream.
     ///
     /// `cache` should be dedicated to this step (see [`StochasticStep`] cache keyspace contract).
-    /// `seed_material` affects seed derivation only; it does not namespace cache keys.
-    pub fn new(cache: C, seed_material: impl AsRef<[u8]>, function: F, engine_factory: EF) -> Self {
+    /// `experiment` affects seed derivation only; it does not namespace cache keys.
+    pub fn new(cache: C, experiment: ExperimentDomain, function: F, engine_factory: EF) -> Self {
         Self {
             cache,
-            seed: RootSeed::from_domain(STOCHASTIC_ROOT_SEED_DOMAIN, seed_material),
+            seed: experiment.derive_single_stream_seed(),
             function,
             engine_factory,
             _phantom: PhantomData,
@@ -199,19 +198,17 @@ where
     /// Create a stochastic step whose function receives configured domain streams.
     ///
     /// `cache` should be dedicated to this step (see [`StochasticStep`] cache keyspace contract).
-    /// `seed_material` affects seed derivation only; it does not namespace cache keys.
+    /// `experiment` affects seed derivation only; it does not namespace cache keys.
     pub fn new_with_domain_streams(
         cache: C,
-        seed_material: impl AsRef<[u8]>,
+        experiment: ExperimentDomain,
         domains: [StreamDomain; N],
         function: F,
         engine_factory: EF,
     ) -> Self {
-        let root_seed = RootSeed::from_domain(STOCHASTIC_ROOT_SEED_DOMAIN, seed_material);
-
         Self {
             cache,
-            seed: root_seed.derive_domain_seeds(domains),
+            seed: experiment.derive_domain_seeds(domains),
             function,
             engine_factory,
             _phantom: PhantomData,
@@ -233,7 +230,7 @@ impl<C: WorkerForkStore, P, O, S: Clone, F: Clone, EF: Clone> Clone
     }
 }
 
-impl<C, P, O, F, EF> Compute for StochasticStep<C, P, O, RootSeed, F, EF>
+impl<C, P, O, F, EF> Compute for StochasticStep<C, P, O, DomainSeed, F, EF>
 where
     F: Fn(&mut Xoshiro256PlusPlus, P) -> Result<O>,
     C: CacheStore,
@@ -322,41 +319,37 @@ mod tests {
         test_utils::execute_one,
     };
 
-    const TEST_SEED_DOMAIN: SeedDomain = SeedDomain::new("ssa-pipeline/test/root-seed/v1");
+    const TEST_EXPERIMENT: ExperimentDomain =
+        ExperimentDomain::new("experiment/ssa-pipeline-test/v1");
     const MAIN_STREAM: StreamDomain = StreamDomain::new("ssa/main/v1");
     const SEGREGATION_STREAM: StreamDomain = StreamDomain::new("model/segregation/v1");
     const MUTATION_STREAM: StreamDomain = StreamDomain::new("model/mutation/v1");
 
     #[test]
-    fn test_seed_and_stream_domain_names_are_stable() {
-        let seed_domain = SeedDomain::new("test/root/v1");
+    fn test_experiment_and_stream_domain_names_are_stable() {
+        let experiment = ExperimentDomain::new("experiment/test/v1");
         let stream_domain = StreamDomain::new("test/stream/v1");
 
-        assert_eq!(seed_domain.as_str(), "test/root/v1");
+        assert_eq!(experiment.as_str(), "experiment/test/v1");
         assert_eq!(stream_domain.as_str(), "test/stream/v1");
-        assert_eq!(seed_domain.to_string(), "test/root/v1");
+        assert_eq!(experiment.to_string(), "experiment/test/v1");
         assert_eq!(stream_domain.to_string(), "test/stream/v1");
     }
 
     #[test]
-    fn test_seed_debug_output_is_redacted() {
-        let root_seed = RootSeed::from_domain(TEST_SEED_DOMAIN, b"root");
-        let domain_seed = root_seed.derive_domain_seed(MAIN_STREAM);
+    fn test_domain_seed_debug_output_is_redacted() {
+        let domain_seed = TEST_EXPERIMENT.derive_domain_seed(MAIN_STREAM);
 
-        let root_debug = format!("{root_seed:?}");
         let domain_debug = format!("{domain_seed:?}");
 
-        assert_eq!(root_debug, "RootSeed { .. }");
         assert_eq!(domain_debug, "DomainSeed { .. }");
-        assert!(!root_debug.contains("bytes"));
         assert!(!domain_debug.contains("bytes"));
     }
 
     #[test]
     fn test_domain_seed_streams_are_stable_and_isolated() {
-        let root_seed = RootSeed::from_domain(TEST_SEED_DOMAIN, b"root");
-        let segregation_seed = root_seed.derive_domain_seed(SEGREGATION_STREAM);
-        let mutation_seed = root_seed.derive_domain_seed(MUTATION_STREAM);
+        let segregation_seed = TEST_EXPERIMENT.derive_domain_seed(SEGREGATION_STREAM);
+        let mutation_seed = TEST_EXPERIMENT.derive_domain_seed(MUTATION_STREAM);
         let mut segregation1 = segregation_seed.make_stream(b"input-A");
         let mut segregation2 = segregation_seed.make_stream(b"input-A");
         let mut mutation = mutation_seed.make_stream(b"input-A");
@@ -367,8 +360,7 @@ mod tests {
 
     #[test]
     fn test_domain_seed_input_bytes_change_stream() {
-        let root_seed = RootSeed::from_domain(TEST_SEED_DOMAIN, b"root");
-        let seed = root_seed.derive_domain_seed(SEGREGATION_STREAM);
+        let seed = TEST_EXPERIMENT.derive_domain_seed(SEGREGATION_STREAM);
         let mut rng_a = seed.make_stream(b"input-A");
         let mut rng_b = seed.make_stream(b"input-B");
 
@@ -377,8 +369,7 @@ mod tests {
 
     #[test]
     fn test_domain_seed_bundle_allows_duplicate_domains() {
-        let root_seed = RootSeed::from_domain(TEST_SEED_DOMAIN, b"root");
-        let seeds = root_seed.derive_domain_seeds([SEGREGATION_STREAM, SEGREGATION_STREAM]);
+        let seeds = TEST_EXPERIMENT.derive_domain_seeds([SEGREGATION_STREAM, SEGREGATION_STREAM]);
         let mut streams = seeds.make_streams(b"input-A");
         let [left, right] = streams.as_mut();
 
@@ -387,8 +378,7 @@ mod tests {
 
     #[test]
     fn test_domain_seed_bundle_accessors_preserve_order() {
-        let root_seed = RootSeed::from_domain(TEST_SEED_DOMAIN, b"root");
-        let seeds = root_seed.derive_domain_seeds([SEGREGATION_STREAM, MUTATION_STREAM]);
+        let seeds = TEST_EXPERIMENT.derive_domain_seeds([SEGREGATION_STREAM, MUTATION_STREAM]);
         let [segregation_seed_ref, mutation_seed_ref] = seeds.as_ref();
         let mut segregation_rng = segregation_seed_ref.make_stream(b"input-A");
         let mut mutation_rng = mutation_seed_ref.make_stream(b"input-A");
@@ -402,10 +392,10 @@ mod tests {
     }
 
     #[test]
-    fn test_root_seed_make_stream_does_not_use_domain_seed() {
-        let root_seed = RootSeed::from_domain(TEST_SEED_DOMAIN, b"root");
-        let domain_seed = root_seed.derive_domain_seed(MAIN_STREAM);
-        let mut single_rng = root_seed.make_stream(b"input-A");
+    fn test_single_stream_seed_is_isolated_from_named_domain_seed() {
+        let single_seed = TEST_EXPERIMENT.derive_single_stream_seed();
+        let domain_seed = TEST_EXPERIMENT.derive_domain_seed(MAIN_STREAM);
+        let mut single_rng = single_seed.make_stream(b"input-A");
         let mut domain_rng = domain_seed.make_stream(b"input-A");
 
         assert_ne!(single_rng.next_u64(), domain_rng.next_u64());
@@ -413,8 +403,7 @@ mod tests {
 
     #[test]
     fn test_domain_seed_bundle_supports_multiple_mutable_rngs() {
-        let root_seed = RootSeed::from_domain(TEST_SEED_DOMAIN, b"root");
-        let seeds = root_seed.derive_domain_seeds([SEGREGATION_STREAM, MUTATION_STREAM]);
+        let seeds = TEST_EXPERIMENT.derive_domain_seeds([SEGREGATION_STREAM, MUTATION_STREAM]);
         let mut streams = seeds.make_streams(b"input-A");
         let [segregation_rng, mutation_rng] = streams.as_mut();
 
@@ -426,8 +415,7 @@ mod tests {
 
     #[test]
     fn test_stochastic_stream_bundle_into_inner_preserves_order() {
-        let root_seed = RootSeed::from_domain(TEST_SEED_DOMAIN, b"root");
-        let seeds = root_seed.derive_domain_seeds([SEGREGATION_STREAM, MUTATION_STREAM]);
+        let seeds = TEST_EXPERIMENT.derive_domain_seeds([SEGREGATION_STREAM, MUTATION_STREAM]);
         let mut streams = seeds.make_streams(b"input-A");
         let [segregation_rng, mutation_rng] = streams.as_mut();
 
@@ -445,7 +433,7 @@ mod tests {
     fn test_stochastic_step_reproducible_with_domain_streams() -> Result<()> {
         let mut step = StochasticStep::new_with_domain_streams(
             (),
-            b"experiment-A",
+            TEST_EXPERIMENT,
             [MAIN_STREAM, SEGREGATION_STREAM],
             |rngs, param| {
                 let [main_rng, segregation_rng] = rngs.as_mut();
@@ -470,7 +458,7 @@ mod tests {
     fn test_stochastic_reproducible_with_owned_cache() -> Result<()> {
         let mut step = StochasticStep::new(
             (),
-            b"experiment-A",
+            TEST_EXPERIMENT,
             |rng, param| {
                 Ok([
                     rng.next_u64() ^ param,
@@ -492,7 +480,7 @@ mod tests {
     fn test_stochastic_diff_repetition_index_changes_stream() -> Result<()> {
         let mut step = StochasticStep::new(
             (),
-            b"experiment-A",
+            TEST_EXPERIMENT,
             |rng, param| {
                 Ok([
                     rng.next_u64() ^ param,
@@ -511,10 +499,10 @@ mod tests {
     }
 
     #[test]
-    fn test_stochastic_diff_seed_material_isolated() -> Result<()> {
+    fn test_stochastic_diff_experiment_domain_isolated() -> Result<()> {
         let mut step1 = StochasticStep::new(
             (),
-            b"experiment-A",
+            ExperimentDomain::new("experiment/A/v1"),
             |rng, param| {
                 Ok([
                     rng.next_u64() ^ param,
@@ -527,7 +515,7 @@ mod tests {
         );
         let mut step2 = StochasticStep::new(
             (),
-            b"experiment-B",
+            ExperimentDomain::new("experiment/B/v1"),
             |rng, param| {
                 Ok([
                     rng.next_u64() ^ param,
@@ -554,7 +542,7 @@ mod tests {
 
         let mut step_a = StochasticStep::new(
             DefaultHashMapStore::default(),
-            b"experiment-A",
+            ExperimentDomain::new("experiment/A/v1"),
             move |rng, param| {
                 calls_a_clone.fetch_add(1, Ordering::SeqCst);
                 Ok(rng.next_u64() ^ param)
@@ -563,7 +551,7 @@ mod tests {
         );
         let mut step_b = StochasticStep::new(
             DefaultHashMapStore::default(),
-            b"experiment-B",
+            ExperimentDomain::new("experiment/B/v1"),
             move |rng, param| {
                 calls_b_clone.fetch_add(1, Ordering::SeqCst);
                 Ok(rng.next_u64() ^ param)
@@ -589,13 +577,13 @@ mod tests {
     fn test_stochastic_execute_many_parallel_reproducible() -> Result<()> {
         let step1 = StochasticStep::new(
             DefaultHashMapStore::default(),
-            b"experiment-A",
+            TEST_EXPERIMENT,
             |rng, param| Ok(rng.next_u64() ^ param),
             FixtureEngine::default,
         );
         let step2 = StochasticStep::new(
             DefaultHashMapStore::default(),
-            b"experiment-A",
+            TEST_EXPERIMENT,
             |rng, param| Ok(rng.next_u64() ^ param),
             FixtureEngine::default,
         );
@@ -624,7 +612,7 @@ mod tests {
 
         let stage1 = StochasticStep::new(
             DefaultHashMapStore::default(),
-            b"experiment-A",
+            TEST_EXPERIMENT,
             move |rng, param| {
                 stage1_calls_clone.fetch_add(1, Ordering::SeqCst);
                 Ok((rng.next_u64() as usize) ^ param)

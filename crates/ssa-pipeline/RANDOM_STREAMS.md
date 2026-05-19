@@ -12,51 +12,49 @@ The long-term goal is to support module-level stream isolation without making ra
 
 ## Core Model
 
-Seed derivation starts from a root seed:
+Random stream identity has three explicit axes:
 
 ```text
-SeedDomain + seed_material
--> RootSeed
-
-RootSeed + encoded_input_bytes
--> Xoshiro256PlusPlus
+ExperimentDomain
+StreamDomain
+StochasticInput { param, repetition_index }
 ```
 
-The single-stream path intentionally has no stream domain. Domain-separated streams add one more seed derivation stage:
+`ExperimentDomain` is the stable namespace for one stochastic experiment or model protocol. It is not a per-run random seed. Use a versioned, static name such as `experiment/cell-copy-number/v1`. If the stochastic protocol changes in a way that should invalidate reproducibility expectations, use a new experiment domain version.
+
+`StreamDomain` is the stable namespace for one random subsystem protocol. Examples include `cell-model/division-event/v1`, `cell-model/copy-number-segregation/v1`, or `cell-model/mutation-sampling/v1`.
+
+`StochasticInput` identifies the concrete run. Its `param` is the model input and its `repetition_index` is the replicate index. Different random trajectories for the same experiment and parameter should use different repetition indices, not ad hoc seed strings.
+
+Seed derivation is:
 
 ```text
-RootSeed + StreamDomain
+ExperimentDomain + StreamDomain
 -> DomainSeed
 
 DomainSeed + encoded_input_bytes
 -> Xoshiro256PlusPlus
 ```
 
-These stages intentionally use different types in the implementation. A `RootSeed` is not a domain seed, and a `DomainSeed` is not an advancing RNG.
-
-Conceptually, execution looks like:
+The single-stream constructor uses the same model with an internal stream domain:
 
 ```text
-StochasticStep
--> RootSeed
--> StochasticInput
--> canonical encoded input
--> RootSeed::make_stream
+ExperimentDomain + internal single-stream domain
+-> DomainSeed
+
+DomainSeed + encoded_input_bytes
 -> Xoshiro256PlusPlus
 ```
 
-For domain-separated execution, `StochasticStep::new_with_domain_streams` pre-derives `DomainSeeds<N>` from the configured domains and uses those domain seeds to create `StochasticStreams<N>` for each encoded input.
+There is intentionally no public root seed. The experiment domain and stream domain are the two protocol namespaces users should reason about.
 
 ## Seed Types
 
 Seed handling lives under `stochastic::seed`.
 
 ```rust
-pub struct SeedDomain(&'static str);
+pub struct ExperimentDomain(&'static str);
 pub struct StreamDomain(&'static str);
-pub struct RootSeed {
-    // private fields
-}
 pub struct DomainSeed {
     // private fields
 }
@@ -64,11 +62,12 @@ pub struct DomainSeeds<const N: usize> {
     // private fields
 }
 
-impl RootSeed {
-    pub fn from_domain(seed_domain: SeedDomain, seed_material: impl AsRef<[u8]>) -> Self;
-    pub fn derive_domain_seed(&self, domain: StreamDomain) -> DomainSeed;
-    pub fn derive_domain_seeds<const N: usize>(&self, domains: [StreamDomain; N]) -> DomainSeeds<N>;
-    pub fn make_stream(&self, encoded_input: &[u8]) -> Xoshiro256PlusPlus;
+impl ExperimentDomain {
+    pub const fn new(name: &'static str) -> Self;
+    pub const fn as_str(self) -> &'static str;
+    pub fn derive_single_stream_seed(self) -> DomainSeed;
+    pub fn derive_domain_seed(self, domain: StreamDomain) -> DomainSeed;
+    pub fn derive_domain_seeds<const N: usize>(self, domains: [StreamDomain; N]) -> DomainSeeds<N>;
 }
 
 impl DomainSeed {
@@ -80,36 +79,45 @@ impl<const N: usize> DomainSeeds<N> {
 }
 ```
 
-`RootSeed`, `DomainSeed`, and `DomainSeeds<N>` are opaque and do not expose raw seed bytes. `derive_domain_seed` and `derive_domain_seeds` are named as derivation operations because they create domain-specific seeds rather than fetching a stored domain object. `RootSeed::make_stream` is the single-stream path and intentionally does not use a `StreamDomain`.
+`DomainSeed` and `DomainSeeds<N>` are opaque and do not expose raw seed bytes. `derive_domain_seed` and `derive_domain_seeds` are named as derivation operations because they create domain-specific seeds rather than fetching stored domain objects.
 
 ## StochasticStep API
 
-The single-stream constructor remains:
+Define experiment and stream domains as constants:
+
+```rust
+pub const CELL_COPY_NUMBER_EXPERIMENT: ExperimentDomain =
+    ExperimentDomain::new("experiment/cell-copy-number/v1");
+
+pub const DIVISION_EVENT_STREAM: StreamDomain =
+    StreamDomain::new("cell-model/division-event/v1");
+
+pub const COPY_NUMBER_SEGREGATION_STREAM: StreamDomain =
+    StreamDomain::new("cell-model/copy-number-segregation/v1");
+```
+
+The single-stream constructor is:
 
 ```rust
 let step = StochasticStep::new(
     store,
-    seed_material,
+    CELL_COPY_NUMBER_EXPERIMENT,
     |rng, param| {
-        // simulation logic using the default stream
+        // simulation logic using one stream
         Ok(output)
     },
     engine_factory,
 );
 ```
 
-This uses `STOCHASTIC_ROOT_SEED_DOMAIN` to derive the root seed, then derives the one RNG stream directly from the encoded input.
+This derives one `DomainSeed` from the experiment domain and the crate-internal single-stream domain, then creates the input-scoped RNG from that domain seed and the encoded input.
 
 The domain-stream constructor is:
 
 ```rust
-pub const DIVISION_EVENT_STREAM: StreamDomain = StreamDomain::new("cell-model/division-event/v1");
-pub const COPY_NUMBER_SEGREGATION_STREAM: StreamDomain =
-    StreamDomain::new("cell-model/copy-number-segregation/v1");
-
 let step = StochasticStep::new_with_domain_streams(
     store,
-    seed_material,
+    CELL_COPY_NUMBER_EXPERIMENT,
     [DIVISION_EVENT_STREAM, COPY_NUMBER_SEGREGATION_STREAM],
     |rngs, parent_copy_number| {
         let [division_rng, segregation_rng] = rngs.as_mut();
@@ -129,50 +137,50 @@ let step = StochasticStep::new_with_domain_streams(
 );
 ```
 
-The difference is domain stream construction, not a different seed model. Both constructors use the same root seed derivation policy. The domain-stream constructor derives `DomainSeeds<N>` once at construction and creates input-scoped `StochasticStreams<N>` during execution.
+The domain-stream constructor derives `DomainSeeds<N>` once at construction and creates input-scoped `StochasticStreams<N>` during execution.
 
-Internally, both modes share the same `StochasticStep` execution shell, but the stored `seed` type differs:
+Internally, both modes share the same `StochasticStep` execution shell, but the stored seed type differs:
 
 ```rust
-StochasticStep<C, P, O, RootSeed, F, EF>
+StochasticStep<C, P, O, DomainSeed, F, EF>
 StochasticStep<C, P, O, DomainSeeds<N>, F, EF>
 ```
 
-The field is intentionally named `seed`. Whether it is a single root seed or a fixed bundle of domain seeds is expressed by the generic type.
+The field is intentionally named `seed`. Whether it is a single domain seed or a fixed bundle of domain seeds is expressed by the generic type.
 
-## Stream Domains
+## Domain Names
 
-A stream domain is a stable protocol identifier:
-
-```rust
-pub struct StreamDomain(&'static str);
-```
-
-Domains should be constants, not ad hoc strings spread through simulation code:
+Experiment and stream domains should be constants, not ad hoc strings spread through simulation code:
 
 ```rust
-pub const DIVISION_EVENT_STREAM: StreamDomain = StreamDomain::new("cell-model/division-event/v1");
-pub const COPY_NUMBER_SEGREGATION_STREAM: StreamDomain =
-    StreamDomain::new("cell-model/copy-number-segregation/v1");
-pub const MUTATION_SAMPLING_STREAM: StreamDomain =
-    StreamDomain::new("cell-model/mutation-sampling/v1");
+pub const EXPERIMENT: ExperimentDomain =
+    ExperimentDomain::new("experiment/ssa-with-copy-number/v1");
+pub const SEGREGATION_STREAM: StreamDomain =
+    StreamDomain::new("model/copy-number-segregation/v1");
 ```
 
-Domain names should include the owning crate or system, the subsystem, and a version. Changing the random protocol for a subsystem should use a new domain version instead of silently changing the meaning of an existing domain.
+Domain names should include the owning crate or system, the stochastic protocol, and a version. Changing the random protocol should use a new domain version instead of silently changing the meaning of an existing domain.
+
+The repetition axis belongs in `StochasticInput`, not in the experiment domain:
+
+```rust
+let inputs = (0..128u64)
+    .map(|rep| StochasticInput::new(model_param, rep));
+```
+
+Do not use `ExperimentDomain::new("experiment/foo/run-17")` to get another random trajectory. That creates another experiment namespace rather than another replicate of the same experiment.
 
 ## Seed Derivation
 
-Substreams are derived using deterministic domain separation:
+Streams are derived using deterministic domain separation:
 
 ```text
-root_seed = derive_key(seed_domain, seed_material)
-single_stream_seed = keyed_hash(root_seed, encoded_input_bytes)
-single_stream_rng = Xoshiro256PlusPlus::from_seed(single_stream_seed)
-
-domain_seed = keyed_hash(root_seed, stream_domain_bytes)
+domain_seed = derive_key(stream_domain, experiment_domain_bytes)
 domain_stream_seed = keyed_hash(domain_seed, encoded_input_bytes)
 domain_stream_rng = Xoshiro256PlusPlus::from_seed(domain_stream_seed)
 ```
+
+For single-stream execution, `stream_domain` is the crate-internal single-stream domain.
 
 This is intentionally seed derivation, not RNG sampling. The domain `cell-model/copy-number-segregation/v1` maps to the same domain seed regardless of whether other domains are requested before or after it.
 
@@ -186,7 +194,7 @@ This design guarantees that different domains do not consume from each other's s
 
 This design does not guarantee that refactoring inside a single domain preserves that domain's results. If `cell-model/copy-number-segregation/v1` consumes one extra random value, the later segregation values in that same domain can change. That is expected because the domain represents one random protocol.
 
-Repeatedly calling `make_stream` with the same domain and encoded input restarts that domain from the same seed each time. That is deterministic, but usually incorrect. Create streams once at the relevant simulation boundary.
+Repeatedly calling `make_stream` with the same domain seed and encoded input restarts that domain from the same seed each time. That is deterministic, but usually incorrect. Create streams once at the relevant simulation boundary.
 
 `derive_domain_seeds([A, A]).make_streams(encoded_input)` intentionally creates two RNGs starting from the same stream seed. Duplicate domains are a protocol mistake in most simulations, but they are not a recoverable runtime error and are therefore not rejected by this API.
 
@@ -194,14 +202,14 @@ The full stochastic output may still change when simulation control flow changes
 
 ## Relationship To Components
 
-Simulation components should not derive seeds themselves and should not own top-level reproducibility policy. They should receive a random stream or component state that was created by the simulation layer from a `StreamDomain`.
+Simulation components should not derive seeds themselves and should not own top-level reproducibility policy. They should receive a random stream or component state that was created by the simulation layer from an `ExperimentDomain` and `StreamDomain`.
 
 For a copy-number segregation component, the intended usage is:
 
 ```rust
 let step = StochasticStep::new_with_domain_streams(
     store,
-    seed_material,
+    EXPERIMENT,
     [COPY_NUMBER_SEGREGATION_STREAM],
     |rngs, param| {
         let [segregation_rng] = rngs.as_mut();
@@ -216,7 +224,7 @@ let step = StochasticStep::new_with_domain_streams(
 );
 ```
 
-This keeps simulation components focused on model behavior and keeps seed derivation centralized in `ssa-pipeline`.
+This keeps simulation components focused on model behavior and keeps stream derivation centralized in `ssa-pipeline`.
 
 ## Non-Goals
 
@@ -224,4 +232,4 @@ This design does not attempt to provide cryptographic randomness.
 
 This design does not require every simulation subsystem to have its own domain. Use a separate domain when the subsystem has a meaningful independent random protocol and when isolating it improves reproducibility, testing, or refactoring stability.
 
-This design does not make persistent cache entries compatible across changes to stream domains. A domain change that affects stochastic output is a compute logic change and should use a fresh cache keyspace according to the existing `StochasticStep` keyspace contract.
+This design does not make persistent cache entries compatible across changes to experiment domains or stream domains. A domain change that affects stochastic output is a compute logic change and should use a fresh cache keyspace according to the existing `StochasticStep` keyspace contract.

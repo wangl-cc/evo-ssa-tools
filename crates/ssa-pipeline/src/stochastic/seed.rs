@@ -1,15 +1,18 @@
 use rand::{SeedableRng, rngs::Xoshiro256PlusPlus};
 
-/// Seed domain used by [`super::StochasticStep`] constructors to derive their root seed.
-pub const STOCHASTIC_ROOT_SEED_DOMAIN: SeedDomain =
-    SeedDomain::new("ssa-pipeline/stochastic/root-seed/v1");
+const SINGLE_STREAM_DOMAIN: StreamDomain =
+    StreamDomain::new("ssa-pipeline/stochastic/single-stream/v1");
 
-/// Stable identifier for deriving a root seed from caller-provided seed material.
+/// Stable namespace for one stochastic experiment or model protocol.
+///
+/// The experiment domain is part of reproducibility, not a per-run random seed. Use a stable,
+/// versioned name such as `experiment/cell-growth/v1`. Different random trajectories within the
+/// same experiment should use different [`super::StochasticInput`] repetition indices.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct SeedDomain(&'static str);
+pub struct ExperimentDomain(&'static str);
 
-impl SeedDomain {
-    /// Create a seed domain from a stable static name.
+impl ExperimentDomain {
+    /// Create an experiment domain from a stable static name.
     pub const fn new(name: &'static str) -> Self {
         Self(name)
     }
@@ -18,9 +21,28 @@ impl SeedDomain {
     pub const fn as_str(self) -> &'static str {
         self.0
     }
+
+    /// Derive the opaque seed for the single-stream stochastic protocol.
+    pub fn derive_single_stream_seed(self) -> DomainSeed {
+        self.derive_domain_seed(SINGLE_STREAM_DOMAIN)
+    }
+
+    /// Derive the opaque seed for one random stream domain.
+    pub fn derive_domain_seed(self, domain: StreamDomain) -> DomainSeed {
+        DomainSeed {
+            bytes: blake3::derive_key(domain.as_str(), self.as_str().as_bytes()),
+        }
+    }
+
+    /// Derive an owned fixed-size bundle of domain seeds.
+    pub fn derive_domain_seeds<const N: usize>(self, domains: [StreamDomain; N]) -> DomainSeeds<N> {
+        DomainSeeds {
+            seeds: domains.map(|domain| self.derive_domain_seed(domain)),
+        }
+    }
 }
 
-impl std::fmt::Display for SeedDomain {
+impl std::fmt::Display for ExperimentDomain {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(self.0)
     }
@@ -29,7 +51,8 @@ impl std::fmt::Display for SeedDomain {
 /// Stable identifier for a reproducible random stream.
 ///
 /// Domains are part of a stochastic protocol. Prefer crate- or subsystem-qualified names with a
-/// version suffix, such as `ssa/main/v1` or `model/segregation/v1`.
+/// version suffix, such as `cell-model/division-event/v1` or
+/// `cell-model/copy-number-segregation/v1`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct StreamDomain(&'static str);
 
@@ -51,56 +74,7 @@ impl std::fmt::Display for StreamDomain {
     }
 }
 
-/// Opaque root seed derived from a seed domain and caller-provided seed material.
-///
-/// A root seed can directly create the single legacy RNG stream. Domain-separated streams first
-/// derive [`DomainSeed`] values from [`StreamDomain`] values.
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub struct RootSeed {
-    bytes: [u8; 32],
-}
-
-impl std::fmt::Debug for RootSeed {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("RootSeed").finish_non_exhaustive()
-    }
-}
-
-impl RootSeed {
-    /// Create a root seed from a stable seed domain and caller-provided seed material.
-    pub fn from_domain(seed_domain: SeedDomain, seed_material: impl AsRef<[u8]>) -> Self {
-        Self {
-            bytes: blake3::derive_key(seed_domain.as_str(), seed_material.as_ref()),
-        }
-    }
-
-    /// Derive the opaque seed for one stream domain.
-    pub fn derive_domain_seed(&self, domain: StreamDomain) -> DomainSeed {
-        DomainSeed {
-            bytes: *blake3::keyed_hash(&self.bytes, domain.as_str().as_bytes()).as_bytes(),
-        }
-    }
-
-    /// Derive an owned fixed-size bundle of domain seeds.
-    pub fn derive_domain_seeds<const N: usize>(
-        &self,
-        domains: [StreamDomain; N],
-    ) -> DomainSeeds<N> {
-        DomainSeeds {
-            seeds: domains.map(|domain| self.derive_domain_seed(domain)),
-        }
-    }
-
-    /// Create the single legacy RNG stream for encoded input.
-    ///
-    /// This path intentionally does not use a [`StreamDomain`].
-    pub fn make_stream(&self, encoded_input: &[u8]) -> Xoshiro256PlusPlus {
-        let bytes = *blake3::keyed_hash(&self.bytes, encoded_input).as_bytes();
-        Xoshiro256PlusPlus::from_seed(bytes)
-    }
-}
-
-/// Opaque seed for one stream domain.
+/// Opaque seed for one stream domain in one experiment domain.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct DomainSeed {
     bytes: [u8; 32],
