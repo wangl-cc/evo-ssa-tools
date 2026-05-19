@@ -1,7 +1,7 @@
 use rand::{SeedableRng, rngs::Xoshiro256PlusPlus};
 
 const SINGLE_STREAM_DOMAIN: StreamDomain =
-    StreamDomain::new("ssa-pipeline/stochastic/single-stream/v1");
+    StreamDomain::new("ssa-pipeline/stochastic/single-stream");
 
 /// Stable namespace for one stochastic experiment or model protocol.
 ///

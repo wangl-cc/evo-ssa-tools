@@ -16,8 +16,6 @@ You describe your workflow as a graph of compute nodes — stochastic simulation
 - `CacheStore` — where materialized results live: `HashMapStore` (in-memory), `Fjall2Store`, `Fjall3Store`, `RedbStore` (persistent), or `()` to disable caching.
 - `CodecEngine<T>` — control how node outputs are serialized for storage; one engine instance is created per Rayon worker. See the [Codec](#codec) section for details.
 
-For the domain-separated RNG stream design, see [Random Streams Design](./RANDOM_STREAMS.md).
-
 ## Execution Model
 
 The flow is straightforward:

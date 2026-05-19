@@ -67,7 +67,26 @@
 //! domain streams: DomainSeed + encoded_input -> Xoshiro256PlusPlus
 //! ```
 //!
-//! For design details, see `crates/ssa-pipeline/RANDOM_STREAMS.md`.
+//! # RNG stability
+//!
+//! RNG streams are stable across compatible `ssa-pipeline` releases for the
+//! same [`ExperimentDomain`], [`StreamDomain`] set, canonical input encoding,
+//! and `StochasticInput::repetition_index`.
+//!
+//! Any crate change that alters the RNG stream for the same stream identity and
+//! encoded input is a breaking change. This includes changes to stream
+//! derivation, the RNG algorithm, the crate-internal single-stream domain used
+//! by [`StochasticStep::new`], or canonical encoding for [`StochasticInput`].
+//!
+//! Domain-separated streams are independent across stream domains. Reordering
+//! calls that use different streams from the same [`StochasticStreams`] bundle
+//! does not change the sequence produced by any individual stream.
+//!
+//! Changes to any stream identity input change the corresponding RNG stream:
+//! experiment domain, stream domain, encoded parameter bytes, repetition index,
+//! or the ordered stream-domain list passed to [`StochasticStep::new_with_domain_streams`].
+//! Within one stream, random values are consumed sequentially; changing how many values that stream
+//! consumes can change later values from the same stream.
 
 use std::marker::PhantomData;
 
