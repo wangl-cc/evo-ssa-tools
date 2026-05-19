@@ -8,7 +8,7 @@
 //!
 //! ```rust
 //! # use ssa_pipeline::prelude::*;
-//! # use rand::Rng;
+//! # use rand::{Rng, RngExt};
 //! # #[cfg(feature = "bitcode")]
 //! # {
 //! const EXPERIMENT: ExperimentDomain = ExperimentDomain::new("experiment/cell-copy-number/v1");
@@ -43,7 +43,7 @@
 //!
 //! ```rust
 //! # use ssa_pipeline::prelude::*;
-//! # use rand::Rng;
+//! # use rand::{Rng, RngExt};
 //! # #[cfg(feature = "bitcode")]
 //! # {
 //! const EXPERIMENT: ExperimentDomain = ExperimentDomain::new("experiment/single-stream-model/v1");
@@ -384,6 +384,24 @@ mod tests {
         let mut rng_b = seed.make_stream(b"input-B");
 
         assert_ne!(rng_a.next_u64(), rng_b.next_u64());
+    }
+
+    #[test]
+    fn test_single_stream_seed_known_sequence() {
+        let seed = TEST_EXPERIMENT.derive_single_stream_seed();
+        let mut rng = seed.make_stream(b"input-A");
+
+        assert_eq!(rng.next_u64(), 5_883_700_003_951_674_005);
+        assert_eq!(rng.next_u64(), 8_534_955_113_658_070_652);
+    }
+
+    #[test]
+    fn test_domain_seed_known_sequence() {
+        let seed = TEST_EXPERIMENT.derive_domain_seed(SEGREGATION_STREAM);
+        let mut rng = seed.make_stream(b"input-A");
+
+        assert_eq!(rng.next_u64(), 8_696_119_191_897_611_845);
+        assert_eq!(rng.next_u64(), 11_319_017_350_160_744_450);
     }
 
     #[test]
