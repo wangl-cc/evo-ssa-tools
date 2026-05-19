@@ -94,7 +94,7 @@ fn main() -> ssa_pipeline::error::Result<()> {
     });
 
     // Each StochasticInput pairs a parameter value with a repetition index.
-    // The pair determines both the cache key and the RNG seed for that run.
+    // The pair determines both the cache key and the RNG stream for that run.
     let inputs: Vec<_> = (0..8u64)
         .map(|rep| StochasticInput::new((25u32, 100u32), rep))
         .collect();

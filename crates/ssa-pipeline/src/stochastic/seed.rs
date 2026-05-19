@@ -5,9 +5,8 @@ const SINGLE_STREAM_DOMAIN: StreamDomain =
 
 /// Stable namespace for one stochastic experiment or model protocol.
 ///
-/// The experiment domain is part of reproducibility, not a per-run random seed. Use a stable,
-/// versioned name such as `experiment/cell-growth/v1`. Different random trajectories within the
-/// same experiment should use different [`super::StochasticInput`] repetition indices.
+/// Use a stable, versioned name such as `experiment/cell-growth/v1`. The experiment domain is
+/// combined with stream domains and [`super::StochasticInput`] to derive reproducible RNG streams.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ExperimentDomain(&'static str);
 
