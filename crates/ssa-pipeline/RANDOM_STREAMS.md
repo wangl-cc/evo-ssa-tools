@@ -2,13 +2,13 @@
 
 This document describes the design for reproducible named random streams in `ssa-pipeline`.
 
-## Motivation
+## Overview
 
-`StochasticStep::new` gives each input one deterministic `Xoshiro256PlusPlus` stream. That model is simple and correct for simulations where randomness is naturally consumed as one sequential trajectory.
+`StochasticStep::new` gives each input one deterministic `Xoshiro256PlusPlus` stream. This is the compact API for simulations where randomness is naturally consumed as one sequential trajectory.
 
-Some simulations need stronger engineering stability. A model may contain several random subsystems such as event scheduling, mutation sampling, copy-number segregation, and final sampling. If all of them consume one shared stream, changing the implementation of one subsystem can shift the random values consumed by later subsystems. The result is still reproducible for the exact same code, but it is sensitive to code ordering and local refactors.
+`StochasticStep::new_with_domain_streams` gives each input a fixed bundle of named streams. This is the structured API for simulations with multiple random subsystems, such as event scheduling, mutation sampling, copy-number segregation, and final sampling.
 
-The long-term goal is module-level stream isolation with stream derivation centralized at the simulation boundary.
+Named streams keep stream derivation centralized at the simulation boundary. Simulation components receive RNG streams; they do not derive streams themselves.
 
 ## Core Model
 
@@ -159,7 +159,7 @@ pub const SEGREGATION_STREAM: StreamDomain =
     StreamDomain::new("model/copy-number-segregation/v1");
 ```
 
-Domain names should include the owning crate or system, the stochastic protocol, and a version. Use a new domain version when changing the random protocol for an experiment or stream.
+Domain names include the owning crate or system, the stochastic protocol, and a version. Use a new domain version when changing the random protocol for an experiment or stream.
 
 Use `StochasticInput::repetition_index` for replicate indices:
 
@@ -182,19 +182,19 @@ For single-stream execution, `stream_domain` is the crate-internal single-stream
 
 The domain `cell-model/copy-number-segregation/v1` maps to the same domain seed regardless of whether other domains are requested before or after it. Domain-separated seed derivation keeps stream construction independent of RNG-specific stream-jump APIs.
 
-## Stability Properties
+## Stability Contract
 
-This design guarantees that different domains do not consume from each other's streams once the caller creates one stream bundle for the simulation. Reordering uses of different RNGs from that bundle should not change the sequence produced by any individual domain.
+Different domains do not consume from each other's streams once the caller creates one stream bundle for the simulation. Reordering uses of different RNGs from that bundle does not change the sequence produced by any individual domain.
 
 Within a single domain, random values are still consumed sequentially. If `cell-model/copy-number-segregation/v1` consumes one extra random value, later segregation values in that domain can change.
 
-Repeatedly calling `make_stream` with the same domain seed and encoded input restarts that domain from the same seed each time. That is deterministic, but usually incorrect. Create streams once at the relevant simulation boundary.
+Repeatedly calling `make_stream` with the same domain seed and encoded input restarts that domain from the same seed each time. Create streams once at the relevant simulation boundary.
 
 `derive_domain_seeds([A, A]).make_streams(encoded_input)` creates two RNGs starting from the same stream seed. Duplicate domains produce duplicate streams.
 
-The full stochastic output may still change when simulation control flow changes. The goal is not to freeze all stochastic behavior, but to localize changes to the stream domains whose protocol or consumption changed.
+The full stochastic output may still change when simulation control flow changes. Named streams localize changes to the stream domains whose protocol or consumption changed.
 
-## Relationship To Components
+## Component Boundary
 
 Simulation components receive random streams or component state created by the simulation layer from an `ExperimentDomain` and `StreamDomain`.
 
@@ -220,10 +220,10 @@ let step = StochasticStep::new_with_domain_streams(
 
 This keeps simulation components focused on model behavior and keeps stream derivation centralized in `ssa-pipeline`.
 
-## Non-Goals
+## Scope
 
 The streams are intended for reproducible simulation, not cryptographic randomness.
 
 Use a separate stream domain when a subsystem has a meaningful independent random protocol and when isolating it improves reproducibility, testing, or refactoring stability.
 
-This design does not make persistent cache entries compatible across changes to experiment domains or stream domains. A domain change that affects stochastic output is a compute logic change and should use a fresh cache keyspace according to the existing `StochasticStep` keyspace contract.
+Domain changes that affect stochastic output are compute logic changes. Use a fresh cache keyspace according to the existing `StochasticStep` keyspace contract.
