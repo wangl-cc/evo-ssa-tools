@@ -41,7 +41,6 @@ Guidance:
 ## Document Guidelines
 
 - Do not manually hard-wrap paragraphs; one paragraph in one line.
-- Write documentation for external users as the final purpose, contract, and usage of the system. Do not record the design discussion, rejected alternatives, or conversational rationale unless the document is explicitly an ADR or design history.
 
 ## PR & Commit Expectations
 
