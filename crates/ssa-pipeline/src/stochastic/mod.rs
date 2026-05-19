@@ -102,7 +102,7 @@
 //! Seed derivation differs by mode:
 //!
 //! ```text
-//! single stream: SimulationModel + internal single-stream variable -> StreamSeed
+//! single stream: SimulationModel -> StreamSeed
 //! single stream: StreamSeed + encoded_input -> Xoshiro256PlusPlus
 //!
 //! named streams: SimulationModel + RandomVariable -> StreamSeed
@@ -117,8 +117,8 @@
 //!
 //! Any crate change that alters the RNG stream for the same stream identity and
 //! encoded input is a breaking change. This includes changes to stream
-//! derivation, the RNG algorithm, the crate-internal single-stream variable used
-//! by [`StochasticStep::new`], or canonical encoding for [`StochasticInput`].
+//! derivation, the RNG algorithm, the crate-internal single-stream key-derivation context used by
+//! [`StochasticStep::new`], or canonical encoding for [`StochasticInput`].
 //!
 //! Named streams are independent across random variables. Reordering
 //! calls that use different streams from the same [`RngStreams`] bundle
@@ -203,7 +203,7 @@ impl<P: CanonicalEncode> CanonicalEncode for StochasticInput<P> {
 /// `seed` field is generic:
 ///
 /// - `StochasticStep<C, P, O, StreamSeed, F, EF>` is created by [`StochasticStep::new`] and stores
-///   one [`StreamSeed`] derived from the simulation model and the internal single-stream variable.
+///   one [`StreamSeed`] derived from the simulation model.
 /// - `StochasticStep<C, P, O, StreamSeeds<N>, F, EF>` is created by
 ///   [`StochasticStep::new_with_streams`] and stores pre-derived [`StreamSeeds<N>`]. Each input
 ///   uses `StreamSeeds<N> + encoded_input -> RngStreams<N>`.
@@ -442,8 +442,8 @@ mod tests {
         let seed = TEST_MODEL.derive_single_stream_seed();
         let mut rng = seed.make_stream(b"input-A");
 
-        assert_eq!(rng.next_u64(), 13_919_498_165_838_590_541);
-        assert_eq!(rng.next_u64(), 12_820_967_852_477_144_935);
+        assert_eq!(rng.next_u64(), 537_736_522_967_230_266);
+        assert_eq!(rng.next_u64(), 15_627_906_466_009_195_256);
     }
 
     #[test]
@@ -451,8 +451,8 @@ mod tests {
         let seed = TEST_MODEL.derive_stream_seed(SEGREGATION_VARIABLE);
         let mut rng = seed.make_stream(b"input-A");
 
-        assert_eq!(rng.next_u64(), 824_170_403_882_865_505);
-        assert_eq!(rng.next_u64(), 17_601_490_218_564_066_657);
+        assert_eq!(rng.next_u64(), 8_286_477_180_495_873_707);
+        assert_eq!(rng.next_u64(), 13_565_259_345_690_764_019);
     }
 
     #[test]
