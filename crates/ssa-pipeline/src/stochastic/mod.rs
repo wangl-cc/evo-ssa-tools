@@ -70,7 +70,7 @@
 //! # RNG stability
 //!
 //! RNG streams are stable across compatible `ssa-pipeline` releases for the
-//! same [`ExperimentDomain`], [`StreamDomain`] set, canonical input encoding,
+//! same [`ExperimentDomain`], [`StreamDomain`] list, canonical input encoding,
 //! and `StochasticInput::repetition_index`.
 //!
 //! Any crate change that alters the RNG stream for the same stream identity and
@@ -84,7 +84,7 @@
 //!
 //! Changes to any stream identity input change the corresponding RNG stream:
 //! experiment domain, stream domain, encoded parameter bytes, repetition index,
-//! or the ordered stream-domain list passed to [`StochasticStep::new_with_domain_streams`].
+//! or the stream-domain order passed to [`StochasticStep::new_with_domain_streams`].
 //! Within one stream, random values are consumed sequentially; changing how many values that stream
 //! consumes can change later values from the same stream.
 
