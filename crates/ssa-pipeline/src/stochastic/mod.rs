@@ -384,234 +384,246 @@ mod tests {
     const MAIN_VARIABLE: RandomVariable = RandomVariable::new("ssa/main/v1");
     const SEGREGATION_VARIABLE: RandomVariable = RandomVariable::new("model/segregation/v1");
 
-    #[test]
-    fn test_stochastic_step_reproducible_with_streams() -> Result<()> {
-        let mut step = StochasticStep::new_with_streams(
-            (),
-            TEST_MODEL,
-            [MAIN_VARIABLE, SEGREGATION_VARIABLE],
-            |rngs, param| {
-                let [main_rng, segregation_rng] = rngs.as_mut();
-                Ok([
-                    main_rng.next_u64() ^ param,
-                    segregation_rng.next_u64(),
-                    main_rng.next_u64(),
-                    segregation_rng.next_u64(),
-                ])
-            },
-            FixtureEngine::default,
-        );
+    mod step_streams {
+        use super::*;
 
-        let output1 = execute_one(&mut step, StochasticInput::new(42, 7))?;
-        let output2 = execute_one(&mut step, StochasticInput::new(42, 7))?;
+        #[test]
+        fn test_stochastic_step_reproducible_with_streams() -> Result<()> {
+            let mut step = StochasticStep::new_with_streams(
+                (),
+                TEST_MODEL,
+                [MAIN_VARIABLE, SEGREGATION_VARIABLE],
+                |rngs, param| {
+                    let [main_rng, segregation_rng] = rngs.as_mut();
+                    Ok([
+                        main_rng.next_u64() ^ param,
+                        segregation_rng.next_u64(),
+                        main_rng.next_u64(),
+                        segregation_rng.next_u64(),
+                    ])
+                },
+                FixtureEngine::default,
+            );
 
-        assert_eq!(output1, output2);
-        Ok(())
+            let output1 = execute_one(&mut step, StochasticInput::new(42, 7))?;
+            let output2 = execute_one(&mut step, StochasticInput::new(42, 7))?;
+
+            assert_eq!(output1, output2);
+            Ok(())
+        }
+
+        #[test]
+        fn test_stochastic_reproducible_with_owned_cache() -> Result<()> {
+            let mut step = StochasticStep::new(
+                (),
+                TEST_MODEL,
+                |rng, param| {
+                    Ok([
+                        rng.next_u64() ^ param,
+                        rng.next_u64(),
+                        rng.next_u64(),
+                        rng.next_u64(),
+                    ])
+                },
+                FixtureEngine::default,
+            );
+            let output1 = execute_one(&mut step, StochasticInput::new(42, 7))?;
+            let output2 = execute_one(&mut step, StochasticInput::new(42, 7))?;
+
+            assert_eq!(output1, output2);
+            Ok(())
+        }
+
+        #[test]
+        fn test_stochastic_diff_repetition_index_changes_stream() -> Result<()> {
+            let mut step = StochasticStep::new(
+                (),
+                TEST_MODEL,
+                |rng, param| {
+                    Ok([
+                        rng.next_u64() ^ param,
+                        rng.next_u64(),
+                        rng.next_u64(),
+                        rng.next_u64(),
+                    ])
+                },
+                FixtureEngine::default,
+            );
+            let output1 = execute_one(&mut step, StochasticInput::new(42, 1))?;
+            let output2 = execute_one(&mut step, StochasticInput::new(42, 2))?;
+
+            assert_ne!(output1, output2);
+            Ok(())
+        }
+
+        #[test]
+        fn test_stochastic_diff_simulation_model_isolated() -> Result<()> {
+            let mut step1 = StochasticStep::new(
+                (),
+                SimulationModel::new("experiment/A/v1"),
+                |rng, param| {
+                    Ok([
+                        rng.next_u64() ^ param,
+                        rng.next_u64(),
+                        rng.next_u64(),
+                        rng.next_u64(),
+                    ])
+                },
+                FixtureEngine::default,
+            );
+            let mut step2 = StochasticStep::new(
+                (),
+                SimulationModel::new("experiment/B/v1"),
+                |rng, param| {
+                    Ok([
+                        rng.next_u64() ^ param,
+                        rng.next_u64(),
+                        rng.next_u64(),
+                        rng.next_u64(),
+                    ])
+                },
+                FixtureEngine::default,
+            );
+            let output1 = execute_one(&mut step1, StochasticInput::new(42, 7))?;
+            let output2 = execute_one(&mut step2, StochasticInput::new(42, 7))?;
+
+            assert_ne!(output1, output2);
+            Ok(())
+        }
     }
 
-    #[test]
-    fn test_stochastic_reproducible_with_owned_cache() -> Result<()> {
-        let mut step = StochasticStep::new(
-            (),
-            TEST_MODEL,
-            |rng, param| {
-                Ok([
-                    rng.next_u64() ^ param,
-                    rng.next_u64(),
-                    rng.next_u64(),
-                    rng.next_u64(),
-                ])
-            },
-            FixtureEngine::default,
-        );
-        let output1 = execute_one(&mut step, StochasticInput::new(42, 7))?;
-        let output2 = execute_one(&mut step, StochasticInput::new(42, 7))?;
+    mod execution {
+        use super::*;
 
-        assert_eq!(output1, output2);
-        Ok(())
+        #[test]
+        fn test_stochastic_cache_isolated_by_compute_instance() -> Result<()> {
+            let calls_a = Arc::new(AtomicUsize::new(0));
+            let calls_a_clone = calls_a.clone();
+            let calls_b = Arc::new(AtomicUsize::new(0));
+            let calls_b_clone = calls_b.clone();
+
+            let mut step_a = StochasticStep::new(
+                DefaultHashMapStore::default(),
+                SimulationModel::new("experiment/A/v1"),
+                move |rng, param| {
+                    calls_a_clone.fetch_add(1, Ordering::SeqCst);
+                    Ok(rng.next_u64() ^ param)
+                },
+                FixtureEngine::default,
+            );
+            let mut step_b = StochasticStep::new(
+                DefaultHashMapStore::default(),
+                SimulationModel::new("experiment/B/v1"),
+                move |rng, param| {
+                    calls_b_clone.fetch_add(1, Ordering::SeqCst);
+                    Ok(rng.next_u64() ^ param)
+                },
+                FixtureEngine::default,
+            );
+
+            let input = StochasticInput::new(42, 7);
+
+            let output_a1 = execute_one(&mut step_a, input.clone())?;
+            let output_b1 = execute_one(&mut step_b, input.clone())?;
+            let output_a2 = execute_one(&mut step_a, input.clone())?;
+            let output_b2 = execute_one(&mut step_b, input)?;
+
+            assert_eq!(output_a1, output_a2);
+            assert_eq!(output_b1, output_b2);
+            assert_eq!(calls_a.load(Ordering::SeqCst), 1);
+            assert_eq!(calls_b.load(Ordering::SeqCst), 1);
+            Ok(())
+        }
+
+        #[test]
+        fn test_stochastic_execute_many_parallel_reproducible() -> Result<()> {
+            let step1 = StochasticStep::new(
+                DefaultHashMapStore::default(),
+                TEST_MODEL,
+                |rng, param| Ok(rng.next_u64() ^ param),
+                FixtureEngine::default,
+            );
+            let step2 = StochasticStep::new(
+                DefaultHashMapStore::default(),
+                TEST_MODEL,
+                |rng, param| Ok(rng.next_u64() ^ param),
+                FixtureEngine::default,
+            );
+
+            let inputs: Vec<_> = (0..128u64)
+                .map(|i| StochasticInput::new(i, i % 8))
+                .collect();
+
+            let outputs1 = step1
+                .execute_many(inputs.clone().into_par_iter(), ExecuteOptions::default())?
+                .collect::<Result<Vec<u64>>>()?;
+            let outputs2 = step2
+                .execute_many(inputs.into_par_iter(), ExecuteOptions::default())?
+                .collect::<Result<Vec<u64>>>()?;
+
+            assert_eq!(outputs1, outputs2);
+            Ok(())
+        }
+
+        #[test]
+        fn test_stochastic_pipeline_integration() -> Result<()> {
+            let stage1_calls = Arc::new(AtomicUsize::new(0));
+            let stage1_calls_clone = stage1_calls.clone();
+            let stage2_calls = Arc::new(AtomicUsize::new(0));
+            let stage2_calls_clone = stage2_calls.clone();
+
+            let stage1 = StochasticStep::new(
+                DefaultHashMapStore::default(),
+                TEST_MODEL,
+                move |rng, param| {
+                    stage1_calls_clone.fetch_add(1, Ordering::SeqCst);
+                    Ok((rng.next_u64() as usize) ^ param)
+                },
+                FixtureEngine::default,
+            );
+
+            let pipeline = Pipeline::new(
+                stage1,
+                DefaultHashMapStore::default(),
+                move |intermediate| {
+                    stage2_calls_clone.fetch_add(1, Ordering::SeqCst);
+                    Ok(intermediate + 10)
+                },
+            );
+
+            let inputs: Vec<_> = (0..20usize)
+                .map(|i| StochasticInput::new(i, (i % 4) as u64))
+                .collect();
+
+            let outputs1 = pipeline
+                .execute_many(inputs.clone().into_par_iter(), ExecuteOptions::default())?
+                .collect::<Result<Vec<usize>>>()?;
+            let outputs2 = pipeline
+                .execute_many(inputs.into_par_iter(), ExecuteOptions::default())?
+                .collect::<Result<Vec<usize>>>()?;
+
+            assert_eq!(outputs1, outputs2);
+            assert_eq!(stage1_calls.load(Ordering::SeqCst), 20);
+            assert_eq!(stage2_calls.load(Ordering::SeqCst), 20);
+            Ok(())
+        }
     }
 
-    #[test]
-    fn test_stochastic_diff_repetition_index_changes_stream() -> Result<()> {
-        let mut step = StochasticStep::new(
-            (),
-            TEST_MODEL,
-            |rng, param| {
-                Ok([
-                    rng.next_u64() ^ param,
-                    rng.next_u64(),
-                    rng.next_u64(),
-                    rng.next_u64(),
-                ])
-            },
-            FixtureEngine::default,
-        );
-        let output1 = execute_one(&mut step, StochasticInput::new(42, 1))?;
-        let output2 = execute_one(&mut step, StochasticInput::new(42, 2))?;
+    mod input_encoding {
+        use super::*;
 
-        assert_ne!(output1, output2);
-        Ok(())
-    }
+        #[test]
+        fn test_stochastic_input_from_tuple_matches_new_encoding() {
+            let from_new = StochasticInput::new(123u64, 9);
+            let from_tuple: StochasticInput<u64> = (123u64, 9u64).into();
 
-    #[test]
-    fn test_stochastic_diff_simulation_model_isolated() -> Result<()> {
-        let mut step1 = StochasticStep::new(
-            (),
-            SimulationModel::new("experiment/A/v1"),
-            |rng, param| {
-                Ok([
-                    rng.next_u64() ^ param,
-                    rng.next_u64(),
-                    rng.next_u64(),
-                    rng.next_u64(),
-                ])
-            },
-            FixtureEngine::default,
-        );
-        let mut step2 = StochasticStep::new(
-            (),
-            SimulationModel::new("experiment/B/v1"),
-            |rng, param| {
-                Ok([
-                    rng.next_u64() ^ param,
-                    rng.next_u64(),
-                    rng.next_u64(),
-                    rng.next_u64(),
-                ])
-            },
-            FixtureEngine::default,
-        );
-        let output1 = execute_one(&mut step1, StochasticInput::new(42, 7))?;
-        let output2 = execute_one(&mut step2, StochasticInput::new(42, 7))?;
+            let mut buffer_new = vec![0u8; StochasticInput::<u64>::SIZE];
+            let mut buffer_tuple = vec![0u8; StochasticInput::<u64>::SIZE];
 
-        assert_ne!(output1, output2);
-        Ok(())
-    }
+            let encoded_new = unsafe { from_new.encode_with_buffer(&mut buffer_new) };
+            let encoded_tuple = unsafe { from_tuple.encode_with_buffer(&mut buffer_tuple) };
 
-    #[test]
-    fn test_stochastic_cache_isolated_by_compute_instance() -> Result<()> {
-        let calls_a = Arc::new(AtomicUsize::new(0));
-        let calls_a_clone = calls_a.clone();
-        let calls_b = Arc::new(AtomicUsize::new(0));
-        let calls_b_clone = calls_b.clone();
-
-        let mut step_a = StochasticStep::new(
-            DefaultHashMapStore::default(),
-            SimulationModel::new("experiment/A/v1"),
-            move |rng, param| {
-                calls_a_clone.fetch_add(1, Ordering::SeqCst);
-                Ok(rng.next_u64() ^ param)
-            },
-            FixtureEngine::default,
-        );
-        let mut step_b = StochasticStep::new(
-            DefaultHashMapStore::default(),
-            SimulationModel::new("experiment/B/v1"),
-            move |rng, param| {
-                calls_b_clone.fetch_add(1, Ordering::SeqCst);
-                Ok(rng.next_u64() ^ param)
-            },
-            FixtureEngine::default,
-        );
-
-        let input = StochasticInput::new(42, 7);
-
-        let output_a1 = execute_one(&mut step_a, input.clone())?;
-        let output_b1 = execute_one(&mut step_b, input.clone())?;
-        let output_a2 = execute_one(&mut step_a, input.clone())?;
-        let output_b2 = execute_one(&mut step_b, input)?;
-
-        assert_eq!(output_a1, output_a2);
-        assert_eq!(output_b1, output_b2);
-        assert_eq!(calls_a.load(Ordering::SeqCst), 1);
-        assert_eq!(calls_b.load(Ordering::SeqCst), 1);
-        Ok(())
-    }
-
-    #[test]
-    fn test_stochastic_execute_many_parallel_reproducible() -> Result<()> {
-        let step1 = StochasticStep::new(
-            DefaultHashMapStore::default(),
-            TEST_MODEL,
-            |rng, param| Ok(rng.next_u64() ^ param),
-            FixtureEngine::default,
-        );
-        let step2 = StochasticStep::new(
-            DefaultHashMapStore::default(),
-            TEST_MODEL,
-            |rng, param| Ok(rng.next_u64() ^ param),
-            FixtureEngine::default,
-        );
-
-        let inputs: Vec<_> = (0..128u64)
-            .map(|i| StochasticInput::new(i, i % 8))
-            .collect();
-
-        let outputs1 = step1
-            .execute_many(inputs.clone().into_par_iter(), ExecuteOptions::default())?
-            .collect::<Result<Vec<u64>>>()?;
-        let outputs2 = step2
-            .execute_many(inputs.into_par_iter(), ExecuteOptions::default())?
-            .collect::<Result<Vec<u64>>>()?;
-
-        assert_eq!(outputs1, outputs2);
-        Ok(())
-    }
-
-    #[test]
-    fn test_stochastic_pipeline_integration() -> Result<()> {
-        let stage1_calls = Arc::new(AtomicUsize::new(0));
-        let stage1_calls_clone = stage1_calls.clone();
-        let stage2_calls = Arc::new(AtomicUsize::new(0));
-        let stage2_calls_clone = stage2_calls.clone();
-
-        let stage1 = StochasticStep::new(
-            DefaultHashMapStore::default(),
-            TEST_MODEL,
-            move |rng, param| {
-                stage1_calls_clone.fetch_add(1, Ordering::SeqCst);
-                Ok((rng.next_u64() as usize) ^ param)
-            },
-            FixtureEngine::default,
-        );
-
-        let pipeline = Pipeline::new(
-            stage1,
-            DefaultHashMapStore::default(),
-            move |intermediate| {
-                stage2_calls_clone.fetch_add(1, Ordering::SeqCst);
-                Ok(intermediate + 10)
-            },
-        );
-
-        let inputs: Vec<_> = (0..20usize)
-            .map(|i| StochasticInput::new(i, (i % 4) as u64))
-            .collect();
-
-        let outputs1 = pipeline
-            .execute_many(inputs.clone().into_par_iter(), ExecuteOptions::default())?
-            .collect::<Result<Vec<usize>>>()?;
-        let outputs2 = pipeline
-            .execute_many(inputs.into_par_iter(), ExecuteOptions::default())?
-            .collect::<Result<Vec<usize>>>()?;
-
-        assert_eq!(outputs1, outputs2);
-        assert_eq!(stage1_calls.load(Ordering::SeqCst), 20);
-        assert_eq!(stage2_calls.load(Ordering::SeqCst), 20);
-        Ok(())
-    }
-
-    #[test]
-    fn test_stochastic_input_from_tuple_matches_new_encoding() {
-        let from_new = StochasticInput::new(123u64, 9);
-        let from_tuple: StochasticInput<u64> = (123u64, 9u64).into();
-
-        let mut buffer_new = vec![0u8; StochasticInput::<u64>::SIZE];
-        let mut buffer_tuple = vec![0u8; StochasticInput::<u64>::SIZE];
-
-        let encoded_new = unsafe { from_new.encode_with_buffer(&mut buffer_new) };
-        let encoded_tuple = unsafe { from_tuple.encode_with_buffer(&mut buffer_tuple) };
-
-        assert_eq!(encoded_new, encoded_tuple);
+            assert_eq!(encoded_new, encoded_tuple);
+        }
     }
 }
