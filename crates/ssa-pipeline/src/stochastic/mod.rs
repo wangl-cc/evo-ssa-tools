@@ -11,28 +11,43 @@
 //! # use rand::{Rng, RngExt};
 //! # #[cfg(feature = "bitcode")]
 //! # {
-//! const EXPERIMENT: ExperimentDomain = ExperimentDomain::new("experiment/cell-copy-number/v1");
-//! const DIVISION_EVENT_STREAM: StreamDomain = StreamDomain::new("cell-model/division-event/v1");
-//! const COPY_NUMBER_SEGREGATION_STREAM: StreamDomain =
-//!     StreamDomain::new("cell-model/copy-number-segregation/v1");
+//! const EXPERIMENT: ExperimentDomain = ExperimentDomain::new("experiment/birth-death-ssa/v1");
+//! const WAITING_TIME_STREAM: StreamDomain = StreamDomain::new("ssa/waiting-time/v1");
+//! const REACTION_CHOICE_STREAM: StreamDomain = StreamDomain::new("ssa/reaction-choice/v1");
 //!
 //! let _step = StochasticStep::new_with_domain_streams(
 //!     DefaultHashMapStore::default(),
 //!     EXPERIMENT,
-//!     [DIVISION_EVENT_STREAM, COPY_NUMBER_SEGREGATION_STREAM],
-//!     |streams, parent_copy_number: u64| {
-//!         let [division_rng, segregation_rng] = streams.as_mut();
+//!     [WAITING_TIME_STREAM, REACTION_CHOICE_STREAM],
+//!     |streams, (initial_cells, max_events): (u32, u32)| {
+//!         let [waiting_time_rng, reaction_choice_rng] = streams.as_mut();
+//!         let birth_rate = 0.8;
+//!         let death_rate = 0.4;
+//!         let mut cells = initial_cells.max(1);
+//!         let mut time = 0.0;
 //!
-//!         let divides = division_rng.random::<u64>() % 4 == 0;
-//!         if !divides {
-//!             return Ok((parent_copy_number, 0));
+//!         for _ in 0..max_events {
+//!             let birth_propensity = birth_rate * cells as f64;
+//!             let death_propensity = death_rate * cells as f64;
+//!             let total_propensity = birth_propensity + death_propensity;
+//!             if total_propensity == 0.0 {
+//!                 break;
+//!             }
+//!
+//!             let u = waiting_time_rng
+//!                 .random::<f64>()
+//!                 .clamp(f64::MIN_POSITIVE, 1.0);
+//!             time += -u.ln() / total_propensity;
+//!
+//!             let reaction_threshold = reaction_choice_rng.random::<f64>() * total_propensity;
+//!             if reaction_threshold < birth_propensity {
+//!                 cells = cells.saturating_add(1);
+//!             } else {
+//!                 cells = cells.saturating_sub(1);
+//!             }
 //!         }
 //!
-//!         let replicated = parent_copy_number * 2;
-//!         let left_daughter = segregation_rng.random_range(0..=replicated);
-//!         let right_daughter = replicated - left_daughter;
-//!
-//!         Ok((left_daughter, right_daughter))
+//!         Ok((cells, time))
 //!     },
 //!     Bitcode06::default,
 //! );
@@ -46,12 +61,39 @@
 //! # use rand::{Rng, RngExt};
 //! # #[cfg(feature = "bitcode")]
 //! # {
-//! const EXPERIMENT: ExperimentDomain = ExperimentDomain::new("experiment/single-stream-model/v1");
+//! const EXPERIMENT: ExperimentDomain = ExperimentDomain::new("experiment/birth-death-ssa/v1");
 //!
 //! let _step = StochasticStep::new(
 //!     DefaultHashMapStore::default(),
 //!     EXPERIMENT,
-//!     |rng, param: u64| Ok(rng.random::<u64>() ^ param),
+//!     |rng, (initial_cells, max_events): (u32, u32)| {
+//!         let birth_rate = 0.8;
+//!         let death_rate = 0.4;
+//!         let mut cells = initial_cells.max(1);
+//!         let mut time = 0.0;
+//!
+//!         for _ in 0..max_events {
+//!             let birth_propensity = birth_rate * cells as f64;
+//!             let death_propensity = death_rate * cells as f64;
+//!             let total_propensity = birth_propensity + death_propensity;
+//!             if total_propensity == 0.0 {
+//!                 break;
+//!             }
+//!
+//!             let u = rng.random::<f64>().clamp(f64::MIN_POSITIVE, 1.0);
+//!             time += -u.ln() / total_propensity;
+//!
+//!             let reaction_threshold = rng.random::<f64>() * total_propensity;
+//!
+//!             if reaction_threshold < birth_propensity {
+//!                 cells = cells.saturating_add(1);
+//!             } else {
+//!                 cells = cells.saturating_sub(1);
+//!             }
+//!         }
+//!
+//!         Ok((cells, time))
+//!     },
 //!     Bitcode06::default,
 //! );
 //! # }

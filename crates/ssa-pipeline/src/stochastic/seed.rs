@@ -50,8 +50,7 @@ impl std::fmt::Display for ExperimentDomain {
 /// Stable identifier for a reproducible random stream.
 ///
 /// Domains are part of a stochastic protocol. Prefer crate- or subsystem-qualified names with a
-/// version suffix, such as `cell-model/division-event/v1` or
-/// `cell-model/copy-number-segregation/v1`.
+/// version suffix, such as `ssa/waiting-time/v1` or `ssa/reaction-choice/v1`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct StreamDomain(&'static str);
 

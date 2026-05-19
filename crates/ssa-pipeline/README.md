@@ -40,7 +40,7 @@ It is designed as an execution and materialization layer, not a long-term result
 
 ## Quick Start
 
-This example builds a two-stage pipeline — a stochastic simulation stage followed by a deterministic analysis stage — and runs it over eight repetitions. It demonstrates three core properties of the crate: parallel execution across Rayon workers, demand-driven caching (the second run reuses stored results without recomputing), and reproducibility (the same `(param, repetition_index)` input always produces the same output, whether computed fresh or retrieved from cache).
+This example builds a two-stage pipeline — a birth-death SSA simulation stage followed by a deterministic analysis stage — and runs it over eight repetitions. It demonstrates three core properties of the crate: parallel execution across Rayon workers, demand-driven caching (the second run reuses stored results without recomputing), and reproducibility (the same `(param, repetition_index)` input always produces the same output, whether computed fresh or retrieved from cache).
 
 ```rust
 use rand::{Rng, RngExt};
@@ -48,22 +48,36 @@ use rayon::prelude::*;
 use ssa_pipeline::prelude::*;
 
 # #[cfg(feature = "bitcode")]
-fn simulate_population(
+fn simulate_birth_death_ssa(
     rng: &mut impl Rng,
     initial_cells: u32,
-    steps: u32,
-) -> Vec<u32> {
-    let mut n = initial_cells.max(1);
-    let mut trajectory = Vec::with_capacity(steps as usize + 1);
-    trajectory.push(n);
+    max_events: u32,
+) -> Vec<(f64, u32)> {
+    let birth_rate = 0.8;
+    let death_rate = 0.4;
+    let mut cells = initial_cells.max(1);
+    let mut time = 0.0;
+    let mut trajectory = Vec::with_capacity(max_events as usize + 1);
+    trajectory.push((time, cells));
 
-    for _ in 0..steps {
-        if rng.random::<f64>() < 0.6 {
-            n = n.saturating_add(1);
-        } else {
-            n = n.saturating_sub(1);
+    for _ in 0..max_events {
+        let birth_propensity = birth_rate * cells as f64;
+        let death_propensity = death_rate * cells as f64;
+        let total_propensity = birth_propensity + death_propensity;
+        if total_propensity == 0.0 {
+            break;
         }
-        trajectory.push(n);
+
+        let u = rng.random::<f64>().clamp(f64::MIN_POSITIVE, 1.0);
+        time += -u.ln() / total_propensity;
+
+        let reaction_threshold = rng.random::<f64>() * total_propensity;
+        if reaction_threshold < birth_propensity {
+            cells = cells.saturating_add(1);
+        } else {
+            cells = cells.saturating_sub(1);
+        }
+        trajectory.push((time, cells));
     }
 
     trajectory
@@ -73,7 +87,7 @@ fn simulate_population(
 fn main() -> ssa_pipeline::error::Result<()> {
     // Stage 1: stochastic simulation.
     const EXPERIMENT: ExperimentDomain =
-        ExperimentDomain::new("experiment/population-trajectory/v1");
+        ExperimentDomain::new("experiment/birth-death-ssa/v1");
 
     // Each (param, repetition_index) pair gets a deterministic RNG stream derived from the
     // experiment domain and the encoded input, so every run produces the same trajectory for the
@@ -81,14 +95,20 @@ fn main() -> ssa_pipeline::error::Result<()> {
     let peak_population = StochasticStep::new(
         DefaultHashMapStore::default(),   // per-stage cache
         EXPERIMENT,                       // stable experiment/model random protocol namespace
-        |rng, (initial_cells, steps): (u32, u32)| Ok(simulate_population(rng, initial_cells, steps)),
+        |rng, (initial_cells, max_events): (u32, u32)| {
+            Ok(simulate_birth_death_ssa(rng, initial_cells, max_events))
+        },
         Bitcode06::default,               // engine factory: one Bitcode06 codec engine per Rayon worker
     )
     // Stage 2: deterministic analysis.
     // Chained onto stage 1 with its own cache. The cache key is the same encoded input,
     // so stage 2 results are also reused automatically on repeated calls.
-    .pipe(DefaultHashMapStore::default(), |trajectory: Vec<u32>| {
-        Ok(trajectory.into_iter().max().unwrap_or(0))
+    .pipe(DefaultHashMapStore::default(), |trajectory: Vec<(f64, u32)>| {
+        Ok(trajectory
+            .into_iter()
+            .map(|(_, cells)| cells)
+            .max()
+            .unwrap_or(0))
     });
 
     // Each StochasticInput pairs a parameter value with a repetition index.
