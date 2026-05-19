@@ -102,7 +102,7 @@
 //! Seed derivation differs by mode:
 //!
 //! ```text
-//! single stream: SimulationModel -> StreamSeed
+//! single stream: SimulationModel + empty RandomVariable -> StreamSeed
 //! single stream: StreamSeed + encoded_input -> Xoshiro256PlusPlus
 //!
 //! named streams: SimulationModel + RandomVariable -> StreamSeed
@@ -117,7 +117,7 @@
 //!
 //! Any crate change that alters the RNG stream for the same stream identity and
 //! encoded input is a breaking change. This includes changes to stream
-//! derivation, the RNG algorithm, the crate-internal single-stream key-derivation context used by
+//! derivation, the RNG algorithm, the crate-internal empty random variable used by
 //! [`StochasticStep::new`], or canonical encoding for [`StochasticInput`].
 //!
 //! Named streams are independent across random variables. Reordering
@@ -203,7 +203,7 @@ impl<P: CanonicalEncode> CanonicalEncode for StochasticInput<P> {
 /// `seed` field is generic:
 ///
 /// - `StochasticStep<C, P, O, StreamSeed, F, EF>` is created by [`StochasticStep::new`] and stores
-///   one [`StreamSeed`] derived from the simulation model.
+///   one [`StreamSeed`] derived from the simulation model and the empty random variable.
 /// - `StochasticStep<C, P, O, StreamSeeds<N>, F, EF>` is created by
 ///   [`StochasticStep::new_with_streams`] and stores pre-derived [`StreamSeeds<N>`]. Each input
 ///   uses `StreamSeeds<N> + encoded_input -> RngStreams<N>`.
@@ -442,8 +442,8 @@ mod tests {
         let seed = TEST_MODEL.derive_single_stream_seed();
         let mut rng = seed.make_stream(b"input-A");
 
-        assert_eq!(rng.next_u64(), 537_736_522_967_230_266);
-        assert_eq!(rng.next_u64(), 15_627_906_466_009_195_256);
+        assert_eq!(rng.next_u64(), 18_439_914_891_317_024_306);
+        assert_eq!(rng.next_u64(), 3_187_733_765_017_413_158);
     }
 
     #[test]
@@ -451,8 +451,8 @@ mod tests {
         let seed = TEST_MODEL.derive_stream_seed(SEGREGATION_VARIABLE);
         let mut rng = seed.make_stream(b"input-A");
 
-        assert_eq!(rng.next_u64(), 8_286_477_180_495_873_707);
-        assert_eq!(rng.next_u64(), 13_565_259_345_690_764_019);
+        assert_eq!(rng.next_u64(), 14_685_298_993_141_689_080);
+        assert_eq!(rng.next_u64(), 5_115_129_566_991_615_718);
     }
 
     #[test]
@@ -487,6 +487,16 @@ mod tests {
         let mut stream_rng = stream_seed.make_stream(b"input-A");
 
         assert_ne!(single_rng.next_u64(), stream_rng.next_u64());
+    }
+
+    #[test]
+    fn test_single_stream_seed_matches_empty_random_variable() {
+        let single_seed = TEST_MODEL.derive_single_stream_seed();
+        let empty_variable_seed = TEST_MODEL.derive_stream_seed(RandomVariable::new(""));
+        let mut single_rng = single_seed.make_stream(b"input-A");
+        let mut empty_variable_rng = empty_variable_seed.make_stream(b"input-A");
+
+        assert_eq!(single_rng.next_u64(), empty_variable_rng.next_u64());
     }
 
     #[test]

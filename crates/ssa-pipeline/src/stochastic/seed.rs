@@ -1,16 +1,14 @@
 use rand::{SeedableRng, rngs::Xoshiro256PlusPlus};
 
-const SINGLE_STREAM_SEED_CONTEXT: &str =
-    "wangl-cc/evo-ssa-tools ssa-pipeline stochastic single stream seed v1";
-const NAMED_STREAM_SEED_CONTEXT: &str =
-    "wangl-cc/evo-ssa-tools ssa-pipeline stochastic named stream seed v1";
+const STREAM_SEED_CONTEXT: &str = "wangl-cc/evo-ssa-tools ssa-pipeline stochastic stream seed v1";
+const SINGLE_STREAM_VARIABLE: RandomVariable = RandomVariable::new("");
 
 /// Stable identifier for one stochastic simulation model.
 ///
 /// Use a stable, versioned name such as `birth-death-ssa/v1`. The simulation model is combined
 /// with random variables and [`super::StochasticInput`] to derive reproducible RNG streams.
-/// Single-stream seeds use the model name as BLAKE3 key material. Named-stream seeds use a
-/// length-prefixed encoding of `(SimulationModel, RandomVariable)` as key material.
+/// Stream seeds use a length-prefixed encoding of `(SimulationModel, RandomVariable)` as BLAKE3 key
+/// material. The single-stream seed is derived with the empty random variable.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SimulationModel(&'static str);
 
@@ -27,17 +25,15 @@ impl SimulationModel {
 
     /// Derive the opaque seed for the single-stream stochastic model.
     pub fn derive_single_stream_seed(self) -> StreamSeed {
-        StreamSeed {
-            bytes: blake3::derive_key(SINGLE_STREAM_SEED_CONTEXT, self.as_str().as_bytes()),
-        }
+        self.derive_stream_seed(SINGLE_STREAM_VARIABLE)
     }
 
     /// Derive the opaque seed for one model random variable.
     pub fn derive_stream_seed(self, variable: RandomVariable) -> StreamSeed {
         StreamSeed {
             bytes: blake3::derive_key(
-                NAMED_STREAM_SEED_CONTEXT,
-                &encode_named_stream_seed_material(self, variable),
+                STREAM_SEED_CONTEXT,
+                &encode_stream_seed_material(self, variable),
             ),
         }
     }
@@ -53,19 +49,11 @@ impl SimulationModel {
     }
 }
 
-fn encode_named_stream_seed_material(model: SimulationModel, variable: RandomVariable) -> Vec<u8> {
+fn encode_stream_seed_material(model: SimulationModel, variable: RandomVariable) -> Vec<u8> {
     let model = model.as_str().as_bytes();
     let variable = variable.as_str().as_bytes();
-    let model_len = (model.len() as u64).to_be_bytes();
-    let variable_len = (variable.len() as u64).to_be_bytes();
 
-    [
-        model_len.as_slice(),
-        model,
-        variable_len.as_slice(),
-        variable,
-    ]
-    .concat()
+    [&(model.len() as u64).to_be_bytes(), model, variable].concat()
 }
 
 impl std::fmt::Display for SimulationModel {
@@ -114,7 +102,7 @@ impl std::fmt::Debug for StreamSeed {
 impl StreamSeed {
     /// Create a fresh RNG stream for this seed and encoded input.
     pub fn make_stream(&self, encoded_input: &[u8]) -> Xoshiro256PlusPlus {
-        let bytes = *blake3::keyed_hash(&self.bytes, encoded_input).as_bytes();
+        let bytes = blake3::keyed_hash(&self.bytes, encoded_input).into();
         Xoshiro256PlusPlus::from_seed(bytes)
     }
 }
