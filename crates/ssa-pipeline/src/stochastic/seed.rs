@@ -1,5 +1,6 @@
 use rand::{SeedableRng, rngs::Xoshiro256PlusPlus};
 
+const STREAM_SEED_CONTEXT: &str = "wangl-cc/evo-ssa-tools ssa-pipeline stochastic stream seed v1";
 const SINGLE_STREAM_VARIABLE: RandomVariable =
     RandomVariable::new("ssa-pipeline/stochastic/single-stream");
 
@@ -7,6 +8,8 @@ const SINGLE_STREAM_VARIABLE: RandomVariable =
 ///
 /// Use a stable, versioned name such as `birth-death-ssa/v1`. The simulation model is combined
 /// with random variables and [`super::StochasticInput`] to derive reproducible RNG streams.
+/// Stream seeds use a crate-defined BLAKE3 key-derivation context and a length-prefixed encoding
+/// of `(SimulationModel, RandomVariable)` as key material.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SimulationModel(&'static str);
 
@@ -29,7 +32,10 @@ impl SimulationModel {
     /// Derive the opaque seed for one model random variable.
     pub fn derive_stream_seed(self, variable: RandomVariable) -> StreamSeed {
         StreamSeed {
-            bytes: blake3::derive_key(variable.as_str(), self.as_str().as_bytes()),
+            bytes: blake3::derive_key(
+                STREAM_SEED_CONTEXT,
+                &encode_stream_seed_material(self, variable),
+            ),
         }
     }
 
@@ -42,6 +48,18 @@ impl SimulationModel {
             seeds: variables.map(|variable| self.derive_stream_seed(variable)),
         }
     }
+}
+
+fn encode_stream_seed_material(model: SimulationModel, variable: RandomVariable) -> Vec<u8> {
+    let model = model.as_str().as_bytes();
+    let variable = variable.as_str().as_bytes();
+    let mut material = Vec::with_capacity(size_of::<u64>() * 2 + model.len() + variable.len());
+
+    material.extend_from_slice(&(model.len() as u64).to_be_bytes());
+    material.extend_from_slice(model);
+    material.extend_from_slice(&(variable.len() as u64).to_be_bytes());
+    material.extend_from_slice(variable);
+    material
 }
 
 impl std::fmt::Display for SimulationModel {

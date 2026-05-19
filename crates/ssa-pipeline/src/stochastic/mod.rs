@@ -428,12 +428,22 @@ mod tests {
     }
 
     #[test]
+    fn test_stream_seed_material_boundaries_change_stream() {
+        let seed_ab_c = SimulationModel::new("ab").derive_stream_seed(RandomVariable::new("c"));
+        let seed_a_bc = SimulationModel::new("a").derive_stream_seed(RandomVariable::new("bc"));
+        let mut rng_ab_c = seed_ab_c.make_stream(b"input-A");
+        let mut rng_a_bc = seed_a_bc.make_stream(b"input-A");
+
+        assert_ne!(rng_ab_c.next_u64(), rng_a_bc.next_u64());
+    }
+
+    #[test]
     fn test_single_stream_seed_known_sequence() {
         let seed = TEST_MODEL.derive_single_stream_seed();
         let mut rng = seed.make_stream(b"input-A");
 
-        assert_eq!(rng.next_u64(), 5_883_700_003_951_674_005);
-        assert_eq!(rng.next_u64(), 8_534_955_113_658_070_652);
+        assert_eq!(rng.next_u64(), 13_919_498_165_838_590_541);
+        assert_eq!(rng.next_u64(), 12_820_967_852_477_144_935);
     }
 
     #[test]
@@ -441,8 +451,8 @@ mod tests {
         let seed = TEST_MODEL.derive_stream_seed(SEGREGATION_VARIABLE);
         let mut rng = seed.make_stream(b"input-A");
 
-        assert_eq!(rng.next_u64(), 8_696_119_191_897_611_845);
-        assert_eq!(rng.next_u64(), 11_319_017_350_160_744_450);
+        assert_eq!(rng.next_u64(), 824_170_403_882_865_505);
+        assert_eq!(rng.next_u64(), 17_601_490_218_564_066_657);
     }
 
     #[test]
