@@ -1,137 +1,140 @@
 use rand::{SeedableRng, rngs::Xoshiro256PlusPlus};
 
-const SINGLE_STREAM_DOMAIN: StreamDomain =
-    StreamDomain::new("ssa-pipeline/stochastic/single-stream");
+const SINGLE_STREAM_VARIABLE: RandomVariable =
+    RandomVariable::new("ssa-pipeline/stochastic/single-stream");
 
-/// Stable namespace for one stochastic experiment or model protocol.
+/// Stable identifier for one stochastic simulation model.
 ///
-/// Use a stable, versioned name such as `experiment/cell-growth/v1`. The experiment domain is
-/// combined with stream domains and [`super::StochasticInput`] to derive reproducible RNG streams.
+/// Use a stable, versioned name such as `birth-death-ssa/v1`. The simulation model is combined
+/// with random variables and [`super::StochasticInput`] to derive reproducible RNG streams.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct ExperimentDomain(&'static str);
+pub struct SimulationModel(&'static str);
 
-impl ExperimentDomain {
-    /// Create an experiment domain from a stable static name.
+impl SimulationModel {
+    /// Create a simulation model identifier from a stable static name.
     pub const fn new(name: &'static str) -> Self {
         Self(name)
     }
 
-    /// Return the domain name.
+    /// Return the model name.
     pub const fn as_str(self) -> &'static str {
         self.0
     }
 
-    /// Derive the opaque seed for the single-stream stochastic protocol.
-    pub fn derive_single_stream_seed(self) -> DomainSeed {
-        self.derive_domain_seed(SINGLE_STREAM_DOMAIN)
+    /// Derive the opaque seed for the single-stream stochastic model.
+    pub fn derive_single_stream_seed(self) -> StreamSeed {
+        self.derive_stream_seed(SINGLE_STREAM_VARIABLE)
     }
 
-    /// Derive the opaque seed for one random stream domain.
-    pub fn derive_domain_seed(self, domain: StreamDomain) -> DomainSeed {
-        DomainSeed {
-            bytes: blake3::derive_key(domain.as_str(), self.as_str().as_bytes()),
+    /// Derive the opaque seed for one model random variable.
+    pub fn derive_stream_seed(self, variable: RandomVariable) -> StreamSeed {
+        StreamSeed {
+            bytes: blake3::derive_key(variable.as_str(), self.as_str().as_bytes()),
         }
     }
 
-    /// Derive an owned fixed-size bundle of domain seeds.
-    pub fn derive_domain_seeds<const N: usize>(self, domains: [StreamDomain; N]) -> DomainSeeds<N> {
-        DomainSeeds {
-            seeds: domains.map(|domain| self.derive_domain_seed(domain)),
+    /// Derive an owned fixed-size bundle of stream seeds.
+    pub fn derive_stream_seeds<const N: usize>(
+        self,
+        variables: [RandomVariable; N],
+    ) -> StreamSeeds<N> {
+        StreamSeeds {
+            seeds: variables.map(|variable| self.derive_stream_seed(variable)),
         }
     }
 }
 
-impl std::fmt::Display for ExperimentDomain {
+impl std::fmt::Display for SimulationModel {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(self.0)
     }
 }
 
-/// Stable identifier for a reproducible random stream.
+/// Stable identifier for a model random variable with its own reproducible RNG stream.
 ///
-/// Domains are part of a stochastic protocol. Prefer crate- or subsystem-qualified names with a
-/// version suffix, such as `ssa/waiting-time/v1` or `ssa/reaction-choice/v1`.
+/// Prefer model-specific names with a version suffix, such as `ssa/waiting-time/v1` or
+/// `ssa/reaction-choice/v1`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct StreamDomain(&'static str);
+pub struct RandomVariable(&'static str);
 
-impl StreamDomain {
-    /// Create a stream domain from a stable static name.
+impl RandomVariable {
+    /// Create a random variable identifier from a stable static name.
     pub const fn new(name: &'static str) -> Self {
         Self(name)
     }
 
-    /// Return the domain name.
+    /// Return the variable name.
     pub const fn as_str(self) -> &'static str {
         self.0
     }
 }
 
-impl std::fmt::Display for StreamDomain {
+impl std::fmt::Display for RandomVariable {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(self.0)
     }
 }
 
-/// Opaque seed for one stream domain in one experiment domain.
+/// Opaque seed for one RNG stream in one simulation model.
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub struct DomainSeed {
+pub struct StreamSeed {
     bytes: [u8; 32],
 }
 
-impl std::fmt::Debug for DomainSeed {
+impl std::fmt::Debug for StreamSeed {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("DomainSeed").finish_non_exhaustive()
+        f.debug_struct("StreamSeed").finish_non_exhaustive()
     }
 }
 
-impl DomainSeed {
-    /// Create a fresh RNG for this domain seed and encoded input.
+impl StreamSeed {
+    /// Create a fresh RNG stream for this seed and encoded input.
     pub fn make_stream(&self, encoded_input: &[u8]) -> Xoshiro256PlusPlus {
         let bytes = *blake3::keyed_hash(&self.bytes, encoded_input).as_bytes();
         Xoshiro256PlusPlus::from_seed(bytes)
     }
 }
 
-/// Owned fixed-size bundle of domain seeds.
+/// Owned fixed-size bundle of stream seeds.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct DomainSeeds<const N: usize> {
-    seeds: [DomainSeed; N],
+pub struct StreamSeeds<const N: usize> {
+    seeds: [StreamSeed; N],
 }
 
-impl<const N: usize> DomainSeeds<N> {
-    /// Consume the bundle and return the owned domain-seed array.
-    pub fn into_inner(self) -> [DomainSeed; N] {
+impl<const N: usize> StreamSeeds<N> {
+    /// Consume the bundle and return the owned stream-seed array.
+    pub fn into_inner(self) -> [StreamSeed; N] {
         self.seeds
     }
 
     /// Create an owned fixed-size bundle of RNG streams for encoded input.
-    pub fn make_streams(&self, encoded_input: &[u8]) -> StochasticStreams<N> {
-        StochasticStreams {
+    pub fn make_streams(&self, encoded_input: &[u8]) -> RngStreams<N> {
+        RngStreams {
             rngs: self.seeds.map(|seed| seed.make_stream(encoded_input)),
         }
     }
 }
 
-impl<const N: usize> AsRef<[DomainSeed; N]> for DomainSeeds<N> {
-    fn as_ref(&self) -> &[DomainSeed; N] {
+impl<const N: usize> AsRef<[StreamSeed; N]> for StreamSeeds<N> {
+    fn as_ref(&self) -> &[StreamSeed; N] {
         &self.seeds
     }
 }
 
-/// Owned fixed-size RNG bundle.
+/// Owned fixed-size RNG stream bundle.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct StochasticStreams<const N: usize> {
+pub struct RngStreams<const N: usize> {
     rngs: [Xoshiro256PlusPlus; N],
 }
 
-impl<const N: usize> StochasticStreams<N> {
+impl<const N: usize> RngStreams<N> {
     /// Consume the bundle and return the owned RNG array.
     pub fn into_inner(self) -> [Xoshiro256PlusPlus; N] {
         self.rngs
     }
 }
 
-impl<const N: usize> AsMut<[Xoshiro256PlusPlus; N]> for StochasticStreams<N> {
+impl<const N: usize> AsMut<[Xoshiro256PlusPlus; N]> for RngStreams<N> {
     fn as_mut(&mut self) -> &mut [Xoshiro256PlusPlus; N] {
         &mut self.rngs
     }
