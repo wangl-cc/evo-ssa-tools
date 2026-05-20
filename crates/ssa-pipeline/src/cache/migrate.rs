@@ -39,20 +39,6 @@ where
     }
 }
 
-#[cfg(feature = "fjall2")]
-impl IterableStore for storage::Fjall2Store {
-    fn iter_encoded<F>(&self, mut f: F) -> Result<()>
-    where
-        F: FnMut(&[u8], &[u8]) -> Result<()>,
-    {
-        for result in self.handle.iter() {
-            let (key, value) = result.map_err(storage::StorageError::from)?;
-            f(key.as_ref(), value.as_ref())?;
-        }
-        Ok(())
-    }
-}
-
 #[cfg(feature = "fjall3")]
 impl IterableStore for super::storage::Fjall3Store {
     fn iter_encoded<F>(&self, mut f: F) -> Result<()>
@@ -371,50 +357,6 @@ mod tests {
         let file = tempfile::NamedTempFile::new().unwrap();
         let db = redb::Database::create(file.path()).map_err(StorageError::from)?;
         let store = RedbStore::from_database(db, "empty")?;
-        let mut count = 0usize;
-        store.iter_encoded(|_, _| {
-            count += 1;
-            Ok(())
-        })?;
-        assert_eq!(count, 0);
-        Ok(())
-    }
-
-    // -- IterableStore: fjall2 ----------------------------------------------
-
-    #[cfg(feature = "fjall2")]
-    #[test]
-    fn fjall2_iter_encoded_roundtrips() -> Result<()> {
-        use storage::{Fjall2Store, StorageError};
-
-        let tmp = tempfile::tempdir().unwrap();
-        let ks = fjall2::Config::new(&tmp)
-            .open()
-            .map_err(StorageError::from)?;
-        let src = Fjall2Store::open(ks.clone(), "src", None)?;
-        let mut engine = FixtureEngine::default();
-        src.store(b"k1", &mut engine, &1u32)?;
-        src.store(b"k2", &mut engine, &2u32)?;
-
-        let dst = Fjall2Store::open(ks, "dst", None)?;
-        let stats = copy(&src, &dst)?;
-        assert_eq!(stats.migrated, 2);
-
-        assert_eq!(dst.fetch::<u32, _>(b"k1", &mut engine)?, Some(1));
-        assert_eq!(dst.fetch::<u32, _>(b"k2", &mut engine)?, Some(2));
-        Ok(())
-    }
-
-    #[cfg(feature = "fjall2")]
-    #[test]
-    fn fjall2_iter_encoded_empty() -> Result<()> {
-        use storage::{Fjall2Store, StorageError};
-
-        let tmp = tempfile::tempdir().unwrap();
-        let ks = fjall2::Config::new(&tmp)
-            .open()
-            .map_err(StorageError::from)?;
-        let store = Fjall2Store::open(ks, "empty", None)?;
         let mut count = 0usize;
         store.iter_encoded(|_, _| {
             count += 1;
