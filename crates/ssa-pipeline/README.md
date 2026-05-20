@@ -13,7 +13,7 @@ You describe your workflow as a graph of compute nodes — stochastic simulation
 - `StochasticStep::new_with_streams` — construction for simulations that need named RNG streams for model random variables.
 - `DeterministicStep` — a pure `input → output` node with no randomness, for standalone analysis or transform stages.
 - `Pipeline` / `.pipe(...)` — chains an upstream node to a deterministic transform closure. Use `DeterministicStep` directly when you need a standalone deterministic node not attached to an upstream stage.
-- `CacheStore` — where materialized results live: `HashMapStore` (in-memory), `Fjall2Store`, `Fjall3Store`, `RedbStore` (persistent), or `()` to disable caching.
+- `CacheStore` — where materialized results live: `HashMapStore` (in-memory), `Fjall3Store`, `RedbStore` (persistent), or `()` to disable caching.
 - `CodecEngine<T>` — control how node outputs are serialized for storage; one engine instance is created per Rayon worker. See the [Codec](#codec) section for details.
 
 ## Execution Model
@@ -148,7 +148,6 @@ If compute logic, encoding, or output type changes incompatibly, use a fresh key
 To use a persistent backend, open it explicitly and pass it to a step or pipeline as its dedicated store:
 
 - `HashMapStore` — process-local, in-memory, zero setup. Best for tests, benchmarks, and short-lived runs.
-- `Fjall2Store::open(keyspace, partition_name, options)`
 - `Fjall3Store::open(database, keyspace_name, options)`
 - `RedbStore::open(path, table_name) -> storage::Result<RedbStore>`
 - `RedbStore::from_database(database, table_name) -> storage::Result<RedbStore>`
@@ -225,7 +224,6 @@ let _engine = CompressedCodec::<Bitcode06, Lz4>::new(Bitcode06::default()).with_
 - `lz4` (disabled by default): `Lz4` compression engine.
 - `postcard` (disabled by default): `postcard` + `serde` serialization/deserialization via `Postcard`.
 - `zstd` (disabled by default): `Zstd` compression engine with runtime-configurable compression level.
-- `fjall2` (disabled by default): Fjall v2 persistent backend wrapper.
 - `fjall3` (disabled by default): Fjall v3 persistent backend wrapper.
 - `redb` (disabled by default): `redb` persistent backend wrapper.
 

@@ -9,7 +9,6 @@ license.workspace = true
 bitcode = { workspace = true, optional = true }
 blake3 = { workspace = true }
 crc32c = { workspace = true }
-fjall2 = { workspace = true, default-features = false, optional = true }
 fjall3 = { workspace = true, default-features = false, optional = true }
 lz4_flex = { workspace = true, optional = true }
 parking_lot = { workspace = true }
@@ -28,7 +27,6 @@ tempfile = { workspace = true }
 default = []
 bitcode = ["dep:bitcode"]
 compress = []
-fjall2 = ["dep:fjall2"]
 fjall3 = ["dep:fjall3"]
 lz4 = ["compress", "dep:lz4_flex"]
 migrate = []

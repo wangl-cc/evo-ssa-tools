@@ -7,8 +7,6 @@
 //! Backend selection guidance:
 //!
 //! - [`HashMapStore`]: in-process, in-memory storage for tests, experiments, and short-lived jobs.
-//! - [`Fjall2Store`]: persistent Fjall v2 partition-backed storage when you already manage a
-//!   [`fjall::Keyspace`](::fjall2::Keyspace) externally.
 //! - [`Fjall3Store`]: persistent Fjall v3 keyspace-backed storage when you already manage a
 //!   [`fjall::Database`](::fjall3::Database) externally.
 //! - [`RedbStore`]: persistent single-file storage scoped to a [`redb::Database`](::redb::Database)
@@ -23,11 +21,6 @@ use crate::error::Result;
 mod hashmap;
 pub use hashmap::{DefaultHashMapStore, HashMapStore};
 
-#[cfg(feature = "fjall2")]
-mod fjall2;
-#[cfg(feature = "fjall2")]
-pub use fjall2::Fjall2Store;
-
 #[cfg(feature = "fjall3")]
 mod fjall3;
 #[cfg(feature = "fjall3")]
@@ -41,10 +34,6 @@ pub use redb::RedbStore;
 /// Errors produced by storage backends.
 #[derive(thiserror::Error, Debug)]
 pub enum StorageError {
-    #[cfg(feature = "fjall2")]
-    #[error("Fjall v2 database error")]
-    Fjall2(#[from] ::fjall2::Error),
-
     #[cfg(feature = "fjall3")]
     #[error("Fjall v3 database error")]
     Fjall3(#[from] ::fjall3::Error),
