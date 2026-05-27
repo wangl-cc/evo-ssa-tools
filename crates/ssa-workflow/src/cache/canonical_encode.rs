@@ -160,16 +160,37 @@ macro_rules! impl_encode_for_float {
 
 impl_encode_for_float!(f32 => 4, f64 => 8);
 
-impl<T1: CanonicalEncode, T2: CanonicalEncode> CanonicalEncode for (T1, T2) {
-    const SIZE: usize = T1::SIZE + T2::SIZE;
+macro_rules! impl_encode_for_tuple {
+    ($($T:ident $idx:tt),+) => {
+        impl<$($T: CanonicalEncode),+> CanonicalEncode for ($($T,)+) {
+            const SIZE: usize = 0 $(+ $T::SIZE)+;
 
-    unsafe fn encode_into(&self, buffer: &mut [u8]) {
-        unsafe {
-            self.0.encode_into(&mut buffer[..T1::SIZE]);
-            self.1.encode_into(&mut buffer[T1::SIZE..Self::SIZE]);
+            #[allow(unused_assignments)]
+            unsafe fn encode_into(&self, buffer: &mut [u8]) {
+                let mut offset = 0usize;
+                $(
+                    unsafe {
+                        self.$idx.encode_into(&mut buffer[offset..offset + $T::SIZE]);
+                    }
+                    offset += $T::SIZE;
+                )+
+            }
         }
-    }
+    };
 }
+
+impl_encode_for_tuple!(T0 0);
+impl_encode_for_tuple!(T0 0, T1 1);
+impl_encode_for_tuple!(T0 0, T1 1, T2 2);
+impl_encode_for_tuple!(T0 0, T1 1, T2 2, T3 3);
+impl_encode_for_tuple!(T0 0, T1 1, T2 2, T3 3, T4 4);
+impl_encode_for_tuple!(T0 0, T1 1, T2 2, T3 3, T4 4, T5 5);
+impl_encode_for_tuple!(T0 0, T1 1, T2 2, T3 3, T4 4, T5 5, T6 6);
+impl_encode_for_tuple!(T0 0, T1 1, T2 2, T3 3, T4 4, T5 5, T6 6, T7 7);
+impl_encode_for_tuple!(T0 0, T1 1, T2 2, T3 3, T4 4, T5 5, T6 6, T7 7, T8 8);
+impl_encode_for_tuple!(T0 0, T1 1, T2 2, T3 3, T4 4, T5 5, T6 6, T7 7, T8 8, T9 9);
+impl_encode_for_tuple!(T0 0, T1 1, T2 2, T3 3, T4 4, T5 5, T6 6, T7 7, T8 8, T9 9, T10 10);
+impl_encode_for_tuple!(T0 0, T1 1, T2 2, T3 3, T4 4, T5 5, T6 6, T7 7, T8 8, T9 9, T10 10, T11 11);
 
 impl<T: CanonicalEncode, const N: usize> CanonicalEncode for [T; N] {
     const SIZE: usize = T::SIZE * N;
