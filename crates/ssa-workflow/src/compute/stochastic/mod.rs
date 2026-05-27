@@ -129,8 +129,7 @@ use crate::{
     compute::{
         NoFunction,
         stream::{
-            NamedStreams as NamedStreamPlan, RandomVariable, SeedSource, SingleStream, StreamSeed,
-            StreamSpecSeed,
+            NamedStreams, RandomVariable, SeedSource, SingleStream, StreamSeed, StreamSpecSeed,
         },
     },
     identity::{ComputationId, ComputationPath},
@@ -303,10 +302,10 @@ impl<CP> StochasticTaskBuilder<(), (), NoFunction, SingleStream, CP> {
     pub fn streams<const N: usize>(
         self,
         variables: [RandomVariable; N],
-    ) -> StochasticTaskBuilder<(), (), NoFunction, NamedStreamPlan<N>, CP> {
+    ) -> StochasticTaskBuilder<(), (), NoFunction, NamedStreams<N>, CP> {
         StochasticTaskBuilder {
             id: self.id,
-            streams: NamedStreamPlan::new(variables),
+            streams: NamedStreams::new(variables),
             function: self.function,
             provider: self.provider,
             _phantom: PhantomData,

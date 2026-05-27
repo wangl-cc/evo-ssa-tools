@@ -286,7 +286,7 @@ mod tests {
 
     impl Compress for TestCompress {
         const ALGORITHM_ID: u8 = 15;
-        const VALUE_FORMAT_SUFFIX: &'static str = "+test-compress/v1";
+        const VALUE_FORMAT_SUFFIX: &'static str = "test-compress-v1";
 
         fn max_output_size(&self, input_len: usize) -> usize {
             input_len.max(1)

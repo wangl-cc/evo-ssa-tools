@@ -53,7 +53,7 @@ where
     T: Serialize + DeserializeOwned,
 {
     const VALUE_FORMAT: crate::cache::codec::ValueFormat =
-        crate::cache::codec::ValueFormat::new("postcard/v1");
+        crate::cache::codec::ValueFormat::new("postcard-v1");
 
     fn encode(&mut self, value: &T) -> Result<&[u8], SkipReason> {
         self.buffer.clear();

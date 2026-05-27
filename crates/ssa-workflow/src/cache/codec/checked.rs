@@ -69,7 +69,7 @@ where
     E: CodecEngine<T>,
 {
     const VALUE_FORMAT: crate::cache::codec::ValueFormat =
-        crate::cache::codec::ValueFormat::concat(&E::VALUE_FORMAT, "+checked/v1");
+        crate::cache::codec::ValueFormat::concat(&E::VALUE_FORMAT, "checked-v1");
 
     fn encode(&mut self, value: &T) -> Result<&[u8], SkipReason> {
         let raw = self.inner.encode(value)?;

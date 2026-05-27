@@ -25,7 +25,7 @@ where
     T: bitcode::Encode + for<'b> bitcode::Decode<'b>,
 {
     const VALUE_FORMAT: crate::cache::codec::ValueFormat =
-        crate::cache::codec::ValueFormat::new("bitcode06/v1");
+        crate::cache::codec::ValueFormat::new("bitcode06-v1");
 
     fn encode(&mut self, value: &T) -> Result<&[u8], SkipReason> {
         Ok(self.buffer.encode(value))

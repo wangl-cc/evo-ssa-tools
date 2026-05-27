@@ -12,10 +12,6 @@ pub enum Error {
     #[error(transparent)]
     Storage(#[from] crate::cache::storage::StorageError),
 
-    /// Cache index was out of bounds when selecting a cache from a collection of caches.
-    #[error("Try to get cache #{want} but only {total} available")]
-    CacheOutofIndex { total: usize, want: usize },
-
     /// A single-space managed memory cache was rebound to a different computation path.
     #[error("managed cache is already bound to {existing}, cannot bind it to {requested}")]
     ManagedCacheAlreadyBound { existing: String, requested: String },

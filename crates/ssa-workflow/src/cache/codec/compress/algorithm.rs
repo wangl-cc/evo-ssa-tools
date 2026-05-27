@@ -20,6 +20,13 @@ pub trait Compress {
     const ALGORITHM_ID: u8;
 
     /// Stable value-format suffix for this compression algorithm.
+    ///
+    /// Follow the [module naming convention](super#naming-convention).
+    ///
+    /// Built-in suffixes:
+    ///
+    /// - [`Lz4`][]: `"lz4-v1"`
+    /// - [`Zstd`][]: `"zstd-v1"`
     const VALUE_FORMAT_SUFFIX: &'static str;
 
     /// Return the maximum output size to compress `input_len` bytes.
@@ -69,7 +76,7 @@ pub(super) mod lz4 {
     #[cfg(feature = "lz4")]
     impl Compress for Lz4 {
         const ALGORITHM_ID: u8 = 1;
-        const VALUE_FORMAT_SUFFIX: &'static str = "+lz4/v1";
+        const VALUE_FORMAT_SUFFIX: &'static str = "lz4-v1";
 
         fn max_output_size(&self, input_len: usize) -> usize {
             lz4_flex::block::get_maximum_output_size(input_len)
@@ -196,7 +203,7 @@ pub(super) mod zstd {
 
     impl Compress for Zstd {
         const ALGORITHM_ID: u8 = 2;
-        const VALUE_FORMAT_SUFFIX: &'static str = "+zstd/v1";
+        const VALUE_FORMAT_SUFFIX: &'static str = "zstd-v1";
 
         fn max_output_size(&self, input_len: usize) -> usize {
             ::zstd::zstd_safe::compress_bound(input_len)

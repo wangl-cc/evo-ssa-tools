@@ -362,7 +362,7 @@ mod tests {
 
     impl Compress for ShortDecodeCompress {
         const ALGORITHM_ID: u8 = 14;
-        const VALUE_FORMAT_SUFFIX: &'static str = "+test-short-decode/v1";
+        const VALUE_FORMAT_SUFFIX: &'static str = "test-short-decode-v1";
 
         fn max_output_size(&self, input_len: usize) -> usize {
             input_len
@@ -391,7 +391,7 @@ mod tests {
 
     impl Compress for ErrorDecodeCompress {
         const ALGORITHM_ID: u8 = 13;
-        const VALUE_FORMAT_SUFFIX: &'static str = "+test-error-decode/v1";
+        const VALUE_FORMAT_SUFFIX: &'static str = "test-error-decode-v1";
 
         fn max_output_size(&self, input_len: usize) -> usize {
             input_len
@@ -416,7 +416,7 @@ mod tests {
 
     impl Compress for TestCompress {
         const ALGORITHM_ID: u8 = 15;
-        const VALUE_FORMAT_SUFFIX: &'static str = "+test-frame/v1";
+        const VALUE_FORMAT_SUFFIX: &'static str = "test-frame-v1";
 
         fn max_output_size(&self, input_len: usize) -> usize {
             input_len.max(1)

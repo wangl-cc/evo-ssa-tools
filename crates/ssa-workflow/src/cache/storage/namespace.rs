@@ -12,7 +12,7 @@ pub struct StorageNamespace {
 impl StorageNamespace {
     /// Create a storage namespace from a computation path and value format.
     pub fn new(path: &ComputationPath, value_format: ValueFormat) -> Self {
-        let value_format = value_format.render();
+        let value_format = value_format.to_string();
         let hash = namespace_hash(path, &value_format);
         Self {
             name: format!(
@@ -50,7 +50,7 @@ mod tests {
     use crate::identity::{ComputationId, ComputationPath};
 
     const COMPUTATION_A: ComputationId = ComputationId::new("computation/a/v1");
-    const FORMAT: ValueFormat = ValueFormat::new("bitcode06/v1");
+    const FORMAT: ValueFormat = ValueFormat::new("bitcode06-v1");
 
     #[test]
     fn storage_namespace_is_readable_and_includes_value_format() {
@@ -58,7 +58,7 @@ mod tests {
         let namespace = StorageNamespace::new(&path, FORMAT);
 
         assert!(namespace.as_str().contains("path-computation_2f_a_2f_v1"));
-        assert!(namespace.as_str().contains("format-bitcode06_2f_v1"));
+        assert!(namespace.as_str().contains("format-bitcode06-v1"));
         assert!(namespace.as_str().contains("__id-"));
     }
 
