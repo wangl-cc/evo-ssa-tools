@@ -1,3 +1,14 @@
+/// Internal warning helper.
+///
+/// Uses [`log::warn`] when the `log` feature is enabled; falls back to [`eprintln`] otherwise.
+#[cfg(feature = "log")]
+macro_rules! warn {
+    ($($arg:tt)*) => { log::warn!($($arg)*) };
+}
+#[cfg(not(feature = "log"))]
+macro_rules! warn {
+    ($($arg:tt)*) => { eprintln!($($arg)*) };
+}
 pub use canonical_encode::{CanonicalEncode, CanonicalEncodeWriter};
 pub use encoded::EncodedCache;
 pub use memory::{HashMemory, ManagedHashCache, ManagedMemoryCache, MemoryCacheStorage};

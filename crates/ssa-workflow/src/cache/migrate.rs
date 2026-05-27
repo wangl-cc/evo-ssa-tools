@@ -151,7 +151,7 @@ where
                 stats.migrated += 1;
             }
             Err(reason) => {
-                eprintln!("[ssa-workflow] skipping migration entry: {reason}");
+                warn!("[ssa-workflow] skipping migration entry: {reason}");
                 stats.skipped += 1;
             }
         }

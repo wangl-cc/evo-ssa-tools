@@ -78,7 +78,7 @@ pub trait CacheStore: Sync {
             Some(encoded) => match engine.decode(encoded.as_ref()) {
                 Ok(value) => Ok(Some(value)),
                 Err(error) if error.is_cache_corruption() => {
-                    eprintln!("[ssa-workflow] ignoring corrupted cache entry during read: {error}");
+                    warn!("[ssa-workflow] ignoring corrupted cache entry during read: {error}");
                     Ok(None)
                 }
                 Err(error) => Err(error.into()),
@@ -95,7 +95,7 @@ pub trait CacheStore: Sync {
         let encoded = match engine.encode(value) {
             Ok(encoded) => encoded,
             Err(reason) => {
-                eprintln!("[ssa-workflow] skipping cache write: {reason}");
+                warn!("[ssa-workflow] skipping cache write: {reason}");
                 return Ok(());
             }
         };
