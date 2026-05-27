@@ -14,8 +14,8 @@ pub trait Compress {
     /// Assigned ids in the current format:
     ///
     /// - `0`: raw/uncompressed payload (reserved by the frame format)
-    /// - `1`: [`Lz4`] when the `lz4` feature is enabled
-    /// - `2`: [`Zstd`] when the `zstd` feature is enabled
+    /// - `1`: [`Lz4`][`lz4::Lz4`] when the `lz4` feature is enabled
+    /// - `2`: [`Zstd`][`zstd::Zstd`] when the `zstd` feature is enabled
     /// - `3..=15`: currently unassigned
     const ALGORITHM_ID: u8;
 
@@ -25,8 +25,8 @@ pub trait Compress {
     ///
     /// Built-in suffixes:
     ///
-    /// - [`Lz4`][]: `"lz4-v1"`
-    /// - [`Zstd`][]: `"zstd-v1"`
+    /// - [`Lz4`][`lz4::Lz4`]: `"lz4-v1"`
+    /// - [`Zstd`][`zstd::Zstd`]: `"zstd-v1"`
     const VALUE_FORMAT_SUFFIX: &'static str;
 
     /// Return the maximum output size to compress `input_len` bytes.
