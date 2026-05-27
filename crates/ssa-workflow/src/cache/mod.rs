@@ -20,18 +20,33 @@ use crate::Result;
 
 /// Execution-facing cache abstraction keyed by canonical input bytes.
 pub trait Cache<T> {
+    /// Fetch a typed value by key. Returns `Ok(None)` on miss.
+    fn fetch(&mut self, key: &[u8]) -> Result<Option<T>>;
+
+    /// Store a typed value by key.
+    fn store(&mut self, key: &[u8], value: &T) -> Result<()>;
+
     /// Fetch a typed value by key, or execute and store it on cache miss.
     fn fetch_or_execute<F>(&mut self, key: &[u8], execute: F) -> Result<T>
     where
-        F: FnOnce() -> Result<T>;
+        F: FnOnce() -> Result<T>,
+    {
+        if let Some(cached) = self.fetch(key)? {
+            return Ok(cached);
+        }
+        let value = execute()?;
+        self.store(key, &value)?;
+        Ok(value)
+    }
 }
 
 impl<T> Cache<T> for () {
-    fn fetch_or_execute<F>(&mut self, _key: &[u8], execute: F) -> Result<T>
-    where
-        F: FnOnce() -> Result<T>,
-    {
-        execute()
+    fn fetch(&mut self, _key: &[u8]) -> Result<Option<T>> {
+        Ok(None)
+    }
+
+    fn store(&mut self, _key: &[u8], _value: &T) -> Result<()> {
+        Ok(())
     }
 }
 

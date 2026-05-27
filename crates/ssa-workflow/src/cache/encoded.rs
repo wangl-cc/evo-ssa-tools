@@ -14,7 +14,7 @@ use crate::error::Result;
 /// cloned fresh with independent worker-local state.
 #[derive(Debug)]
 pub struct EncodedCache<S, CE> {
-    storage: S,
+    pub(crate) storage: S,
     engine: CE,
 }
 
@@ -39,17 +39,28 @@ where
     S: CacheStore,
     CE: CodecEngine<T>,
 {
-    fn fetch_or_execute<F>(&mut self, key: &[u8], execute: F) -> Result<T>
-    where
-        F: FnOnce() -> Result<T>,
-    {
-        if let Some(cached) = self.storage.fetch::<T, CE>(key, &mut self.engine)? {
-            return Ok(cached);
+    fn fetch(&mut self, key: &[u8]) -> Result<Option<T>> {
+        match self.storage.fetch_encoded(key)? {
+            Some(raw) => match self.engine.decode(raw.as_ref()) {
+                Ok(value) => Ok(Some(value)),
+                Err(error) if error.is_cache_corruption() => {
+                    warn!("[ssa-workflow] ignoring corrupted cache entry during read: {error}");
+                    Ok(None)
+                }
+                Err(error) => Err(error.into()),
+            },
+            None => Ok(None),
         }
-        let output = execute()?;
-        self.storage
-            .store::<T, CE>(key, &mut self.engine, &output)?;
-        Ok(output)
+    }
+
+    fn store(&mut self, key: &[u8], value: &T) -> Result<()> {
+        match self.engine.encode(value) {
+            Ok(encoded) => self.storage.store_encoded(key, encoded)?,
+            Err(reason) => {
+                warn!("[ssa-workflow] skipping cache write: {reason}");
+            }
+        }
+        Ok(())
     }
 }
 

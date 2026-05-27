@@ -14,9 +14,6 @@
 //! Stores do not add namespacing on top of the underlying database. Reuse the same partition,
 //! keyspace, or table only when the cached compute semantics are intentionally identical.
 
-use super::codec::CodecEngine;
-use crate::error::Result;
-
 mod namespace;
 pub use namespace::StorageNamespace;
 
@@ -68,56 +65,6 @@ pub trait CacheStore: Sync {
 
     /// Store an already-encoded payload for `key`.
     fn store_encoded(&self, key: &[u8], encoded: &[u8]) -> StorageResult<()>;
-
-    /// Attempts to fetch a value from the cache.
-    fn fetch<T, CE>(&self, key: &[u8], engine: &mut CE) -> Result<Option<T>>
-    where
-        CE: CodecEngine<T>,
-    {
-        match self.fetch_encoded(key)? {
-            Some(encoded) => match engine.decode(encoded.as_ref()) {
-                Ok(value) => Ok(Some(value)),
-                Err(error) if error.is_cache_corruption() => {
-                    warn!("[ssa-workflow] ignoring corrupted cache entry during read: {error}");
-                    Ok(None)
-                }
-                Err(error) => Err(error.into()),
-            },
-            None => Ok(None),
-        }
-    }
-
-    /// Stores a value in the cache.
-    fn store<T, CE>(&self, key: &[u8], engine: &mut CE, value: &T) -> Result<()>
-    where
-        CE: CodecEngine<T>,
-    {
-        let encoded = match engine.encode(value) {
-            Ok(encoded) => encoded,
-            Err(reason) => {
-                warn!("[ssa-workflow] skipping cache write: {reason}");
-                return Ok(());
-            }
-        };
-
-        self.store_encoded(key, encoded)?;
-        Ok(())
-    }
-
-    /// Fetch value by key, or execute and store it on cache miss.
-    fn fetch_or_execute<T, CE, F>(&self, key: &[u8], engine: &mut CE, execute: F) -> Result<T>
-    where
-        CE: CodecEngine<T>,
-        F: FnOnce(&mut CE) -> Result<T>,
-    {
-        if let Some(cached) = self.fetch::<T, CE>(key, engine)? {
-            Ok(cached)
-        } else {
-            let output = execute(engine)?;
-            self.store::<T, CE>(key, engine, &output)?;
-            Ok(output)
-        }
-    }
 }
 
 #[cfg(test)]

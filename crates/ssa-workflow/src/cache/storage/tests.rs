@@ -8,7 +8,7 @@ use parking_lot::Mutex;
 use super::CacheStore;
 use crate::{
     cache::{
-        CloneShared,
+        Cache, CloneShared, EncodedCache,
         codec::{CheckedCodec, CodecEngine, SkipReason, fixtures::Error as FixtureError},
     },
     error::Result,
@@ -65,9 +65,9 @@ fn test_default_store_skips_write_when_encode_is_rejected() -> Result<()> {
     let store = SkipStore {
         write_called: &write_called,
     };
-    let mut engine = SkipEngine;
+    let mut cache = EncodedCache::new(store, SkipEngine);
 
-    store.store(b"ignored", &mut engine, &42u32)?;
+    cache.store(b"ignored", &42u32)?;
     assert!(!write_called.load(Ordering::Relaxed));
     Ok(())
 }
@@ -116,8 +116,8 @@ fn test_fetch_propagates_non_corruption_decode_error() {
     }
 
     let store = FailingStore;
-    let mut engine = FailingDecodeEngine;
-    let result = store.fetch::<u32, _>(b"ignored", &mut engine);
+    let mut cache = EncodedCache::new(store, FailingDecodeEngine);
+    let result = cache.fetch(b"ignored");
 
     assert!(matches!(
         result,
@@ -182,8 +182,8 @@ fn test_fetch_treats_checked_corruption_as_miss() -> Result<()> {
     encoded[0] ^= 0x01;
 
     let store = SingleValueStore { value: encoded };
-    let mut read_engine = CheckedCodec::new(BytesEngine::default());
-    assert_eq!(store.fetch(b"ignored", &mut read_engine)?, None);
+    let mut cache = EncodedCache::new(store, CheckedCodec::new(BytesEngine::default()));
+    assert_eq!(cache.fetch(b"ignored")?, None);
     Ok(())
 }
 
@@ -247,9 +247,9 @@ fn test_fetch_or_execute_recomputes_when_checked_entry_is_corrupted() -> Result<
         value: encoded,
         writes: writes.clone(),
     };
-    let mut engine = CheckedCodec::new(BytesEngine::default());
+    let mut cache = EncodedCache::new(store, CheckedCodec::new(BytesEngine::default()));
 
-    let value = store.fetch_or_execute(b"ignored", &mut engine, |_| Ok(11u32))?;
+    let value = cache.fetch_or_execute(b"ignored", || Ok(11u32))?;
     assert_eq!(value, 11);
     assert_eq!(writes.load(Ordering::Relaxed), 1);
     Ok(())
@@ -308,8 +308,8 @@ fn test_fetch_or_execute_returns_cached_value_on_hit() -> Result<()> {
     let store = PreloadedStore {
         payload: encoded_value,
     };
-    let mut engine = BytesEngine::default();
-    let value = store.fetch_or_execute(b"key", &mut engine, |_| Ok(0u32))?;
+    let mut cache = EncodedCache::new(store, BytesEngine::default());
+    let value = cache.fetch_or_execute(b"key", || Ok(0u32))?;
     assert_eq!(value, 99);
     Ok(())
 }
@@ -355,13 +355,16 @@ impl super::CacheStore for TestBytesStore {
 #[test]
 fn test_store_basic_roundtrip() -> crate::error::Result<()> {
     let store = TestBytesStore::new();
-    let mut engine = crate::cache::codec::fixtures::FixtureEngine::default();
+    let mut cache = EncodedCache::new(
+        store,
+        crate::cache::codec::fixtures::FixtureEngine::default(),
+    );
 
     let value = 42u32;
     let key = b"test_sig";
-    store.store::<u32, _>(key, &mut engine, &value)?;
-    assert_eq!(store.fetch::<u32, _>(key, &mut engine)?, Some(value));
-    assert_eq!(store.fetch::<u32, _>(b"non_existent", &mut engine)?, None);
-    assert!(store.fetch::<u64, _>(key, &mut engine).is_err());
+    cache.store(key, &value)?;
+    assert_eq!(cache.fetch(key)?, Some(value));
+    assert_eq!(cache.fetch(b"non_existent")?, None::<u32>);
+    assert!(Cache::<u64>::fetch(&mut cache, key).is_err());
     Ok(())
 }

@@ -68,16 +68,13 @@ where
     T: Clone + Send + Sync + 'static,
     H: BuildHasher + Send + Sync,
 {
-    fn fetch_or_execute<F>(&mut self, key: &[u8], execute: F) -> Result<T>
-    where
-        F: FnOnce() -> Result<T>,
-    {
-        if let Some(cached) = self.inner.read().get(key).cloned() {
-            return Ok(cached);
-        }
-        let output = execute()?;
-        self.inner.write().insert(Box::from(key), output.clone());
-        Ok(output)
+    fn fetch(&mut self, key: &[u8]) -> Result<Option<T>> {
+        Ok(self.inner.read().get(key).cloned())
+    }
+
+    fn store(&mut self, key: &[u8], value: &T) -> Result<()> {
+        self.inner.write().insert(Box::from(key), value.clone());
+        Ok(())
     }
 }
 
