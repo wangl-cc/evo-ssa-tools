@@ -1,35 +1,32 @@
-//! Serialisation engines and format identifiers for persistent cache values.
+//! Codecs for turning typed cache values into bytes.
 //!
-//! # Architecture
+//! A codec has two jobs:
 //!
-//! The codec layer sits between typed Rust values and raw storage backends. It has three
-//! responsibilities:
+//! - encode and decode one Rust value type through [`CodecEngine`]
+//! - expose a stable [`ValueFormat`] name for the bytes it writes
 //!
-//! - **Serialisation**: convert `T` to bytes via [`CodecEngine::encode`].
-//! - **Deserialisation**: recover `T` from bytes via [`CodecEngine::decode`].
-//! - **Format identity**: tag every stored value with a stable, versioned name so that different
-//!   serialisation formats, compression choices, or schema versions map to distinct cache
-//!   namespaces.
+//! Persistent cache namespaces include the value format. Changing the serializer, adding a wrapper
+//! such as [`CheckedCodec`], or changing a compression algorithm therefore moves new writes into a
+//! different namespace instead of mixing incompatible bytes.
 //!
-//! # Key types
+//! # Built-in codecs
 //!
-//! | Type | Role |
-//! |---|---|
-//! | [`CodecEngine<T>`] | The central trait: one `encode` / `decode` pair per type `T`. |
-//! | [`ValueFormat`] | A tree of `&'static str` segments that identifies the codec pipeline. |
-//! | [`CheckedCodec<E>`] | Wraps any engine with a CRC32C integrity checksum. |
-//! | [`CompressedCodec<E, C, P>`] | Wraps any engine with a framed compression layer (requires `compress` feature). |
-//! | [`CloneFresh`] | Per-worker clone contract: shared config, fresh scratch buffers. |
+//! | Codec | Feature | Use when |
+//! |---|---|---|
+//! | [`Bitcode06`] | `bitcode06` | You want a fast binary format tied to `bitcode` 0.6. |
+//! | [`Postcard`] | `postcard` | You want a compact serde format with a published wire spec. |
+//! | [`CheckedCodec<E>`] | always | You want CRC32C corruption checks around another codec. |
+//! | [`CompressedCodec<E, C, P>`] | `compress` | You want framed compression around another codec. |
 //!
-//! # Naming convention
+//! # Value format names
 //!
-//! Format names use `-` for internal word separation and **never** contain `/`.
-//! The `/` separator is reserved for layer composition via [`ValueFormat::concat`].
-//! Good names: `"bitcode06-v1"`, `"postcard-v1"`, `"checked-v1"`, `"lz4-v1"`.
+//! Format names are part of the persistent cache contract. Use stable, versioned names such as
+//! `"bitcode06-v1"`, `"postcard-v1"`, `"checked-v1"`, or `"lz4-v1"`.
 //!
-//! # Composing codecs
+//! Use `-` inside one segment and never include `/`. The `/` separator is reserved for composed
+//! formats built with [`ValueFormat::concat`].
 //!
-//! Codec wrappers nest via [`ValueFormat::concat`], which inserts `/` between layers:
+//! Codec wrappers append their own segment to the inner format:
 //!
 //! ```ignore
 //! // Renders as "bitcode06-v1/checked-v1"
@@ -37,36 +34,27 @@
 //!     ValueFormat::concat(&Bitcode06::<MyType>::VALUE_FORMAT, "checked-v1");
 //! ```
 //!
-//! This structural naming ensures that changing any layer in the pipeline (e.g. switching from
-//! `bitcode` to `postcard`, or adding compression) automatically selects a different persistent
-//! namespace.
+//! Structural names distinguish `ValueFormat::new("a/b")` from
+//! `ValueFormat::concat(&ValueFormat::new("a"), "b")`, even though both display as `a/b`.
 //!
-//! # Built-in engines
-//!
-//! | Engine | Feature | Notes |
-//! |---|---|---|
-//! | [`Bitcode06`] | `bitcode06` | Fast binary format; tied to `bitcode` v0.6 major. |
-//! | [`Postcard`] | `postcard` | Stable serde-based format with a published wire spec. |
-//! | [`CheckedCodec<E>`] | always | CRC32C wrapper for any engine. |
-//! | [`CompressedCodec<E, C, P>`] | `compress` | Framed compression (Lz4 / Zstd) for any engine. |
+//! [`CompressedCodec<E, C, P>`]: compress::CompressedCodec
 
 use std::hash::{Hash, Hasher};
 
-/// Stable, versioned name for an encoded cache value format.
+/// Stable name for bytes written by a codec pipeline.
 ///
-/// `ValueFormat::concat` keeps composed formats as a static expression instead of materializing a
-/// new `&'static str`. That avoids Rust's current restriction on using generic associated consts
-/// in const-generic string concatenation while still letting codec wrappers expose a static
-/// `CodecEngine::VALUE_FORMAT`.
+/// Persistent cache namespaces include this value, so changing it intentionally separates old and
+/// new cache entries. Keep names stable for compatible bytes and use a new versioned segment when
+/// the encoded representation changes.
 ///
 /// See the [module-level naming convention](self#naming-convention) for segment naming
 /// rules.
 ///
 /// # Equality
 ///
-/// Equality is structural: two formats are equal only when they were built from the same chain of
-/// [`concat`](Self::concat) calls. Segment boundaries carry semantic meaning (each suffix
-/// represents a wrapper or adaptation layer).
+/// Equality is structural: segment boundaries matter. A single segment named `"a/b"` is different
+/// from `"a"` composed with suffix `"b"` through [`concat`](Self::concat), even though both render
+/// as `a/b`.
 #[derive(Clone, Copy, Debug)]
 pub struct ValueFormat(ValueFormatRepr);
 
@@ -79,12 +67,12 @@ enum ValueFormatRepr {
 use ValueFormatRepr::{Concat, Static};
 
 impl ValueFormat {
-    /// Create a value format identifier from a stable static name.
+    /// Create a value format from one stable segment.
     pub const fn new(name: &'static str) -> Self {
         Self(Static(name))
     }
 
-    /// Create a format by appending a static suffix to another static format expression.
+    /// Append one stable segment to an existing format.
     ///
     /// The rendered form inserts `/` between segments: `base/suffix`.
     /// Callers should **not** include the separator in `suffix`.
@@ -146,13 +134,13 @@ impl PartialEq for ValueFormatRepr {
 // Traits
 // ---------------------------------------------------------------------------
 
-/// Clone a fresh worker-local instance from the same configuration.
+/// Clone a worker-local instance from the same configuration.
 ///
-/// This is the contract for codecs and compression helpers whose worker-local instance should
-/// reuse configuration while resetting scratch buffers, encode state, or compression contexts.
-///
-/// Cloning is fresh at the logical level: workers should not contend on shared mutable codec state.
+/// Implementations should copy configuration, but not share mutable scratch buffers or codec
+/// contexts. This lets parallel workers reuse the same codec settings without contending on codec
+/// internals.
 pub trait CloneFresh: Sized {
+    /// Return an independent instance with the same configuration.
     fn clone_fresh(&self) -> Self;
 }
 
@@ -160,7 +148,7 @@ impl CloneFresh for () {
     fn clone_fresh(&self) -> Self {}
 }
 
-/// A codec engine that can serialize/deserialize `T`.
+/// Encode and decode one cache value type.
 ///
 /// Engines can carry their own scratch space, so the same instance can be reused
 /// across many calls without external buffer management:
@@ -180,7 +168,7 @@ impl CloneFresh for () {
 /// # }
 /// ```
 pub trait CodecEngine<T>: CloneFresh {
-    /// Stable value format identifier for bytes produced by this codec type.
+    /// Stable format name for bytes produced by this codec.
     ///
     /// Follow the [module naming convention](self#naming-convention): use `-` internally,
     /// never `/`. For wrappers, compose with [`ValueFormat::concat`]:
@@ -191,19 +179,19 @@ pub trait CodecEngine<T>: CloneFresh {
     /// ```
     const VALUE_FORMAT: ValueFormat;
 
-    /// Encode `value` and return the encoded bytes, or `Err(SkipReason)` to skip caching.
+    /// Encode `value`, or return [`SkipReason`] to skip this cache write.
     ///
     /// The returned slice borrows from the engine's internal buffer and is
     /// valid until the next call to `encode` or `decode` on this instance.
     fn encode(&mut self, value: &T) -> Result<&[u8], SkipReason>;
 
-    /// Decode a `T` from `bytes`.
+    /// Decode one value from bytes.
     fn decode(&mut self, bytes: &[u8]) -> Result<T, Error>;
 }
 
 type BoxedCodecError = Box<dyn std::error::Error + Send + Sync + 'static>;
 
-/// Reasons why a value may be skipped from the cache.
+/// Reasons why a cache write may be skipped.
 #[derive(thiserror::Error, Debug)]
 pub enum SkipReason {
     #[error("encoded value size {encoded_len} exceeds cache limit {max_len}")]
@@ -213,7 +201,7 @@ pub enum SkipReason {
     EncodeFailure(#[source] BoxedCodecError),
 }
 
-/// Errors produced by codec engines and codec adapters.
+/// Errors produced while decoding cached bytes.
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
     #[cfg(feature = "bitcode06")]
