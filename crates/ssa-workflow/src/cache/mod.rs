@@ -11,9 +11,9 @@ macro_rules! warn {
 }
 pub use canonical_encode::{CanonicalEncode, CanonicalEncodeWriter};
 pub use encoded::EncodedCache;
-pub use memory::{HashMemory, ManagedHashCache, ManagedMemoryCache, MemoryCacheStorage};
 #[cfg(feature = "lru")]
-pub use memory::{LruMemory, ManagedLruCache};
+pub use memory::ManagedLruCache;
+pub use memory::{ManagedHashCache, ManagedMemoryCache};
 pub use provider::{CacheProvider, ManagedPersistentCache, PersistentBackend};
 
 use crate::Result;

@@ -1,8 +1,5 @@
 #[cfg(feature = "lru")]
 use core::num::NonZeroUsize;
-use std::{marker::PhantomData, sync::Arc};
-
-use parking_lot::Mutex;
 
 use super::HashObjectCache;
 #[cfg(feature = "lru")]
@@ -13,107 +10,33 @@ use crate::{
     identity::ComputationPath,
 };
 
-/// Strategy that creates one concrete in-memory cache space.
-pub trait MemoryCacheStorage<T>: Clone + Send + Sync + 'static {
-    /// Bound cache type created by this strategy.
-    type Cache: Cache<T> + CloneShared;
-
-    /// Create one empty cache space.
-    fn new_cache(&self) -> Self::Cache;
-}
-
-/// Unbounded hash-map backed memory cache strategy.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct HashMemory;
-
-impl<T> MemoryCacheStorage<T> for HashMemory
-where
-    T: Clone + Send + Sync + 'static,
-{
-    type Cache = HashObjectCache<T>;
-
-    fn new_cache(&self) -> Self::Cache {
-        HashObjectCache::default()
-    }
-}
-
-/// Bounded LRU memory cache strategy.
-#[cfg(feature = "lru")]
-#[derive(Clone, Copy, Debug)]
-pub struct LruMemory {
-    capacity: NonZeroUsize,
-}
-
-#[cfg(feature = "lru")]
-impl LruMemory {
-    /// Create an LRU strategy with the given entry capacity.
-    pub const fn new(capacity: NonZeroUsize) -> Self {
-        Self { capacity }
-    }
-}
-
-#[cfg(feature = "lru")]
-impl<T> MemoryCacheStorage<T> for LruMemory
-where
-    T: Clone + Send + Sync + 'static,
-{
-    type Cache = LruObjectCache<T>;
-
-    fn new_cache(&self) -> Self::Cache {
-        LruObjectCache::new(self.capacity)
-    }
-}
-
-struct BoundMemorySpace<C> {
+/// One-shot managed memory cache provider.
+///
+/// The provider owns one private in-memory cache space. Binding consumes the provider and returns
+/// the owned cache; worker and cloned-task sharing happens through the bound cache's
+/// [`CloneShared`] implementation.
+pub struct ManagedMemoryCache<C> {
     cache: C,
 }
 
-/// Single-space typed managed memory cache provider.
-pub struct ManagedMemoryCache<T, S = HashMemory>
-where
-    S: MemoryCacheStorage<T>,
-{
-    strategy: S,
-    state: Arc<Mutex<Option<BoundMemorySpace<S::Cache>>>>,
-    _marker: PhantomData<fn() -> T>,
-}
-
-impl<T, S> ManagedMemoryCache<T, S>
-where
-    S: MemoryCacheStorage<T>,
-{
-    /// Create a managed memory cache from a storage strategy.
-    pub fn with_strategy(strategy: S) -> Self {
-        Self {
-            strategy,
-            state: Arc::new(Mutex::new(None)),
-            _marker: PhantomData,
-        }
+impl<C> ManagedMemoryCache<C> {
+    /// Create a managed memory provider from an already constructed cache.
+    pub fn new(cache: C) -> Self {
+        Self { cache }
     }
 }
 
-impl<T> ManagedMemoryCache<T, HashMemory>
+impl<T> ManagedHashCache<T>
 where
     T: Clone + Send + Sync + 'static,
 {
-    /// Create a managed unbounded hash cache.
+    /// Create a managed unbounded hash cache provider.
     pub fn hash() -> Self {
-        Self::with_strategy(HashMemory)
+        Self::new(HashObjectCache::default())
     }
 }
 
-#[cfg(feature = "lru")]
-impl<T> ManagedMemoryCache<T, LruMemory>
-where
-    T: Clone + Send + Sync + 'static,
-{
-    /// Create a managed bounded LRU cache.
-    pub fn lru(capacity: NonZeroUsize) -> Self {
-        Self::with_strategy(LruMemory::new(capacity))
-    }
-}
-
-impl<T> Default for ManagedMemoryCache<T, HashMemory>
+impl<T> Default for ManagedHashCache<T>
 where
     T: Clone + Send + Sync + 'static,
 {
@@ -122,43 +45,34 @@ where
     }
 }
 
-impl<T, S> Clone for ManagedMemoryCache<T, S>
+#[cfg(feature = "lru")]
+impl<T> ManagedLruCache<T>
 where
-    S: MemoryCacheStorage<T>,
+    T: Clone + Send + Sync + 'static,
 {
-    fn clone(&self) -> Self {
-        Self {
-            strategy: self.strategy.clone(),
-            state: self.state.clone(),
-            _marker: PhantomData,
-        }
+    /// Create a managed bounded LRU cache provider.
+    pub fn lru(capacity: NonZeroUsize) -> Self {
+        Self::new(LruObjectCache::new(capacity))
     }
 }
 
-impl<T, S> CacheProvider<T> for ManagedMemoryCache<T, S>
+impl<T, C> CacheProvider<T> for ManagedMemoryCache<C>
 where
-    S: MemoryCacheStorage<T>,
+    C: Cache<T> + CloneShared,
 {
-    type Cache = S::Cache;
+    type Cache = C;
 
     fn bind(self, _path: &ComputationPath) -> Result<Self::Cache> {
-        let mut state = self.state.lock();
-        if let Some(bound) = &*state {
-            return Ok(bound.cache.clone_shared());
-        }
-        let cache = self.strategy.new_cache();
-        let bound_cache = cache.clone_shared();
-        *state = Some(BoundMemorySpace { cache });
-        Ok(bound_cache)
+        Ok(self.cache)
     }
 }
 
 /// Managed unbounded hash cache provider.
-pub type ManagedHashCache<T> = ManagedMemoryCache<T, HashMemory>;
+pub type ManagedHashCache<T> = ManagedMemoryCache<HashObjectCache<T>>;
 
 /// Managed bounded LRU cache provider.
 #[cfg(feature = "lru")]
-pub type ManagedLruCache<T> = ManagedMemoryCache<T, LruMemory>;
+pub type ManagedLruCache<T> = ManagedMemoryCache<LruObjectCache<T>>;
 
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
@@ -167,14 +81,13 @@ mod tests {
     use crate::identity::{ComputationId, ComputationPath};
 
     #[test]
-    fn same_path_reuses_hash_cache() -> Result<()> {
+    fn bind_returns_owned_hash_cache() -> Result<()> {
         let provider = ManagedHashCache::<u32>::default();
         let path = ComputationPath::root(ComputationId::new("answer/v1"));
-        let mut first = provider.clone().bind(&path)?;
-        let mut second = provider.bind(&path)?;
+        let mut cache = provider.bind(&path)?;
 
-        let value = first.fetch_or_execute(b"k", || Ok(7))?;
-        let reused = second.fetch_or_execute(b"k", || Ok(9))?;
+        let value = cache.fetch_or_execute(b"k", || Ok(7))?;
+        let reused = cache.fetch_or_execute(b"k", || Ok(9))?;
 
         assert_eq!(value, 7);
         assert_eq!(reused, 7);

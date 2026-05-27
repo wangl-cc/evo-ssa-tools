@@ -31,23 +31,18 @@ fn managed_hash_cache_reuses_results() -> Result<()> {
 }
 
 #[test]
-fn cloned_managed_hash_provider_shares_same_path_space() -> Result<()> {
-    let provider = ManagedHashCache::<usize>::default();
+fn cloned_task_shares_bound_managed_hash_cache() -> Result<()> {
     let calls = Arc::new(AtomicUsize::new(0));
+    let calls_clone = Arc::clone(&calls);
 
-    let make_task = || {
-        let calls = Arc::clone(&calls);
-        DeterministicTask::builder("shared-double/v1")
-            .function(move |input: usize| {
-                calls.fetch_add(1, Ordering::SeqCst);
-                Ok(input * 2)
-            })
-            .cache(provider.clone())
-            .build()
-    };
-
-    let mut first = make_task()?;
-    let mut second = make_task()?;
+    let mut first = DeterministicTask::builder("shared-double/v1")
+        .function(move |input: usize| {
+            calls_clone.fetch_add(1, Ordering::SeqCst);
+            Ok(input * 2)
+        })
+        .cache(ManagedHashCache::<usize>::default())
+        .build()?;
+    let mut second = first.clone();
 
     assert_eq!(first.execute_one(11)?, 22);
     assert_eq!(second.execute_one(11)?, 22);
@@ -162,8 +157,6 @@ fn stochastic_transform_path_extends_source_path() -> Result<()> {
 fn managed_lru_cache_evicts_by_capacity() -> Result<()> {
     use std::num::NonZeroUsize;
 
-    use ssa_workflow::cache::memory::ManagedMemoryCache;
-
     let calls = Arc::new(AtomicUsize::new(0));
     let calls_clone = Arc::clone(&calls);
     let mut task = DeterministicTask::builder("identity/v1")
@@ -171,7 +164,7 @@ fn managed_lru_cache_evicts_by_capacity() -> Result<()> {
             calls_clone.fetch_add(1, Ordering::SeqCst);
             Ok(input)
         })
-        .cache(ManagedMemoryCache::lru(
+        .cache(ManagedLruCache::<usize>::lru(
             NonZeroUsize::new(1).expect("capacity is non-zero"),
         ))
         .build()?;
