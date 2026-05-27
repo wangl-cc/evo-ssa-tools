@@ -981,7 +981,7 @@ dependencies = [
 
 [[package]]
 name = "ssa-workflow"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "bitcode",
  "blake3",
