@@ -1,13 +1,15 @@
 use super::{CloneFresh, frame::Error};
 use crate::Result;
 
-/// Compression algorithm adapter.
+/// Compression algorithm
 ///
-/// Implementors provide a block-level compress/decompress pair used by [`super::CompressedCodec`].
+/// Implementors provide a block-level compress/decompress pair used by [`CompressedCodec`].
 ///
 /// This trait does not decide *when* compression should be attempted or skipped.
-/// That policy lives in [`super::CompressedCodec`]. `Compress` only describes how to
+/// That policy lives in [`CompressedCodec`]. `Compress` only describes how to
 /// transform one raw byte slice into one compressed byte slice and back.
+///
+/// [`CompressedCodec`]: [super::CompressedCodec]
 pub trait Compress {
     /// Algorithm identifier stored in the low 4 bits of the frame header.
     ///
@@ -64,6 +66,10 @@ pub trait Compress {
 pub(super) mod lz4 {
     use super::*;
 
+    /// LZ4 compression algorithm for compressed cache values.
+    ///
+    /// Optimized for fast compression and decompression.
+    /// This compressor is stateless and uses the stable `lz4-v1` value-format suffix.
     #[derive(Debug, Clone, Copy, Default)]
     pub struct Lz4;
 
@@ -73,7 +79,6 @@ pub(super) mod lz4 {
         }
     }
 
-    #[cfg(feature = "lz4")]
     impl Compress for Lz4 {
         const ALGORITHM_ID: u8 = 1;
         const VALUE_FORMAT_SUFFIX: &'static str = "lz4-v1";
@@ -164,6 +169,10 @@ pub(super) mod zstd {
 
     use super::*;
 
+    /// Zstandard compression algorithm for compressed cache values.
+    ///
+    /// Uses a configurable compression level set by [`Zstd::new`]. This compressor keeps reusable
+    /// compressor/decompressor state and uses the stable `zstd-v1` value-format suffix.
     pub struct Zstd {
         level: i32,
         // NOTE: the lifetime of the compressor and decompressor is for prepared_dictionary.
