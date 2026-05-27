@@ -93,8 +93,8 @@ mod tests {
     use super::*;
     use crate::{
         cache::{
-            Cache, CloneShared, ManagedPersistentCache, codec::fixtures::FixtureEngine,
-            provider::CacheProvider, storage::StorageError,
+            Cache, CloneShared, EncodedCache, ManagedPersistentCache,
+            codec::fixtures::FixtureEngine, provider::CacheProvider, storage::StorageError,
         },
         error::Result,
         identity::{ComputationId, ComputationPath},
@@ -107,23 +107,16 @@ mod tests {
             .open()
             .map_err(StorageError::from)?;
         let store = Fjall3Store::open(db, "test", None)?;
-        let mut engine = FixtureEngine::default();
+        let mut cache = EncodedCache::new(store, FixtureEngine::default());
 
-        assert_eq!(
-            store.fetch::<u32, FixtureEngine>(b"non_existent", &mut engine)?,
-            None
-        );
+        assert_eq!(cache.fetch(b"non_existent")?, None::<u32>);
 
-        store.store::<u32, FixtureEngine>(b"k", &mut engine, &42u32)?;
-        assert_eq!(
-            store.fetch::<u32, FixtureEngine>(b"k", &mut engine)?,
-            Some(42)
-        );
-        assert!(
-            store
-                .fetch::<u64, FixtureEngine>(b"k", &mut engine)
-                .is_err()
-        );
+        cache.store(b"k", &42u32)?;
+        assert_eq!(cache.fetch(b"k")?, Some(42u32));
+
+        let mut mismatched_cache =
+            EncodedCache::new(cache.storage.clone_shared(), FixtureEngine::default());
+        assert!(crate::cache::Cache::<u64>::fetch(&mut mismatched_cache, b"k").is_err());
         Ok(())
     }
 

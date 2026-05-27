@@ -167,7 +167,7 @@ mod tests {
     use super::*;
     use crate::{
         cache::{
-            Cache, CloneShared, PersistentBackend,
+            Cache, CloneShared, EncodedCache, PersistentBackend,
             codec::{ValueFormat, fixtures::FixtureEngine},
         },
         error::Result as CrateResult,
@@ -181,23 +181,15 @@ mod tests {
         let file = tempfile::NamedTempFile::new().unwrap();
         let db = ::redb::Database::create(file.path()).map_err(StorageError::from)?;
         let store = RedbStore::from_database(db, "test")?;
-        let mut engine = FixtureEngine::default();
+        let mut cache = EncodedCache::new(store, FixtureEngine::default());
 
-        assert_eq!(
-            store.fetch::<u32, FixtureEngine>(b"non_existent", &mut engine)?,
-            None
-        );
+        assert_eq!(cache.fetch(b"non_existent")?, None::<u32>);
 
-        store.store::<u32, FixtureEngine>(b"k", &mut engine, &42u32)?;
-        assert_eq!(
-            store.fetch::<u32, FixtureEngine>(b"k", &mut engine)?,
-            Some(42)
-        );
-        assert!(
-            store
-                .fetch::<u64, FixtureEngine>(b"k", &mut engine)
-                .is_err()
-        );
+        cache.store(b"k", &42u32)?;
+        assert_eq!(cache.fetch(b"k")?, Some(42u32));
+        let mut mismatched_cache =
+            EncodedCache::new(cache.storage.clone_shared(), FixtureEngine::default());
+        assert!(crate::cache::Cache::<u64>::fetch(&mut mismatched_cache, b"k").is_err());
         Ok(())
     }
 
@@ -245,17 +237,15 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("cache.redb");
 
-        let mut engine = FixtureEngine::default();
         {
-            let store = RedbStore::open(&path, "test")?;
-            store.store::<u32, FixtureEngine>(b"k", &mut engine, &7u32)?;
+            let mut cache =
+                EncodedCache::new(RedbStore::open(&path, "test")?, FixtureEngine::default());
+            cache.store(b"k", &7u32)?;
         }
 
-        let reopened = RedbStore::open(&path, "test")?;
-        assert_eq!(
-            reopened.fetch::<u32, FixtureEngine>(b"k", &mut engine)?,
-            Some(7)
-        );
+        let mut reopened =
+            EncodedCache::new(RedbStore::open(&path, "test")?, FixtureEngine::default());
+        assert_eq!(reopened.fetch(b"k")?, Some(7u32));
         Ok(())
     }
 

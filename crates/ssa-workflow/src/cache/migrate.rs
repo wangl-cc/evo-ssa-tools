@@ -167,6 +167,7 @@ mod tests {
 
     use super::*;
     use crate::cache::{
+        Cache, CloneShared, EncodedCache,
         codec::{CodecEngine, Error as CodecError, SkipReason, fixtures::FixtureEngine},
         storage::{CacheStore, StorageResult},
     };
@@ -208,9 +209,9 @@ mod tests {
 
     fn make_store(entries: &[(&[u8], u32)]) -> TestStore {
         let store = TestStore::default();
-        let mut engine = FixtureEngine::default();
+        let mut cache = EncodedCache::new(store.clone(), FixtureEngine::default());
         for &(key, value) in entries {
-            store.store::<u32, _>(key, &mut engine, &value).unwrap();
+            cache.store(key, &value).unwrap();
         }
         store
     }
@@ -225,10 +226,10 @@ mod tests {
         assert_eq!(stats.migrated, 3);
         assert_eq!(stats.skipped, 0);
 
-        let mut engine = FixtureEngine::default();
-        assert_eq!(dst.fetch::<u32, _>(b"k1", &mut engine)?, Some(1));
-        assert_eq!(dst.fetch::<u32, _>(b"k2", &mut engine)?, Some(2));
-        assert_eq!(dst.fetch::<u32, _>(b"k3", &mut engine)?, Some(3));
+        let mut cache = EncodedCache::new(dst.clone(), FixtureEngine::default());
+        assert_eq!(cache.fetch(b"k1")?, Some(1u32));
+        assert_eq!(cache.fetch(b"k2")?, Some(2u32));
+        assert_eq!(cache.fetch(b"k3")?, Some(3u32));
         Ok(())
     }
 
@@ -256,10 +257,10 @@ mod tests {
         assert_eq!(stats.migrated, 3);
         assert_eq!(stats.skipped, 0);
 
-        let mut engine = FixtureEngine::default();
-        assert_eq!(dst.fetch::<u32, _>(b"k1", &mut engine)?, Some(1));
-        assert_eq!(dst.fetch::<u32, _>(b"k2", &mut engine)?, Some(2));
-        assert_eq!(dst.fetch::<u32, _>(b"k3", &mut engine)?, Some(3));
+        let mut cache = EncodedCache::new(dst.clone(), FixtureEngine::default());
+        assert_eq!(cache.fetch(b"k1")?, Some(1u32));
+        assert_eq!(cache.fetch(b"k2")?, Some(2u32));
+        assert_eq!(cache.fetch(b"k3")?, Some(3u32));
         Ok(())
     }
 
@@ -344,16 +345,17 @@ mod tests {
         let file = tempfile::NamedTempFile::new().unwrap();
         let db = Arc::new(redb::Database::create(file.path()).map_err(StorageError::from)?);
         let src = RedbStore::from_database_arc(db.clone(), "src")?;
-        let mut engine = FixtureEngine::default();
-        src.store(b"k1", &mut engine, &1u32)?;
-        src.store(b"k2", &mut engine, &2u32)?;
+        let mut src_cache = EncodedCache::new(src.clone_shared(), FixtureEngine::default());
+        src_cache.store(b"k1", &1u32)?;
+        src_cache.store(b"k2", &2u32)?;
 
         let dst = RedbStore::from_database_arc(db, "dst")?;
         let stats = copy(&src, &dst)?;
         assert_eq!(stats.migrated, 2);
 
-        assert_eq!(dst.fetch::<u32, _>(b"k1", &mut engine)?, Some(1));
-        assert_eq!(dst.fetch::<u32, _>(b"k2", &mut engine)?, Some(2));
+        let mut dst_cache = EncodedCache::new(dst, FixtureEngine::default());
+        assert_eq!(dst_cache.fetch(b"k1")?, Some(1u32));
+        assert_eq!(dst_cache.fetch(b"k2")?, Some(2u32));
         Ok(())
     }
 
@@ -386,9 +388,9 @@ mod tests {
             .open()
             .map_err(StorageError::from)?;
         let src = Fjall3Store::open(db, "src", None)?;
-        let mut engine = FixtureEngine::default();
-        src.store(b"k1", &mut engine, &1u32)?;
-        src.store(b"k2", &mut engine, &2u32)?;
+        let mut src_cache = EncodedCache::new(src.clone_shared(), FixtureEngine::default());
+        src_cache.store(b"k1", &1u32)?;
+        src_cache.store(b"k2", &2u32)?;
 
         let tmp2 = tempfile::tempdir().unwrap();
         let db2 = fjall3::Database::builder(&tmp2)
@@ -398,8 +400,9 @@ mod tests {
         let stats = copy(&src, &dst)?;
         assert_eq!(stats.migrated, 2);
 
-        assert_eq!(dst.fetch::<u32, _>(b"k1", &mut engine)?, Some(1));
-        assert_eq!(dst.fetch::<u32, _>(b"k2", &mut engine)?, Some(2));
+        let mut dst_cache = EncodedCache::new(dst, FixtureEngine::default());
+        assert_eq!(dst_cache.fetch(b"k1")?, Some(1u32));
+        assert_eq!(dst_cache.fetch(b"k2")?, Some(2u32));
         Ok(())
     }
 
