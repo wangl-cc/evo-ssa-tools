@@ -1,12 +1,10 @@
 mod hash;
-pub use hash::{DefaultHashObjectCache, HashObjectCache};
+pub use hash::{DefaultHashObjectCache, HashObjectCache, ManagedHashCache};
 
 mod managed;
-pub use managed::{ManagedHashCache, ManagedMemoryCache};
+pub use managed::ManagedMemoryCache;
 
 #[cfg(feature = "lru")]
 mod lru;
 #[cfg(feature = "lru")]
-pub use lru::{DefaultLruObjectCache, LruObjectCache};
-#[cfg(feature = "lru")]
-pub use managed::ManagedLruCache;
+pub use lru::{DefaultLruObjectCache, LruObjectCache, ManagedLruCache};

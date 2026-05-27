@@ -170,8 +170,8 @@ If compute logic, encoding, or output type changes incompatibly, use a fresh key
 
 Use these cache choices depending on what you need:
 
-- `ManagedHashCache<T>` — one-shot process-local unbounded typed object cache provider. It owns one private in-memory keyspace; after binding, cloned tasks and workers share the bound cache handle.
-- `ManagedLruCache<T>` (requires `lru` feature) — one-shot process-local bounded typed object cache provider with LRU eviction. It is also single-space and typed.
+- `ManagedHashCache<T>` — one-shot process-local unbounded typed object cache provider. It owns one private in-memory keyspace; after binding, cloned tasks and workers share the bound cache handle. The computation path is not part of the in-memory key.
+- `ManagedLruCache<T>` (requires `lru` feature) — one-shot process-local bounded typed object cache provider with LRU eviction. It is also single-space and typed, and the computation path is not part of the in-memory key.
 - `ManagedPersistentCache<B, CE>` — multi-space persistent provider. It combines a backend root (`Fjall3Backend` or `RedbBackend`) with a codec engine and automatically maps computation paths plus `CE::VALUE_FORMAT` to physical namespaces.
 - `HashObjectCache<T>`, `LruObjectCache<T>`, and `EncodedCache<S, CE>` — low-level bound caches for callers that intentionally manage cache keyspaces themselves.
 - `()` — disables caching entirely; every input is always recomputed.
@@ -204,6 +204,8 @@ use ssa_workflow::prelude::*;
 let _cache = ManagedHashCache::<String>::default();
 ```
 
+Use `ManagedHashCache::<T>::with_hasher(...)` when the in-memory hash map needs a custom hasher.
+
 For bounded managed in-memory caching with LRU eviction (requires `lru` feature):
 
 ```rust
@@ -212,9 +214,11 @@ For bounded managed in-memory caching with LRU eviction (requires `lru` feature)
 use std::num::NonZeroUsize;
 use ssa_workflow::prelude::*;
 
-let _cache = ManagedLruCache::<String>::lru(NonZeroUsize::new(256).expect("capacity is non-zero"));
+let _cache = ManagedLruCache::<String>::new(NonZeroUsize::new(256).expect("capacity is non-zero"));
 # }
 ```
+
+Use `ManagedLruCache::<T>::with_hasher(...)` when the bounded cache also needs a custom hasher.
 
 ## Codec
 

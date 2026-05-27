@@ -27,6 +27,10 @@ pub trait Cache<T> {
     fn store(&mut self, key: &[u8], value: &T) -> Result<()>;
 
     /// Fetch a typed value by key, or execute and store it on cache miss.
+    ///
+    /// This default implementation is thread-safe when the underlying cache is thread-safe, but it
+    /// is not single-flight: concurrent misses for the same key may execute the closure more than
+    /// once before any worker stores a value.
     fn fetch_or_execute<F>(&mut self, key: &[u8], execute: F) -> Result<T>
     where
         F: FnOnce() -> Result<T>,

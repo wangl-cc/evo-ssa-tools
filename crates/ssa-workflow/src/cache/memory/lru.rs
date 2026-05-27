@@ -4,7 +4,7 @@ use parking_lot::Mutex;
 
 use crate::{
     Result,
-    cache::{Cache, CloneShared},
+    cache::{Cache, CloneShared, memory::ManagedMemoryCache},
 };
 
 type LruCache<T, H> = lru::LruCache<Box<[u8]>, T, H>;
@@ -16,14 +16,12 @@ type LruCache<T, H> = lru::LruCache<Box<[u8]>, T, H>;
 ///
 /// All workers share the same underlying cache: a result stored by one worker is immediately
 /// available to the others, and evictions from any worker affect the shared pool.
-pub struct LruObjectCache<T, H = RandomState> {
+///
+/// This cache is thread-safe, but not single-flight. Concurrent misses for the same key may execute
+/// the caller-provided computation more than once.
+#[derive(Debug)]
+pub struct LruObjectCache<T, H: BuildHasher = RandomState> {
     inner: Arc<Mutex<LruCache<T, H>>>,
-}
-
-impl<T, H> core::fmt::Debug for LruObjectCache<T, H> {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("LruObjectCache").finish_non_exhaustive()
-    }
 }
 
 impl<T> LruObjectCache<T, RandomState> {
@@ -48,10 +46,34 @@ where
 /// [`LruObjectCache`] with the default hasher.
 pub type DefaultLruObjectCache<T> = LruObjectCache<T, RandomState>;
 
+/// Managed bounded LRU cache provider.
+pub type ManagedLruCache<T> = ManagedMemoryCache<LruObjectCache<T>>;
+
+impl<T> ManagedLruCache<T>
+where
+    T: Clone + Send + Sync + 'static,
+{
+    /// Create a managed bounded LRU cache provider.
+    pub fn new(capacity: NonZeroUsize) -> Self {
+        Self::from_cache(LruObjectCache::new(capacity))
+    }
+}
+
+impl<T, H> ManagedMemoryCache<LruObjectCache<T, H>>
+where
+    T: Clone + Send + Sync + 'static,
+    H: BuildHasher,
+{
+    /// Create a managed bounded LRU cache provider with a custom hasher.
+    pub fn with_hasher(capacity: NonZeroUsize, hasher: H) -> Self {
+        Self::from_cache(LruObjectCache::with_hasher(capacity, hasher))
+    }
+}
+
 impl<T, H> CloneShared for LruObjectCache<T, H>
 where
     T: Send + Sync,
-    H: Send + Sync,
+    H: BuildHasher + Send + Sync,
 {
     fn clone_shared(&self) -> Self {
         Self {
@@ -210,13 +232,47 @@ mod tests {
 
     mod formatting {
         use super::fixtures::entry_capacity;
-        use crate::cache::memory::DefaultLruObjectCache;
+        use crate::{
+            Result,
+            cache::{Cache, memory::DefaultLruObjectCache},
+        };
 
         #[test]
         fn debug_names_cache_type() {
             let cache = DefaultLruObjectCache::<String>::new(entry_capacity());
             let debug = format!("{cache:?}");
             assert!(debug.contains("LruObjectCache"));
+        }
+
+        #[test]
+        fn with_hasher_builds_working_cache() -> Result<()> {
+            let mut cache = DefaultLruObjectCache::with_hasher(
+                entry_capacity(),
+                std::collections::hash_map::RandomState::default(),
+            );
+
+            let value = cache.fetch_or_execute(b"k", || Ok(42u32))?;
+            assert_eq!(value, 42);
+            Ok(())
+        }
+
+        #[test]
+        fn managed_with_hasher_builds_working_cache() -> Result<()> {
+            use crate::{
+                cache::{memory::ManagedLruCache, provider::CacheProvider},
+                identity::{ComputationId, ComputationPath},
+            };
+
+            let provider = ManagedLruCache::<u32>::with_hasher(
+                entry_capacity(),
+                std::collections::hash_map::RandomState::default(),
+            );
+            let path = ComputationPath::root(ComputationId::new("managed-lru/v1"));
+            let mut cache = provider.bind(&path)?;
+
+            let value = cache.fetch_or_execute(b"k", || Ok(42u32))?;
+            assert_eq!(value, 42);
+            Ok(())
         }
     }
 }

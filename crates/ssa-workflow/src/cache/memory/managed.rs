@@ -1,9 +1,3 @@
-#[cfg(feature = "lru")]
-use core::num::NonZeroUsize;
-
-use super::HashObjectCache;
-#[cfg(feature = "lru")]
-use super::LruObjectCache;
 use crate::{
     Result,
     cache::{Cache, CloneShared, provider::CacheProvider},
@@ -15,44 +9,21 @@ use crate::{
 /// The provider owns one private in-memory cache space. Binding consumes the provider and returns
 /// the owned cache; worker and cloned-task sharing happens through the bound cache's
 /// [`CloneShared`] implementation.
+///
+/// The computation path passed to `bind` is intentionally ignored. Managed memory providers are
+/// one-shot and path-agnostic; isolation comes from provider ownership rather than path-derived
+/// namespacing.
+///
+/// This wrapper is intentionally not directly constructible by downstream callers. Use concrete
+/// providers such as `ManagedHashCache` and `ManagedLruCache`, or implement [`CacheProvider`] for
+/// custom provider types that need different keyspace semantics.
 pub struct ManagedMemoryCache<C> {
     cache: C,
 }
 
 impl<C> ManagedMemoryCache<C> {
-    /// Create a managed memory provider from an already constructed cache.
-    pub fn new(cache: C) -> Self {
+    pub(super) fn from_cache(cache: C) -> Self {
         Self { cache }
-    }
-}
-
-impl<T> ManagedHashCache<T>
-where
-    T: Clone + Send + Sync + 'static,
-{
-    /// Create a managed unbounded hash cache provider.
-    pub fn hash() -> Self {
-        Self::new(HashObjectCache::default())
-    }
-}
-
-impl<T> Default for ManagedHashCache<T>
-where
-    T: Clone + Send + Sync + 'static,
-{
-    fn default() -> Self {
-        Self::hash()
-    }
-}
-
-#[cfg(feature = "lru")]
-impl<T> ManagedLruCache<T>
-where
-    T: Clone + Send + Sync + 'static,
-{
-    /// Create a managed bounded LRU cache provider.
-    pub fn lru(capacity: NonZeroUsize) -> Self {
-        Self::new(LruObjectCache::new(capacity))
     }
 }
 
@@ -62,27 +33,23 @@ where
 {
     type Cache = C;
 
-    fn bind(self, _path: &ComputationPath) -> Result<Self::Cache> {
+    fn bind(self, _: &ComputationPath) -> Result<Self::Cache> {
         Ok(self.cache)
     }
 }
-
-/// Managed unbounded hash cache provider.
-pub type ManagedHashCache<T> = ManagedMemoryCache<HashObjectCache<T>>;
-
-/// Managed bounded LRU cache provider.
-#[cfg(feature = "lru")]
-pub type ManagedLruCache<T> = ManagedMemoryCache<LruObjectCache<T>>;
 
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
-    use crate::identity::{ComputationId, ComputationPath};
+    use crate::{
+        cache::memory::HashObjectCache,
+        identity::{ComputationId, ComputationPath},
+    };
 
     #[test]
     fn bind_returns_owned_hash_cache() -> Result<()> {
-        let provider = ManagedHashCache::<u32>::default();
+        let provider = ManagedMemoryCache::from_cache(HashObjectCache::<u32>::default());
         let path = ComputationPath::root(ComputationId::new("answer/v1"));
         let mut cache = provider.bind(&path)?;
 

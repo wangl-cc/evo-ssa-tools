@@ -51,6 +51,39 @@ fn cloned_task_shares_bound_managed_hash_cache() -> Result<()> {
 }
 
 #[test]
+fn independent_managed_hash_providers_do_not_share_space() -> Result<()> {
+    let calls_a = Arc::new(AtomicUsize::new(0));
+    let calls_b = Arc::new(AtomicUsize::new(0));
+
+    let mut first = DeterministicTask::builder("same-id/v1")
+        .function({
+            let calls = Arc::clone(&calls_a);
+            move |input: usize| {
+                calls.fetch_add(1, Ordering::SeqCst);
+                Ok(input * 2)
+            }
+        })
+        .cache(ManagedHashCache::<usize>::default())
+        .build()?;
+    let mut second = DeterministicTask::builder("same-id/v1")
+        .function({
+            let calls = Arc::clone(&calls_b);
+            move |input: usize| {
+                calls.fetch_add(1, Ordering::SeqCst);
+                Ok(input * 3)
+            }
+        })
+        .cache(ManagedHashCache::<usize>::default())
+        .build()?;
+
+    assert_eq!(first.execute_one(11)?, 22);
+    assert_eq!(second.execute_one(11)?, 33);
+    assert_eq!(calls_a.load(Ordering::SeqCst), 1);
+    assert_eq!(calls_b.load(Ordering::SeqCst), 1);
+    Ok(())
+}
+
+#[test]
 fn named_streams_affect_rng_but_not_cache_namespace() -> Result<()> {
     const WAITING: RandomVariable = RandomVariable::new("waiting/v1");
     const CHOICE: RandomVariable = RandomVariable::new("choice/v1");
@@ -164,7 +197,7 @@ fn managed_lru_cache_evicts_by_capacity() -> Result<()> {
             calls_clone.fetch_add(1, Ordering::SeqCst);
             Ok(input)
         })
-        .cache(ManagedLruCache::<usize>::lru(
+        .cache(ManagedLruCache::<usize>::new(
             NonZeroUsize::new(1).expect("capacity is non-zero"),
         ))
         .build()?;
@@ -172,6 +205,31 @@ fn managed_lru_cache_evicts_by_capacity() -> Result<()> {
     assert_eq!(task.execute_one(1)?, 1);
     assert_eq!(task.execute_one(2)?, 2);
     assert_eq!(task.execute_one(1)?, 1);
+    assert_eq!(calls.load(Ordering::SeqCst), 3);
+    Ok(())
+}
+
+#[cfg(feature = "lru")]
+#[test]
+fn cloned_task_shares_managed_lru_eviction_state() -> Result<()> {
+    use std::num::NonZeroUsize;
+
+    let calls = Arc::new(AtomicUsize::new(0));
+    let calls_clone = Arc::clone(&calls);
+    let mut first = DeterministicTask::builder("shared-lru/v1")
+        .function(move |input: usize| {
+            calls_clone.fetch_add(1, Ordering::SeqCst);
+            Ok(input)
+        })
+        .cache(ManagedLruCache::<usize>::new(
+            NonZeroUsize::new(1).expect("capacity is non-zero"),
+        ))
+        .build()?;
+    let mut second = first.clone();
+
+    assert_eq!(first.execute_one(1)?, 1);
+    assert_eq!(second.execute_one(2)?, 2);
+    assert_eq!(first.execute_one(1)?, 1);
     assert_eq!(calls.load(Ordering::SeqCst), 3);
     Ok(())
 }
