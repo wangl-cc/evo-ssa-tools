@@ -7,9 +7,9 @@
 //!
 //! - **Serialisation**: convert `T` to bytes via [`CodecEngine::encode`].
 //! - **Deserialisation**: recover `T` from bytes via [`CodecEngine::decode`].
-//! - **Format identity**: tag every stored value with a stable, versioned name so that
-//!   different serialisation formats, compression choices, or schema versions map to
-//!   distinct cache namespaces.
+//! - **Format identity**: tag every stored value with a stable, versioned name so that different
+//!   serialisation formats, compression choices, or schema versions map to distinct cache
+//!   namespaces.
 //!
 //! # Key types
 //!
@@ -49,7 +49,6 @@
 //! | [`Postcard`] | `postcard` | Stable serde-based format with a published wire spec. |
 //! | [`CheckedCodec<E>`] | always | CRC32C wrapper for any engine. |
 //! | [`CompressedCodec<E, C, P>`] | `compress` | Framed compression (Lz4 / Zstd) for any engine. |
-//!
 
 use std::hash::{Hash, Hasher};
 

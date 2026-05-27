@@ -6,18 +6,18 @@ use super::{
 use crate::{Result, identity::ComputationPath};
 
 /// Provider that binds a semantic computation path to an execution cache.
-pub trait CacheProvider<T>: Clone {
+pub trait CacheProvider<T> {
     /// Bound cache used by the execution path.
     type Cache: Cache<T> + CloneShared;
 
-    /// Bind the provider to a computation path.
-    fn bind(&self, path: &ComputationPath) -> Result<Self::Cache>;
+    /// Bind the provider to a computation path, consuming it.
+    fn bind(self, path: &ComputationPath) -> Result<Self::Cache>;
 }
 
 impl<T> CacheProvider<T> for () {
     type Cache = ();
 
-    fn bind(&self, _path: &ComputationPath) -> Result<Self::Cache> {
+    fn bind(self, _path: &ComputationPath) -> Result<Self::Cache> {
         Ok(())
     }
 }
@@ -60,7 +60,7 @@ where
 {
     type Cache = EncodedCache<B::Store, CE>;
 
-    fn bind(&self, path: &ComputationPath) -> Result<Self::Cache> {
+    fn bind(self, path: &ComputationPath) -> Result<Self::Cache> {
         let namespace = StorageNamespace::new(path, CE::VALUE_FORMAT);
         let store = self.backend.open_namespace(&namespace)?;
         Ok(EncodedCache::new(store, self.codec.clone_fresh()))

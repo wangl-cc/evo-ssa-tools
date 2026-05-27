@@ -12,10 +12,6 @@ pub enum Error {
     #[error(transparent)]
     Storage(#[from] crate::cache::storage::StorageError),
 
-    /// A single-space managed memory cache was rebound to a different computation path.
-    #[error("managed cache is already bound to {existing}, cannot bind it to {requested}")]
-    ManagedCacheAlreadyBound { existing: String, requested: String },
-
     /// Execution was short-circuited due to an interrupt signal.
     #[error("Execution interrupted")]
     Interrupted,
@@ -27,3 +23,18 @@ pub enum Error {
 
 /// Convenience alias for `std::result::Result<T, Error>`.
 pub type Result<T, E = Error> = std::result::Result<T, E>;
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod tests {
+    use super::*;
+
+    mod display {
+        use super::*;
+
+        #[test]
+        fn interrupted() {
+            assert_eq!(Error::Interrupted.to_string(), "Execution interrupted");
+        }
+    }
+}

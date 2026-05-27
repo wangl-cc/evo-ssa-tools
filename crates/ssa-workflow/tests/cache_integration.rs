@@ -31,7 +31,7 @@ where
 {
     type Cache = C;
 
-    fn bind(&self, _path: &ComputationPath) -> Result<Self::Cache> {
+    fn bind(self, _path: &ComputationPath) -> Result<Self::Cache> {
         Ok(self.0.clone_shared())
     }
 }

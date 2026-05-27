@@ -8,7 +8,7 @@ use super::HashObjectCache;
 #[cfg(feature = "lru")]
 use super::LruObjectCache;
 use crate::{
-    Error, Result,
+    Result,
     cache::{Cache, CloneShared, provider::CacheProvider},
     identity::ComputationPath,
 };
@@ -65,7 +65,6 @@ where
 }
 
 struct BoundMemorySpace<C> {
-    path: ComputationPath,
     cache: C,
 }
 
@@ -142,24 +141,15 @@ where
 {
     type Cache = S::Cache;
 
-    fn bind(&self, path: &ComputationPath) -> Result<Self::Cache> {
+    fn bind(self, _path: &ComputationPath) -> Result<Self::Cache> {
         let mut state = self.state.lock();
-        match &*state {
-            Some(bound) if bound.path == *path => Ok(bound.cache.clone_shared()),
-            Some(bound) => Err(Error::ManagedCacheAlreadyBound {
-                existing: bound.path.render(),
-                requested: path.render(),
-            }),
-            None => {
-                let cache = self.strategy.new_cache();
-                let bound_cache = cache.clone_shared();
-                *state = Some(BoundMemorySpace {
-                    path: path.clone(),
-                    cache,
-                });
-                Ok(bound_cache)
-            }
+        if let Some(bound) = &*state {
+            return Ok(bound.cache.clone_shared());
         }
+        let cache = self.strategy.new_cache();
+        let bound_cache = cache.clone_shared();
+        *state = Some(BoundMemorySpace { cache });
+        Ok(bound_cache)
     }
 }
 
@@ -180,7 +170,7 @@ mod tests {
     fn same_path_reuses_hash_cache() -> Result<()> {
         let provider = ManagedHashCache::<u32>::default();
         let path = ComputationPath::root(ComputationId::new("answer/v1"));
-        let mut first = provider.bind(&path)?;
+        let mut first = provider.clone().bind(&path)?;
         let mut second = provider.bind(&path)?;
 
         let value = first.fetch_or_execute(b"k", || Ok(7))?;
@@ -188,34 +178,6 @@ mod tests {
 
         assert_eq!(value, 7);
         assert_eq!(reused, 7);
-        Ok(())
-    }
-
-    #[test]
-    fn different_path_is_rejected() -> Result<()> {
-        let provider = ManagedHashCache::<u32>::default();
-        let first = ComputationPath::root(ComputationId::new("a/v1"));
-        let second = ComputationPath::root(ComputationId::new("b/v1"));
-
-        let _ = provider.bind(&first)?;
-        assert!(matches!(
-            provider.bind(&second),
-            Err(Error::ManagedCacheAlreadyBound { .. })
-        ));
-        Ok(())
-    }
-
-    #[test]
-    fn computation_change_is_different_path() -> Result<()> {
-        let provider = ManagedHashCache::<u32>::default();
-        let first = ComputationPath::root(ComputationId::new("m/a/trajectory/v1"));
-        let second = ComputationPath::root(ComputationId::new("m/b/trajectory/v1"));
-
-        let _ = provider.bind(&first)?;
-        assert!(matches!(
-            provider.bind(&second),
-            Err(Error::ManagedCacheAlreadyBound { .. })
-        ));
         Ok(())
     }
 }

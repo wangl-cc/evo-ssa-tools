@@ -156,8 +156,8 @@ mod tests {
         );
         let path_a = ComputationPath::root(ComputationId::new("a/v1"));
         let path_b = ComputationPath::root(ComputationId::new("b/v1"));
-        let mut cache_a = <_ as CacheProvider<u32>>::bind(&provider, &path_a)?;
-        let mut cache_b = <_ as CacheProvider<u32>>::bind(&provider, &path_b)?;
+        let mut cache_a = <_ as CacheProvider<u32>>::bind(provider.clone(), &path_a)?;
+        let mut cache_b = <_ as CacheProvider<u32>>::bind(provider, &path_b)?;
 
         assert_eq!(cache_a.fetch_or_execute(b"k", || Ok(1))?, 1);
         assert_eq!(cache_b.fetch_or_execute(b"k", || Ok(2))?, 2);
