@@ -127,6 +127,8 @@ let task = DeterministicTask::builder("summary-statistics-v1")
 
 Identifiers use stable segments with ASCII letters, digits, and `-`; `_` is reserved for derived cache names. Prefer lowercase kebab-case and bump the version when the meaning of a result changes. Persistent namespace names use `_` between path or codec segments and `__` between path, codec, and hash fields.
 
+Dependent computation paths render from the current result back to their roots. For example, a transform id `summary-v1` built from a task id `trajectory-v1` renders as `summary-v1_trajectory-v1`, read as "summary of trajectory". Persistent namespaces and RNG seed material use this same segment order.
+
 If you change compute logic, output type, or persistent encoding incompatibly, use a new computation id or codec format so old cached bytes are not reused as a different result.
 
 ## Transforms
@@ -153,6 +155,8 @@ let peak = trajectory
 ```
 
 Use `.transform("...").function_with_param(...)` when an analysis parameter is part of the result semantics. Use `.stochastic_transform("...")` when downstream analysis samples from an upstream result.
+
+Random variable names used with `.streams(...)` are opaque RNG seed labels. They do not become storage namespace segments and are not restricted like task or transform ids. Keep them stable for reproducibility; changing a label changes only that variable's derived stream.
 
 ## Choosing a Cache
 
