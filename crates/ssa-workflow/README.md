@@ -125,7 +125,7 @@ let task = DeterministicTask::builder("summary-statistics-v1")
 # }
 ```
 
-Identifiers use stable segments with ASCII letters, digits, `.`, and `-`; `_` is reserved for derived cache names. Prefer lowercase kebab-case and bump the version when the meaning of a result changes. Persistent namespace names use `_` between path or codec segments and `__` between path, codec, and hash fields.
+Identifiers use stable segments with ASCII letters, digits, and `-`; `_` is reserved for derived cache names. Prefer lowercase kebab-case and bump the version when the meaning of a result changes. Persistent namespace names use `_` between path or codec segments and `__` between path, codec, and hash fields.
 
 If you change compute logic, output type, or persistent encoding incompatibly, use a new computation id or codec format so old cached bytes are not reused as a different result.
 

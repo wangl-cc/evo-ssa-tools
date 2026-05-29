@@ -4,7 +4,7 @@
 ///
 /// # Naming convention
 ///
-/// Only alphabetic, digits, and `-` are allowed. `_` is reserved for derived names and must not
+/// Only ASCII letters, digits, and `-` are allowed. `_` is reserved for derived names and must not
 /// appear inside one segment.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ComputationId(&'static str);
