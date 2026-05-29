@@ -38,31 +38,6 @@ pub struct ComputationPath {
     node: Box<ComputationPathNode>,
 }
 
-pub(crate) trait IdentifierSegmentChain {
-    fn for_each_segment(&self, visit: impl FnMut(&str));
-
-    fn write_segments<W: std::fmt::Write>(&self, separator: &str, out: &mut W) -> std::fmt::Result
-    where
-        Self: Sized,
-    {
-        let mut is_first = true;
-        let mut result = Ok(());
-        self.for_each_segment(|segment| {
-            if result.is_err() {
-                return;
-            }
-            if !is_first {
-                result = out.write_str(separator);
-            }
-            if result.is_ok() {
-                result = out.write_str(segment);
-            }
-            is_first = false;
-        });
-        result
-    }
-}
-
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 enum ComputationPathNode {
     Root(ComputationId),
@@ -96,6 +71,31 @@ impl ComputationPath {
     #[cfg(test)]
     pub(crate) fn child_from_str(&self, id: &'static str) -> Self {
         self.child(ComputationId::new(id))
+    }
+}
+
+pub(crate) trait IdentifierSegmentChain {
+    fn for_each_segment(&self, visit: impl FnMut(&str));
+
+    fn write_segments<W: std::fmt::Write>(&self, separator: &str, out: &mut W) -> std::fmt::Result
+    where
+        Self: Sized,
+    {
+        let mut is_first = true;
+        let mut result = Ok(());
+        self.for_each_segment(|segment| {
+            if result.is_err() {
+                return;
+            }
+            if !is_first {
+                result = out.write_str(separator);
+            }
+            if result.is_ok() {
+                result = out.write_str(segment);
+            }
+            is_first = false;
+        });
+        result
     }
 }
 
@@ -190,7 +190,7 @@ mod tests {
         use super::*;
 
         #[test]
-        fn display_matches_namespace_path() {
+        fn display_joins_segments_with_double_hyphen() {
             let path = ComputationPath::root_from_str("trajectory-v1").child_from_str("summary-v1");
 
             assert_eq!(path.to_string(), "summary-v1--trajectory-v1");
