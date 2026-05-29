@@ -16,7 +16,7 @@ impl ComputationId {
     ///
     /// Panics if the name does not follow the naming convention.
     pub const fn new(name: &'static str) -> Self {
-        assert_identifier_segment(name, false);
+        assert_identifier_segment(name);
         Self(name)
     }
 
@@ -145,9 +145,9 @@ pub(crate) const FIELD_DISPLAY_SEPARATOR: &str = "__";
 
 pub(crate) const SEGMENT_ENCODED_SEPARATOR: &[u8] = b"\0";
 
-pub(crate) const fn assert_identifier_segment(value: &str, allow_empty: bool) {
+pub(crate) const fn assert_identifier_segment(value: &str) {
     let bytes = value.as_bytes();
-    if !allow_empty && bytes.is_empty() {
+    if bytes.is_empty() {
         panic!("identifier segment must not be empty");
     }
 

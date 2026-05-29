@@ -64,7 +64,7 @@ impl ValueFormat {
     ///
     /// Used by standalone codec engines such as [`Postcard`], which encode/decode values directly.
     pub const fn new(name: &'static str) -> Self {
-        assert_identifier_segment(name, false);
+        assert_identifier_segment(name);
         Self(Root(name))
     }
 
@@ -72,7 +72,7 @@ impl ValueFormat {
     ///
     /// Used by codec wrappers such as [`CheckedCodec`], which wrap around another codec engine.
     pub const fn concat(base: &'static ValueFormat, suffix: &'static str) -> Self {
-        assert_identifier_segment(suffix, false);
+        assert_identifier_segment(suffix);
         Self(Child {
             parent: base,
             segment: suffix,
