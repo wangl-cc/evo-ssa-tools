@@ -190,13 +190,6 @@ mod tests {
         use super::*;
 
         #[test]
-        fn display_joins_segments_with_double_hyphen() {
-            let path = ComputationPath::root_from_str("trajectory-v1").child_from_str("summary-v1");
-
-            assert_eq!(path.to_string(), "summary-v1--trajectory-v1");
-        }
-
-        #[test]
         fn parent_path_changes_child_path() {
             let first = ComputationPath::root_from_str("model-a-trajectory-v1")
                 .child_from_str("summary-v1");
@@ -207,11 +200,10 @@ mod tests {
         }
 
         #[test]
-        fn child_path_iterates_current_then_parent() {
-            let root = ComputationPath::root_from_str("trajectory-v1");
-            let child = root.child_from_str("summary-v1");
+        fn display() {
+            let path = ComputationPath::root_from_str("trajectory-v1").child_from_str("summary-v1");
 
-            assert_eq!(child.to_string(), "summary-v1--trajectory-v1");
+            assert_eq!(path.to_string(), "summary-v1--trajectory-v1");
         }
     }
 }

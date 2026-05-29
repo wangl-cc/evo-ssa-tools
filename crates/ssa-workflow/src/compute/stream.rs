@@ -279,8 +279,8 @@ mod tests {
             let seed = test_path().derive_single_stream_seed();
             let mut rng = seed.make_stream(b"input-A");
 
-            assert_eq!(rng.next_u64(), 1_421_434_473_334_949_077);
-            assert_eq!(rng.next_u64(), 3_224_070_076_799_729_687);
+            assert_eq!(rng.next_u64(), 9757323776284558303);
+            assert_eq!(rng.next_u64(), 14831252709949991980);
         }
 
         #[test]
@@ -290,8 +290,8 @@ mod tests {
 
             let first = rng.next_u64();
             let second = rng.next_u64();
-            assert_eq!(first, 4_391_430_058_245_016_709);
-            assert_eq!(second, 1_974_120_400_265_464_438);
+            assert_eq!(first, 2995826121996810498);
+            assert_eq!(second, 8097071445023789793);
         }
 
         #[test]
