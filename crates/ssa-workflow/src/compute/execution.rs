@@ -259,10 +259,13 @@ mod tests {
             let mut compute = EncodedEcho {
                 calls: Arc::clone(&calls),
             };
+            let mut buffer = vec![0xAA; u16::SIZE + 1];
 
-            let output = compute.execute_one(0x1234)?;
+            // Safety: the buffer is longer than the required u16 canonical encoding.
+            let output = unsafe { compute.execute_one_with_buffer(0x1234, &mut buffer) }?;
 
             assert_eq!(output, [0x12, 0x34]);
+            assert_eq!(buffer, [0x12, 0x34, 0xAA]);
             assert_eq!(calls.load(Ordering::SeqCst), 1);
             Ok(())
         }
@@ -373,6 +376,23 @@ mod tests {
                     .iter()
                     .all(|result| { matches!(result, Err(Error::Interrupted)) })
             );
+        }
+
+        #[test]
+        fn collect_observes_preset_interrupt_signal() {
+            let signal = InterruptSignal::new();
+            signal.interrupt();
+            let calls = Arc::new(AtomicUsize::new(0));
+
+            let result = CountingCompute {
+                calls: Arc::clone(&calls),
+            }
+            .with_inputs(0u8..4)
+            .with_interrupt_signal(signal)
+            .collect();
+
+            assert!(matches!(result, Err(Error::Interrupted)));
+            assert_eq!(calls.load(Ordering::SeqCst), 0);
         }
 
         #[derive(Clone)]

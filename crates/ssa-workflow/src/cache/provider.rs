@@ -79,3 +79,61 @@ where
         Ok(EncodedCache::new(storage, self.codec.clone_fresh()))
     }
 }
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod tests {
+    use super::*;
+    use crate::{
+        Error,
+        cache::{
+            codec::fixtures::FixtureEngine,
+            storage::{EncodedStorage, StorageResult},
+        },
+        identity::ComputationPath,
+    };
+
+    #[derive(Clone, Copy)]
+    struct FailingStorageProvider;
+
+    struct NeverStorage;
+
+    impl CloneShared for NeverStorage {
+        fn clone_shared(&self) -> Self {
+            Self
+        }
+    }
+
+    impl EncodedStorage for NeverStorage {
+        type Encoded<'a> = &'a [u8];
+
+        fn fetch_encoded(&self, _key: &[u8]) -> StorageResult<Option<Self::Encoded<'_>>> {
+            Ok(None)
+        }
+
+        fn store_encoded(&self, _key: &[u8], _encoded: &[u8]) -> StorageResult<()> {
+            Ok(())
+        }
+    }
+
+    impl StorageProvider for FailingStorageProvider {
+        type Storage = NeverStorage;
+
+        fn open_storage(&self, _namespace: &StorageNamespace) -> Result<Self::Storage> {
+            Err(Error::Compute(
+                std::io::Error::other("open storage failed").into(),
+            ))
+        }
+    }
+
+    #[test]
+    fn persistent_cache_provider_bind_propagates_storage_open_error() {
+        let provider =
+            PersistentCacheProvider::new(FailingStorageProvider, FixtureEngine::default());
+        let path = ComputationPath::root_from_str("provider-bind-failure-v1");
+
+        let result = <_ as CacheProvider<u32>>::bind(provider, &path);
+
+        assert!(matches!(result, Err(Error::Compute(_))));
+    }
+}

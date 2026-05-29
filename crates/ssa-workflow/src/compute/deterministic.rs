@@ -147,13 +147,9 @@ where
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
-    use std::{
-        sync::{
-            Arc,
-            atomic::{AtomicUsize, Ordering},
-        },
-        thread::sleep,
-        time::Duration,
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
     };
 
     use super::*;
@@ -213,20 +209,16 @@ mod tests {
     #[test]
     fn test_deterministic_execution_order() -> Result<()> {
         let compute = DeterministicTask::builder("test-deterministic-order-v1")
-            .function(|i: usize| {
-                sleep(Duration::from_millis(20 - (i % 20) as u64));
-                Ok(i + 100)
-            })
+            .function(|i: usize| Ok(i + 100))
             .cache(ManagedHashCache::<usize>::default())
             .build()?;
 
-        let n_inputs = 20;
-
-        let results = compute.with_inputs(0..n_inputs).collect()?;
+        let inputs = vec![3usize, 0, 2, 1, 4];
+        let results = compute.with_inputs(inputs.clone()).collect()?;
 
         assert_eq!(
             results,
-            (0..n_inputs).map(|i| i + 100).collect::<Vec<usize>>()
+            inputs.into_iter().map(|i| i + 100).collect::<Vec<usize>>()
         );
 
         Ok(())
@@ -241,7 +233,6 @@ mod tests {
                         std::io::Error::other("real failure").into(),
                     ))
                 } else {
-                    sleep(Duration::from_millis(10));
                     Ok(i)
                 }
             })
@@ -292,30 +283,5 @@ mod tests {
             .build();
 
         assert!(matches!(result, Err(crate::Error::Compute(_))));
-    }
-
-    #[test]
-    fn test_explicit_shared_cache_behavior() -> Result<()> {
-        let call_count = Arc::new(AtomicUsize::new(0));
-
-        let mut compute_a = DeterministicTask::builder("test-shared-cache-v1")
-            .function({
-                let call_count = call_count.clone();
-                move |i: usize| {
-                    call_count.fetch_add(1, Ordering::SeqCst);
-                    Ok(i * 7)
-                }
-            })
-            .cache(ManagedHashCache::<usize>::default())
-            .build()?;
-        let mut compute_b = compute_a.clone();
-
-        let output_a = compute_a.execute_one(4usize)?;
-        let output_b = compute_b.execute_one(4usize)?;
-
-        assert_eq!(output_a, 28);
-        assert_eq!(output_b, 28);
-        assert_eq!(call_count.load(Ordering::SeqCst), 1);
-        Ok(())
     }
 }

@@ -1,51 +1,39 @@
-use std::{
-    sync::{
-        Arc,
-        atomic::{AtomicUsize, Ordering},
-    },
-    thread::sleep,
-    time::Duration,
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
 };
 
 use super::*;
 use crate::{Result, compute::execution::Compute, prelude::*};
 
 #[test]
-fn test_transform_two_stage_caching() -> Result<()> {
-    let stage1_calls = Arc::new(AtomicUsize::new(0));
-    let stage1_calls_clone = stage1_calls.clone();
-    let stage2_calls = Arc::new(AtomicUsize::new(0));
-    let stage2_calls_clone = stage2_calls.clone();
-
-    let transform = DeterministicTask::builder("test-two-stage-source-v1")
-        .function(move |input| {
-            stage1_calls_clone.fetch_add(1, Ordering::SeqCst);
-            sleep(Duration::from_millis(10));
-            Ok(input * 2)
+fn transform_cache_hit_skips_uncached_upstream() -> Result<()> {
+    let source_calls = Arc::new(AtomicUsize::new(0));
+    let transform_calls = Arc::new(AtomicUsize::new(0));
+    let mut transform = DeterministicTask::builder("test-two-stage-source-v1")
+        .function({
+            let source_calls = Arc::clone(&source_calls);
+            move |input: usize| {
+                source_calls.fetch_add(1, Ordering::SeqCst);
+                Ok(input * 2)
+            }
         })
-        .cache(ManagedHashCache::<usize>::default())
         .build()?
         .transform("test-two-stage-plus-ten-v1")
-        .function(move |intermediate| {
-            stage2_calls_clone.fetch_add(1, Ordering::SeqCst);
-            sleep(Duration::from_millis(10));
-            Ok(intermediate + 10)
+        .function({
+            let transform_calls = Arc::clone(&transform_calls);
+            move |intermediate| {
+                transform_calls.fetch_add(1, Ordering::SeqCst);
+                Ok(intermediate + 10)
+            }
         })
         .cache(ManagedHashCache::<usize>::default())
         .build()?;
 
-    let results1 = transform.with_inputs(0..5usize).collect()?;
-
-    let expected: Vec<usize> = (0..5).map(|i| i * 2 + 10).collect();
-    assert_eq!(results1, expected);
-    assert_eq!(stage1_calls.load(Ordering::SeqCst), 5);
-    assert_eq!(stage2_calls.load(Ordering::SeqCst), 5);
-
-    let results2 = transform.with_inputs(0..5).collect()?;
-
-    assert_eq!(results2, expected);
-    assert_eq!(stage1_calls.load(Ordering::SeqCst), 5);
-    assert_eq!(stage2_calls.load(Ordering::SeqCst), 5);
+    assert_eq!(transform.execute_one(5)?, 20);
+    assert_eq!(transform.execute_one(5)?, 20);
+    assert_eq!(source_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(transform_calls.load(Ordering::SeqCst), 1);
 
     Ok(())
 }
@@ -59,7 +47,6 @@ fn test_transform_source_and_transform_cache_split() -> Result<()> {
             let stage1_calls = stage1_calls.clone();
             move |input: usize| {
                 stage1_calls.fetch_add(1, Ordering::SeqCst);
-                sleep(Duration::from_millis(10));
                 Ok(input * 2)
             }
         })
@@ -73,7 +60,6 @@ fn test_transform_source_and_transform_cache_split() -> Result<()> {
             .transform("test-cache-split-format-a-v1")
             .function(move |intermediate| {
                 stage2_calls.fetch_add(1, Ordering::SeqCst);
-                sleep(Duration::from_millis(10));
                 Ok(format!("Result: {}", intermediate))
             })
             .cache(ManagedHashCache::<String>::default())
@@ -93,7 +79,6 @@ fn test_transform_source_and_transform_cache_split() -> Result<()> {
             .transform("test-cache-split-format-b-v1")
             .function(move |intermediate| {
                 stage2_calls.fetch_add(1, Ordering::SeqCst);
-                sleep(Duration::from_millis(10));
                 Ok(format!("Result: {}", intermediate))
             })
             .cache(ManagedHashCache::<String>::default())
@@ -247,6 +232,47 @@ fn stochastic_transform_repetition_changes_output_and_hits_cache() -> Result<()>
 
     assert_ne!(first, second);
     assert_eq!(first, first_again);
+    assert_eq!(source_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(transform_calls.load(Ordering::SeqCst), 2);
+    Ok(())
+}
+
+#[test]
+fn parameterized_stochastic_transform_recomputes_only_transform_for_param_changes() -> Result<()> {
+    let source_calls = Arc::new(AtomicUsize::new(0));
+    let transform_calls = Arc::new(AtomicUsize::new(0));
+
+    let source = DeterministicTask::builder("param-stochastic-source-cache-v1")
+        .function({
+            let source_calls = Arc::clone(&source_calls);
+            move |input: u16| {
+                source_calls.fetch_add(1, Ordering::SeqCst);
+                Ok(input * 2)
+            }
+        })
+        .cache(ManagedHashCache::<u16>::default())
+        .build()?;
+
+    let mut transform = source
+        .stochastic_transform("param-stochastic-analysis-v1")
+        .function_with_param({
+            let transform_calls = Arc::clone(&transform_calls);
+            move |rng, value, offset: u16| {
+                transform_calls.fetch_add(1, Ordering::SeqCst);
+                Ok(value as u64 + offset as u64 + rand::Rng::next_u64(rng))
+            }
+        })
+        .cache(ManagedHashCache::<u64>::default())
+        .build()?;
+
+    let input_a = DependentStochasticInput::new(1u16, 10u16, 0);
+    let input_b = DependentStochasticInput::new(2u16, 10u16, 0);
+    let first_a = transform.execute_one(input_a.clone())?;
+    let first_b = transform.execute_one(input_b)?;
+    let second_a = transform.execute_one(input_a)?;
+
+    assert_ne!(first_a, first_b);
+    assert_eq!(first_a, second_a);
     assert_eq!(source_calls.load(Ordering::SeqCst), 1);
     assert_eq!(transform_calls.load(Ordering::SeqCst), 2);
     Ok(())

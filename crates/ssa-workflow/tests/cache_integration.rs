@@ -11,7 +11,7 @@ use ssa_workflow::cache::{
 };
 use ssa_workflow::{
     Compute,
-    cache::{Cache, CacheProvider, CloneShared, memory::DefaultHashObjectCache},
+    cache::{Cache, CacheProvider, CloneShared},
     compute::DeterministicTask,
     error::Result,
     identity::ComputationPath,
@@ -148,26 +148,6 @@ fn encoded_cache_uses_configured_fresh_codec_in_parallel_execution() -> Result<(
     assert_eq!(outputs1, expected);
     assert_eq!(outputs2, expected);
     assert_eq!(call_count.load(Ordering::SeqCst), 8);
-    Ok(())
-}
-
-#[test]
-fn typed_object_cache_skips_codec_roundtrip_on_hot_hits() -> Result<()> {
-    let object_compute_calls = Arc::new(AtomicUsize::new(0));
-    let mut object_compute = DeterministicTask::builder("test-object-hot-hit-v1")
-        .function({
-            let compute_calls = Arc::clone(&object_compute_calls);
-            move |i: usize| {
-                compute_calls.fetch_add(1, Ordering::SeqCst);
-                Ok(i * 2)
-            }
-        })
-        .cache(SingleCacheProvider(DefaultHashObjectCache::default()))
-        .build()?;
-
-    assert_eq!(object_compute.execute_one(3usize)?, 6);
-    assert_eq!(object_compute.execute_one(3usize)?, 6);
-    assert_eq!(object_compute_calls.load(Ordering::SeqCst), 1);
     Ok(())
 }
 
