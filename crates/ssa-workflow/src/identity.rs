@@ -147,8 +147,6 @@ impl IdentifierSegmentChain for ComputationPath {
 
 pub(crate) const SEGMENT_DISPLAY_SEPARATOR: &str = "_";
 
-pub(crate) const FIELD_DISPLAY_SEPARATOR: &str = "__";
-
 pub(crate) const SEGMENT_ENCODED_SEPARATOR: &[u8] = b"\0";
 
 pub(crate) const fn assert_identifier_segment(value: &str) {
@@ -197,6 +195,12 @@ mod tests {
         #[should_panic(expected = "identifier segment contains an invalid character")]
         fn rejects_underscore() {
             let _ = ComputationId::new("model_family-v1");
+        }
+
+        #[test]
+        #[should_panic(expected = "identifier segment contains an invalid character")]
+        fn rejects_dot() {
+            let _ = ComputationId::new("model.family-v1");
         }
 
         #[test]

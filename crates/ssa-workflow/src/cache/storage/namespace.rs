@@ -1,9 +1,4 @@
-use crate::{
-    cache::codec::ValueFormat,
-    identity::{
-        ComputationPath, FIELD_DISPLAY_SEPARATOR, IdentifierSegmentChain, SEGMENT_ENCODED_SEPARATOR,
-    },
-};
+use crate::{cache::codec::ValueFormat, identity::ComputationPath};
 
 /// Physical storage namespace derived from a computation path and value format.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -14,11 +9,7 @@ pub struct StorageNamespace {
 impl StorageNamespace {
     /// Create a storage namespace from a computation path and value format.
     pub fn new(path: &ComputationPath, value_format: ValueFormat) -> Self {
-        let hash = namespace_hash(path, value_format);
-        let short_hash: &str = &hash.to_hex()[..16];
-        let name = format!(
-            "{path}{FIELD_DISPLAY_SEPARATOR}{value_format}{FIELD_DISPLAY_SEPARATOR}{short_hash}"
-        );
+        let name = format!("{path}__{value_format}");
 
         Self { name }
     }
@@ -26,20 +17,6 @@ impl StorageNamespace {
     /// Return the storage namespace name.
     pub fn as_str(&self) -> &str {
         &self.name
-    }
-}
-
-fn namespace_hash(path: &ComputationPath, value_format: ValueFormat) -> blake3::Hash {
-    let mut hasher = blake3::Hasher::new();
-    path.hash_segments(&mut hasher);
-    hasher.update(SEGMENT_ENCODED_SEPARATOR);
-    value_format.hash_segments(&mut hasher);
-    hasher.finalize()
-}
-
-impl std::fmt::Display for StorageNamespace {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.name)
     }
 }
 
@@ -57,24 +34,19 @@ mod tests {
         let path = ComputationPath::root_from_str(COMPUTATION_A);
         let namespace = StorageNamespace::new(&path, FORMAT);
 
-        assert!(
-            namespace
-                .as_str()
-                .starts_with("computation-a-v1__bitcode06-v1__")
-        );
-        assert_eq!(namespace.as_str().rsplit_once("__").unwrap().1.len(), 16);
+        assert_eq!(namespace.as_str(), "computation-a-v1__bitcode06-v1");
     }
 
     #[test]
-    fn storage_namespace_display_matches_backend_name() {
-        let path = ComputationPath::root_from_str(COMPUTATION_A);
+    fn child_path_namespace_renders_leaf_first() {
+        let path = ComputationPath::root_from_str("trajectory-v1").child_from_str("summary-v1");
         let namespace = StorageNamespace::new(&path, FORMAT);
 
-        assert_eq!(namespace.to_string(), namespace.as_str());
+        assert_eq!(namespace.as_str(), "summary-v1_trajectory-v1__bitcode06-v1");
     }
 
     #[test]
-    fn namespace_hash_includes_path_boundaries() {
+    fn namespace_includes_path_boundaries() {
         let first = ComputationPath::root_from_str("a-b").child_from_str("c");
         let second = ComputationPath::root_from_str("a").child_from_str("b-c");
 

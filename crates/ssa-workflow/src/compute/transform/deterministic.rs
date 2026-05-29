@@ -305,4 +305,31 @@ mod tests {
         assert_eq!(source_calls.load(Ordering::SeqCst), 1);
         Ok(())
     }
+
+    #[derive(Clone, Copy)]
+    struct FailingProvider;
+
+    impl<T> CacheProvider<T> for FailingProvider {
+        type Cache = ();
+
+        fn bind(self, _: &ComputationPath) -> Result<Self::Cache> {
+            Err(crate::Error::Compute("bind failed".into()))
+        }
+    }
+
+    #[test]
+    fn transform_build_propagates_cache_provider_error() -> Result<()> {
+        let source = DeterministicTask::builder("test-bind-source-v1")
+            .function(|input: u8| Ok(input))
+            .build()?;
+
+        let result = source
+            .transform("test-bind-transform-v1")
+            .function(Ok)
+            .cache(FailingProvider)
+            .build();
+
+        assert!(matches!(result, Err(crate::Error::Compute(_))));
+        Ok(())
+    }
 }

@@ -75,6 +75,21 @@ pub trait Compute {
     /// Inputs must produce an [`IndexedParallelIterator`], so collected outputs follow the logical
     /// input order and Rayon can use its indexed collection path.
     ///
+    /// Unordered parallel inputs such as `HashSet` intentionally do not satisfy this API:
+    ///
+    /// ```compile_fail
+    /// # use ssa_workflow::prelude::*;
+    /// # use std::collections::HashSet;
+    /// # fn main() -> ssa_workflow::Result<()> {
+    /// let task = DeterministicTask::builder("unordered-inputs-v1")
+    ///     .function(|input: u8| Ok(input))
+    ///     .build()?;
+    /// let inputs = HashSet::from([1u8, 2u8]);
+    /// let _ = task.with_inputs(inputs);
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
     /// Each input item is scheduled independently. Batch execution does not deduplicate equal
     /// inputs or provide single-flight behavior for equal canonical keys; if duplicate inputs
     /// are executed concurrently, they may compute the same cache miss more than once before

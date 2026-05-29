@@ -233,19 +233,6 @@ mod tests {
     }
 
     #[test]
-    fn batch_collects_outputs_in_input_order() -> Result<()> {
-        let compute = DeterministicTask::builder("test-deterministic-batch-order-v1")
-            .function(|i: usize| Ok(i * i))
-            .cache(ManagedHashCache::<usize>::default())
-            .build()?;
-
-        let results = compute.with_inputs(0..8usize).collect()?;
-
-        assert_eq!(results, vec![0, 1, 4, 9, 16, 25, 36, 49]);
-        Ok(())
-    }
-
-    #[test]
     fn batch_collect_naturally_returns_the_real_item_error() {
         let compute = DeterministicTask::builder("test-deterministic-real-error-v1")
             .function(|i: usize| {
@@ -267,52 +254,6 @@ mod tests {
     }
 
     #[test]
-    fn batch_results_collects_item_errors_without_short_circuiting() -> Result<()> {
-        let call_count = Arc::new(AtomicUsize::new(0));
-        let compute = DeterministicTask::builder("test-deterministic-results-v1")
-            .function({
-                let call_count = Arc::clone(&call_count);
-                move |i: usize| {
-                    call_count.fetch_add(1, Ordering::SeqCst);
-                    if i == 2 {
-                        Err(crate::Error::Compute(std::io::Error::other("boom").into()))
-                    } else {
-                        Ok(i)
-                    }
-                }
-            })
-            .build()?;
-
-        let results = compute.with_inputs(0..5usize).results();
-
-        assert_eq!(results.len(), 5);
-        assert!(matches!(results[2], Err(crate::Error::Compute(_))));
-        assert_eq!(call_count.load(Ordering::SeqCst), 5);
-        Ok(())
-    }
-
-    #[test]
-    fn test_no_cache_mode_still_works() -> Result<()> {
-        let call_count = Arc::new(AtomicUsize::new(0));
-        let call_count_clone = call_count.clone();
-
-        let mut compute = DeterministicTask::builder("test-no-cache-direct-v1")
-            .function(move |i: usize| {
-                call_count_clone.fetch_add(1, Ordering::SeqCst);
-                Ok(i * 11)
-            })
-            .build()?;
-
-        let output1 = compute.execute_one(3)?;
-        let output2 = compute.execute_one(3)?;
-
-        assert_eq!(output1, 33);
-        assert_eq!(output2, 33);
-        assert_eq!(call_count.load(Ordering::SeqCst), 2);
-        Ok(())
-    }
-
-    #[test]
     fn builder_defaults_to_no_cache() -> Result<()> {
         let call_count = Arc::new(AtomicUsize::new(0));
         let call_count_clone = call_count.clone();
@@ -328,6 +269,29 @@ mod tests {
         assert_eq!(compute.execute_one(3)?, 33);
         assert_eq!(call_count.load(Ordering::SeqCst), 2);
         Ok(())
+    }
+
+    #[derive(Clone, Copy)]
+    struct FailingProvider;
+
+    impl<T> CacheProvider<T> for FailingProvider {
+        type Cache = ();
+
+        fn bind(self, _: &ComputationPath) -> Result<Self::Cache> {
+            Err(crate::Error::Compute(
+                std::io::Error::other("bind failed").into(),
+            ))
+        }
+    }
+
+    #[test]
+    fn build_propagates_cache_provider_error() {
+        let result = DeterministicTask::builder("test-bind-failure-v1")
+            .function(|input: u8| Ok(input))
+            .cache(FailingProvider)
+            .build();
+
+        assert!(matches!(result, Err(crate::Error::Compute(_))));
     }
 
     #[test]

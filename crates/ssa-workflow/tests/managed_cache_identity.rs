@@ -296,6 +296,42 @@ mod persistent_fjall3 {
     }
 
     #[test]
+    fn same_path_and_format_reopen_same_persistent_namespace() -> Result<()> {
+        let (_dir, _db, storage_provider) = make_storage_provider()?;
+        let provider = cache_provider(storage_provider);
+        let calls = Arc::new(AtomicUsize::new(0));
+        let input = StochasticInput::new((), 3);
+
+        let mut first = StochasticTask::builder("reopen-computation-v1")
+            .function({
+                let calls = Arc::clone(&calls);
+                move |_rng, ()| {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    Ok(11u64)
+                }
+            })
+            .cache(provider.clone())
+            .build()?;
+
+        assert_eq!(first.execute_one(input.clone())?, 11);
+
+        let mut second = StochasticTask::builder("reopen-computation-v1")
+            .function({
+                let calls = Arc::clone(&calls);
+                move |_rng, ()| {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    Ok(22u64)
+                }
+            })
+            .cache(provider)
+            .build()?;
+
+        assert_eq!(second.execute_one(input)?, 11);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        Ok(())
+    }
+
+    #[test]
     fn downstream_path_changes_with_upstream_computation() -> Result<()> {
         let (_dir, _db, storage_provider) = make_storage_provider()?;
         let provider = cache_provider(storage_provider);

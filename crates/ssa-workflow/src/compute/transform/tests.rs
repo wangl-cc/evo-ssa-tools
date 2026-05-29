@@ -283,6 +283,37 @@ fn cloned_stochastic_transform_shares_cache() -> Result<()> {
 }
 
 #[test]
+fn cloned_parameterized_stochastic_transform_shares_cache() -> Result<()> {
+    let transform_calls = Arc::new(AtomicUsize::new(0));
+
+    let source = DeterministicTask::builder("param-stochastic-source-v1")
+        .function(|input: u16| Ok(input * 2))
+        .cache(ManagedHashCache::<u16>::default())
+        .build()?;
+
+    let mut transform = source
+        .stochastic_transform("param-stochastic-resample-v1")
+        .function_with_param({
+            let transform_calls = Arc::clone(&transform_calls);
+            move |rng, value, offset: u16| {
+                transform_calls.fetch_add(1, Ordering::SeqCst);
+                Ok(value as u64 + offset as u64 + rand::Rng::next_u64(rng))
+            }
+        })
+        .cache(ManagedHashCache::<u64>::default())
+        .build()?;
+    let mut cloned = transform.clone();
+
+    let input = DependentStochasticInput::new(7u16, 10u16, 0);
+    let first = transform.execute_one(input.clone())?;
+    let second = cloned.execute_one(input)?;
+
+    assert_eq!(first, second);
+    assert_eq!(transform_calls.load(Ordering::SeqCst), 1);
+    Ok(())
+}
+
+#[test]
 fn stochastic_transform_without_param_uses_source_and_repetition() -> Result<()> {
     let source_calls = Arc::new(AtomicUsize::new(0));
     let transform_calls = Arc::new(AtomicUsize::new(0));
