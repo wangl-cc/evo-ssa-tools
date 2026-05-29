@@ -1,6 +1,6 @@
 use crate::{
     cache::codec::ValueFormat,
-    identity::{ComputationPath, IdentifierSegmentChain, append_len_prefixed},
+    identity::{ComputationPath, IdentifierSegmentChain},
 };
 
 /// Physical storage namespace derived from a computation path and value format.
@@ -13,15 +13,9 @@ impl StorageNamespace {
     /// Create a storage namespace from a computation path and value format.
     pub fn new(path: &ComputationPath, value_format: ValueFormat) -> Self {
         let hash = namespace_hash(path, value_format);
-        let value_format = value_format.to_string();
-        let short_hash = &hash[..16];
+        let short_hash: &str = &hash.to_hex()[..16];
         Self {
-            name: format!(
-                "{}--{}--{}",
-                path.render_segments("--"),
-                value_format,
-                short_hash
-            ),
+            name: format!("{path}--{value_format}--{short_hash}"),
         }
     }
 
@@ -31,11 +25,18 @@ impl StorageNamespace {
     }
 }
 
-fn namespace_hash(path: &ComputationPath, value_format: ValueFormat) -> String {
-    let mut material = Vec::new();
-    append_len_prefixed(&mut material, &path.encode_segments());
-    append_len_prefixed(&mut material, &value_format.encode_segments());
-    blake3::hash(&material).to_hex().to_string()
+fn namespace_hash(path: &ComputationPath, value_format: ValueFormat) -> blake3::Hash {
+    let mut hasher = blake3::Hasher::new();
+    path.for_each_segment(|segment| {
+        hasher.update(segment.as_bytes());
+        hasher.update(&[0]); // Separator
+    });
+    hasher.update(&[0]); // Separator
+    value_format.for_each_segment(|segment| {
+        hasher.update(segment.as_bytes());
+        hasher.update(&[0]); // Separator
+    });
+    hasher.finalize()
 }
 
 impl std::fmt::Display for StorageNamespace {
@@ -79,7 +80,6 @@ mod tests {
         let first = ComputationPath::root_from_str("a-b").child_from_str("c");
         let second = ComputationPath::root_from_str("a").child_from_str("b-c");
 
-        assert_ne!(first.encode_segments(), second.encode_segments());
         assert_ne!(
             StorageNamespace::new(&first, FORMAT),
             StorageNamespace::new(&second, FORMAT)

@@ -2,9 +2,7 @@
 
 use rand::{SeedableRng, rngs::Xoshiro256PlusPlus};
 
-use crate::identity::{
-    ComputationPath, IdentifierSegmentChain, append_len_prefixed, assert_identifier_segment,
-};
+use crate::identity::{ComputationPath, IdentifierSegmentChain, assert_identifier_segment};
 
 const STREAM_SEED_CONTEXT: &str = "wangl-cc/evo-ssa-tools ssa-workflow stochastic stream seed v1";
 
@@ -65,7 +63,15 @@ impl ComputationPath {
 
     /// Derive the opaque seed for one random variable stream.
     pub fn derive_stream_seed(&self, variable: RandomVariable) -> StreamSeed {
-        derive_stream_seed(self, variable)
+        let mut hasher = blake3::Hasher::new_derive_key(STREAM_SEED_CONTEXT);
+        self.for_each_segment(|segment| {
+            hasher.update(segment.as_bytes());
+            hasher.update(&[0]); // Separator
+        });
+        hasher.update(&[0]); // Separator
+        hasher.update(variable.as_str().as_bytes());
+        let bytes = hasher.finalize().into();
+        StreamSeed { bytes }
     }
 
     /// Derive an owned fixed-size bundle of stream seeds.
@@ -77,13 +83,6 @@ impl ComputationPath {
             seeds: variables.map(|variable| self.derive_stream_seed(variable)),
         }
     }
-}
-
-fn derive_stream_seed(path: &ComputationPath, variable: RandomVariable) -> StreamSeed {
-    let mut material = Vec::with_capacity(128 + variable.as_str().len());
-    append_len_prefixed(&mut material, &path.encode_segments());
-    append_len_prefixed(&mut material, variable.as_str().as_bytes());
-    StreamSeed::derive_from(&material)
 }
 
 #[doc(hidden)]
@@ -113,12 +112,6 @@ impl std::fmt::Debug for StreamSeed {
 }
 
 impl StreamSeed {
-    pub(crate) fn derive_from(material: &[u8]) -> Self {
-        Self {
-            bytes: blake3::derive_key(STREAM_SEED_CONTEXT, material),
-        }
-    }
-
     /// Create a fresh RNG stream for this seed and encoded input.
     pub fn make_stream(&self, encoded_input: &[u8]) -> Xoshiro256PlusPlus {
         let bytes = blake3::keyed_hash(&self.bytes, encoded_input).into();

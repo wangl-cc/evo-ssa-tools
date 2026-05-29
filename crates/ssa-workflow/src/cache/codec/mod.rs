@@ -103,7 +103,7 @@ impl IdentifierSegmentChain for ValueFormat {
 
 impl std::fmt::Display for ValueFormat {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.write_segments("->", f)
+        self.write_segments("--", f)
     }
 }
 
@@ -270,14 +270,13 @@ mod tests {
     }
 
     #[test]
-    fn display_with_arrow_separator() {
+    fn display_with_double_hyphen_separator() {
         const FORMAT: ValueFormat = ValueFormat::new("bitcode06-v1");
         const CHECKED: ValueFormat = ValueFormat::concat(&FORMAT, "checked-v1");
         const COMPRESSED: ValueFormat = ValueFormat::concat(&CHECKED, "zstd-v1");
 
-        assert_eq!(CHECKED.to_string(), "bitcode06-v1->checked-v1");
-        assert_eq!(CHECKED.to_string(), "bitcode06-v1->checked-v1");
-        assert_eq!(COMPRESSED.to_string(), "bitcode06-v1->checked-v1->zstd-v1");
+        assert_eq!(CHECKED.to_string(), "bitcode06-v1--checked-v1");
+        assert_eq!(COMPRESSED.to_string(), "bitcode06-v1--checked-v1--zstd-v1");
     }
 
     #[test]
@@ -287,18 +286,6 @@ mod tests {
         const B: ValueFormat = ValueFormat::concat(&BASE, "checked-v1");
 
         assert_eq!(A, B);
-    }
-
-    #[test]
-    fn encoded_segments_preserve_structural_boundaries() {
-        const BASE: ValueFormat = ValueFormat::new("bitcode06-v1");
-        const CHECKED: ValueFormat = ValueFormat::concat(&BASE, "checked-v1");
-
-        let mut expected = Vec::new();
-        crate::identity::append_len_prefixed(&mut expected, b"bitcode06-v1");
-        crate::identity::append_len_prefixed(&mut expected, b"checked-v1");
-
-        assert_eq!(CHECKED.encode_segments(), expected);
     }
 
     #[test]
