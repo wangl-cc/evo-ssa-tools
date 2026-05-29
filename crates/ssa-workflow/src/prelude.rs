@@ -16,14 +16,9 @@ pub use crate::cache::memory::ManagedLruCache;
 pub use crate::cache::storage::Fjall3StorageProvider;
 pub use crate::{
     Compute, InterruptSignal,
-    cache::{
-        CanonicalEncode, PersistentCacheProvider, StorageProviderExt,
-        codec::ValueFormat,
-        memory::{ManagedHashCache, ManagedMemoryCache},
-    },
+    cache::{CanonicalEncode, StorageProviderExt, memory::ManagedHashCache},
     compute::{
         DependentInput, DependentStochasticInput, DeterministicTask, RandomVariable, RngStreams,
         StochasticInput, StochasticTask, TransformExt,
     },
-    identity::ComputationId,
 };

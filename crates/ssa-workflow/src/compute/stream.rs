@@ -6,7 +6,10 @@ use crate::identity::{ComputationPath, IdentifierSegmentChain, SEGMENT_ENCODED_S
 
 const STREAM_SEED_CONTEXT: &str = "wangl-cc/evo-ssa-tools ssa-workflow stochastic stream seed v1";
 
-/// Stable identifier for a model random variable with its own reproducible RNG stream.
+/// Stable label for a model random variable with its own reproducible RNG stream.
+///
+/// Random variable names are opaque seed labels, not storage namespace segments.
+/// Changing a label changes the derived stream for that variable.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct RandomVariable(&'static str);
 

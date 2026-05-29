@@ -73,8 +73,12 @@ pub trait Compute {
     /// Start a batch execution builder for ordered `inputs`.
     ///
     /// Inputs must produce an [`IndexedParallelIterator`], so collected outputs follow the logical
-    /// input order and Rayon can use its indexed collection path. Ranges, vectors, and slices
-    /// satisfy this bound.
+    /// input order and Rayon can use its indexed collection path.
+    ///
+    /// Each input item is scheduled independently. Batch execution does not deduplicate equal
+    /// inputs or provide single-flight behavior for equal canonical keys; if duplicate inputs
+    /// are executed concurrently, they may compute the same cache miss more than once before
+    /// one worker stores the result.
     fn with_inputs<I>(&self, inputs: I) -> BatchExecution<'_, Self, I>
     where
         Self: Sized,

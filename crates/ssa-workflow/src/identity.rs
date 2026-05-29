@@ -39,6 +39,12 @@ impl std::fmt::Display for ComputationId {
 }
 
 /// Parent-linked semantic result path for a built compute node.
+///
+/// Paths render from the current result back to its roots. For example, a transform with local id
+/// `summary-v1` built from a task with id `trajectory-v1` renders as `summary-v1_trajectory-v1`,
+/// read as "summary of trajectory".
+///
+/// Persistent namespaces and RNG seed material use this same segment order.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ComputationPath {
     node: Box<ComputationPathNode>,
