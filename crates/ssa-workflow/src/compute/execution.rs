@@ -2,7 +2,7 @@
 
 use std::sync::{Arc, atomic};
 
-use rayon::prelude::*;
+use rayon::prelude::{IndexedParallelIterator, IntoParallelIterator, ParallelIterator};
 
 use crate::{
     cache::CanonicalEncode,
@@ -62,18 +62,24 @@ pub trait Compute {
     ///
     /// This is the safe, single-item counterpart to [`Self::execute_one_with_buffer`].
     ///
-    /// If you need to execute multiple inputs in parallel, use [`Self::with_inputs`] instead.
+    /// If you need to execute multiple ordered inputs in parallel, use [`Self::with_inputs`]
+    /// instead.
     fn execute_one(&mut self, input: Self::Input) -> Result<Self::Output> {
         let mut encode_buffer = vec![0u8; Self::Input::SIZE];
         // Safety: The buffer is initialized with length Self::Input::SIZE.
         unsafe { self.execute_one_with_buffer(input, &mut encode_buffer) }
     }
 
-    /// Start a batch execution builder for `inputs`.
+    /// Start a batch execution builder for ordered `inputs`.
+    ///
+    /// Inputs must produce an [`IndexedParallelIterator`], so collected outputs follow the logical
+    /// input order and Rayon can use its indexed collection path. Ranges, vectors, and slices
+    /// satisfy this bound.
     fn with_inputs<I>(&self, inputs: I) -> BatchExecution<'_, Self, I>
     where
         Self: Sized,
         I: IntoParallelIterator<Item = Self::Input>,
+        I::Iter: IndexedParallelIterator<Item = Self::Input>,
     {
         BatchExecution {
             compute: self,
@@ -88,6 +94,7 @@ pub struct BatchExecution<'a, C, I>
 where
     C: Compute,
     I: IntoParallelIterator<Item = C::Input>,
+    I::Iter: IndexedParallelIterator<Item = C::Input>,
 {
     compute: &'a C,
     inputs: I,
@@ -98,6 +105,7 @@ impl<'a, C, I> BatchExecution<'a, C, I>
 where
     C: Compute,
     I: IntoParallelIterator<Item = C::Input>,
+    I::Iter: IndexedParallelIterator<Item = C::Input>,
 {
     /// Interrupt pending work when `signal` is set.
     ///
@@ -107,11 +115,11 @@ where
         self
     }
 
-    /// Build the parallel iterator for this batch.
+    /// Build the indexed parallel iterator for this batch.
     ///
     /// Collecting this iterator as `Result<Vec<_>>` naturally short-circuits on errors.
     /// Collecting it as `Vec<Result<_>>` keeps successful and failed items.
-    pub fn execute(self) -> impl ParallelIterator<Item = Result<C::Output>> + 'a
+    pub fn execute(self) -> impl IndexedParallelIterator<Item = Result<C::Output>> + 'a
     where
         C: Clone + Sync + 'a,
         I: 'a,
