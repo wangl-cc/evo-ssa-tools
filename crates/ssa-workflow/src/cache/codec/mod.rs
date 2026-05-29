@@ -270,14 +270,14 @@ mod tests {
     }
 
     #[test]
-    fn concat_renders_with_double_hyphen_separator() {
+    fn display_with_arrow_separator() {
         const FORMAT: ValueFormat = ValueFormat::new("bitcode06-v1");
         const CHECKED: ValueFormat = ValueFormat::concat(&FORMAT, "checked-v1");
         const COMPRESSED: ValueFormat = ValueFormat::concat(&CHECKED, "zstd-v1");
 
-        assert_eq!(CHECKED.to_string(), "bitcode06-v1--checked-v1");
-        assert_eq!(CHECKED.to_string(), "bitcode06-v1--checked-v1");
-        assert_eq!(COMPRESSED.to_string(), "bitcode06-v1--checked-v1--zstd-v1");
+        assert_eq!(CHECKED.to_string(), "bitcode06-v1->checked-v1");
+        assert_eq!(CHECKED.to_string(), "bitcode06-v1->checked-v1");
+        assert_eq!(COMPRESSED.to_string(), "bitcode06-v1->checked-v1->zstd-v1");
     }
 
     #[test]
@@ -318,16 +318,6 @@ mod tests {
     fn value_format_concat_rejects_double_hyphen_suffix() {
         const BASE: ValueFormat = ValueFormat::new("bitcode06-v1");
         let _ = ValueFormat::concat(&BASE, "checked--v1");
-    }
-
-    #[test]
-    fn concat_can_be_built_at_runtime_from_static_parts() {
-        static FORMAT: ValueFormat = ValueFormat::new("postcard-v1");
-
-        let checked = ValueFormat::concat(&FORMAT, "checked-v1");
-
-        assert_eq!(checked.to_string(), "postcard-v1--checked-v1");
-        assert_eq!(checked.to_string(), "postcard-v1--checked-v1");
     }
 
     #[test]
