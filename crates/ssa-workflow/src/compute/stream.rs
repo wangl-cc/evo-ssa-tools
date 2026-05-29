@@ -2,7 +2,7 @@
 
 use rand::{SeedableRng, rngs::Xoshiro256PlusPlus};
 
-use crate::identity::{ComputationPath, IdentifierSegmentChain, assert_identifier_segment};
+use crate::identity::{ComputationPath, IdentifierSegmentChain, SEGMENT_ENCODED_SEPARATOR};
 
 const STREAM_SEED_CONTEXT: &str = "wangl-cc/evo-ssa-tools ssa-workflow stochastic stream seed v1";
 
@@ -12,12 +12,7 @@ pub struct RandomVariable(&'static str);
 
 impl RandomVariable {
     /// Create a random variable identifier from a stable static name.
-    ///
-    /// Names use the same identifier segment rules as
-    /// [`ComputationId`](crate::identity::ComputationId), except the empty name is reserved for the
-    /// default unnamed stream.
     pub const fn new(name: &'static str) -> Self {
-        assert_identifier_segment(name, true);
         Self(name)
     }
 
@@ -64,11 +59,8 @@ impl ComputationPath {
     /// Derive the opaque seed for one random variable stream.
     pub fn derive_stream_seed(&self, variable: RandomVariable) -> StreamSeed {
         let mut hasher = blake3::Hasher::new_derive_key(STREAM_SEED_CONTEXT);
-        self.for_each_segment(|segment| {
-            hasher.update(segment.as_bytes());
-            hasher.update(&[0]); // Separator
-        });
-        hasher.update(&[0]); // Separator
+        self.hash_segments(&mut hasher);
+        hasher.update(SEGMENT_ENCODED_SEPARATOR);
         hasher.update(variable.as_str().as_bytes());
         let bytes = hasher.finalize().into();
         StreamSeed { bytes }
@@ -218,12 +210,12 @@ mod tests {
         #[test]
         fn names_are_stable() {
             let model = ComputationId::new("experiment-test-v1");
-            let variable = RandomVariable::new("test-stream-v1");
+            let variable = RandomVariable::new("αβγ/ℝⁿ/𝔼[X_t]/λ₁→∞");
 
             assert_eq!(model.as_str(), "experiment-test-v1");
-            assert_eq!(variable.as_str(), "test-stream-v1");
+            assert_eq!(variable.as_str(), "αβγ/ℝⁿ/𝔼[X_t]/λ₁→∞");
             assert_eq!(model.to_string(), "experiment-test-v1");
-            assert_eq!(variable.to_string(), "test-stream-v1");
+            assert_eq!(variable.to_string(), "αβγ/ℝⁿ/𝔼[X_t]/λ₁→∞");
         }
     }
 

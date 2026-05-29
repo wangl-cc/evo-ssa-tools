@@ -23,13 +23,10 @@
 //! Format names are part of the persistent cache contract. Use stable, versioned names such as
 //! `"bitcode06-v1"`, `"postcard-v1"`, `"checked-v1"`, or `"lz4-v1"`.
 //!
-//! Use `-` inside one segment and never `--`. The `--` separator is reserved for composed
-//! formats built with [`ValueFormat::concat`].
-//!
 //! Codec wrappers append their own segment to the inner format:
 //!
 //! ```ignore
-//! // Renders as "bitcode06-v1--checked-v1"
+//! // Renders as "bitcode06-v1_checked-v1"
 //! const VALUE_FORMAT: ValueFormat =
 //!     ValueFormat::concat(&Bitcode06::<MyType>::VALUE_FORMAT, "checked-v1");
 //! ```
@@ -44,12 +41,9 @@ use crate::identity::{IdentifierSegmentChain, assert_identifier_segment};
 /// new cache entries. Keep names stable for compatible bytes and use a new versioned segment when
 /// the encoded representation changes.
 ///
-/// See the [module-level naming convention](self#naming-convention) for segment naming
-/// rules.
-///
 /// # Equality
 ///
-/// Equality is structural: segment boundaries matter. Segment constructors reject `--`, so each
+/// Equality is structural: segment boundaries matter. Segment constructors reject `_`, so each
 /// displayed format maps back to one unambiguous segment chain.
 #[derive(Clone, Copy, Debug)]
 pub struct ValueFormat(ValueFormatRepr);
@@ -67,6 +61,8 @@ use ValueFormatRepr::{Child, Root};
 
 impl ValueFormat {
     /// Create a value format from one stable segment.
+    ///
+    /// Used by standalone codec engines such as [`Postcard`], which encode/decode values directly.
     pub const fn new(name: &'static str) -> Self {
         assert_identifier_segment(name, false);
         Self(Root(name))
@@ -74,8 +70,7 @@ impl ValueFormat {
 
     /// Append one stable segment to an existing format.
     ///
-    /// The rendered form inserts `--` between segments: `base--suffix`.
-    /// Callers should **not** include the separator in `suffix`.
+    /// Used by codec wrappers such as [`CheckedCodec`], which wrap around another codec engine.
     pub const fn concat(base: &'static ValueFormat, suffix: &'static str) -> Self {
         assert_identifier_segment(suffix, false);
         Self(Child {
@@ -103,7 +98,7 @@ impl IdentifierSegmentChain for ValueFormat {
 
 impl std::fmt::Display for ValueFormat {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.write_segments("--", f)
+        self.write_segments(f)
     }
 }
 
@@ -176,8 +171,8 @@ impl CloneFresh for () {
 pub trait CodecEngine<T>: CloneFresh {
     /// Stable format name for bytes produced by this codec.
     ///
-    /// Follow the [module naming convention](self#naming-convention): use `-` internally,
-    /// never `--`. For wrappers, compose with [`ValueFormat::concat`]:
+    /// Follow the [`identity` module naming convention](crate::identity#naming-convention). For
+    /// wrappers, compose with [`ValueFormat::concat`]:
     ///
     /// ```ignore
     /// const VALUE_FORMAT: ValueFormat =
@@ -242,14 +237,14 @@ impl Error {
     }
 }
 
-pub use checked::{CheckedCodec, Error as CheckedError};
+mod engine;
 #[cfg(feature = "bitcode06")]
 pub use engine::bitcode::Bitcode06;
 #[cfg(feature = "postcard")]
 pub use engine::postcard::Postcard;
 
 mod checked;
-mod engine;
+pub use checked::{CheckedCodec, Error as CheckedError};
 
 #[cfg(feature = "compress")]
 pub mod compress;
@@ -270,28 +265,23 @@ mod tests {
     }
 
     #[test]
-    fn display_with_double_hyphen_separator() {
+    fn display_with_underscore_separator() {
         const FORMAT: ValueFormat = ValueFormat::new("bitcode06-v1");
         const CHECKED: ValueFormat = ValueFormat::concat(&FORMAT, "checked-v1");
         const COMPRESSED: ValueFormat = ValueFormat::concat(&CHECKED, "zstd-v1");
 
-        assert_eq!(CHECKED.to_string(), "bitcode06-v1--checked-v1");
-        assert_eq!(COMPRESSED.to_string(), "bitcode06-v1--checked-v1--zstd-v1");
+        assert_eq!(CHECKED.to_string(), "bitcode06-v1_checked-v1");
+        assert_eq!(COMPRESSED.to_string(), "bitcode06-v1_checked-v1_zstd-v1");
     }
 
     #[test]
-    fn concat_with_same_chain_is_equal() {
+    fn double_hyphen_is_allowed_inside_segments() {
         const BASE: ValueFormat = ValueFormat::new("bitcode06-v1");
-        const A: ValueFormat = ValueFormat::concat(&BASE, "checked-v1");
-        const B: ValueFormat = ValueFormat::concat(&BASE, "checked-v1");
 
-        assert_eq!(A, B);
-    }
-
-    #[test]
-    #[should_panic(expected = "identifier segment must not contain `--`")]
-    fn value_format_rejects_double_hyphen_segment() {
-        let _ = ValueFormat::new("bitcode06-v1--checked-v1");
+        assert_eq!(
+            ValueFormat::concat(&BASE, "checked--v1").to_string(),
+            "bitcode06-v1_checked--v1"
+        );
     }
 
     #[test]
@@ -301,10 +291,12 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "identifier segment must not contain `--`")]
-    fn value_format_concat_rejects_double_hyphen_suffix() {
+    fn concat_with_same_chain_is_equal() {
         const BASE: ValueFormat = ValueFormat::new("bitcode06-v1");
-        let _ = ValueFormat::concat(&BASE, "checked--v1");
+        const A: ValueFormat = ValueFormat::concat(&BASE, "checked-v1");
+        const B: ValueFormat = ValueFormat::concat(&BASE, "checked-v1");
+
+        assert_eq!(A, B);
     }
 
     #[test]

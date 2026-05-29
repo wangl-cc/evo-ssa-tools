@@ -149,7 +149,7 @@ fn managed_transform_uses_child_path_for_output_space() -> Result<()> {
 
     let namespace =
         StorageNamespace::new(transform.computation_path(), ValueFormat::new("memory-v1"));
-    assert!(namespace.as_str().contains("plus-one-v1--double-v1"));
+    assert!(namespace.as_str().contains("plus-one-v1_double-v1"));
     Ok(())
 }
 
@@ -167,7 +167,7 @@ fn stochastic_transform_path_extends_source_path() -> Result<()> {
 
     let namespace =
         StorageNamespace::new(transform.computation_path(), ValueFormat::new("memory-v1"));
-    assert!(namespace.as_str().contains("resample-v1--trajectory-v1"));
+    assert!(namespace.as_str().contains("resample-v1_trajectory-v1"));
 
     let input = DependentStochasticInput::from_source(StochasticInput::new((), 0), 0);
     assert_eq!(

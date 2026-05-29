@@ -1,14 +1,20 @@
 //! Semantic computation identifiers and derived computation paths.
 
 /// Stable, versioned identifier for one semantic computation.
+///
+/// # Naming convention
+///
+/// Only alphabetic, digits, and `-` are allowed. `_` is reserved for derived names and must not
+/// appear inside one segment.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ComputationId(&'static str);
 
 impl ComputationId {
     /// Create a computation identifier from a stable static name.
     ///
-    /// Names must be non-empty backend-safe identifier segments: ASCII letters, digits, `.`, and
-    /// `-` are allowed, but `--` is reserved as a namespace separator.
+    /// # Panics
+    ///
+    /// Panics if the name does not follow the naming convention.
     pub const fn new(name: &'static str) -> Self {
         assert_identifier_segment(name, false);
         Self(name)
@@ -74,10 +80,16 @@ impl ComputationPath {
     }
 }
 
+impl std::fmt::Display for ComputationPath {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.write_segments(f)
+    }
+}
+
 pub(crate) trait IdentifierSegmentChain {
     fn for_each_segment(&self, visit: impl FnMut(&str));
 
-    fn write_segments<W: std::fmt::Write>(&self, separator: &str, out: &mut W) -> std::fmt::Result
+    fn write_segments<W: std::fmt::Write>(&self, out: &mut W) -> std::fmt::Result
     where
         Self: Sized,
     {
@@ -88,7 +100,7 @@ pub(crate) trait IdentifierSegmentChain {
                 return;
             }
             if !is_first {
-                result = out.write_str(separator);
+                result = out.write_str(SEGMENT_DISPLAY_SEPARATOR);
             }
             if result.is_ok() {
                 result = out.write_str(segment);
@@ -96,6 +108,13 @@ pub(crate) trait IdentifierSegmentChain {
             is_first = false;
         });
         result
+    }
+
+    fn hash_segments(&self, hasher: &mut blake3::Hasher) {
+        self.for_each_segment(|segment| {
+            hasher.update(segment.as_bytes());
+            hasher.update(SEGMENT_ENCODED_SEPARATOR);
+        });
     }
 }
 
@@ -120,11 +139,11 @@ impl IdentifierSegmentChain for ComputationPath {
     }
 }
 
-impl std::fmt::Display for ComputationPath {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.write_segments("--", f)
-    }
-}
+pub(crate) const SEGMENT_DISPLAY_SEPARATOR: &str = "_";
+
+pub(crate) const FIELD_DISPLAY_SEPARATOR: &str = "__";
+
+pub(crate) const SEGMENT_ENCODED_SEPARATOR: &[u8] = b"\0";
 
 pub(crate) const fn assert_identifier_segment(value: &str, allow_empty: bool) {
     let bytes = value.as_bytes();
@@ -136,12 +155,8 @@ pub(crate) const fn assert_identifier_segment(value: &str, allow_empty: bool) {
     while index < bytes.len() {
         let byte = bytes[index];
         match byte {
-            b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'.' | b'-' => {}
+            b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'-' => {}
             _ => panic!("identifier segment contains an invalid character"),
-        }
-
-        if byte == b'-' && index + 1 < bytes.len() && bytes[index + 1] == b'-' {
-            panic!("identifier segment must not contain `--`");
         }
 
         index += 1;
@@ -168,8 +183,7 @@ mod tests {
         }
 
         #[test]
-        #[should_panic(expected = "identifier segment must not contain `--`")]
-        fn rejects_double_hyphen() {
+        fn accepts_double_hyphen() {
             let _ = ComputationId::new("model--family-v1");
         }
 
@@ -203,7 +217,7 @@ mod tests {
         fn display() {
             let path = ComputationPath::root_from_str("trajectory-v1").child_from_str("summary-v1");
 
-            assert_eq!(path.to_string(), "summary-v1--trajectory-v1");
+            assert_eq!(path.to_string(), "summary-v1_trajectory-v1");
         }
     }
 }

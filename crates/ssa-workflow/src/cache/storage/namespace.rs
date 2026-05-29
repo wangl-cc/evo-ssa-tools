@@ -1,6 +1,8 @@
 use crate::{
     cache::codec::ValueFormat,
-    identity::{ComputationPath, IdentifierSegmentChain},
+    identity::{
+        ComputationPath, FIELD_DISPLAY_SEPARATOR, IdentifierSegmentChain, SEGMENT_ENCODED_SEPARATOR,
+    },
 };
 
 /// Physical storage namespace derived from a computation path and value format.
@@ -14,9 +16,11 @@ impl StorageNamespace {
     pub fn new(path: &ComputationPath, value_format: ValueFormat) -> Self {
         let hash = namespace_hash(path, value_format);
         let short_hash: &str = &hash.to_hex()[..16];
-        Self {
-            name: format!("{path}--{value_format}--{short_hash}"),
-        }
+        let name = format!(
+            "{path}{FIELD_DISPLAY_SEPARATOR}{value_format}{FIELD_DISPLAY_SEPARATOR}{short_hash}"
+        );
+
+        Self { name }
     }
 
     /// Return the storage namespace name.
@@ -27,15 +31,9 @@ impl StorageNamespace {
 
 fn namespace_hash(path: &ComputationPath, value_format: ValueFormat) -> blake3::Hash {
     let mut hasher = blake3::Hasher::new();
-    path.for_each_segment(|segment| {
-        hasher.update(segment.as_bytes());
-        hasher.update(&[0]); // Separator
-    });
-    hasher.update(&[0]); // Separator
-    value_format.for_each_segment(|segment| {
-        hasher.update(segment.as_bytes());
-        hasher.update(&[0]); // Separator
-    });
+    path.hash_segments(&mut hasher);
+    hasher.update(SEGMENT_ENCODED_SEPARATOR);
+    value_format.hash_segments(&mut hasher);
     hasher.finalize()
 }
 
@@ -62,9 +60,9 @@ mod tests {
         assert!(
             namespace
                 .as_str()
-                .starts_with("computation-a-v1--bitcode06-v1--")
+                .starts_with("computation-a-v1__bitcode06-v1__")
         );
-        assert_eq!(namespace.as_str().rsplit_once("--").unwrap().1.len(), 16);
+        assert_eq!(namespace.as_str().rsplit_once("__").unwrap().1.len(), 16);
     }
 
     #[test]
