@@ -2,80 +2,25 @@
 
 `ssa-workflow` is a demand-driven memoization layer for stochastic simulation and analysis workflows.
 
-You describe your workflow as ordinary Rust values — stochastic tasks, deterministic tasks, and dependent transforms — and provide a set of inputs. The crate figures out which results are already cached, computes the rest in parallel across workers, and reuses expensive intermediate outputs automatically when multiple downstream transforms depend on the same upstream result.
-
-## Core Concepts
-
-- `Compute` — the common trait for any node: given an input, produce an output.
-- `StochasticInput<P>` — wraps a parameter value and a `repetition_index`; together they form the cache key and determine the RNG stream for that run.
-- `ComputationId` — a stable, versioned identifier for one semantic result, such as `birth-death-ssa/trajectory/v1`.
-- `StochasticTask` — a simulation task; the single RNG stream for each input is derived deterministically from `(computation_path, encoded_input)`.
-- `StochasticTask::builder(...).streams(...)` — construction for simulations that need named RNG streams for model random variables.
-- `DeterministicTask` — a pure `input -> output` root task with no randomness.
-- `Transform` / `.transform(...)` — chains a built upstream node to a deterministic transform closure before the final executable transform is built. Use `DeterministicTask` directly when you need a standalone deterministic root task.
-- Managed caches — the recommended construction path. Tasks and transforms declare a stable computation id; the provider binds the resulting computation path to a cache space before execution.
-- `Cache<T>` — the low-level execution-facing cache abstraction used by tasks and transforms. It can be backed by `HashObjectCache<T>` (unbounded in-memory), `LruObjectCache<T>` (bounded with LRU eviction, requires `lru` feature), `EncodedCache<S, CE>` (raw store + codec for persistent storage), or `()` to disable caching.
-- `CacheStore` — the low-level `key -> encoded bytes` storage abstraction behind raw backends like `Fjall3Store` and `RedbStore`.
-- `CodecEngine<T>` — controls how node outputs are serialized for persistent storage. Engines implement `cache::codec::CloneFresh`: each worker gets a fresh instance with the same configuration but independent scratch state.
-
-## Execution Model
-
-The flow is straightforward:
-
-- You provide inputs — plain values for `DeterministicTask`, or `StochasticInput { param, repetition_index }` for `StochasticTask`
-- You call `with_inputs(...).collect()` on a task or transform
-- Work fans out across worker threads; each worker holds its own input-encoding buffer and its own cloned execution state
-- For each input, the worker encodes it into canonical bytes and uses those bytes as the cache key; a hit returns the stored value, a miss runs the function and stores the result
-- If the cache is an `EncodedCache<S, CE>`, each worker also gets its own codec engine instance; typed object caches such as `HashObjectCache<T>` and `LruObjectCache<T>` do not involve a codec engine at all
-
-The working model is: submit inputs, get outputs, reuse what was already computed.
-
-## Dependent Transforms
-
-Transforms are dependent compute nodes. Their computation path includes the upstream path plus their own id, so changing an upstream task automatically selects a different managed cache namespace for downstream results.
-
-Use `.transform(...)` when the downstream computation only depends on the upstream output:
-
-```rust
-# use ssa_workflow::prelude::*;
-# let trajectory = DeterministicTask::builder("birth-death-ssa/trajectory/v1")
-    .function(|input: u32| Ok(vec![input]))
-#     .cache(ManagedHashCache::<Vec<u32>>::default())
-#     .build()?;
-let peak = trajectory
-    .transform("peak-population/v1")
-    .function(|trajectory: Vec<u32>| {
-        Ok(trajectory.into_iter().max().unwrap_or(0))
-    })
-    .cache(ManagedHashCache::<u32>::default())
-    .build()?;
-# let _ = peak;
-# Ok::<(), ssa_workflow::error::Error>(())
-```
-
-Use `.transform("...").function_with_param(...)` when an analysis parameter is part of the result
-semantics. The cache key layout is `transform_param | source_input`, which groups entries by analysis
-parameter for prefix-oriented stores.
-
-Use `.stochastic_transform("...")` for downstream analysis that samples from an upstream result without any
-additional semantic parameter. Use `.stochastic_transform("...").function_with_param(...)` when the
-stochastic transform also has an explicit parameter. The parameterized stochastic key layout is
-`transform_param | source_input | transform_repetition_index`.
+You describe a workflow as ordinary Rust tasks and transforms, provide inputs, and collect outputs. The crate computes cache misses in parallel, reuses cached results, and keeps stochastic runs reproducible by deriving RNG streams from stable computation identity plus canonical input bytes.
 
 ## When This Crate Fits
 
-This crate works well when:
+Use `ssa-workflow` when the workflow is driven by the parameter sets you actually ask for. Instead of splitting work into a large batch-generation phase and a later analysis phase, you define simulations and analyses as one dependency graph, submit the requested inputs, and let the crate compute only the missing intermediate and final results.
 
-- You want results for a specific set of inputs without precomputing everything up front
-- Multiple analyses share the same upstream simulation output and you want that output computed only once
-- Stochastic runs need to be reproducible and scoped to a `(param, repetition_index)` pair
-- You want transparent parallelism without managing thread state yourself
+This fits workflows where:
 
-It is designed as an execution and materialization layer, not a long-term result store or query engine. If your workflow leans toward exploratory data analysis, large offline collections, or table-oriented querying, pairing it with something like Parquet + DuckDB/Polars will usually serve you better.
+- analyses pull on the simulation outputs they need, rather than scanning a precomputed result table
+- parameter sweeps are selective, iterative, or shared by several downstream analyses
+- multiple analyses may depend on the same expensive upstream simulation output
+- stochastic runs must be reproducible for each `(parameter, repetition_index)` pair
+- you want transparent parallel execution and memoization while keeping workflow code in Rust
+
+It is not a replacement for table-oriented analytics. If your workflow is “run a large batch, write all results, then explore/query them later”, a storage-first setup such as Parquet plus DuckDB or Polars may be a better fit. `ssa-workflow` is for demand-driven execution: provide the parameter set you need now, compute what is missing, and reuse what was already materialized.
 
 ## Quick Start
 
-This example builds a two-stage workflow — a stochastic simulation stage followed by a deterministic analysis stage — and runs it over eight repetitions. It demonstrates three core properties of the crate: parallel execution across workers, demand-driven caching (the second run reuses stored results without recomputing), and reproducibility (the same `(param, repetition_index)` input always produces the same output, whether computed fresh or retrieved from cache).
+This example builds a two-stage workflow: a stochastic simulation followed by a deterministic analysis. The first run computes and caches both stages; the second run reuses cached results.
 
 ```rust
 use rand::{Rng, RngExt};
@@ -117,21 +62,18 @@ fn simulate_population(
 }
 
 fn main() -> ssa_workflow::error::Result<()> {
-    // Each (param, repetition_index) pair gets a deterministic RNG stream derived from the
-    // computation path and the encoded input, so every run produces the same trajectory for the
-    // same input. Results are cached in memory.
-    let trajectory = StochasticTask::builder("birth-death-ssa/trajectory/v1")
+    // Stable computation id: change it when the simulation semantics change.
+    let trajectory = StochasticTask::builder("birth-death-ssa-trajectory-v1")
         .function(|rng, (initial_cells, max_events): (u32, u32)| {
             Ok(simulate_population(rng, initial_cells, max_events))
         })
+        // Process-local cache for trajectory outputs.
         .cache(ManagedHashCache::<Vec<(f64, u32)>>::default())
         .build()?;
 
-    // Stage 2: deterministic analysis.
-    // Chained onto stage 1 with its own cache. The cache key is the same encoded input,
-    // so stage 2 results are also reused automatically on repeated calls.
+    // Dependent analysis: its identity includes the upstream trajectory path.
     let peak_population = trajectory
-        .transform("peak-population/v1")
+        .transform("peak-population-v1")
         .function(|trajectory: Vec<(f64, u32)>| {
             Ok(trajectory
                 .into_iter()
@@ -142,17 +84,13 @@ fn main() -> ssa_workflow::error::Result<()> {
         .cache(ManagedHashCache::<u32>::default())
         .build()?;
 
-    // Each StochasticInput pairs a parameter value with a repetition index.
-    // The pair determines both the cache key and the RNG stream for that run.
+    // Same parameter set, eight independent stochastic repetitions.
     let inputs: Vec<_> = (0..8u64)
         .map(|rep| StochasticInput::new((25u32, 100u32), rep))
         .collect();
 
-    // with_inputs(...).collect() distributes work across workers in parallel.
-    // Cache misses run the simulation and analysis; hits return stored values directly.
+    // Execution is demand-driven: cache misses compute, hits reuse stored results.
     let first_run = peak_population.with_inputs(inputs.clone()).collect()?;
-
-    // Both stages hit the cache on the second run — no simulation or analysis code executes again.
     let second_run = peak_population.with_inputs(inputs).collect()?;
 
     assert_eq!(first_run, second_run);
@@ -160,53 +98,80 @@ fn main() -> ssa_workflow::error::Result<()> {
 }
 ```
 
-## Keyspace Contract
+## Core Concepts
 
-Memoization is a pure mapping of `input-bytes -> output-bytes` at the raw storage layer. Each task or transform treats its cache as a private keyspace; sharing a keyspace across different compute logic is not supported and can cause a decode error, a panic, or silently wrong results depending on how the stored bytes happen to decode against the new logic.
+- `StochasticTask` runs a simulation with reproducible RNG streams. Each `StochasticInput<P>` combines a parameter value with a `repetition_index`.
+- `DeterministicTask` runs a pure `input -> output` root computation.
+- `.transform(...)` builds a dependent deterministic analysis from an upstream task or transform.
+- `.stochastic_transform(...)` builds a dependent stochastic analysis from an upstream result.
+- Task and transform ids are stable, versioned names for semantic results, such as `birth-death-ssa-trajectory-v1`.
+- Cache providers such as `ManagedHashCache`, `ManagedLruCache`, and `PersistentCacheProvider` attach storage to a task or transform before it is built.
 
-If compute logic, encoding, or output type changes incompatibly, use a fresh keyspace rather than reusing the old one.
+## Computation Identity
 
-## Cache Choices
+Every task and transform needs a stable id. That id becomes part of the computation path used for caching, reproducible RNG streams, and downstream transform identity.
 
-Use these cache choices depending on what you need:
+Use short, versioned, backend-safe names:
 
-- `ManagedHashCache<T>` — one-shot process-local unbounded typed object cache provider. It owns one private in-memory keyspace; after binding, cloned tasks and workers share the bound cache handle. The computation path is not part of the in-memory key.
-- `ManagedLruCache<T>` (requires `lru` feature) — one-shot process-local bounded typed object cache provider with LRU eviction. It is also single-space and typed, and the computation path is not part of the in-memory key.
-- `ManagedPersistentCache<B, CE>` — multi-space persistent provider. It combines a backend root (`Fjall3Backend` or `RedbBackend`) with a codec engine and automatically maps computation paths plus `CE::VALUE_FORMAT` to physical namespaces.
-- `HashObjectCache<T>`, `LruObjectCache<T>`, and `EncodedCache<S, CE>` — low-level bound caches for callers that intentionally manage cache keyspaces themselves.
-- `()` — disables caching entirely; every input is always recomputed.
-
-To use a managed persistent backend, open the database root and combine it with a codec:
-
-```no_run
-use ssa_workflow::prelude::*;
-# #[cfg(all(feature = "fjall3", feature = "bitcode06"))]
-# {
-// Open an existing Fjall v3 database root and create a multi-space persistent provider.
-// let db = fjall3::Database::builder("./my-db").open().unwrap();
-// let cache = ManagedPersistentCache::new(Fjall3Backend::new(db), Bitcode06::default());
+```rust
+# use ssa_workflow::prelude::*;
+# fn main() -> ssa_workflow::error::Result<()> {
+let task = DeterministicTask::builder("summary-statistics-v1")
+    .function(|x: u32| Ok(x + 1))
+    .cache(ManagedHashCache::<u32>::default())
+    .build()?;
+# let _ = task;
+# Ok(())
 # }
 ```
 
-Available persistent store constructors:
+Allowed id characters are ASCII letters, digits, `.`, and `-`. The separator `--` is reserved internally. Prefer lowercase kebab-case and bump the version when the meaning of a result changes.
 
-- `Fjall3Store::open(database, keyspace_name, options)` (requires `fjall3` feature)
-- `RedbStore::open(path, table_name)` (requires `redb` feature)
-- `RedbStore::from_database(database, table_name)`
-- `RedbStore::from_database_arc(database, table_name)`
+If you change compute logic, output type, or persistent encoding incompatibly, use a new computation id or codec format so old cached bytes are not reused as a different result.
 
-Treat each partition, keyspace, or table as one cache namespace. If compute logic or encoding changes incompatibly, use a new namespace rather than the old one. Stores are `CloneShared`: worker-local handles keep pointing at the same underlying backing store, so you do not clone store handles yourself.
+## Transforms
 
-For unbounded managed in-memory caching (always available):
+Transforms are dependent compute nodes. A transform's computation path includes the upstream path plus the transform's own id, so changing an upstream task automatically selects a different cache space for downstream results.
+
+Use `.transform(...)` when the downstream computation only depends on the upstream output:
+
+```rust
+# use ssa_workflow::prelude::*;
+# let trajectory = DeterministicTask::builder("birth-death-ssa-trajectory-v1")
+    .function(|input: u32| Ok(vec![input]))
+#     .cache(ManagedHashCache::<Vec<u32>>::default())
+#     .build()?;
+let peak = trajectory
+    .transform("peak-population-v1")
+    .function(|trajectory: Vec<u32>| {
+        Ok(trajectory.into_iter().max().unwrap_or(0))
+    })
+    .cache(ManagedHashCache::<u32>::default())
+    .build()?;
+# let _ = peak;
+# Ok::<(), ssa_workflow::error::Error>(())
+```
+
+Use `.transform("...").function_with_param(...)` when an analysis parameter is part of the result semantics. Use `.stochastic_transform("...")` when downstream analysis samples from an upstream result.
+
+## Choosing a Cache
+
+Start with an in-memory managed cache unless you need persistence across process runs.
+
+- `ManagedHashCache<T>`: unbounded in-memory cache provider; always available.
+- `ManagedLruCache<T>`: bounded in-memory cache provider with LRU eviction; requires the `lru` feature.
+- `PersistentCacheProvider<SP, CE>`: persistent cache provider composed by calling `.with_codec(...)` on a storage provider.
+- `()`: disables caching; every input is recomputed.
+
+Unbounded in-memory caching:
 
 ```rust
 use ssa_workflow::prelude::*;
+
 let _cache = ManagedHashCache::<String>::default();
 ```
 
-Use `ManagedHashCache::<T>::with_hasher(...)` when the in-memory hash map needs a custom hasher.
-
-For bounded managed in-memory caching with LRU eviction (requires `lru` feature):
+Bounded in-memory caching:
 
 ```rust
 # #[cfg(feature = "lru")]
@@ -218,80 +183,64 @@ let _cache = ManagedLruCache::<String>::new(NonZeroUsize::new(256).expect("capac
 # }
 ```
 
-Use `ManagedLruCache::<T>::with_hasher(...)` when the bounded cache also needs a custom hasher.
+## Persistent Caches
 
-## Codec
+Persistent caches combine a storage provider with a codec. The storage provider decides where bytes live; the codec decides how typed outputs are encoded.
 
-`CodecEngine<T>` is the abstraction for serializing and deserializing node outputs for persistent storage. `EncodedCache<S, CE>` combines a `CloneShared` raw store with a `cache::codec::CloneFresh` codec engine, so workers share persisted data while each worker keeps its own codec buffers and contexts.
+```no_run
+use ssa_workflow::prelude::*;
 
-Every codec engine declares a static `VALUE_FORMAT`. Managed persistent caches include this value format in the physical namespace next to the computation path. Backend table, keyspace, compression-level, or partition tuning belongs to the backend or codec configuration; it only belongs in `VALUE_FORMAT` when it changes how stored value bytes should be decoded.
+# #[cfg(all(feature = "fjall3", feature = "bitcode06"))]
+# {
+let db = fjall3::Database::builder("./my-cache").open().unwrap();
+let cache = Fjall3StorageProvider::new(db)
+    .with_codec(Bitcode06::default());
 
-The built-in serialization backends currently available are:
+let task = DeterministicTask::builder("expensive-analysis-v1")
+    .function(|x: u32| Ok(x * 2))
+    .cache(cache)
+    .build()?;
+# let _ = task;
+# }
+# Ok::<(), ssa_workflow::error::Error>(())
+```
 
-- `Postcard` is the built-in serde-based backend, enabled by the `postcard` feature. Its wire format is a [published specification](https://postcard.jamesmunns.com/wire-format), stable within the same major version; a breaking wire-format change requires a new `postcard` major version.
-- `Bitcode06` explicitly names the `bitcode v0.6` backend. Treat any future `bitcode` major-version upgrade as a data migration step.
+Use `.with_keyspace_options(...)` before `.with_codec(...)` when you need custom Fjall keyspace creation options. Create multiple `Fjall3StorageProvider`s from the same database when different cache families need different options. The provider opens one physical namespace per computation path and codec format.
 
-Rule of thumb:
+## Codecs
 
-- Use `Postcard` when your types already derive `serde` traits. Minor/patch upgrades of `postcard` are always wire-compatible; only a major version bump would require migration.
-- Use `Bitcode06` when throughput matters. Treat any future `bitcode` major version upgrade as a data migration step.
+Persistent caches need a `CodecEngine<T>` for the output type `T`. Each codec has a stable `VALUE_FORMAT`; the value format is included in the persistent namespace so incompatible encodings do not share storage.
 
-### Compressed Codec
+Built-in serialization choices:
 
-For workloads where storage size matters, `CompressedCodec<E, C, P>` wraps any existing engine with a framed compression layer. The `lz4` and `zstd` features provide ready-made compression algorithms. You can also plug in a custom `CompressPolicy` to decide at runtime whether compression is worth applying for a given payload:
+- `Bitcode06` (`bitcode06` feature): fast binary encoding tied to `bitcode` 0.6.
+- `Postcard` (`postcard` feature): compact serde-based encoding with a published wire spec.
+
+For workloads where storage size matters, wrap a codec with framed compression:
 
 ```rust
 # #[cfg(all(feature = "lz4", feature = "bitcode06"))]
 # {
-use ssa_workflow::{
-    cache::codec::compress::{CompressPolicy, CompressionAction},
-    prelude::*,
-};
-
-struct TunedPolicy;
-
-impl CompressPolicy for TunedPolicy {
-    fn before_compress(&self, raw_size: usize) -> CompressionAction {
-        if raw_size < 8 * 1024 {
-            CompressionAction::Raw
-        } else {
-            CompressionAction::Compress
-        }
-    }
-
-    fn after_compress(
-        &self,
-        raw_frame_size: usize,
-        compressed_frame_size: usize,
-    ) -> CompressionAction {
-        if raw_frame_size.saturating_sub(compressed_frame_size) >= 512 {
-            CompressionAction::Compress
-        } else {
-            CompressionAction::Raw
-        }
-    }
-}
+use ssa_workflow::prelude::*;
 
 let _engine = Bitcode06::default()
     .compress(Lz4)
-    .with_policy(TunedPolicy)
     .with_max_len(64 * 1024 * 1024)
     .build();
 # }
 ```
 
-`.with_max_len(...)` sets a size limit at both encode time (serialized payload) and decode time (compressed payload); pass `0` to remove it. The decode-time check does not apply to raw frames and is independent of `CompressPolicy`.
+Use `Lz4` when speed matters. Use `Zstd` when stronger compression is worth the extra CPU cost.
 
 ## Feature Flags
 
-- `bitcode06` (disabled by default): `bitcode v0.6` serialization/deserialization via `Bitcode06`.
-- `compress` (automatically enabled by `lz4`/`zstd`; can also be enabled directly for custom engines): framed compressed codec layer and checksum support.
-- `lru` (disabled by default): bounded in-memory typed cache with LRU eviction via `LruObjectCache<T>`.
-- `lz4` (disabled by default): `Lz4` compression engine.
+- `bitcode06` (disabled by default): `bitcode` 0.6 serialization/deserialization via `Bitcode06`.
+- `compress` (enabled by `lz4` or `zstd`): framed compression layer and checksum support.
+- `fjall3` (disabled by default): Fjall v3 storage provider.
+- `lru` (disabled by default): bounded in-memory cache with LRU eviction.
+- `lz4` (disabled by default): `Lz4` compression.
 - `postcard` (disabled by default): `postcard` + `serde` serialization/deserialization via `Postcard`.
-- `zstd` (disabled by default): `Zstd` compression engine with runtime-configurable compression level.
-- `fjall3` (disabled by default): Fjall v3 persistent backend wrapper.
-- `redb` (disabled by default): `redb` persistent backend wrapper.
+- `zstd` (disabled by default): `Zstd` compression with runtime-configurable compression level.
 
 ## License
 

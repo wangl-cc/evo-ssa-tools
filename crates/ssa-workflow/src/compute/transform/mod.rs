@@ -67,11 +67,11 @@ mod inline_tests {
 
     #[test]
     fn transform_ext_builds_dependent_transform_from_node() -> Result<()> {
-        let mut transform = DeterministicTask::builder("test/source/v1")
+        let mut transform = DeterministicTask::builder("test-source-v1")
             .function(|input: u16| Ok(input * 2))
             .cache(ManagedHashCache::<u16>::default())
             .build()?
-            .transform("test/plus-one/v1")
+            .transform("test-plus-one-v1")
             .function(|value| Ok(value + 1))
             .cache(ManagedHashCache::<u16>::default())
             .build()?;
@@ -86,7 +86,7 @@ mod inline_tests {
         let source_calls = Arc::new(AtomicUsize::new(0));
         let transform_calls = Arc::new(AtomicUsize::new(0));
 
-        let mut transform = DeterministicTask::builder("test/no-cache-source/v1")
+        let mut transform = DeterministicTask::builder("test-no-cache-source-v1")
             .function({
                 let source_calls = Arc::clone(&source_calls);
                 move |input: u16| {
@@ -95,7 +95,7 @@ mod inline_tests {
                 }
             })
             .build()?
-            .transform("test/no-cache-transform/v1")
+            .transform("test-no-cache-transform-v1")
             .function({
                 let transform_calls = Arc::clone(&transform_calls);
                 move |value| {
@@ -116,10 +116,10 @@ mod inline_tests {
     fn stochastic_transform_builder_defaults_to_no_cache() -> Result<()> {
         let transform_calls = Arc::new(AtomicUsize::new(0));
 
-        let mut transform = StochasticTask::builder("test/no-cache-stochastic-source/v1")
+        let mut transform = StochasticTask::builder("test-no-cache-stochastic-source-v1")
             .function(|rng, ()| Ok(rand::Rng::next_u64(rng)))
             .build()?
-            .stochastic_transform("test/no-cache-stochastic-transform/v1")
+            .stochastic_transform("test-no-cache-stochastic-transform-v1")
             .function({
                 let transform_calls = Arc::clone(&transform_calls);
                 move |rng, value: u64| {

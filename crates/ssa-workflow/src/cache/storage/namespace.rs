@@ -1,6 +1,6 @@
 use crate::{
     cache::codec::ValueFormat,
-    identity::{ComputationPath, append_len_prefixed, escape_namespace_part},
+    identity::{ComputationPath, IdentifierSegmentChain, append_len_prefixed},
 };
 
 /// Physical storage namespace derived from a computation path and value format.
@@ -12,28 +12,29 @@ pub struct StorageNamespace {
 impl StorageNamespace {
     /// Create a storage namespace from a computation path and value format.
     pub fn new(path: &ComputationPath, value_format: ValueFormat) -> Self {
+        let hash = namespace_hash(path, value_format);
         let value_format = value_format.to_string();
-        let hash = namespace_hash(path, &value_format);
+        let short_hash = &hash[..16];
         Self {
             name: format!(
-                "ssa_workflow__path-{}__format-{}__id-{}",
-                path.namespace_hint(),
-                escape_namespace_part(&value_format),
-                hash
+                "{}--{}--{}",
+                path.render_segments("--"),
+                value_format,
+                short_hash
             ),
         }
     }
 
-    /// Return the backend namespace name.
+    /// Return the storage namespace name.
     pub fn as_str(&self) -> &str {
         &self.name
     }
 }
 
-fn namespace_hash(path: &ComputationPath, value_format: &str) -> String {
+fn namespace_hash(path: &ComputationPath, value_format: ValueFormat) -> String {
     let mut material = Vec::new();
-    append_len_prefixed(&mut material, &path.encode_bytes());
-    append_len_prefixed(&mut material, value_format.as_bytes());
+    append_len_prefixed(&mut material, &path.encode_segments());
+    append_len_prefixed(&mut material, &value_format.encode_segments());
     blake3::hash(&material).to_hex().to_string()
 }
 
@@ -47,47 +48,38 @@ impl std::fmt::Display for StorageNamespace {
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
-    use crate::identity::{ComputationId, ComputationPath};
+    use crate::identity::ComputationPath;
 
-    const COMPUTATION_A: ComputationId = ComputationId::new("computation/a/v1");
+    const COMPUTATION_A: &str = "computation-a-v1";
     const FORMAT: ValueFormat = ValueFormat::new("bitcode06-v1");
 
     #[test]
     fn storage_namespace_is_readable_and_includes_value_format() {
-        let path = ComputationPath::root(COMPUTATION_A);
+        let path = ComputationPath::root_from_str(COMPUTATION_A);
         let namespace = StorageNamespace::new(&path, FORMAT);
 
-        assert!(namespace.as_str().contains("path-computation_2f_a_2f_v1"));
-        assert!(namespace.as_str().contains("format-bitcode06-v1"));
-        assert!(namespace.as_str().contains("__id-"));
+        assert!(
+            namespace
+                .as_str()
+                .starts_with("computation-a-v1--bitcode06-v1--")
+        );
+        assert_eq!(namespace.as_str().rsplit_once("--").unwrap().1.len(), 16);
     }
 
     #[test]
     fn storage_namespace_display_matches_backend_name() {
-        let path = ComputationPath::root(COMPUTATION_A);
+        let path = ComputationPath::root_from_str(COMPUTATION_A);
         let namespace = StorageNamespace::new(&path, FORMAT);
 
         assert_eq!(namespace.to_string(), namespace.as_str());
     }
 
     #[test]
-    fn namespace_escape_is_injective_for_underscore_sequences() {
-        let slash = ComputationPath::root(ComputationId::new("a/b"));
-        let literal = ComputationPath::root(ComputationId::new("a_2f_b"));
-
-        assert_ne!(
-            StorageNamespace::new(&slash, FORMAT),
-            StorageNamespace::new(&literal, FORMAT)
-        );
-    }
-
-    #[test]
     fn namespace_hash_includes_path_boundaries() {
-        let first = ComputationPath::root(ComputationId::new("a-b")).child(ComputationId::new("c"));
-        let second =
-            ComputationPath::root(ComputationId::new("a")).child(ComputationId::new("b-c"));
+        let first = ComputationPath::root_from_str("a-b").child_from_str("c");
+        let second = ComputationPath::root_from_str("a").child_from_str("b-c");
 
-        assert_ne!(first.encode_bytes(), second.encode_bytes());
+        assert_ne!(first.encode_segments(), second.encode_segments());
         assert_ne!(
             StorageNamespace::new(&first, FORMAT),
             StorageNamespace::new(&second, FORMAT)

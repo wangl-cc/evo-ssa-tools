@@ -223,7 +223,7 @@ pub(crate) mod fixtures {
     }
 
     impl CodecEngine<Vec<u8>> for PassthroughBytesEngine {
-        const VALUE_FORMAT: ValueFormat = ValueFormat::new("test/passthrough-bytes/v1");
+        const VALUE_FORMAT: ValueFormat = ValueFormat::new("test-passthrough-bytes-v1");
 
         fn encode(&mut self, value: &Vec<u8>) -> std::result::Result<&[u8], SkipReason> {
             self.buffer.clear();
@@ -249,7 +249,7 @@ pub(crate) mod fixtures {
     }
 
     impl CodecEngine<usize> for SizedBytesEngine {
-        const VALUE_FORMAT: ValueFormat = ValueFormat::new("test/sized-bytes/v1");
+        const VALUE_FORMAT: ValueFormat = ValueFormat::new("test-sized-bytes-v1");
 
         fn encode(&mut self, value: &usize) -> std::result::Result<&[u8], SkipReason> {
             self.buffer.resize(*value, 0);
@@ -336,7 +336,7 @@ mod tests {
     }
 
     impl CodecEngine<Vec<u8>> for RejectingEncodeEngine {
-        const VALUE_FORMAT: ValueFormat = ValueFormat::new("test/rejecting-encode-bytes/v1");
+        const VALUE_FORMAT: ValueFormat = ValueFormat::new("test-rejecting-encode-bytes-v1");
 
         fn encode(&mut self, value: &Vec<u8>) -> Result<&[u8], SkipReason> {
             Err(SkipReason::EncodedValueTooLarge {
@@ -362,7 +362,7 @@ mod tests {
     }
 
     impl CodecEngine<Vec<u8>> for RejectingDecodeEngine {
-        const VALUE_FORMAT: ValueFormat = ValueFormat::new("test/rejecting-decode-bytes/v1");
+        const VALUE_FORMAT: ValueFormat = ValueFormat::new("test-rejecting-decode-bytes-v1");
 
         fn encode(&mut self, value: &Vec<u8>) -> Result<&[u8], SkipReason> {
             self.buffer.clear();

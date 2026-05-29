@@ -241,15 +241,12 @@ mod tests {
 
     #[test]
     fn test_managed_hash_cache_with_hasher() -> Result<()> {
-        use crate::{
-            cache::provider::CacheProvider,
-            identity::{ComputationId, ComputationPath},
-        };
+        use crate::{cache::provider::CacheProvider, identity::ComputationPath};
 
         let provider = ManagedHashCache::<u32>::with_hasher(
             std::collections::hash_map::RandomState::default(),
         );
-        let path = ComputationPath::root(ComputationId::new("managed-hash/v1"));
+        let path = ComputationPath::root_from_str("managed-hash-v1");
         let mut cache = provider.bind(&path)?;
 
         let value = cache.fetch_or_execute(b"k", || Ok(42u32))?;

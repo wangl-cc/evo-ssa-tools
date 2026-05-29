@@ -9,10 +9,10 @@
 //! ```rust
 //! # use ssa_workflow::prelude::*;
 //! # use rand::{Rng, RngExt};
-//! const WAITING_TIME: RandomVariable = RandomVariable::new("ssa/waiting-time/v1");
-//! const REACTION_CHOICE: RandomVariable = RandomVariable::new("ssa/reaction-choice/v1");
+//! const WAITING_TIME: RandomVariable = RandomVariable::new("ssa-waiting-time-v1");
+//! const REACTION_CHOICE: RandomVariable = RandomVariable::new("ssa-reaction-choice-v1");
 //!
-//! let task = StochasticTask::builder("birth-death-ssa/v1")
+//! let task = StochasticTask::builder("birth-death-ssa-v1")
 //!     .streams([WAITING_TIME, REACTION_CHOICE])
 //!     .function(|streams, (initial_cells, max_events): (u32, u32)| {
 //!         let [waiting_time_rng, reaction_choice_rng] = streams.as_mut();
@@ -55,7 +55,7 @@
 //! # use ssa_workflow::prelude::*;
 //! # use rand::{Rng, RngExt};
 //!
-//! let task = StochasticTask::builder("birth-death-ssa/v1")
+//! let task = StochasticTask::builder("birth-death-ssa-v1")
 //!     .function(|rng, (initial_cells, max_events): (u32, u32)| {
 //!         let birth_rate = 0.8;
 //!         let death_rate = 0.4;
@@ -110,7 +110,7 @@
 //! derivation, the RNG algorithm, or canonical encoding for [`StochasticInput`].
 //!
 //! Named streams are independent across random variables. Reordering
-//! calls that use different streams from the same [`RngStreams`] bundle
+//! calls that use different streams from the same [`RngStreams`](crate::compute::RngStreams) bundle
 //! does not change the sequence produced by any individual stream.
 //!
 //! Changes to any seed input change the corresponding RNG stream:
@@ -370,8 +370,8 @@ mod tests {
     use super::*;
     use crate::cache::memory::ManagedHashCache;
 
-    const MAIN_VARIABLE: RandomVariable = RandomVariable::new("ssa/main/v1");
-    const SEGREGATION_VARIABLE: RandomVariable = RandomVariable::new("model/segregation/v1");
+    const MAIN_VARIABLE: RandomVariable = RandomVariable::new("ssa-main-v1");
+    const SEGREGATION_VARIABLE: RandomVariable = RandomVariable::new("model-segregation-v1");
 
     fn test_function(rng: &mut Xoshiro256PlusPlus, _: ()) -> Result<u64> {
         Ok(rng.next_u64())
@@ -382,7 +382,7 @@ mod tests {
 
         #[test]
         fn test_stochastic_task_reproducible_with_streams() -> Result<()> {
-            let mut task = StochasticTask::builder("test/stochastic-streams/v1")
+            let mut task = StochasticTask::builder("test-stochastic-streams-v1")
                 .streams([MAIN_VARIABLE, SEGREGATION_VARIABLE])
                 .function(|rngs, param| {
                     let [main_rng, segregation_rng] = rngs.as_mut();
@@ -404,7 +404,7 @@ mod tests {
 
         #[test]
         fn test_same_input_reuses_same_seed() -> Result<()> {
-            let mut task = StochasticTask::builder("experiment/ssa-workflow-test/v1")
+            let mut task = StochasticTask::builder("experiment-ssa-workflow-test-v1")
                 .function(test_function)
                 .build()?;
             let output1 = task.execute_one(StochasticInput::new((), 7))?;
@@ -416,7 +416,7 @@ mod tests {
 
         #[test]
         fn test_repetition_index_changes_seed() -> Result<()> {
-            let mut task = StochasticTask::builder("experiment/ssa-workflow-test/v1")
+            let mut task = StochasticTask::builder("experiment-ssa-workflow-test-v1")
                 .function(test_function)
                 .build()?;
             let output1 = task.execute_one(StochasticInput::new((), 1))?;
@@ -428,10 +428,10 @@ mod tests {
 
         #[test]
         fn test_computation_id_changes_seed() -> Result<()> {
-            let mut task1 = StochasticTask::builder("experiment/A/v1")
+            let mut task1 = StochasticTask::builder("experiment-A-v1")
                 .function(test_function)
                 .build()?;
-            let mut task2 = StochasticTask::builder("experiment/B/v1")
+            let mut task2 = StochasticTask::builder("experiment-B-v1")
                 .function(test_function)
                 .build()?;
             let output1 = task1.execute_one(StochasticInput::new((), 7))?;
@@ -452,14 +452,14 @@ mod tests {
             let calls_b = Arc::new(AtomicUsize::new(0));
             let calls_b_clone = calls_b.clone();
 
-            let mut task_a = StochasticTask::builder("experiment/A/v1")
+            let mut task_a = StochasticTask::builder("experiment-A-v1")
                 .function(move |rng, ()| {
                     calls_a_clone.fetch_add(1, Ordering::SeqCst);
                     Ok(rng.next_u64())
                 })
                 .cache(ManagedHashCache::<u64>::default())
                 .build()?;
-            let mut task_b = StochasticTask::builder("experiment/B/v1")
+            let mut task_b = StochasticTask::builder("experiment-B-v1")
                 .function(move |rng, ()| {
                     calls_b_clone.fetch_add(1, Ordering::SeqCst);
                     Ok(rng.next_u64())
@@ -483,11 +483,11 @@ mod tests {
 
         #[test]
         fn test_parallel_execution_preserves_seed_reproducibility() -> Result<()> {
-            let task1 = StochasticTask::builder("experiment/ssa-workflow-test/v1")
+            let task1 = StochasticTask::builder("experiment-ssa-workflow-test-v1")
                 .function(|rng, ()| Ok(rng.next_u64()))
                 .cache(ManagedHashCache::<u64>::default())
                 .build()?;
-            let task2 = StochasticTask::builder("experiment/ssa-workflow-test/v1")
+            let task2 = StochasticTask::builder("experiment-ssa-workflow-test-v1")
                 .function(|rng, ()| Ok(rng.next_u64()))
                 .cache(ManagedHashCache::<u64>::default())
                 .build()?;
@@ -506,7 +506,7 @@ mod tests {
             let call_count = Arc::new(AtomicUsize::new(0));
             let call_count_clone = call_count.clone();
 
-            let mut task = StochasticTask::builder("test/no-cache-stochastic/v1")
+            let mut task = StochasticTask::builder("test-no-cache-stochastic-v1")
                 .function(move |rng, ()| {
                     call_count_clone.fetch_add(1, Ordering::SeqCst);
                     Ok(rng.next_u64())

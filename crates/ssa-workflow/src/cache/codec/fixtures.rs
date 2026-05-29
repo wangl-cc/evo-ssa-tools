@@ -73,7 +73,7 @@ impl crate::cache::codec::CloneFresh for FixtureEngine {
 
 impl<T: FixtureValue> CodecEngine<T> for FixtureEngine {
     const VALUE_FORMAT: crate::cache::codec::ValueFormat =
-        crate::cache::codec::ValueFormat::new("fixture/v1");
+        crate::cache::codec::ValueFormat::new("fixture-v1");
 
     fn encode(&mut self, value: &T) -> Result<&[u8], SkipReason> {
         self.buffer.clear();

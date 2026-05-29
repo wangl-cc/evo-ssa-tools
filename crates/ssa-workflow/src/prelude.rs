@@ -13,13 +13,11 @@ pub use crate::cache::codec::compress::Zstd;
 #[cfg(feature = "lru")]
 pub use crate::cache::memory::ManagedLruCache;
 #[cfg(feature = "fjall3")]
-pub use crate::cache::storage::Fjall3Backend;
-#[cfg(feature = "redb")]
-pub use crate::cache::storage::RedbBackend;
+pub use crate::cache::storage::Fjall3StorageProvider;
 pub use crate::{
     Compute, InterruptSignal,
     cache::{
-        CanonicalEncode, ManagedPersistentCache,
+        CanonicalEncode, PersistentCacheProvider, StorageProviderExt,
         codec::ValueFormat,
         memory::{ManagedHashCache, ManagedMemoryCache},
     },

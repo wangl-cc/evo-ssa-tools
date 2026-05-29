@@ -23,7 +23,7 @@ use crate::{
 /// ```rust
 /// # use ssa_workflow::prelude::*;
 /// # fn main() -> ssa_workflow::error::Result<()> {
-/// let task = DeterministicTask::builder("abs/v1")
+/// let task = DeterministicTask::builder("abs-v1")
 ///     .function(|i: i32| Ok(i.abs()))
 ///     .cache(ManagedHashCache::<i32>::default())
 ///     .build()?;
@@ -164,7 +164,7 @@ mod tests {
         let call_count = Arc::new(AtomicUsize::new(0));
         let call_count_clone = call_count.clone();
 
-        let compute = DeterministicTask::builder("test/deterministic-caching/v1")
+        let compute = DeterministicTask::builder("test-deterministic-caching-v1")
             .function(move |i: usize| {
                 call_count_clone.fetch_add(1, Ordering::SeqCst);
                 Ok(i * 3)
@@ -190,7 +190,7 @@ mod tests {
 
     #[test]
     fn test_deterministic_error_propagation() -> Result<()> {
-        let mut compute = DeterministicTask::builder("test/deterministic-error/v1")
+        let mut compute = DeterministicTask::builder("test-deterministic-error-v1")
             .function(|i: usize| {
                 if i == 5 {
                     Err(crate::error::Error::Interrupted)
@@ -212,7 +212,7 @@ mod tests {
 
     #[test]
     fn test_deterministic_execution_order() -> Result<()> {
-        let compute = DeterministicTask::builder("test/deterministic-order/v1")
+        let compute = DeterministicTask::builder("test-deterministic-order-v1")
             .function(|i: usize| {
                 sleep(Duration::from_millis(20 - (i % 20) as u64));
                 Ok(i + 100)
@@ -234,7 +234,7 @@ mod tests {
 
     #[test]
     fn batch_collects_outputs_in_input_order() -> Result<()> {
-        let compute = DeterministicTask::builder("test/deterministic-batch-order/v1")
+        let compute = DeterministicTask::builder("test-deterministic-batch-order-v1")
             .function(|i: usize| Ok(i * i))
             .cache(ManagedHashCache::<usize>::default())
             .build()?;
@@ -247,7 +247,7 @@ mod tests {
 
     #[test]
     fn batch_collect_naturally_returns_the_real_item_error() {
-        let compute = DeterministicTask::builder("test/deterministic-real-error/v1")
+        let compute = DeterministicTask::builder("test-deterministic-real-error-v1")
             .function(|i: usize| {
                 if i == 0 {
                     Err(crate::Error::Compute(
@@ -269,7 +269,7 @@ mod tests {
     #[test]
     fn batch_results_collects_item_errors_without_short_circuiting() -> Result<()> {
         let call_count = Arc::new(AtomicUsize::new(0));
-        let compute = DeterministicTask::builder("test/deterministic-results/v1")
+        let compute = DeterministicTask::builder("test-deterministic-results-v1")
             .function({
                 let call_count = Arc::clone(&call_count);
                 move |i: usize| {
@@ -296,7 +296,7 @@ mod tests {
         let call_count = Arc::new(AtomicUsize::new(0));
         let call_count_clone = call_count.clone();
 
-        let mut compute = DeterministicTask::builder("test/no-cache-direct/v1")
+        let mut compute = DeterministicTask::builder("test-no-cache-direct-v1")
             .function(move |i: usize| {
                 call_count_clone.fetch_add(1, Ordering::SeqCst);
                 Ok(i * 11)
@@ -317,7 +317,7 @@ mod tests {
         let call_count = Arc::new(AtomicUsize::new(0));
         let call_count_clone = call_count.clone();
 
-        let mut compute = DeterministicTask::builder("test/no-cache-deterministic/v1")
+        let mut compute = DeterministicTask::builder("test-no-cache-deterministic-v1")
             .function(move |i: usize| {
                 call_count_clone.fetch_add(1, Ordering::SeqCst);
                 Ok(i * 11)
@@ -334,7 +334,7 @@ mod tests {
     fn test_explicit_shared_cache_behavior() -> Result<()> {
         let call_count = Arc::new(AtomicUsize::new(0));
 
-        let mut compute_a = DeterministicTask::builder("test/shared-cache/v1")
+        let mut compute_a = DeterministicTask::builder("test-shared-cache-v1")
             .function({
                 let call_count = call_count.clone();
                 move |i: usize| {

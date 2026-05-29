@@ -5,7 +5,7 @@ use std::sync::{
 
 use parking_lot::Mutex;
 
-use super::CacheStore;
+use super::EncodedStorage;
 use crate::{
     cache::{
         Cache, CloneShared, EncodedCache,
@@ -20,7 +20,7 @@ fn test_default_store_skips_write_when_encode_is_rejected() -> Result<()> {
         write_called: &'a AtomicBool,
     }
 
-    impl CacheStore for SkipStore<'_> {
+    impl EncodedStorage for SkipStore<'_> {
         type Encoded<'a>
             = &'a [u8]
         where
@@ -47,7 +47,7 @@ fn test_default_store_skips_write_when_encode_is_rejected() -> Result<()> {
 
     impl CodecEngine<u32> for SkipEngine {
         const VALUE_FORMAT: crate::cache::codec::ValueFormat =
-            crate::cache::codec::ValueFormat::new("test/skip-u32/v1");
+            crate::cache::codec::ValueFormat::new("test-skip-u32-v1");
 
         fn encode(&mut self, _: &u32) -> std::result::Result<&[u8], SkipReason> {
             Err(SkipReason::EncodedValueTooLarge {
@@ -76,7 +76,7 @@ fn test_default_store_skips_write_when_encode_is_rejected() -> Result<()> {
 fn test_fetch_propagates_non_corruption_decode_error() {
     struct FailingStore;
 
-    impl CacheStore for FailingStore {
+    impl EncodedStorage for FailingStore {
         type Encoded<'a>
             = &'a [u8]
         where
@@ -102,7 +102,7 @@ fn test_fetch_propagates_non_corruption_decode_error() {
 
     impl CodecEngine<u32> for FailingDecodeEngine {
         const VALUE_FORMAT: crate::cache::codec::ValueFormat =
-            crate::cache::codec::ValueFormat::new("test/failing-decode-u32/v1");
+            crate::cache::codec::ValueFormat::new("test-failing-decode-u32-v1");
 
         fn encode(&mut self, _: &u32) -> std::result::Result<&[u8], SkipReason> {
             unreachable!("fetch test never encodes")
@@ -140,7 +140,7 @@ fn test_fetch_treats_checked_corruption_as_miss() -> Result<()> {
 
     impl CodecEngine<u32> for BytesEngine {
         const VALUE_FORMAT: crate::cache::codec::ValueFormat =
-            crate::cache::codec::ValueFormat::new("test/checked-bytes-u32/v1");
+            crate::cache::codec::ValueFormat::new("test-checked-bytes-u32-v1");
 
         fn encode(&mut self, value: &u32) -> std::result::Result<&[u8], SkipReason> {
             self.0.clear();
@@ -159,7 +159,7 @@ fn test_fetch_treats_checked_corruption_as_miss() -> Result<()> {
         value: Vec<u8>,
     }
 
-    impl CacheStore for SingleValueStore {
+    impl EncodedStorage for SingleValueStore {
         type Encoded<'a>
             = &'a [u8]
         where
@@ -200,7 +200,7 @@ fn test_fetch_or_execute_recomputes_when_checked_entry_is_corrupted() -> Result<
 
     impl CodecEngine<u32> for BytesEngine {
         const VALUE_FORMAT: crate::cache::codec::ValueFormat =
-            crate::cache::codec::ValueFormat::new("test/corrupt-bytes-u32/v1");
+            crate::cache::codec::ValueFormat::new("test-corrupt-bytes-u32-v1");
 
         fn encode(&mut self, value: &u32) -> std::result::Result<&[u8], SkipReason> {
             self.0.clear();
@@ -219,7 +219,7 @@ fn test_fetch_or_execute_recomputes_when_checked_entry_is_corrupted() -> Result<
         writes: Arc<AtomicUsize>,
     }
 
-    impl CacheStore for TestStore {
+    impl EncodedStorage for TestStore {
         type Encoded<'a>
             = &'a [u8]
         where
@@ -268,7 +268,7 @@ fn test_fetch_or_execute_returns_cached_value_on_hit() -> Result<()> {
 
     impl CodecEngine<u32> for BytesEngine {
         const VALUE_FORMAT: crate::cache::codec::ValueFormat =
-            crate::cache::codec::ValueFormat::new("test/preloaded-bytes-u32/v1");
+            crate::cache::codec::ValueFormat::new("test-preloaded-bytes-u32-v1");
 
         fn encode(&mut self, value: &u32) -> std::result::Result<&[u8], SkipReason> {
             self.0.clear();
@@ -290,7 +290,7 @@ fn test_fetch_or_execute_returns_cached_value_on_hit() -> Result<()> {
         payload: Vec<u8>,
     }
 
-    impl CacheStore for PreloadedStore {
+    impl EncodedStorage for PreloadedStore {
         type Encoded<'a>
             = &'a [u8]
         where
@@ -320,7 +320,7 @@ fn test_unit_store_clone_shared_is_noop() {
     store.clone_shared();
 }
 
-// -- CacheStore + raw bytes store tests -------------------------------------
+// -- EncodedStorage + raw bytes store tests ----------------------------------
 //
 // These tests use an inline bytes store as a minimal storage-layer test double.
 
@@ -336,7 +336,7 @@ impl TestBytesStore {
     }
 }
 
-impl super::CacheStore for TestBytesStore {
+impl super::EncodedStorage for TestBytesStore {
     type Encoded<'a>
         = Vec<u8>
     where

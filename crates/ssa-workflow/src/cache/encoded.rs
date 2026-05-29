@@ -1,17 +1,20 @@
-//! Typed cache adapter backed by a raw [`CacheStore`](crate::cache::storage::CacheStore).
+//! Typed cache adapter backed by raw [`EncodedStorage`](crate::cache::storage::EncodedStorage).
 
 use super::{
     Cache, CloneShared,
     codec::{CloneFresh, CodecEngine},
-    storage::CacheStore,
+    storage::EncodedStorage,
 };
 use crate::error::Result;
 
-/// A cache backed by a raw [`CacheStore`] and a [`CodecEngine`].
+/// A cache backed by raw [`EncodedStorage`] and a [`CodecEngine`].
 ///
 /// `EncodedCache` owns both a storage backend and a codec engine. During batch execution, each
 /// worker gets its own cache handle: the store is cloned as a shared handle, while the codec is
 /// cloned fresh with independent worker-local state.
+///
+/// The raw storage trait is sealed, so callers should construct this cache with crate-provided
+/// storage backends such as `Fjall3Store`.
 #[derive(Debug)]
 pub struct EncodedCache<S, CE> {
     pub(crate) storage: S,
@@ -36,7 +39,7 @@ impl<S: CloneShared, CE: CloneFresh> CloneShared for EncodedCache<S, CE> {
 
 impl<S, CE, T> Cache<T> for EncodedCache<S, CE>
 where
-    S: CacheStore,
+    S: EncodedStorage,
     CE: CodecEngine<T>,
 {
     fn fetch(&mut self, key: &[u8]) -> Result<Option<T>> {
@@ -79,7 +82,7 @@ mod tests {
             Result,
             cache::{
                 codec::{CodecEngine, Error as CodecError, SkipReason},
-                storage::{CacheStore, StorageResult},
+                storage::{EncodedStorage, StorageResult},
             },
         };
 
@@ -95,7 +98,7 @@ mod tests {
             }
         }
 
-        impl CacheStore for TestBytesStore {
+        impl EncodedStorage for TestBytesStore {
             type Encoded<'a>
                 = Vec<u8>
             where
@@ -125,7 +128,7 @@ mod tests {
 
         impl CodecEngine<u32> for BytesEngine {
             const VALUE_FORMAT: crate::cache::codec::ValueFormat =
-                crate::cache::codec::ValueFormat::new("test/bytes-u32/v1");
+                crate::cache::codec::ValueFormat::new("test-bytes-u32-v1");
 
             fn encode(&mut self, value: &u32) -> std::result::Result<&[u8], SkipReason> {
                 self.encoded.clear();
@@ -157,51 +160,6 @@ mod tests {
 
             assert!(matches!(result, Err(Error::Interrupted)));
             assert!(!cache.storage.write_called());
-        }
-    }
-
-    #[cfg(feature = "redb")]
-    mod store_errors {
-        use super::{super::EncodedCache, fixtures::BytesEngine};
-        use crate::{
-            cache::{
-                Cache,
-                storage::{CacheStore, StorageResult},
-            },
-            error::Error,
-        };
-
-        struct FailingStore;
-
-        impl CacheStore for FailingStore {
-            type Encoded<'a>
-                = Vec<u8>
-            where
-                Self: 'a;
-
-            fn fetch_encoded(&self, _: &[u8]) -> StorageResult<Option<Self::Encoded<'_>>> {
-                Ok(None)
-            }
-
-            fn store_encoded(&self, _: &[u8], _: &[u8]) -> StorageResult<()> {
-                Err(crate::cache::storage::StorageError::Redb(
-                    ::redb::Error::DatabaseClosed,
-                ))
-            }
-        }
-
-        #[test]
-        fn propagates_store_errors() {
-            let mut cache = EncodedCache::new(FailingStore, BytesEngine::default());
-
-            let result = cache.fetch_or_execute(b"k", || Ok(3u32));
-
-            assert!(matches!(
-                result,
-                Err(Error::Storage(crate::cache::storage::StorageError::Redb(
-                    ::redb::Error::DatabaseClosed
-                )))
-            ));
         }
     }
 }

@@ -13,33 +13,30 @@
 //!
 //! | Codec | Feature | Use when |
 //! |---|---|---|
-//! | [`Bitcode06`] | `bitcode06` | You want a fast binary format tied to `bitcode` 0.6. |
-//! | [`Postcard`] | `postcard` | You want a compact serde format with a published wire spec. |
+//! | `Bitcode06` | `bitcode06` | You want a fast binary format tied to `bitcode` 0.6. |
+//! | `Postcard` | `postcard` | You want a compact serde format with a published wire spec. |
 //! | [`CheckedCodec<E>`] | always | You want CRC32C corruption checks around another codec. |
-//! | [`CompressedCodec<E, C, P>`] | `compress` | You want framed compression around another codec. |
+//! | `CompressedCodec<E, C, P>` | `compress` | You want framed compression around another codec. |
 //!
 //! # Value format names
 //!
 //! Format names are part of the persistent cache contract. Use stable, versioned names such as
 //! `"bitcode06-v1"`, `"postcard-v1"`, `"checked-v1"`, or `"lz4-v1"`.
 //!
-//! Use `-` inside one segment and never include `/`. The `/` separator is reserved for composed
+//! Use `-` inside one segment and never `--`. The `--` separator is reserved for composed
 //! formats built with [`ValueFormat::concat`].
 //!
 //! Codec wrappers append their own segment to the inner format:
 //!
 //! ```ignore
-//! // Renders as "bitcode06-v1/checked-v1"
+//! // Renders as "bitcode06-v1--checked-v1"
 //! const VALUE_FORMAT: ValueFormat =
 //!     ValueFormat::concat(&Bitcode06::<MyType>::VALUE_FORMAT, "checked-v1");
 //! ```
 //!
-//! Structural names distinguish `ValueFormat::new("a/b")` from
-//! `ValueFormat::concat(&ValueFormat::new("a"), "b")`, even though both display as `a/b`.
-//!
-//! [`CompressedCodec<E, C, P>`]: compress::CompressedCodec
+//! Segment constructors assert this convention, so displayed names remain unambiguous.
 
-use std::hash::{Hash, Hasher};
+use crate::identity::{IdentifierSegmentChain, assert_identifier_segment};
 
 /// Stable name for bytes written by a codec pipeline.
 ///
@@ -52,61 +49,61 @@ use std::hash::{Hash, Hasher};
 ///
 /// # Equality
 ///
-/// Equality is structural: segment boundaries matter. A single segment named `"a/b"` is different
-/// from `"a"` composed with suffix `"b"` through [`concat`](Self::concat), even though both render
-/// as `a/b`.
+/// Equality is structural: segment boundaries matter. Segment constructors reject `--`, so each
+/// displayed format maps back to one unambiguous segment chain.
 #[derive(Clone, Copy, Debug)]
 pub struct ValueFormat(ValueFormatRepr);
 
 #[derive(Clone, Copy, Debug)]
 enum ValueFormatRepr {
-    Static(&'static str),
-    Concat(&'static ValueFormat, &'static str),
+    Root(&'static str),
+    Child {
+        parent: &'static ValueFormat,
+        segment: &'static str,
+    },
 }
 
-use ValueFormatRepr::{Concat, Static};
+use ValueFormatRepr::{Child, Root};
 
 impl ValueFormat {
     /// Create a value format from one stable segment.
     pub const fn new(name: &'static str) -> Self {
-        Self(Static(name))
+        assert_identifier_segment(name, false);
+        Self(Root(name))
     }
 
     /// Append one stable segment to an existing format.
     ///
-    /// The rendered form inserts `/` between segments: `base/suffix`.
+    /// The rendered form inserts `--` between segments: `base--suffix`.
     /// Callers should **not** include the separator in `suffix`.
     pub const fn concat(base: &'static ValueFormat, suffix: &'static str) -> Self {
-        Self(Concat(base, suffix))
+        assert_identifier_segment(suffix, false);
+        Self(Child {
+            parent: base,
+            segment: suffix,
+        })
+    }
+}
+
+impl IdentifierSegmentChain for ValueFormat {
+    fn for_each_segment(&self, mut visit: impl FnMut(&str)) {
+        fn walk(format: &ValueFormat, visit: &mut impl FnMut(&str)) {
+            match format.0 {
+                Root(value) => visit(value),
+                Child { parent, segment } => {
+                    walk(parent, visit);
+                    visit(segment);
+                }
+            }
+        }
+
+        walk(self, &mut visit);
     }
 }
 
 impl std::fmt::Display for ValueFormat {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self.0 {
-            Static(value) => f.write_str(value),
-            Concat(base, suffix) => {
-                std::fmt::Display::fmt(base, f)?;
-                f.write_str("/")?;
-                f.write_str(suffix)
-            }
-        }
-    }
-}
-
-impl Hash for ValueFormat {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        match self.0 {
-            Static(s) => {
-                state.write_u8(0);
-                state.write(s.as_bytes());
-            }
-            Concat(base, suffix) => {
-                state.write_u8(1);
-                Hash::hash(base, state);
-                state.write(suffix.as_bytes());
-            }
-        }
+        self.write_segments("->", f)
     }
 }
 
@@ -121,14 +118,23 @@ impl Eq for ValueFormat {}
 impl PartialEq for ValueFormatRepr {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
-            (Static(a), Static(b)) => a == b,
-            (Concat(a_base, a_suffix), Concat(b_base, b_suffix)) => {
-                a_suffix == b_suffix && a_base.0 == b_base.0
-            }
+            (Root(a), Root(b)) => a == b,
+            (
+                Child {
+                    parent: a_parent,
+                    segment: a_segment,
+                },
+                Child {
+                    parent: b_parent,
+                    segment: b_segment,
+                },
+            ) => a_segment == b_segment && a_parent.0 == b_parent.0,
             _ => false,
         }
     }
 }
+
+impl Eq for ValueFormatRepr {}
 
 // ---------------------------------------------------------------------------
 // Traits
@@ -171,7 +177,7 @@ pub trait CodecEngine<T>: CloneFresh {
     /// Stable format name for bytes produced by this codec.
     ///
     /// Follow the [module naming convention](self#naming-convention): use `-` internally,
-    /// never `/`. For wrappers, compose with [`ValueFormat::concat`]:
+    /// never `--`. For wrappers, compose with [`ValueFormat::concat`]:
     ///
     /// ```ignore
     /// const VALUE_FORMAT: ValueFormat =
@@ -264,14 +270,14 @@ mod tests {
     }
 
     #[test]
-    fn concat_renders_with_slash_separator() {
+    fn concat_renders_with_double_hyphen_separator() {
         const FORMAT: ValueFormat = ValueFormat::new("bitcode06-v1");
         const CHECKED: ValueFormat = ValueFormat::concat(&FORMAT, "checked-v1");
         const COMPRESSED: ValueFormat = ValueFormat::concat(&CHECKED, "zstd-v1");
 
-        assert_eq!(CHECKED.to_string(), "bitcode06-v1/checked-v1");
-        assert_eq!(CHECKED.to_string(), "bitcode06-v1/checked-v1");
-        assert_eq!(COMPRESSED.to_string(), "bitcode06-v1/checked-v1/zstd-v1");
+        assert_eq!(CHECKED.to_string(), "bitcode06-v1--checked-v1");
+        assert_eq!(CHECKED.to_string(), "bitcode06-v1--checked-v1");
+        assert_eq!(COMPRESSED.to_string(), "bitcode06-v1--checked-v1--zstd-v1");
     }
 
     #[test]
@@ -284,29 +290,34 @@ mod tests {
     }
 
     #[test]
-    fn static_never_equals_concat() {
+    fn encoded_segments_preserve_structural_boundaries() {
         const BASE: ValueFormat = ValueFormat::new("bitcode06-v1");
-        let concat = ValueFormat::concat(&BASE, "checked-v1");
+        const CHECKED: ValueFormat = ValueFormat::concat(&BASE, "checked-v1");
 
-        // Same rendered bytes, different structure.
-        assert_ne!(ValueFormat::new("bitcode06-v1/checked-v1"), concat);
-        assert_ne!(concat, ValueFormat::new("bitcode06-v1/checked-v1"));
+        let mut expected = Vec::new();
+        crate::identity::append_len_prefixed(&mut expected, b"bitcode06-v1");
+        crate::identity::append_len_prefixed(&mut expected, b"checked-v1");
+
+        assert_eq!(CHECKED.encode_segments(), expected);
     }
 
     #[test]
-    fn hash_distinguishes_static_from_concat() {
+    #[should_panic(expected = "identifier segment must not contain `--`")]
+    fn value_format_rejects_double_hyphen_segment() {
+        let _ = ValueFormat::new("bitcode06-v1--checked-v1");
+    }
+
+    #[test]
+    #[should_panic(expected = "identifier segment contains an invalid character")]
+    fn value_format_rejects_slash_segment() {
+        let _ = ValueFormat::new("bitcode06-v1/checked-v1");
+    }
+
+    #[test]
+    #[should_panic(expected = "identifier segment must not contain `--`")]
+    fn value_format_concat_rejects_double_hyphen_suffix() {
         const BASE: ValueFormat = ValueFormat::new("bitcode06-v1");
-        let concat = ValueFormat::concat(&BASE, "checked-v1");
-        let static_eq = ValueFormat::new("bitcode06-v1/checked-v1");
-
-        use std::collections::hash_map::DefaultHasher;
-        let hash = |vf: ValueFormat| {
-            let mut h = DefaultHasher::new();
-            vf.hash(&mut h);
-            h.finish()
-        };
-
-        assert_ne!(hash(concat), hash(static_eq));
+        let _ = ValueFormat::concat(&BASE, "checked--v1");
     }
 
     #[test]
@@ -315,8 +326,8 @@ mod tests {
 
         let checked = ValueFormat::concat(&FORMAT, "checked-v1");
 
-        assert_eq!(checked.to_string(), "postcard-v1/checked-v1");
-        assert_eq!(checked.to_string(), "postcard-v1/checked-v1");
+        assert_eq!(checked.to_string(), "postcard-v1--checked-v1");
+        assert_eq!(checked.to_string(), "postcard-v1--checked-v1");
     }
 
     #[test]

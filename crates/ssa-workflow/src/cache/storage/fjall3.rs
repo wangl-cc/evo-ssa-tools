@@ -1,9 +1,9 @@
-//! Persistent storage backend built on Fjall v3 keyspaces.
+//! Fjall v3 storage provider and raw store helpers.
 
-use super::{CacheStore, StorageNamespace, StorageResult};
-use crate::{Result, cache::PersistentBackend};
+use super::{EncodedStorage, StorageNamespace, StorageResult};
+use crate::{Result, cache::StorageProvider};
 
-/// Fjall v3-backed cache store bound to a single keyspace.
+/// Fjall v3-backed raw store bound to a single keyspace.
 ///
 /// The caller owns the surrounding [`fjall3::Database`] handle and decides how different cache
 /// keyspaces map onto Fjall keyspace names.
@@ -16,52 +16,65 @@ pub struct Fjall3Store {
 
 impl Fjall3Store {
     /// Open or create a keyspace-backed store inside an existing Fjall v3 database.
-    ///
-    /// `options` defaults to [`fjall3::KeyspaceCreateOptions::default`] when omitted.
-    pub fn open(
+    pub fn open(database: fjall3::Database, keyspace_name: impl AsRef<str>) -> StorageResult<Self> {
+        Self::open_with_options(
+            database,
+            keyspace_name,
+            fjall3::KeyspaceCreateOptions::default(),
+        )
+    }
+
+    /// Open or create a keyspace-backed store with custom keyspace creation options.
+    pub fn open_with_options(
         database: fjall3::Database,
         keyspace_name: impl AsRef<str>,
-        options: Option<fjall3::KeyspaceCreateOptions>,
+        create_options: fjall3::KeyspaceCreateOptions,
     ) -> StorageResult<Self> {
-        let create_options = options.unwrap_or_default();
         let handle = database.keyspace(keyspace_name.as_ref(), || create_options)?;
         Ok(Self { handle })
     }
 }
 
-/// Fjall v3 backend root for managed persistent cache spaces.
+/// Fjall v3 storage provider for managed cache spaces.
+///
+/// The provider owns a database handle and the keyspace options used when opening namespaces.
+/// Multiple providers can share the same database while using different keyspace options.
 #[derive(Clone)]
-pub struct Fjall3Backend {
+pub struct Fjall3StorageProvider {
     database: fjall3::Database,
-    options: Option<fjall3::KeyspaceCreateOptions>,
+    keyspace_options: fjall3::KeyspaceCreateOptions,
 }
 
-impl Fjall3Backend {
-    /// Create a managed backend root from an existing Fjall v3 database.
+impl Fjall3StorageProvider {
+    /// Create a storage provider from an existing Fjall v3 database.
     pub fn new(database: fjall3::Database) -> Self {
         Self {
             database,
-            options: None,
+            keyspace_options: fjall3::KeyspaceCreateOptions::default(),
         }
     }
 
     /// Set keyspace creation options used for newly opened namespaces.
     pub fn with_keyspace_options(mut self, options: fjall3::KeyspaceCreateOptions) -> Self {
-        self.options = Some(options);
+        self.keyspace_options = options;
         self
     }
 }
 
-impl PersistentBackend for Fjall3Backend {
-    type Store = Fjall3Store;
+impl StorageProvider for Fjall3StorageProvider {
+    type Storage = Fjall3Store;
 
-    fn open_namespace(&self, namespace: &StorageNamespace) -> Result<Self::Store> {
-        let database = self.database.clone();
-        let options = self.options.clone();
-        let store = Fjall3Store::open(database, namespace.as_str(), options)?;
-        Ok(store)
+    fn open_storage(&self, namespace: &StorageNamespace) -> Result<Self::Storage> {
+        Ok(Fjall3Store::open_with_options(
+            self.database.clone(),
+            namespace.as_str(),
+            self.keyspace_options.clone(),
+        )?)
     }
 }
+
+#[cfg(not(test))]
+impl super::sealed::Sealed for Fjall3Store {}
 
 impl crate::cache::CloneShared for Fjall3Store {
     fn clone_shared(&self) -> Self {
@@ -71,7 +84,7 @@ impl crate::cache::CloneShared for Fjall3Store {
     }
 }
 
-impl CacheStore for Fjall3Store {
+impl EncodedStorage for Fjall3Store {
     type Encoded<'a>
         = fjall3::UserValue
     where
@@ -93,11 +106,11 @@ mod tests {
     use super::*;
     use crate::{
         cache::{
-            Cache, CloneShared, EncodedCache, ManagedPersistentCache,
-            codec::fixtures::FixtureEngine, provider::CacheProvider, storage::StorageError,
+            Cache, CloneShared, EncodedCache, StorageProviderExt, codec::fixtures::FixtureEngine,
+            provider::CacheProvider, storage::StorageError,
         },
         error::Result,
-        identity::{ComputationId, ComputationPath},
+        identity::ComputationPath,
     };
 
     #[test]
@@ -106,7 +119,7 @@ mod tests {
         let db = ::fjall3::Database::builder(&tmp)
             .open()
             .map_err(StorageError::from)?;
-        let store = Fjall3Store::open(db, "test", None)?;
+        let store = Fjall3Store::open(db, "test")?;
         let mut cache = EncodedCache::new(store, FixtureEngine::default());
 
         assert_eq!(cache.fetch(b"non_existent")?, None::<u32>);
@@ -126,7 +139,7 @@ mod tests {
         let db = ::fjall3::Database::builder(&tmp)
             .open()
             .map_err(StorageError::from)?;
-        let store = Fjall3Store::open(db, "raw", None)?;
+        let store = Fjall3Store::open(db, "raw")?;
         let forked = store.clone_shared();
 
         store.store_encoded(b"k", b"payload")?;
@@ -138,17 +151,16 @@ mod tests {
     }
 
     #[test]
-    fn test_fjall3_backend_opens_distinct_namespaces() -> Result<()> {
+    fn test_fjall3_storage_provider_opens_distinct_namespaces() -> Result<()> {
         let tmp = tempfile::tempdir().unwrap();
         let db = ::fjall3::Database::builder(&tmp)
             .open()
             .map_err(StorageError::from)?;
-        let provider = ManagedPersistentCache::new(
-            Fjall3Backend::new(db).with_keyspace_options(fjall3::KeyspaceCreateOptions::default()),
-            FixtureEngine::default(),
-        );
-        let path_a = ComputationPath::root(ComputationId::new("a/v1"));
-        let path_b = ComputationPath::root(ComputationId::new("b/v1"));
+        let provider = Fjall3StorageProvider::new(db)
+            .with_keyspace_options(fjall3::KeyspaceCreateOptions::default())
+            .with_codec(FixtureEngine::default());
+        let path_a = ComputationPath::root_from_str("a-v1");
+        let path_b = ComputationPath::root_from_str("b-v1");
         let mut cache_a = <_ as CacheProvider<u32>>::bind(provider.clone(), &path_a)?;
         let mut cache_b = <_ as CacheProvider<u32>>::bind(provider, &path_b)?;
 

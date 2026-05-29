@@ -42,15 +42,12 @@ where
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
-    use crate::{
-        cache::memory::HashObjectCache,
-        identity::{ComputationId, ComputationPath},
-    };
+    use crate::{cache::memory::HashObjectCache, identity::ComputationPath};
 
     #[test]
     fn bind_returns_owned_hash_cache() -> Result<()> {
         let provider = ManagedMemoryCache::from_cache(HashObjectCache::<u32>::default());
-        let path = ComputationPath::root(ComputationId::new("answer/v1"));
+        let path = ComputationPath::root_from_str("answer-v1");
         let mut cache = provider.bind(&path)?;
 
         let value = cache.fetch_or_execute(b"k", || Ok(7))?;

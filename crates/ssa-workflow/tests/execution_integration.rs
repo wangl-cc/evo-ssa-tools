@@ -11,7 +11,7 @@ fn prelude_smoke_supports_execute_one_and_batch_collect() -> Result<()> {
     let call_count = Arc::new(AtomicUsize::new(0));
     let call_count_clone = Arc::clone(&call_count);
 
-    let mut task = DeterministicTask::builder("prelude/smoke/v1")
+    let mut task = DeterministicTask::builder("prelude-smoke-v1")
         .function(move |input: usize| {
             call_count_clone.fetch_add(1, Ordering::SeqCst);
             Ok(input * 4)
@@ -35,14 +35,14 @@ fn stochastic_transform_reuses_cached_analysis() -> Result<()> {
     let analysis_calls = Arc::new(AtomicUsize::new(0));
     let analysis_calls_clone = Arc::clone(&analysis_calls);
 
-    let transform = StochasticTask::builder("experiment/simple/v1")
+    let transform = StochasticTask::builder("experiment-simple-v1")
         .function(move |rng, ()| {
             experiment_calls_clone.fetch_add(1, Ordering::SeqCst);
             Ok(rng.next_u64())
         })
         .cache(ManagedHashCache::<u64>::default())
         .build()?
-        .transform("analysis/count-ones/v1")
+        .transform("analysis-count-ones-v1")
         .function(move |sample: u64| {
             analysis_calls_clone.fetch_add(1, Ordering::SeqCst);
             Ok(sample.count_ones())

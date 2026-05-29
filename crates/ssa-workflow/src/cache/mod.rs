@@ -14,7 +14,7 @@ pub use encoded::EncodedCache;
 #[cfg(feature = "lru")]
 pub use memory::ManagedLruCache;
 pub use memory::{ManagedHashCache, ManagedMemoryCache};
-pub use provider::{CacheProvider, ManagedPersistentCache, PersistentBackend};
+pub use provider::{CacheProvider, PersistentCacheProvider, StorageProvider, StorageProviderExt};
 
 use crate::Result;
 

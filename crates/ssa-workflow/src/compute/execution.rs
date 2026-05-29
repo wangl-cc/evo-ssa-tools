@@ -196,10 +196,9 @@ mod tests {
     };
 
     use super::*;
-    use crate::identity::ComputationId;
 
     static TEST_PATH: LazyLock<ComputationPath> =
-        LazyLock::new(|| ComputationPath::root(ComputationId::new("test/compute/v1")));
+        LazyLock::new(|| ComputationPath::root_from_str("test-compute-v1"));
 
     mod single_item {
         use super::*;

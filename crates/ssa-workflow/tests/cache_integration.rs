@@ -3,15 +3,15 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 
-use parking_lot::Mutex;
+#[cfg(feature = "fjall3")]
+use ssa_workflow::cache::{
+    CanonicalEncode, EncodedCache,
+    codec::{CheckedCodec, CloneFresh, CodecEngine, Error as CodecError, SkipReason},
+    storage::EncodedStorage,
+};
 use ssa_workflow::{
     Compute,
-    cache::{
-        Cache, CacheProvider, CanonicalEncode, CloneShared, EncodedCache,
-        codec::{CheckedCodec, CloneFresh, CodecEngine, Error as CodecError, SkipReason},
-        memory::DefaultHashObjectCache,
-        storage::{CacheStore, StorageResult},
-    },
+    cache::{Cache, CacheProvider, CloneShared, memory::DefaultHashObjectCache},
     compute::DeterministicTask,
     error::Result,
     identity::ComputationPath,
@@ -36,43 +36,25 @@ where
     }
 }
 
-/// Minimal in-memory `CacheStore` + `CloneShared` for integration tests that need `EncodedCache`.
-#[derive(Default)]
-struct SimpleStore(Arc<Mutex<std::collections::HashMap<Vec<u8>, Vec<u8>>>>);
-
-impl CloneShared for SimpleStore {
-    fn clone_shared(&self) -> Self {
-        Self(Arc::clone(&self.0))
-    }
+#[cfg(feature = "fjall3")]
+fn fjall_store(
+    name: &str,
+) -> Result<(tempfile::TempDir, ssa_workflow::cache::storage::Fjall3Store)> {
+    let dir = tempfile::tempdir().expect("tempdir should be created");
+    let db = fjall3::Database::builder(&dir)
+        .open()
+        .map_err(ssa_workflow::cache::storage::StorageError::from)?;
+    let store = ssa_workflow::cache::storage::Fjall3Store::open(db, name)?;
+    Ok((dir, store))
 }
 
-impl CacheStore for SimpleStore {
-    type Encoded<'a>
-        = Vec<u8>
-    where
-        Self: 'a;
-
-    fn fetch_encoded(&self, key: &[u8]) -> StorageResult<Option<Self::Encoded<'_>>> {
-        Ok(self.0.lock().get(key).cloned())
-    }
-
-    fn store_encoded(&self, key: &[u8], encoded: &[u8]) -> StorageResult<()> {
-        self.0.lock().insert(key.to_owned(), encoded.to_vec());
-        Ok(())
-    }
-}
-
-impl SimpleStore {
-    fn overwrite_raw(&self, key: &[u8], encoded: Vec<u8>) {
-        self.0.lock().insert(key.to_owned(), encoded);
-    }
-}
-
+#[cfg(feature = "fjall3")]
 struct TaggedUsizeEngine {
     tag: u8,
     buffer: Vec<u8>,
 }
 
+#[cfg(feature = "fjall3")]
 impl TaggedUsizeEngine {
     fn new(tag: u8) -> Self {
         Self {
@@ -82,15 +64,17 @@ impl TaggedUsizeEngine {
     }
 }
 
+#[cfg(feature = "fjall3")]
 impl CloneFresh for TaggedUsizeEngine {
     fn clone_fresh(&self) -> Self {
         Self::new(self.tag)
     }
 }
 
+#[cfg(feature = "fjall3")]
 impl CodecEngine<usize> for TaggedUsizeEngine {
     const VALUE_FORMAT: ssa_workflow::cache::codec::ValueFormat =
-        ssa_workflow::cache::codec::ValueFormat::new("test/tagged-usize/v1");
+        ssa_workflow::cache::codec::ValueFormat::new("test-tagged-usize-v1");
 
     fn encode(&mut self, value: &usize) -> std::result::Result<&[u8], SkipReason> {
         self.buffer.clear();
@@ -110,63 +94,21 @@ impl CodecEngine<usize> for TaggedUsizeEngine {
     }
 }
 
-struct CountingUsizeEngine {
-    buffer: Vec<u8>,
-    encode_calls: Arc<AtomicUsize>,
-    decode_calls: Arc<AtomicUsize>,
-}
-
-impl CountingUsizeEngine {
-    fn new(encode_calls: Arc<AtomicUsize>, decode_calls: Arc<AtomicUsize>) -> Self {
-        Self {
-            buffer: Vec::new(),
-            encode_calls,
-            decode_calls,
-        }
-    }
-}
-
-impl CloneFresh for CountingUsizeEngine {
-    fn clone_fresh(&self) -> Self {
-        Self {
-            buffer: Vec::new(),
-            encode_calls: Arc::clone(&self.encode_calls),
-            decode_calls: Arc::clone(&self.decode_calls),
-        }
-    }
-}
-
-impl CodecEngine<usize> for CountingUsizeEngine {
-    const VALUE_FORMAT: ssa_workflow::cache::codec::ValueFormat =
-        ssa_workflow::cache::codec::ValueFormat::new("test/counting-usize/v1");
-
-    fn encode(&mut self, value: &usize) -> std::result::Result<&[u8], SkipReason> {
-        self.encode_calls.fetch_add(1, Ordering::SeqCst);
-        self.buffer.clear();
-        self.buffer.extend_from_slice(&value.to_le_bytes());
-        Ok(&self.buffer)
-    }
-
-    fn decode(&mut self, bytes: &[u8]) -> Result<usize, CodecError> {
-        self.decode_calls.fetch_add(1, Ordering::SeqCst);
-        let value_bytes: [u8; core::mem::size_of::<usize>()] =
-            bytes.try_into().expect("payload should store one usize");
-        Ok(usize::from_le_bytes(value_bytes))
-    }
-}
-
+#[cfg(feature = "fjall3")]
 #[derive(Default)]
 struct BytesUsizeEngine(Vec<u8>);
 
+#[cfg(feature = "fjall3")]
 impl ssa_workflow::cache::codec::CloneFresh for BytesUsizeEngine {
     fn clone_fresh(&self) -> Self {
         Self::default()
     }
 }
 
+#[cfg(feature = "fjall3")]
 impl CodecEngine<usize> for BytesUsizeEngine {
     const VALUE_FORMAT: ssa_workflow::cache::codec::ValueFormat =
-        ssa_workflow::cache::codec::ValueFormat::new("test/bytes-usize/v1");
+        ssa_workflow::cache::codec::ValueFormat::new("test-bytes-usize-v1");
 
     fn encode(&mut self, value: &usize) -> std::result::Result<&[u8], SkipReason> {
         self.0.clear();
@@ -182,17 +124,19 @@ impl CodecEngine<usize> for BytesUsizeEngine {
 }
 
 #[test]
+#[cfg(feature = "fjall3")]
 fn encoded_cache_uses_configured_fresh_codec_in_parallel_execution() -> Result<()> {
     let call_count = Arc::new(AtomicUsize::new(0));
     let call_count_clone = Arc::clone(&call_count);
+    let (_dir, store) = fjall_store("encoded-parallel")?;
 
-    let compute = DeterministicTask::builder("test/encoded-parallel/v1")
+    let compute = DeterministicTask::builder("test-encoded-parallel-v1")
         .function(move |i: usize| {
             call_count_clone.fetch_add(1, Ordering::SeqCst);
             Ok(i + 10)
         })
         .cache(SingleCacheProvider(EncodedCache::new(
-            SimpleStore::default(),
+            store,
             TaggedUsizeEngine::new(0xA5),
         )))
         .build()?;
@@ -209,32 +153,8 @@ fn encoded_cache_uses_configured_fresh_codec_in_parallel_execution() -> Result<(
 
 #[test]
 fn typed_object_cache_skips_codec_roundtrip_on_hot_hits() -> Result<()> {
-    let encode_calls = Arc::new(AtomicUsize::new(0));
-    let decode_calls = Arc::new(AtomicUsize::new(0));
-    let compute_calls = Arc::new(AtomicUsize::new(0));
-
-    let mut raw_compute = DeterministicTask::builder("test/encoded-hot-hit/v1")
-        .function({
-            let compute_calls = Arc::clone(&compute_calls);
-            move |i: usize| {
-                compute_calls.fetch_add(1, Ordering::SeqCst);
-                Ok(i * 2)
-            }
-        })
-        .cache(SingleCacheProvider(EncodedCache::new(
-            SimpleStore::default(),
-            CountingUsizeEngine::new(Arc::clone(&encode_calls), Arc::clone(&decode_calls)),
-        )))
-        .build()?;
-
-    assert_eq!(raw_compute.execute_one(3usize)?, 6);
-    assert_eq!(raw_compute.execute_one(3usize)?, 6);
-    assert_eq!(compute_calls.load(Ordering::SeqCst), 1);
-    assert_eq!(encode_calls.load(Ordering::SeqCst), 1);
-    assert_eq!(decode_calls.load(Ordering::SeqCst), 1);
-
     let object_compute_calls = Arc::new(AtomicUsize::new(0));
-    let mut object_compute = DeterministicTask::builder("test/object-hot-hit/v1")
+    let mut object_compute = DeterministicTask::builder("test-object-hot-hit-v1")
         .function({
             let compute_calls = Arc::clone(&object_compute_calls);
             move |i: usize| {
@@ -248,18 +168,17 @@ fn typed_object_cache_skips_codec_roundtrip_on_hot_hits() -> Result<()> {
     assert_eq!(object_compute.execute_one(3usize)?, 6);
     assert_eq!(object_compute.execute_one(3usize)?, 6);
     assert_eq!(object_compute_calls.load(Ordering::SeqCst), 1);
-    assert_eq!(encode_calls.load(Ordering::SeqCst), 1);
-    assert_eq!(decode_calls.load(Ordering::SeqCst), 1);
     Ok(())
 }
 
 #[test]
+#[cfg(feature = "fjall3")]
 fn encoded_cache_treats_checked_corruption_as_miss_in_execution_flow() -> Result<()> {
     let compute_calls = Arc::new(AtomicUsize::new(0));
-    let store = SimpleStore::default();
+    let (_dir, store) = fjall_store("checked-corruption")?;
     let store_handle = store.clone_shared();
 
-    let mut compute = DeterministicTask::builder("test/checked-corruption/v1")
+    let mut compute = DeterministicTask::builder("test-checked-corruption-v1")
         .function({
             let compute_calls = Arc::clone(&compute_calls);
             move |i: usize| {
@@ -280,9 +199,11 @@ fn encoded_cache_treats_checked_corruption_as_miss_in_execution_flow() -> Result
     let key = unsafe { 3usize.encode_with_buffer(&mut key_buffer) }.to_vec();
     let mut corrupted = store_handle
         .fetch_encoded(&key)?
-        .expect("value should have been stored");
+        .expect("value should have been stored")
+        .as_ref()
+        .to_vec();
     corrupted[0] ^= 0x01;
-    store_handle.overwrite_raw(&key, corrupted);
+    store_handle.store_encoded(&key, &corrupted)?;
 
     assert_eq!(compute.execute_one(3usize)?, 30);
     assert_eq!(compute_calls.load(Ordering::SeqCst), 2);

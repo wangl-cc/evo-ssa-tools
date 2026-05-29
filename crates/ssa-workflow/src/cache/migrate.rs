@@ -1,12 +1,12 @@
 //! Store migration utilities.
 //!
-//! Use these helpers when you need to move cached data between storage backends or transcode it
-//! from one codec to another.
+//! Use these helpers when you need to move cached data between crate-provided storage locations or
+//! transcode it from one codec to another.
 //!
 //! # Choosing the right function
 //!
-//! - [`copy`]: same codec, new storage backend (e.g., `Fjall3Store` → new keyspace).
-//! - [`copy_transcoded`]: new codec, same or new storage backend (e.g., `Bitcode06` → `Postcard`).
+//! - [`copy`]: same codec, new storage location (e.g., `Fjall3Store` → new keyspace).
+//! - [`copy_transcoded`]: new codec, same or new storage location (e.g., `Bitcode06` → `Postcard`).
 
 use super::{codec::CodecEngine, storage};
 use crate::error::Result;
@@ -37,28 +37,6 @@ impl IterableStore for super::storage::Fjall3Store {
     }
 }
 
-#[cfg(feature = "redb")]
-impl IterableStore for super::storage::RedbStore {
-    fn iter_encoded<F>(&self, mut f: F) -> Result<()>
-    where
-        F: FnMut(&[u8], &[u8]) -> Result<()>,
-    {
-        use redb::{ReadableDatabase, ReadableTable, TableDefinition};
-        type BytesTable<'n> = TableDefinition<'n, &'static [u8], &'static [u8]>;
-
-        let tx = self.db.begin_read().map_err(storage::StorageError::from)?;
-        let definition = BytesTable::new(self.table_name.as_ref());
-        let table = tx
-            .open_table(definition)
-            .map_err(storage::StorageError::from)?;
-        for entry in table.iter().map_err(storage::StorageError::from)? {
-            let (key, value) = entry.map_err(storage::StorageError::from)?;
-            f(key.value(), value.value())?;
-        }
-        Ok(())
-    }
-}
-
 /// Statistics returned by [`copy`] and [`copy_transcoded`].
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct MigrateStats {
@@ -72,28 +50,27 @@ pub struct MigrateStats {
 
 /// Copy all raw encoded entries from `src` to `dst` without any transcoding.
 ///
-/// Use this when migrating to a new storage backend while keeping the same codec engine.
+/// Use this when migrating to a new storage location while keeping the same codec engine.
 /// Entries already present in `dst` are overwritten.
 ///
-/// # Undefined Behavior
+/// # Unsupported in-place migration
 ///
-/// `src` and `dst` must be distinct stores. Passing the same store for both is unsound:
-/// backends that hold a read lock for the entire iteration will deadlock on any write within
-/// the closure.
+/// `src` and `dst` must be distinct stores. Passing the same store for both is unsupported:
+/// backends that hold a read lock for the entire iteration may deadlock on any write within the
+/// closure.
 ///
 /// # Example
 ///
 /// ```no_run
 /// use ssa_workflow::{cache::migrate::copy, prelude::*};
 ///
-/// // Open src and dst using any `IterableStore` + `CacheStore` implementations,
-/// // e.g. Fjall3Store::open(...) or RedbStore::open(...).
+/// // Open src and dst storage locations, e.g. Fjall3Store::open(...).
 /// // let stats = copy(&src, &dst).unwrap();
 /// ```
 pub fn copy<Src, Dst>(src: &Src, dst: &Dst) -> Result<MigrateStats>
 where
     Src: IterableStore,
-    Dst: storage::CacheStore,
+    Dst: storage::EncodedStorage,
 {
     let mut stats = MigrateStats::default();
     src.iter_encoded(|key, encoded| {
@@ -109,14 +86,14 @@ where
 ///
 /// This is the primary migration path when changing codec engines (e.g., `Bitcode06` →
 /// `Postcard`). Entries that fail to re-encode are skipped with a warning, matching the
-/// behavior of [`CacheStore::store`](storage::CacheStore::store). Entries that fail to decode
+/// behavior of [`Cache::store`](super::Cache::store). Entries that fail to decode
 /// abort the migration with an error.
 ///
-/// # Panics / deadlocks
+/// # Unsupported in-place migration
 ///
-/// `src` and `dst` must be distinct stores. Passing the same store for both is unsound:
-/// backends that hold a read lock for the entire iteration will deadlock on any write within
-/// the closure.
+/// `src` and `dst` must be distinct stores. Passing the same store for both is unsupported:
+/// backends that hold a read lock for the entire iteration may deadlock on any write within the
+/// closure.
 ///
 /// In-place transcoding is intentionally not provided: a failure partway through would leave
 /// the store in a mixed-codec state that cannot be rolled back.
@@ -126,8 +103,8 @@ where
 /// ```no_run
 /// use ssa_workflow::{cache::migrate::copy_transcoded, prelude::*};
 ///
-/// // Open src and dst using any `IterableStore` + `CacheStore` implementations,
-/// // e.g. Fjall3Store::open(...) or RedbStore::open(...).
+/// // Open src and dst using any `IterableStore` + `EncodedStorage` implementations,
+/// // e.g. Fjall3Store::open(...).
 /// // let stats = copy_transcoded::<MyType, _, _, _, _>(&src, &mut from_engine, &dst, &mut to_engine).unwrap();
 /// ```
 pub fn copy_transcoded<T, Src, Dst, FromCE, ToCE>(
@@ -138,7 +115,7 @@ pub fn copy_transcoded<T, Src, Dst, FromCE, ToCE>(
 ) -> Result<MigrateStats>
 where
     Src: IterableStore,
-    Dst: storage::CacheStore,
+    Dst: storage::EncodedStorage,
     FromCE: CodecEngine<T>,
     ToCE: CodecEngine<T>,
 {
@@ -169,14 +146,14 @@ mod tests {
     use crate::cache::{
         Cache, CloneShared, EncodedCache,
         codec::{CodecEngine, Error as CodecError, SkipReason, fixtures::FixtureEngine},
-        storage::{CacheStore, StorageResult},
+        storage::{EncodedStorage, StorageResult},
     };
 
-    /// Minimal in-memory store that implements both `CacheStore` and `IterableStore`.
+    /// Minimal in-memory store that implements both `EncodedStorage` and `IterableStore`.
     #[derive(Default, Clone)]
     struct TestStore(Arc<Mutex<std::collections::HashMap<Vec<u8>, Vec<u8>>>>);
 
-    impl CacheStore for TestStore {
+    impl EncodedStorage for TestStore {
         type Encoded<'a>
             = Vec<u8>
         where
@@ -292,7 +269,7 @@ mod tests {
 
         impl CodecEngine<u32> for AlwaysSkipEngine {
             const VALUE_FORMAT: crate::cache::codec::ValueFormat =
-                crate::cache::codec::ValueFormat::new("test/always-skip-u32/v1");
+                crate::cache::codec::ValueFormat::new("test-always-skip-u32-v1");
 
             fn encode(&mut self, _: &u32) -> std::result::Result<&[u8], SkipReason> {
                 Err(SkipReason::EncodedValueTooLarge {
@@ -333,49 +310,6 @@ mod tests {
         Ok(())
     }
 
-    // -- IterableStore: redb ------------------------------------------------
-
-    #[cfg(feature = "redb")]
-    #[test]
-    fn redb_iter_encoded_roundtrips() -> Result<()> {
-        use std::sync::Arc;
-
-        use storage::{RedbStore, StorageError};
-
-        let file = tempfile::NamedTempFile::new().unwrap();
-        let db = Arc::new(redb::Database::create(file.path()).map_err(StorageError::from)?);
-        let src = RedbStore::from_database_arc(db.clone(), "src")?;
-        let mut src_cache = EncodedCache::new(src.clone_shared(), FixtureEngine::default());
-        src_cache.store(b"k1", &1u32)?;
-        src_cache.store(b"k2", &2u32)?;
-
-        let dst = RedbStore::from_database_arc(db, "dst")?;
-        let stats = copy(&src, &dst)?;
-        assert_eq!(stats.migrated, 2);
-
-        let mut dst_cache = EncodedCache::new(dst, FixtureEngine::default());
-        assert_eq!(dst_cache.fetch(b"k1")?, Some(1u32));
-        assert_eq!(dst_cache.fetch(b"k2")?, Some(2u32));
-        Ok(())
-    }
-
-    #[cfg(feature = "redb")]
-    #[test]
-    fn redb_iter_encoded_empty() -> Result<()> {
-        use storage::{RedbStore, StorageError};
-
-        let file = tempfile::NamedTempFile::new().unwrap();
-        let db = redb::Database::create(file.path()).map_err(StorageError::from)?;
-        let store = RedbStore::from_database(db, "empty")?;
-        let mut count = 0usize;
-        store.iter_encoded(|_, _| {
-            count += 1;
-            Ok(())
-        })?;
-        assert_eq!(count, 0);
-        Ok(())
-    }
-
     // -- IterableStore: fjall3 ----------------------------------------------
 
     #[cfg(feature = "fjall3")]
@@ -387,7 +321,7 @@ mod tests {
         let db = fjall3::Database::builder(&tmp)
             .open()
             .map_err(StorageError::from)?;
-        let src = Fjall3Store::open(db, "src", None)?;
+        let src = Fjall3Store::open(db, "src")?;
         let mut src_cache = EncodedCache::new(src.clone_shared(), FixtureEngine::default());
         src_cache.store(b"k1", &1u32)?;
         src_cache.store(b"k2", &2u32)?;
@@ -396,7 +330,7 @@ mod tests {
         let db2 = fjall3::Database::builder(&tmp2)
             .open()
             .map_err(StorageError::from)?;
-        let dst = Fjall3Store::open(db2, "dst", None)?;
+        let dst = Fjall3Store::open(db2, "dst")?;
         let stats = copy(&src, &dst)?;
         assert_eq!(stats.migrated, 2);
 
@@ -415,7 +349,7 @@ mod tests {
         let db = fjall3::Database::builder(&tmp)
             .open()
             .map_err(StorageError::from)?;
-        let store = Fjall3Store::open(db, "empty", None)?;
+        let store = Fjall3Store::open(db, "empty")?;
         let mut count = 0usize;
         store.iter_encoded(|_, _| {
             count += 1;

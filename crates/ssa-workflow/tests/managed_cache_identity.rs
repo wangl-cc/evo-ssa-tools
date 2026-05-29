@@ -16,7 +16,7 @@ use ssa_workflow::{
 fn managed_hash_cache_reuses_results() -> Result<()> {
     let calls = Arc::new(AtomicUsize::new(0));
     let calls_clone = Arc::clone(&calls);
-    let mut task = DeterministicTask::builder("double/v1")
+    let mut task = DeterministicTask::builder("double-v1")
         .function(move |input: usize| {
             calls_clone.fetch_add(1, Ordering::SeqCst);
             Ok(input * 2)
@@ -35,7 +35,7 @@ fn cloned_task_shares_bound_managed_hash_cache() -> Result<()> {
     let calls = Arc::new(AtomicUsize::new(0));
     let calls_clone = Arc::clone(&calls);
 
-    let mut first = DeterministicTask::builder("shared-double/v1")
+    let mut first = DeterministicTask::builder("shared-double-v1")
         .function(move |input: usize| {
             calls_clone.fetch_add(1, Ordering::SeqCst);
             Ok(input * 2)
@@ -55,7 +55,7 @@ fn independent_managed_hash_providers_do_not_share_space() -> Result<()> {
     let calls_a = Arc::new(AtomicUsize::new(0));
     let calls_b = Arc::new(AtomicUsize::new(0));
 
-    let mut first = DeterministicTask::builder("same-id/v1")
+    let mut first = DeterministicTask::builder("same-id-v1")
         .function({
             let calls = Arc::clone(&calls_a);
             move |input: usize| {
@@ -65,7 +65,7 @@ fn independent_managed_hash_providers_do_not_share_space() -> Result<()> {
         })
         .cache(ManagedHashCache::<usize>::default())
         .build()?;
-    let mut second = DeterministicTask::builder("same-id/v1")
+    let mut second = DeterministicTask::builder("same-id-v1")
         .function({
             let calls = Arc::clone(&calls_b);
             move |input: usize| {
@@ -85,12 +85,12 @@ fn independent_managed_hash_providers_do_not_share_space() -> Result<()> {
 
 #[test]
 fn named_streams_affect_rng_but_not_cache_namespace() -> Result<()> {
-    const WAITING: RandomVariable = RandomVariable::new("waiting/v1");
-    const CHOICE: RandomVariable = RandomVariable::new("choice/v1");
+    const WAITING: RandomVariable = RandomVariable::new("waiting-v1");
+    const CHOICE: RandomVariable = RandomVariable::new("choice-v1");
 
     let calls = Arc::new(AtomicUsize::new(0));
     let calls_clone = Arc::clone(&calls);
-    let mut task = StochasticTask::builder("computation/named-streams/v1")
+    let mut task = StochasticTask::builder("computation-named-streams-v1")
         .streams([WAITING, CHOICE])
         .function(move |rng, input: u64| {
             calls_clone.fetch_add(1, Ordering::SeqCst);
@@ -100,12 +100,8 @@ fn named_streams_affect_rng_but_not_cache_namespace() -> Result<()> {
         .cache(ManagedHashCache::<u64>::default())
         .build()?;
 
-    let namespace = StorageNamespace::new(task.computation_path(), ValueFormat::new("memory/v1"));
-    assert!(
-        namespace
-            .as_str()
-            .contains("computation_2f_named-streams_2f_v1")
-    );
+    let namespace = StorageNamespace::new(task.computation_path(), ValueFormat::new("memory-v1"));
+    assert!(namespace.as_str().contains("computation-named-streams-v1"));
     assert!(!namespace.as_str().contains("waiting"));
     assert!(!namespace.as_str().contains("choice"));
 
@@ -125,7 +121,7 @@ fn managed_transform_uses_child_path_for_output_space() -> Result<()> {
     let stage1_calls_clone = Arc::clone(&stage1_calls);
     let stage2_calls_clone = Arc::clone(&stage2_calls);
 
-    let source = DeterministicTask::builder("double/v1")
+    let source = DeterministicTask::builder("double-v1")
         .function(move |input: usize| {
             stage1_calls_clone.fetch_add(1, Ordering::SeqCst);
             Ok(input * 2)
@@ -134,7 +130,7 @@ fn managed_transform_uses_child_path_for_output_space() -> Result<()> {
         .build()?;
 
     let transform = source
-        .transform("plus-one/v1")
+        .transform("plus-one-v1")
         .function(move |intermediate: usize| {
             stage2_calls_clone.fetch_add(1, Ordering::SeqCst);
             Ok(intermediate + 1)
@@ -152,30 +148,26 @@ fn managed_transform_uses_child_path_for_output_space() -> Result<()> {
     assert_eq!(stage2_calls.load(Ordering::SeqCst), 8);
 
     let namespace =
-        StorageNamespace::new(transform.computation_path(), ValueFormat::new("memory/v1"));
-    assert!(namespace.as_str().contains("double_2f_v1__plus-one_2f_v1"));
+        StorageNamespace::new(transform.computation_path(), ValueFormat::new("memory-v1"));
+    assert!(namespace.as_str().contains("plus-one-v1--double-v1"));
     Ok(())
 }
 
 #[test]
 fn stochastic_transform_path_extends_source_path() -> Result<()> {
-    let source = StochasticTask::builder("trajectory/v1")
+    let source = StochasticTask::builder("trajectory-v1")
         .function(|rng, ()| Ok(rand::Rng::next_u64(rng)))
         .cache(ManagedHashCache::<u64>::default())
         .build()?;
     let mut transform = source
-        .stochastic_transform("resample/v1")
+        .stochastic_transform("resample-v1")
         .function(|rng, value: u64| Ok(value ^ rand::Rng::next_u64(rng)))
         .cache(ManagedHashCache::<u64>::default())
         .build()?;
 
     let namespace =
-        StorageNamespace::new(transform.computation_path(), ValueFormat::new("memory/v1"));
-    assert!(
-        namespace
-            .as_str()
-            .contains("trajectory_2f_v1__resample_2f_v1")
-    );
+        StorageNamespace::new(transform.computation_path(), ValueFormat::new("memory-v1"));
+    assert!(namespace.as_str().contains("resample-v1--trajectory-v1"));
 
     let input = DependentStochasticInput::from_source(StochasticInput::new((), 0), 0);
     assert_eq!(
@@ -192,7 +184,7 @@ fn managed_lru_cache_evicts_by_capacity() -> Result<()> {
 
     let calls = Arc::new(AtomicUsize::new(0));
     let calls_clone = Arc::clone(&calls);
-    let mut task = DeterministicTask::builder("identity/v1")
+    let mut task = DeterministicTask::builder("identity-v1")
         .function(move |input: usize| {
             calls_clone.fetch_add(1, Ordering::SeqCst);
             Ok(input)
@@ -216,7 +208,7 @@ fn cloned_task_shares_managed_lru_eviction_state() -> Result<()> {
 
     let calls = Arc::new(AtomicUsize::new(0));
     let calls_clone = Arc::clone(&calls);
-    let mut first = DeterministicTask::builder("shared-lru/v1")
+    let mut first = DeterministicTask::builder("shared-lru-v1")
         .function(move |input: usize| {
             calls_clone.fetch_add(1, Ordering::SeqCst);
             Ok(input)
@@ -234,32 +226,43 @@ fn cloned_task_shares_managed_lru_eviction_state() -> Result<()> {
     Ok(())
 }
 
-#[cfg(all(feature = "redb", feature = "bitcode06"))]
-mod persistent_redb {
+#[cfg(all(feature = "fjall3", feature = "bitcode06"))]
+mod persistent_fjall3 {
     use ssa_workflow::{
         cache::{
-            CanonicalEncode, ManagedPersistentCache,
+            CanonicalEncode, PersistentCacheProvider, StorageProviderExt,
             codec::{Bitcode06, CheckedCodec, CodecEngine},
-            storage::{CacheStore, RedbBackend, RedbStore, StorageNamespace},
+            storage::{EncodedStorage, Fjall3StorageProvider, Fjall3Store, StorageNamespace},
         },
         compute::{StochasticInput, StochasticTask},
     };
 
     use super::*;
 
-    fn provider(backend: RedbBackend) -> ManagedPersistentCache<RedbBackend, Bitcode06> {
-        ManagedPersistentCache::new(backend, Bitcode06::default())
+    fn make_storage_provider()
+    -> Result<(tempfile::TempDir, fjall3::Database, Fjall3StorageProvider)> {
+        let dir = tempfile::tempdir().expect("tempdir should be created");
+        let db = fjall3::Database::builder(&dir)
+            .open()
+            .map_err(ssa_workflow::cache::storage::StorageError::from)?;
+        let provider = Fjall3StorageProvider::new(db.clone());
+        Ok((dir, db, provider))
+    }
+
+    fn cache_provider(
+        storage_provider: Fjall3StorageProvider,
+    ) -> PersistentCacheProvider<Fjall3StorageProvider, Bitcode06> {
+        storage_provider.with_codec(Bitcode06::default())
     }
 
     #[test]
     fn computation_change_uses_a_different_persistent_namespace() -> Result<()> {
-        let file = tempfile::NamedTempFile::new().expect("tempfile should be created");
-        let backend = RedbBackend::open(file.path())?;
-        let provider = provider(backend);
+        let (_dir, _db, storage_provider) = make_storage_provider()?;
+        let provider = cache_provider(storage_provider);
         let calls_a = Arc::new(AtomicUsize::new(0));
         let calls_b = Arc::new(AtomicUsize::new(0));
 
-        let mut task_a = StochasticTask::builder("computation/a/v1")
+        let mut task_a = StochasticTask::builder("computation-a-v1")
             .function({
                 let calls = Arc::clone(&calls_a);
                 move |rng, ()| {
@@ -270,7 +273,7 @@ mod persistent_redb {
             .cache(provider.clone())
             .build()?;
 
-        let mut task_b = StochasticTask::builder("computation/b/v1")
+        let mut task_b = StochasticTask::builder("computation-b-v1")
             .function({
                 let calls = Arc::clone(&calls_b);
                 move |rng, ()| {
@@ -294,9 +297,8 @@ mod persistent_redb {
 
     #[test]
     fn downstream_path_changes_with_upstream_computation() -> Result<()> {
-        let file = tempfile::NamedTempFile::new().expect("tempfile should be created");
-        let backend = RedbBackend::open(file.path())?;
-        let provider = provider(backend);
+        let (_dir, _db, storage_provider) = make_storage_provider()?;
+        let provider = cache_provider(storage_provider);
         let source_calls = Arc::new(AtomicUsize::new(0));
         let transform_calls = Arc::new(AtomicUsize::new(0));
 
@@ -310,7 +312,7 @@ mod persistent_redb {
                 })
                 .cache(provider.clone())
                 .build()?
-                .transform("as-string/v1")
+                .transform("as-string-v1")
                 .function(move |value: u64| {
                     transform_calls.fetch_add(1, Ordering::SeqCst);
                     Ok(value.to_string())
@@ -319,8 +321,8 @@ mod persistent_redb {
                 .build()
         };
 
-        let mut transform_a = make_transform("computation/a/v1")?;
-        let mut transform_b = make_transform("computation/b/v1")?;
+        let mut transform_a = make_transform("computation-a-v1")?;
+        let mut transform_b = make_transform("computation-b-v1")?;
         let input = StochasticInput::new((), 7);
 
         let _ = transform_a.execute_one(input.clone())?;
@@ -335,34 +337,31 @@ mod persistent_redb {
 
     #[test]
     fn value_format_changes_persistent_namespace() -> Result<()> {
-        let file = tempfile::NamedTempFile::new().expect("tempfile should be created");
-        let backend = RedbBackend::open(file.path())?;
+        let (_dir, _db, storage_provider) = make_storage_provider()?;
         let calls = Arc::new(AtomicUsize::new(0));
 
         let make_plain_task = || {
             let calls = Arc::clone(&calls);
-            StochasticTask::builder("computation/a/v1")
+            StochasticTask::builder("computation-a-v1")
                 .function(move |rng, ()| {
                     calls.fetch_add(1, Ordering::SeqCst);
                     Ok(rand::Rng::next_u64(rng))
                 })
-                .cache(ManagedPersistentCache::new(
-                    backend.clone(),
-                    Bitcode06::default(),
-                ))
+                .cache(storage_provider.clone().with_codec(Bitcode06::default()))
                 .build()
         };
         let make_checked_task = || {
             let calls = Arc::clone(&calls);
-            StochasticTask::builder("computation/a/v1")
+            StochasticTask::builder("computation-a-v1")
                 .function(move |rng, ()| {
                     calls.fetch_add(1, Ordering::SeqCst);
                     Ok(rand::Rng::next_u64(rng))
                 })
-                .cache(ManagedPersistentCache::new(
-                    backend.clone(),
-                    CheckedCodec::new(Bitcode06::default()),
-                ))
+                .cache(
+                    storage_provider
+                        .clone()
+                        .with_codec(CheckedCodec::new(Bitcode06::default())),
+                )
                 .build()
         };
 
@@ -379,16 +378,11 @@ mod persistent_redb {
 
     #[test]
     fn namespace_stores_raw_canonical_entry_keys() -> Result<()> {
-        let file = tempfile::NamedTempFile::new().expect("tempfile should be created");
-        let db = Arc::new(
-            redb::Database::create(file.path())
-                .map_err(ssa_workflow::cache::storage::StorageError::from)?,
-        );
-        let backend = RedbBackend::from_database_arc(Arc::clone(&db));
+        let (_dir, db, storage_provider) = make_storage_provider()?;
         let layout = <Bitcode06 as CodecEngine<u64>>::VALUE_FORMAT;
-        let provider = provider(backend);
+        let provider = cache_provider(storage_provider);
 
-        let mut task = StochasticTask::builder("computation/a/v1")
+        let mut task = StochasticTask::builder("computation-a-v1")
             .function(|rng, ()| Ok(rand::Rng::next_u64(rng)))
             .cache(provider)
             .build()?;
@@ -396,7 +390,7 @@ mod persistent_redb {
         let _ = task.execute_one(input.clone())?;
 
         let namespace = StorageNamespace::new(task.computation_path(), layout);
-        let store = RedbStore::from_database_arc(db, namespace.as_str())?;
+        let store = Fjall3Store::open(db, namespace.as_str())?;
         let mut key_buffer = vec![0u8; StochasticInput::<()>::SIZE];
         let key = unsafe { input.encode_with_buffer(&mut key_buffer) };
 

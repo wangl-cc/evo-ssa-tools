@@ -124,7 +124,7 @@ mod tests {
 
     impl CodecEngine<Vec<u8>> for PassthroughBytesEngine {
         const VALUE_FORMAT: crate::cache::codec::ValueFormat =
-            crate::cache::codec::ValueFormat::new("test/passthrough-bytes/v1");
+            crate::cache::codec::ValueFormat::new("test-passthrough-bytes-v1");
 
         fn encode(&mut self, value: &Vec<u8>) -> Result<&[u8], SkipReason> {
             self.buffer.clear();
@@ -150,7 +150,7 @@ mod tests {
 
     impl CodecEngine<Vec<u8>> for RejectingDecodeEngine {
         const VALUE_FORMAT: crate::cache::codec::ValueFormat =
-            crate::cache::codec::ValueFormat::new("test/rejecting-decode-bytes/v1");
+            crate::cache::codec::ValueFormat::new("test-rejecting-decode-bytes-v1");
 
         fn encode(&mut self, value: &Vec<u8>) -> Result<&[u8], SkipReason> {
             self.buffer.clear();

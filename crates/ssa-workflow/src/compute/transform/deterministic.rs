@@ -259,7 +259,7 @@ mod tests {
     #[test]
     fn transform_builder_composes_built_nodes() -> Result<()> {
         let source_calls = Arc::new(AtomicUsize::new(0));
-        let source = DeterministicTask::builder("test/source/v1")
+        let source = DeterministicTask::builder("test-source-v1")
             .function({
                 let source_calls = Arc::clone(&source_calls);
                 move |input: u16| {
@@ -270,7 +270,7 @@ mod tests {
             .cache(ManagedHashCache::<u16>::default())
             .build()?;
         let mut transform = source
-            .transform("test/plus-one/v1")
+            .transform("test-plus-one-v1")
             .function(|intermediate| Ok(intermediate + 1))
             .cache(ManagedHashCache::<u16>::default())
             .build()?;
@@ -284,7 +284,7 @@ mod tests {
     #[test]
     fn transform_builder_supports_parameterized_transforms() -> Result<()> {
         let source_calls = Arc::new(AtomicUsize::new(0));
-        let source = DeterministicTask::builder("test/param-source/v1")
+        let source = DeterministicTask::builder("test-param-source-v1")
             .function({
                 let source_calls = Arc::clone(&source_calls);
                 move |input: u16| {
@@ -295,7 +295,7 @@ mod tests {
             .cache(ManagedHashCache::<u16>::default())
             .build()?;
         let mut transform = source
-            .transform("test/add-param/v1")
+            .transform("test-add-param-v1")
             .function_with_param(|intermediate, param: u16| Ok(intermediate + param))
             .cache(ManagedHashCache::<u16>::default())
             .build()?;

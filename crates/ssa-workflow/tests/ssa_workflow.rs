@@ -6,8 +6,8 @@ use std::sync::{
 use rand::RngExt;
 use ssa_workflow::{error::Result, prelude::*};
 
-const WAITING_TIME: RandomVariable = RandomVariable::new("ssa/waiting-time/v1");
-const REACTION_CHOICE: RandomVariable = RandomVariable::new("ssa/reaction-choice/v1");
+const WAITING_TIME: RandomVariable = RandomVariable::new("ssa-waiting-time-v1");
+const REACTION_CHOICE: RandomVariable = RandomVariable::new("ssa-reaction-choice-v1");
 const INITIAL_CELLS: u32 = 25;
 const MAX_EVENTS: u32 = 64;
 
@@ -26,7 +26,7 @@ fn birth_death_ssa_transform_is_reproducible_and_cached() -> Result<()> {
     let summary_calls = Arc::new(AtomicUsize::new(0));
     let summary_calls_clone = Arc::clone(&summary_calls);
 
-    let transform = StochasticTask::builder("birth-death-ssa/integration/v1")
+    let transform = StochasticTask::builder("birth-death-ssa-integration-v1")
         .streams([WAITING_TIME, REACTION_CHOICE])
         .function(move |streams, (initial_cells, max_events): (u32, u32)| {
             ssa_calls_clone.fetch_add(1, Ordering::SeqCst);
@@ -64,7 +64,7 @@ fn birth_death_ssa_transform_is_reproducible_and_cached() -> Result<()> {
         })
         .cache(ManagedHashCache::<(u32, u32, f64)>::default())
         .build()?
-        .transform("birth-death-ssa/summary/v1")
+        .transform("birth-death-ssa-summary-v1")
         .function(
             move |(final_cells, events, elapsed_time): (u32, u32, f64)| {
                 summary_calls_clone.fetch_add(1, Ordering::SeqCst);

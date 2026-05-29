@@ -17,7 +17,6 @@ parking_lot = { workspace = true }
 postcard = { workspace = true, optional = true }
 rand = { workspace = true }
 rayon = { workspace = true }
-redb = { workspace = true, optional = true }
 serde = { workspace = true, optional = true }
 thiserror = { workspace = true }
 zstd = { workspace = true, optional = true }
@@ -35,7 +34,6 @@ lru = ["dep:lru"]
 lz4 = ["compress", "dep:lz4_flex"]
 migrate = []
 postcard = ["dep:postcard", "dep:serde"]
-redb = ["dep:redb"]
 zstd = ["compress", "dep:zstd"]
 
 [lints]

@@ -2,7 +2,9 @@
 
 use rand::{SeedableRng, rngs::Xoshiro256PlusPlus};
 
-use crate::identity::{ComputationPath, append_len_prefixed};
+use crate::identity::{
+    ComputationPath, IdentifierSegmentChain, append_len_prefixed, assert_identifier_segment,
+};
 
 const STREAM_SEED_CONTEXT: &str = "wangl-cc/evo-ssa-tools ssa-workflow stochastic stream seed v1";
 
@@ -12,7 +14,12 @@ pub struct RandomVariable(&'static str);
 
 impl RandomVariable {
     /// Create a random variable identifier from a stable static name.
+    ///
+    /// Names use the same identifier segment rules as
+    /// [`ComputationId`](crate::identity::ComputationId), except the empty name is reserved for the
+    /// default unnamed stream.
     pub const fn new(name: &'static str) -> Self {
+        assert_identifier_segment(name, true);
         Self(name)
     }
 
@@ -74,7 +81,7 @@ impl ComputationPath {
 
 fn derive_stream_seed(path: &ComputationPath, variable: RandomVariable) -> StreamSeed {
     let mut material = Vec::with_capacity(128 + variable.as_str().len());
-    append_len_prefixed(&mut material, &path.encode_bytes());
+    append_len_prefixed(&mut material, &path.encode_segments());
     append_len_prefixed(&mut material, variable.as_str().as_bytes());
     StreamSeed::derive_from(&material)
 }
@@ -204,12 +211,12 @@ mod tests {
     use super::*;
     use crate::identity::ComputationId;
 
-    const MAIN_VARIABLE: RandomVariable = RandomVariable::new("ssa/main/v1");
-    const SEGREGATION_VARIABLE: RandomVariable = RandomVariable::new("model/segregation/v1");
-    const MUTATION_VARIABLE: RandomVariable = RandomVariable::new("model/mutation/v1");
+    const MAIN_VARIABLE: RandomVariable = RandomVariable::new("ssa-main-v1");
+    const SEGREGATION_VARIABLE: RandomVariable = RandomVariable::new("model-segregation-v1");
+    const MUTATION_VARIABLE: RandomVariable = RandomVariable::new("model-mutation-v1");
 
     fn test_path() -> ComputationPath {
-        ComputationPath::root(ComputationId::new("experiment/ssa-workflow-test/v1"))
+        ComputationPath::root_from_str("experiment-ssa-workflow-test-v1")
     }
 
     mod identifiers {
@@ -217,13 +224,13 @@ mod tests {
 
         #[test]
         fn names_are_stable() {
-            let model = ComputationId::new("experiment/test/v1");
-            let variable = RandomVariable::new("test/stream/v1");
+            let model = ComputationId::new("experiment-test-v1");
+            let variable = RandomVariable::new("test-stream-v1");
 
-            assert_eq!(model.as_str(), "experiment/test/v1");
-            assert_eq!(variable.as_str(), "test/stream/v1");
-            assert_eq!(model.to_string(), "experiment/test/v1");
-            assert_eq!(variable.to_string(), "test/stream/v1");
+            assert_eq!(model.as_str(), "experiment-test-v1");
+            assert_eq!(variable.as_str(), "test-stream-v1");
+            assert_eq!(model.to_string(), "experiment-test-v1");
+            assert_eq!(variable.to_string(), "test-stream-v1");
         }
     }
 
@@ -264,10 +271,10 @@ mod tests {
 
         #[test]
         fn material_boundaries_change_stream() {
-            let seed_ab_c = ComputationPath::root(ComputationId::new("ab"))
-                .derive_stream_seed(RandomVariable::new("c"));
-            let seed_a_bc = ComputationPath::root(ComputationId::new("a"))
-                .derive_stream_seed(RandomVariable::new("bc"));
+            let seed_ab_c =
+                ComputationPath::root_from_str("ab").derive_stream_seed(RandomVariable::new("c"));
+            let seed_a_bc =
+                ComputationPath::root_from_str("a").derive_stream_seed(RandomVariable::new("bc"));
             let mut rng_ab_c = seed_ab_c.make_stream(b"input-A");
             let mut rng_a_bc = seed_a_bc.make_stream(b"input-A");
 
@@ -279,8 +286,8 @@ mod tests {
             let seed = test_path().derive_single_stream_seed();
             let mut rng = seed.make_stream(b"input-A");
 
-            assert_eq!(rng.next_u64(), 11_846_606_337_717_868_160);
-            assert_eq!(rng.next_u64(), 9_081_064_352_459_457_986);
+            assert_eq!(rng.next_u64(), 1_421_434_473_334_949_077);
+            assert_eq!(rng.next_u64(), 3_224_070_076_799_729_687);
         }
 
         #[test]
@@ -290,8 +297,8 @@ mod tests {
 
             let first = rng.next_u64();
             let second = rng.next_u64();
-            assert_eq!(first, 2_015_346_976_427_987_820);
-            assert_eq!(second, 4_095_672_738_363_505_177);
+            assert_eq!(first, 4_391_430_058_245_016_709);
+            assert_eq!(second, 1_974_120_400_265_464_438);
         }
 
         #[test]

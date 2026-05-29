@@ -260,14 +260,14 @@ mod tests {
         fn managed_with_hasher_builds_working_cache() -> Result<()> {
             use crate::{
                 cache::{memory::ManagedLruCache, provider::CacheProvider},
-                identity::{ComputationId, ComputationPath},
+                identity::ComputationPath,
             };
 
             let provider = ManagedLruCache::<u32>::with_hasher(
                 entry_capacity(),
                 std::collections::hash_map::RandomState::default(),
             );
-            let path = ComputationPath::root(ComputationId::new("managed-lru/v1"));
+            let path = ComputationPath::root_from_str("managed-lru-v1");
             let mut cache = provider.bind(&path)?;
 
             let value = cache.fetch_or_execute(b"k", || Ok(42u32))?;

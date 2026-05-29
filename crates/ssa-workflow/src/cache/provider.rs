@@ -1,7 +1,7 @@
 use super::{
     Cache, CloneShared, EncodedCache,
     codec::{CloneFresh, CodecEngine},
-    storage::{CacheStore, StorageNamespace},
+    storage::{EncodedStorage, StorageNamespace},
 };
 use crate::{Result, identity::ComputationPath};
 
@@ -22,47 +22,60 @@ impl<T> CacheProvider<T> for () {
     }
 }
 
-/// Persistent backend root that can open a store for a storage namespace.
-pub trait PersistentBackend: Clone + Send + Sync + 'static {
-    /// Bound store type returned for one namespace.
-    type Store: CacheStore + CloneShared;
+/// Storage provider root that opens raw namespaced storage.
+pub trait StorageProvider: Clone + Send + Sync + 'static {
+    /// Bound storage type returned for one namespace.
+    type Storage: EncodedStorage + CloneShared;
 
-    /// Open or create the backend namespace.
-    fn open_namespace(&self, namespace: &StorageNamespace) -> Result<Self::Store>;
+    /// Open or create a raw namespace storage.
+    fn open_storage(&self, namespace: &StorageNamespace) -> Result<Self::Storage>;
 }
 
-/// Multi-space persistent cache provider.
-pub struct ManagedPersistentCache<B, CE> {
-    backend: B,
-    codec: CE,
-}
-
-impl<B, CE> ManagedPersistentCache<B, CE> {
-    /// Create a managed persistent cache provider from a backend root and codec.
-    pub fn new(backend: B, codec: CE) -> Self {
-        Self { backend, codec }
+/// Convenience methods for storage providers.
+pub trait StorageProviderExt: StorageProvider + Sized {
+    /// Attach a codec to this storage provider, producing a persistent cache provider.
+    fn with_codec<CE>(self, codec: CE) -> PersistentCacheProvider<Self, CE> {
+        PersistentCacheProvider::new(self, codec)
     }
 }
 
-impl<B: Clone, CE: CloneFresh> Clone for ManagedPersistentCache<B, CE> {
+impl<SP: StorageProvider> StorageProviderExt for SP {}
+
+/// Cache provider composed from a storage provider and a codec.
+pub struct PersistentCacheProvider<SP, CE> {
+    storage_provider: SP,
+    codec: CE,
+}
+
+impl<SP, CE> PersistentCacheProvider<SP, CE> {
+    /// Create a cache provider from a storage provider and codec.
+    pub fn new(storage_provider: SP, codec: CE) -> Self {
+        Self {
+            storage_provider,
+            codec,
+        }
+    }
+}
+
+impl<SP: Clone, CE: CloneFresh> Clone for PersistentCacheProvider<SP, CE> {
     fn clone(&self) -> Self {
         Self {
-            backend: self.backend.clone(),
+            storage_provider: self.storage_provider.clone(),
             codec: self.codec.clone_fresh(),
         }
     }
 }
 
-impl<T, B, CE> CacheProvider<T> for ManagedPersistentCache<B, CE>
+impl<T, SP, CE> CacheProvider<T> for PersistentCacheProvider<SP, CE>
 where
-    B: PersistentBackend,
+    SP: StorageProvider,
     CE: CodecEngine<T> + CloneFresh + Send + Sync + 'static,
 {
-    type Cache = EncodedCache<B::Store, CE>;
+    type Cache = EncodedCache<SP::Storage, CE>;
 
     fn bind(self, path: &ComputationPath) -> Result<Self::Cache> {
         let namespace = StorageNamespace::new(path, CE::VALUE_FORMAT);
-        let store = self.backend.open_namespace(&namespace)?;
-        Ok(EncodedCache::new(store, self.codec.clone_fresh()))
+        let storage = self.storage_provider.open_storage(&namespace)?;
+        Ok(EncodedCache::new(storage, self.codec.clone_fresh()))
     }
 }

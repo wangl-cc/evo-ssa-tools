@@ -17,7 +17,7 @@ fn test_transform_two_stage_caching() -> Result<()> {
     let stage2_calls = Arc::new(AtomicUsize::new(0));
     let stage2_calls_clone = stage2_calls.clone();
 
-    let transform = DeterministicTask::builder("test/two-stage/source/v1")
+    let transform = DeterministicTask::builder("test-two-stage-source-v1")
         .function(move |input| {
             stage1_calls_clone.fetch_add(1, Ordering::SeqCst);
             sleep(Duration::from_millis(10));
@@ -25,7 +25,7 @@ fn test_transform_two_stage_caching() -> Result<()> {
         })
         .cache(ManagedHashCache::<usize>::default())
         .build()?
-        .transform("test/two-stage/plus-ten/v1")
+        .transform("test-two-stage-plus-ten-v1")
         .function(move |intermediate| {
             stage2_calls_clone.fetch_add(1, Ordering::SeqCst);
             sleep(Duration::from_millis(10));
@@ -54,7 +54,7 @@ fn test_transform_two_stage_caching() -> Result<()> {
 fn test_transform_source_and_transform_cache_split() -> Result<()> {
     let stage1_calls = Arc::new(AtomicUsize::new(0));
     let stage2_calls = Arc::new(AtomicUsize::new(0));
-    let stage1 = DeterministicTask::builder("test/cache-split/source/v1")
+    let stage1 = DeterministicTask::builder("test-cache-split-source-v1")
         .function({
             let stage1_calls = stage1_calls.clone();
             move |input: usize| {
@@ -70,7 +70,7 @@ fn test_transform_source_and_transform_cache_split() -> Result<()> {
         let stage2_calls = stage2_calls.clone();
         stage1
             .clone()
-            .transform("test/cache-split/format-a/v1")
+            .transform("test-cache-split-format-a-v1")
             .function(move |intermediate| {
                 stage2_calls.fetch_add(1, Ordering::SeqCst);
                 sleep(Duration::from_millis(10));
@@ -90,7 +90,7 @@ fn test_transform_source_and_transform_cache_split() -> Result<()> {
     let transform2 = {
         let stage2_calls = stage2_calls.clone();
         stage1
-            .transform("test/cache-split/format-b/v1")
+            .transform("test-cache-split-format-b-v1")
             .function(move |intermediate| {
                 stage2_calls.fetch_add(1, Ordering::SeqCst);
                 sleep(Duration::from_millis(10));
@@ -111,11 +111,11 @@ fn test_transform_source_and_transform_cache_split() -> Result<()> {
 
 #[test]
 fn test_transform_with_different_types() -> Result<()> {
-    let transform = DeterministicTask::builder("test/different-types/source/v1")
+    let transform = DeterministicTask::builder("test-different-types-source-v1")
         .function(|input: u32| Ok(input as u64 * 100))
         .cache(ManagedHashCache::<u64>::default())
         .build()?
-        .transform("test/different-types/string/v1")
+        .transform("test-different-types-string-v1")
         .function(|intermediate: u64| Ok(format!("Value: {}", intermediate)))
         .cache(ManagedHashCache::<String>::default())
         .build()?;
@@ -151,7 +151,7 @@ fn parameterized_transform_recomputes_only_transform_for_param_changes() -> Resu
     let source_calls = Arc::new(AtomicUsize::new(0));
     let transform_calls = Arc::new(AtomicUsize::new(0));
 
-    let source = DeterministicTask::builder("source/value/v1")
+    let source = DeterministicTask::builder("source-value-v1")
         .function({
             let source_calls = Arc::clone(&source_calls);
             move |input: u16| {
@@ -163,7 +163,7 @@ fn parameterized_transform_recomputes_only_transform_for_param_changes() -> Resu
 
     let mut transform = source
         .build()?
-        .transform("analysis/offset/v1")
+        .transform("analysis-offset-v1")
         .function_with_param({
             let transform_calls = Arc::clone(&transform_calls);
             move |value, offset: u16| {
@@ -186,13 +186,13 @@ fn parameterized_transform_recomputes_only_transform_for_param_changes() -> Resu
 fn cloned_parameterized_transform_shares_cache() -> Result<()> {
     let transform_calls = Arc::new(AtomicUsize::new(0));
 
-    let source = DeterministicTask::builder("source/value/v1")
+    let source = DeterministicTask::builder("source-value-v1")
         .function(|input: u16| Ok(input * 2))
         .cache(ManagedHashCache::<u16>::default())
         .build()?;
 
     let mut transform = source
-        .transform("analysis/offset/v1")
+        .transform("analysis-offset-v1")
         .function_with_param({
             let transform_calls = Arc::clone(&transform_calls);
             move |value, offset: u16| {
@@ -216,7 +216,7 @@ fn stochastic_transform_repetition_changes_output_and_hits_cache() -> Result<()>
     let source_calls = Arc::new(AtomicUsize::new(0));
     let transform_calls = Arc::new(AtomicUsize::new(0));
 
-    let source = DeterministicTask::builder("source/value/v1")
+    let source = DeterministicTask::builder("source-value-v1")
         .function({
             let source_calls = Arc::clone(&source_calls);
             move |input: u16| {
@@ -228,7 +228,7 @@ fn stochastic_transform_repetition_changes_output_and_hits_cache() -> Result<()>
 
     let mut transform = source
         .build()?
-        .stochastic_transform("analysis/sample/v1")
+        .stochastic_transform("analysis-sample-v1")
         .function_with_param({
             let transform_calls = Arc::clone(&transform_calls);
             move |rng, value, offset: u16| {
@@ -256,13 +256,13 @@ fn stochastic_transform_repetition_changes_output_and_hits_cache() -> Result<()>
 fn cloned_stochastic_transform_shares_cache() -> Result<()> {
     let transform_calls = Arc::new(AtomicUsize::new(0));
 
-    let source = DeterministicTask::builder("source/value/v1")
+    let source = DeterministicTask::builder("source-value-v1")
         .function(|input: u16| Ok(input * 2))
         .cache(ManagedHashCache::<u16>::default())
         .build()?;
 
     let mut transform = source
-        .stochastic_transform("analysis/resample/v1")
+        .stochastic_transform("analysis-resample-v1")
         .function({
             let transform_calls = Arc::clone(&transform_calls);
             move |rng, value| {
@@ -287,7 +287,7 @@ fn stochastic_transform_without_param_uses_source_and_repetition() -> Result<()>
     let source_calls = Arc::new(AtomicUsize::new(0));
     let transform_calls = Arc::new(AtomicUsize::new(0));
 
-    let source = DeterministicTask::builder("source/value/v1")
+    let source = DeterministicTask::builder("source-value-v1")
         .function({
             let source_calls = Arc::clone(&source_calls);
             move |input: u16| {
@@ -299,7 +299,7 @@ fn stochastic_transform_without_param_uses_source_and_repetition() -> Result<()>
 
     let mut transform = source
         .build()?
-        .stochastic_transform("analysis/resample/v1")
+        .stochastic_transform("analysis-resample-v1")
         .function({
             let transform_calls = Arc::clone(&transform_calls);
             move |rng, value| {
@@ -325,17 +325,17 @@ fn stochastic_transform_without_param_uses_source_and_repetition() -> Result<()>
 
 #[test]
 fn named_stochastic_transform_uses_distinct_streams_and_hits_cache() -> Result<()> {
-    const LEFT: RandomVariable = RandomVariable::new("analysis/left/v1");
-    const RIGHT: RandomVariable = RandomVariable::new("analysis/right/v1");
+    const LEFT: RandomVariable = RandomVariable::new("analysis-left-v1");
+    const RIGHT: RandomVariable = RandomVariable::new("analysis-right-v1");
 
     let transform_calls = Arc::new(AtomicUsize::new(0));
-    let source = DeterministicTask::builder("source/value/v1")
+    let source = DeterministicTask::builder("source-value-v1")
         .function(|input: u16| Ok(input * 2))
         .cache(ManagedHashCache::<u16>::default())
         .build()?;
 
     let mut transform = source
-        .stochastic_transform("analysis/named-sample/v1")
+        .stochastic_transform("analysis-named-sample-v1")
         .streams([LEFT, RIGHT])
         .function_with_param({
             let transform_calls = Arc::clone(&transform_calls);
@@ -365,17 +365,17 @@ fn named_stochastic_transform_uses_distinct_streams_and_hits_cache() -> Result<(
 
 #[test]
 fn cloned_named_stochastic_transform_shares_cache() -> Result<()> {
-    const LEFT: RandomVariable = RandomVariable::new("analysis/left/v1");
-    const RIGHT: RandomVariable = RandomVariable::new("analysis/right/v1");
+    const LEFT: RandomVariable = RandomVariable::new("analysis-left-v1");
+    const RIGHT: RandomVariable = RandomVariable::new("analysis-right-v1");
 
     let transform_calls = Arc::new(AtomicUsize::new(0));
-    let source = DeterministicTask::builder("source/value/v1")
+    let source = DeterministicTask::builder("source-value-v1")
         .function(|input: u16| Ok(input * 2))
         .cache(ManagedHashCache::<u16>::default())
         .build()?;
 
     let mut transform = source
-        .stochastic_transform("analysis/named-resample/v1")
+        .stochastic_transform("analysis-named-resample-v1")
         .streams([LEFT, RIGHT])
         .function({
             let transform_calls = Arc::clone(&transform_calls);
@@ -401,17 +401,17 @@ fn cloned_named_stochastic_transform_shares_cache() -> Result<()> {
 
 #[test]
 fn named_stochastic_transform_without_param_uses_distinct_streams() -> Result<()> {
-    const LEFT: RandomVariable = RandomVariable::new("analysis/left/v1");
-    const RIGHT: RandomVariable = RandomVariable::new("analysis/right/v1");
+    const LEFT: RandomVariable = RandomVariable::new("analysis-left-v1");
+    const RIGHT: RandomVariable = RandomVariable::new("analysis-right-v1");
 
     let transform_calls = Arc::new(AtomicUsize::new(0));
-    let source = DeterministicTask::builder("source/value/v1")
+    let source = DeterministicTask::builder("source-value-v1")
         .function(|input: u16| Ok(input * 2))
         .cache(ManagedHashCache::<u16>::default())
         .build()?;
 
     let mut transform = source
-        .stochastic_transform("analysis/named-resample/v1")
+        .stochastic_transform("analysis-named-resample-v1")
         .streams([LEFT, RIGHT])
         .function({
             let transform_calls = Arc::clone(&transform_calls);
