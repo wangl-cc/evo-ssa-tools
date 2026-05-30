@@ -1,5 +1,5 @@
 error: missing #[cache_schema(version = N)]
- --> tests/ui/missing_version.rs:3:10
+ --> tests/ui/cache_schema/missing_version.rs:3:10
   |
 3 | #[derive(CacheSchema)]
   |          ^^^^^^^^^^^

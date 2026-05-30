@@ -1,5 +1,5 @@
 error: unsupported cache_schema attribute
- --> tests/ui/unsupported_attribute.rs:4:16
+ --> tests/ui/cache_schema/unsupported_attribute.rs:4:16
   |
 4 | #[cache_schema(foo)]
   |                ^^^

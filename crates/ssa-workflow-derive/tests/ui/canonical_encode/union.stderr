@@ -1,5 +1,5 @@
 error: CanonicalEncode can only be derived for structs or unit enums
- --> tests/ui/union.rs:4:1
+ --> tests/ui/canonical_encode/union.rs:4:1
   |
 4 | union BadUnion {
   | ^^^^^

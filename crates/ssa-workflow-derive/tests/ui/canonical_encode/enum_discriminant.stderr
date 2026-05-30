@@ -1,5 +1,5 @@
 error: CanonicalEncode unit enum discriminants are not supported; variants encode by declaration order
- --> tests/ui/enum_discriminant.rs:5:9
+ --> tests/ui/canonical_encode/enum_discriminant.rs:5:9
   |
 5 |     A = 1,
   |         ^
