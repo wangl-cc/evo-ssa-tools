@@ -253,7 +253,7 @@ mod tests {
             let multi_stream = MultiStreams::from(["x", "y", "z"]);
             let multi_stream_seed = multi_stream.derive_seed(&TEST_PATH);
             let multi_stream_debug = format!("{multi_stream_seed:?}");
-            assert_eq!(multi_stream_debug, "StreamSeed { .. }");
+            assert_eq!(multi_stream_debug, "StreamSeeds { .. }");
         }
 
         #[test]
