@@ -1,4 +1,4 @@
-use ssa_workflow::cache::CanonicalEncode;
+use workflow::cache::CanonicalEncode;
 
 #[derive(ssa_workflow_derive::CanonicalEncode)]
 #[canonical_encode(version = 1)]

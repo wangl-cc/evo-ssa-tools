@@ -1,4 +1,5 @@
 use proc_macro::TokenStream;
+use proc_macro_crate::{FoundCrate, crate_name};
 use quote::{ToTokens, quote};
 use syn::{
     Attribute, Data, DeriveInput, Fields, Generics, Index, LitInt, parse_macro_input, parse_quote,
@@ -15,7 +16,8 @@ pub fn derive_canonical_encode(input: TokenStream) -> TokenStream {
 fn expand_canonical_encode(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
     let ident = input.ident;
     let attrs = input.attrs;
-    let generics = add_trait_bounds(input.generics);
+    let workflow_crate = workflow_crate_path()?;
+    let generics = add_trait_bounds(input.generics, &workflow_crate);
     let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
 
     let (field_tys, field_accesses, field_schema): (Vec<_>, Vec<_>, Vec<_>) = match input.data {
@@ -41,24 +43,41 @@ fn expand_canonical_encode(input: DeriveInput) -> syn::Result<proc_macro2::Token
     let schema = syn::LitStr::new(&schema, proc_macro2::Span::call_site());
 
     Ok(quote! {
-        unsafe impl #impl_generics ::ssa_workflow::cache::CanonicalEncode for #ident #ty_generics #where_clause {
-            const SIZE: usize = 0 #( + <#field_tys as ::ssa_workflow::cache::CanonicalEncode>::SIZE )*;
+        unsafe impl #impl_generics #workflow_crate::cache::CanonicalEncode for #ident #ty_generics #where_clause {
+            const SIZE: usize = 0 #( + <#field_tys as #workflow_crate::cache::CanonicalEncode>::SIZE )*;
             const SCHEMA_SIGNATURE: u32 = {
-                let signature = ::ssa_workflow::cache::schema_signature(#schema.as_bytes());
+                let signature = #workflow_crate::cache::schema_signature(#schema.as_bytes());
                 #(
-                    let signature = ::ssa_workflow::cache::extend_schema_signature(
+                    let signature = #workflow_crate::cache::extend_schema_signature(
                         signature,
-                        <#field_tys as ::ssa_workflow::cache::CanonicalEncode>::SCHEMA_SIGNATURE,
+                        <#field_tys as #workflow_crate::cache::CanonicalEncode>::SCHEMA_SIGNATURE,
                     );
                 )*
                 signature
             };
 
             unsafe fn encode_into(&self, buffer: &mut [u8]) {
-                let mut writer = ::ssa_workflow::cache::CanonicalEncodeWriter::for_type::<Self>(buffer);
+                let mut writer = #workflow_crate::cache::CanonicalEncodeWriter::for_type::<Self>(buffer);
                 #( writer.write(&self.#field_accesses); )*
                 writer.finish();
             }
+        }
+    })
+}
+
+fn workflow_crate_path() -> syn::Result<proc_macro2::TokenStream> {
+    let found = crate_name("ssa-workflow").map_err(|error| {
+        syn::Error::new(
+            proc_macro2::Span::call_site(),
+            format!("failed to resolve ssa-workflow crate: {error}"),
+        )
+    })?;
+
+    Ok(match found {
+        FoundCrate::Itself => quote!(crate),
+        FoundCrate::Name(name) => {
+            let ident = syn::Ident::new(&name, proc_macro2::Span::call_site());
+            quote!(::#ident)
         }
     })
 }
@@ -92,11 +111,11 @@ fn parse_version(attrs: &[Attribute]) -> syn::Result<u8> {
     })
 }
 
-fn add_trait_bounds(mut generics: Generics) -> Generics {
+fn add_trait_bounds(mut generics: Generics, workflow_crate: &proc_macro2::TokenStream) -> Generics {
     for param in generics.type_params_mut() {
-        param
-            .bounds
-            .push(parse_quote!(::ssa_workflow::cache::CanonicalEncode));
+        param.bounds.push(parse_quote!(
+            #workflow_crate::cache::CanonicalEncode
+        ));
     }
     generics
 }
