@@ -46,6 +46,15 @@ impl CanonicalEncode for () {
     unsafe fn encode_into(&self, _buffer: &mut [u8]) {}
 }
 
+impl CanonicalEncode for bool {
+    const SIZE: usize = 1;
+
+    #[inline]
+    unsafe fn encode_into(&self, buffer: &mut [u8]) {
+        buffer[0] = *self as u8;
+    }
+}
+
 /// Sequential writer for building a [`CanonicalEncode`] implementation field by field.
 ///
 /// This helper narrows the provided buffer to exactly `T::SIZE` bytes and then advances an
@@ -225,6 +234,25 @@ mod tests {
                 .write(&self.selection)
                 .write(&self.counts)
                 .finish();
+        }
+    }
+
+    mod bool_encode {
+        use super::*;
+
+        #[test]
+        fn test_bool_encode_size_matches_type_width() {
+            assert_eq!(bool::SIZE, 1);
+        }
+
+        #[test]
+        fn test_bool_encode_encodes_correctly() {
+            let mut buffer = vec![0u8; bool::SIZE];
+            unsafe { true.encode_into(&mut buffer) };
+            assert_eq!(buffer, [1u8]);
+
+            unsafe { false.encode_into(&mut buffer) };
+            assert_eq!(buffer, [0u8]);
         }
     }
 
