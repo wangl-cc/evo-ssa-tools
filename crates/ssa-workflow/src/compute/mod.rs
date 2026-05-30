@@ -9,8 +9,12 @@ pub mod transform;
 pub use deterministic::DeterministicTask;
 pub use execution::{BatchExecution, Compute, InterruptSignal};
 pub use stochastic::{StochasticInput, StochasticTask};
-pub use stream::{NamedStreams, RandomVariable, RngStreams, SingleStream, StreamSeed, StreamSeeds};
-pub use transform::{DependentInput, DependentStochasticInput, Transform, TransformExt};
+pub use stream::{
+    MultiStreams, RandomVariable, RngBundle, SeedSource, SingleStream, StreamSeed, StreamSeeds,
+};
+pub use transform::{
+    DependentInput, DependentStochasticInput, StochasticTransform, Transform, TransformExt,
+};
 
 #[doc(hidden)]
 #[derive(Debug, Clone, Copy)]

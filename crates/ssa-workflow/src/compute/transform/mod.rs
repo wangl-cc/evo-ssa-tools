@@ -11,6 +11,7 @@ pub mod stochastic;
 
 pub use deterministic::Transform;
 pub use input::{DependentInput, DependentStochasticInput};
+pub use stochastic::StochasticTransform;
 
 /// Extension trait for dependent transform construction.
 pub trait TransformExt: Compute + Sized {

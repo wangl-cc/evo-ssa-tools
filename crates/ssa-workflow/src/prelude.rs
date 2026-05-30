@@ -18,7 +18,7 @@ pub use crate::{
     Compute, InterruptSignal,
     cache::{CanonicalEncode, StorageProviderExt, memory::ManagedHashCache},
     compute::{
-        DependentInput, DependentStochasticInput, DeterministicTask, RandomVariable, RngStreams,
-        StochasticInput, StochasticTask, TransformExt,
+        DependentInput, DependentStochasticInput, DeterministicTask, RandomVariable, RngBundle,
+        StochasticInput, StochasticTask, StochasticTransform, Transform, TransformExt,
     },
 };

@@ -128,9 +128,7 @@ use crate::{
     cache::{Cache, CacheProvider, CanonicalEncode, CloneShared},
     compute::{
         NoFunction,
-        stream::{
-            NamedStreams, RandomVariable, SeedSource, SingleStream, StreamSeed, StreamSpecSeed,
-        },
+        stream::{MultiStreams, RandomVariable, SeedSource, SingleStream, StreamSeed, StreamSpec},
     },
     identity::{ComputationId, ComputationPath},
 };
@@ -239,7 +237,7 @@ impl<C: CloneShared, P, O, S: Clone, F: Clone> Clone for StochasticTask<C, P, O,
     }
 }
 
-impl<C, P, O, F, S> Compute for StochasticTask<C, P, O, S, F>
+impl<C, P, O, S, F> Compute for StochasticTask<C, P, O, S, F>
 where
     S: SeedSource,
     F: Fn(&mut S::Rng, P) -> Result<O>,
@@ -302,10 +300,10 @@ impl<CP> StochasticTaskBuilder<(), (), NoFunction, SingleStream, CP> {
     pub fn streams<const N: usize>(
         self,
         variables: [RandomVariable; N],
-    ) -> StochasticTaskBuilder<(), (), NoFunction, NamedStreams<N>, CP> {
+    ) -> StochasticTaskBuilder<(), (), NoFunction, MultiStreams<N>, CP> {
         StochasticTaskBuilder {
             id: self.id,
-            streams: NamedStreams::new(variables),
+            streams: MultiStreams::new(variables),
             function: self.function,
             provider: self.provider,
             _phantom: PhantomData,
@@ -313,17 +311,14 @@ impl<CP> StochasticTaskBuilder<(), (), NoFunction, SingleStream, CP> {
     }
 }
 
-impl<P, O, F, S, CP> StochasticTaskBuilder<P, O, F, S, CP>
-where
-    S: StreamSpecSeed,
-{
+impl<P, O, F, S: StreamSpec, CP> StochasticTaskBuilder<P, O, F, S, CP> {
     /// Replace the compute function for this stochastic task.
     pub fn function<NextP, NextO, NextF>(
         self,
         function: NextF,
     ) -> StochasticTaskBuilder<NextP, NextO, NextF, S, CP>
     where
-        NextF: Fn(&mut <<S as StreamSpecSeed>::Seed as SeedSource>::Rng, NextP) -> Result<NextO>,
+        NextF: Fn(&mut <S::Seed as SeedSource>::Rng, NextP) -> Result<NextO>,
     {
         StochasticTaskBuilder {
             id: self.id,
@@ -337,8 +332,8 @@ where
 
 impl<P, O, F, S, CP> StochasticTaskBuilder<P, O, F, S, CP>
 where
-    S: StreamSpecSeed,
-    F: Fn(&mut <<S as StreamSpecSeed>::Seed as SeedSource>::Rng, P) -> Result<O>,
+    S: StreamSpec,
+    F: Fn(&mut <S::Seed as SeedSource>::Rng, P) -> Result<O>,
     CP: CacheProvider<O>,
     P: CanonicalEncode,
 {

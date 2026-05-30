@@ -6,7 +6,7 @@ use crate::{
     cache::{Cache, CacheProvider, CanonicalEncode, CloneShared},
     compute::{
         NoFunction,
-        stream::{NamedStreams, RandomVariable, SeedSource, SingleStream, StreamSpecSeed},
+        stream::{MultiStreams, RandomVariable, SeedSource, SingleStream, StreamSpec},
     },
     error::Result,
     identity::{ComputationId, ComputationPath},
@@ -113,7 +113,13 @@ pub struct StochasticTransform<U, C, F, O, S> {
     _output: PhantomData<O>,
 }
 
-impl<U: Clone, C: CloneShared, F: Clone, O, S: Clone> Clone for StochasticTransform<U, C, F, O, S> {
+impl<U, C, F, O, S> Clone for StochasticTransform<U, C, F, O, S>
+where
+    U: Clone,
+    C: CloneShared,
+    S: Clone,
+    F: Clone,
+{
     fn clone(&self) -> Self {
         Self {
             path: self.path.clone(),
@@ -200,11 +206,11 @@ where
     pub fn streams<const N: usize>(
         self,
         variables: [RandomVariable; N],
-    ) -> StochasticTransformBuilder<U, NoFunction, (), NamedStreams<N>, CP> {
+    ) -> StochasticTransformBuilder<U, NoFunction, (), MultiStreams<N>, CP> {
         StochasticTransformBuilder {
             upstream: self.upstream,
             id: self.id,
-            streams: NamedStreams::new(variables),
+            streams: MultiStreams::new(variables),
             transform: self.transform,
             provider: self.provider,
             _output: PhantomData,
@@ -215,7 +221,7 @@ where
 impl<U, O, S, CP> StochasticTransformBuilder<U, NoFunction, O, S, CP>
 where
     U: Compute,
-    S: StreamSpecSeed,
+    S: StreamSpec,
 {
     /// Replace the stochastic transform function.
     pub fn function<NextF, NextO>(
@@ -223,8 +229,7 @@ where
         transform: NextF,
     ) -> StochasticTransformBuilder<U, StochasticTransformFunction<NextF>, NextO, S, CP>
     where
-        NextF:
-            Fn(&mut <<S as StreamSpecSeed>::Seed as SeedSource>::Rng, U::Output) -> Result<NextO>,
+        NextF: Fn(&mut <S::Seed as SeedSource>::Rng, U::Output) -> Result<NextO>,
     {
         StochasticTransformBuilder {
             upstream: self.upstream,
@@ -244,11 +249,7 @@ where
         transform: NextF,
     ) -> StochasticTransformBuilder<U, ParamStochasticTransformFunction<NextF, NextP>, NextO, S, CP>
     where
-        NextF: Fn(
-            &mut <<S as StreamSpecSeed>::Seed as SeedSource>::Rng,
-            U::Output,
-            NextP,
-        ) -> Result<NextO>,
+        NextF: Fn(&mut <S::Seed as SeedSource>::Rng, U::Output, NextP) -> Result<NextO>,
     {
         StochasticTransformBuilder {
             upstream: self.upstream,
@@ -267,9 +268,8 @@ where
 impl<U, T, O, S, CP> StochasticTransformBuilder<U, T, O, S, CP>
 where
     U: Compute,
-    S: StreamSpecSeed,
-    T: StochasticTransformFn<U, <<S as StreamSpecSeed>::Seed as SeedSource>::Rng, O>,
-    T::Input: CanonicalEncode,
+    S: StreamSpec,
+    T: StochasticTransformFn<U, <S::Seed as SeedSource>::Rng, O>,
     CP: CacheProvider<O>,
 {
     /// Bind providers recursively and build the stochastic transform.

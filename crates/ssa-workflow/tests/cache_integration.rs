@@ -1,17 +1,17 @@
+#![cfg(feature = "fjall3")]
+
 use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
 };
 
-#[cfg(feature = "fjall3")]
-use ssa_workflow::cache::{
-    CanonicalEncode, EncodedCache,
-    codec::{CheckedCodec, CloneFresh, CodecEngine, Error as CodecError, SkipReason},
-    storage::EncodedStorage,
-};
 use ssa_workflow::{
     Compute,
-    cache::{Cache, CacheProvider, CloneShared},
+    cache::{
+        Cache, CacheProvider, CanonicalEncode, CloneShared, EncodedCache,
+        codec::{CheckedCodec, CloneFresh, CodecEngine, Error as CodecError, SkipReason},
+        storage::EncodedStorage,
+    },
     compute::DeterministicTask,
     error::Result,
     identity::ComputationPath,
@@ -36,7 +36,6 @@ where
     }
 }
 
-#[cfg(feature = "fjall3")]
 fn fjall_store(
     name: &str,
 ) -> Result<(tempfile::TempDir, ssa_workflow::cache::storage::Fjall3Store)> {
@@ -48,13 +47,11 @@ fn fjall_store(
     Ok((dir, store))
 }
 
-#[cfg(feature = "fjall3")]
 struct TaggedUsizeEngine {
     tag: u8,
     buffer: Vec<u8>,
 }
 
-#[cfg(feature = "fjall3")]
 impl TaggedUsizeEngine {
     fn new(tag: u8) -> Self {
         Self {
@@ -64,14 +61,12 @@ impl TaggedUsizeEngine {
     }
 }
 
-#[cfg(feature = "fjall3")]
 impl CloneFresh for TaggedUsizeEngine {
     fn clone_fresh(&self) -> Self {
         Self::new(self.tag)
     }
 }
 
-#[cfg(feature = "fjall3")]
 impl CodecEngine<usize> for TaggedUsizeEngine {
     const VALUE_FORMAT: ssa_workflow::cache::codec::ValueFormat =
         ssa_workflow::cache::codec::ValueFormat::new("test-tagged-usize-v1");
@@ -94,18 +89,15 @@ impl CodecEngine<usize> for TaggedUsizeEngine {
     }
 }
 
-#[cfg(feature = "fjall3")]
 #[derive(Default)]
 struct BytesUsizeEngine(Vec<u8>);
 
-#[cfg(feature = "fjall3")]
 impl ssa_workflow::cache::codec::CloneFresh for BytesUsizeEngine {
     fn clone_fresh(&self) -> Self {
         Self::default()
     }
 }
 
-#[cfg(feature = "fjall3")]
 impl CodecEngine<usize> for BytesUsizeEngine {
     const VALUE_FORMAT: ssa_workflow::cache::codec::ValueFormat =
         ssa_workflow::cache::codec::ValueFormat::new("test-bytes-usize-v1");
@@ -124,7 +116,6 @@ impl CodecEngine<usize> for BytesUsizeEngine {
 }
 
 #[test]
-#[cfg(feature = "fjall3")]
 fn encoded_cache_uses_configured_fresh_codec_in_parallel_execution() -> Result<()> {
     let call_count = Arc::new(AtomicUsize::new(0));
     let call_count_clone = Arc::clone(&call_count);
@@ -152,7 +143,6 @@ fn encoded_cache_uses_configured_fresh_codec_in_parallel_execution() -> Result<(
 }
 
 #[test]
-#[cfg(feature = "fjall3")]
 fn encoded_cache_treats_checked_corruption_as_miss_in_execution_flow() -> Result<()> {
     let compute_calls = Arc::new(AtomicUsize::new(0));
     let (_dir, store) = fjall_store("checked-corruption")?;
