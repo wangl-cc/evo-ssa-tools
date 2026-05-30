@@ -1,6 +1,6 @@
-use ssa_workflow_derive::CanonicalEncode;
+use ssa_workflow_derive::CacheSchema;
 
-#[derive(CanonicalEncode)]
+#[derive(CacheSchema)]
 struct MissingVersion {
     value: u64,
 }

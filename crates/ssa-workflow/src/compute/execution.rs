@@ -17,10 +17,10 @@ use crate::{
 /// # Cache key
 ///
 /// `Input` is encoded into canonical payload bytes via [`CanonicalEncode`]. Persistent cache
-/// namespaces include the input schema signature, so incompatible input schema changes select a
-/// different storage namespace while the per-entry key stays payload-only.
-/// If you change the meaning of your input encoding or the semantics of the computation, treat it
-/// as a new keyspace.
+/// namespaces include input and output schema signatures, so incompatible cache-boundary schema
+/// changes select a different storage namespace while the per-entry key stays payload-only. If you
+/// change the meaning of your input encoding, output value schema, or the semantics of the
+/// computation, treat it as a new keyspace.
 pub trait Compute {
     /// Input type that can be canonical-encoded into a cache key.
     type Input: CanonicalEncode;

@@ -1,4 +1,4 @@
-use crate::cache::{CanonicalEncode, extend_schema_signature, schema_signature};
+use crate::cache::{CacheSchema, CanonicalEncode, extend_schema_signature, schema_signature};
 
 /// Input for a parameterized dependent transform.
 ///
@@ -19,12 +19,15 @@ impl<P, S> DependentInput<P, S> {
     }
 }
 
-unsafe impl<P: CanonicalEncode, S: CanonicalEncode> CanonicalEncode for DependentInput<P, S> {
+unsafe impl<P: CacheSchema, S: CacheSchema> CacheSchema for DependentInput<P, S> {
     const SCHEMA_SIGNATURE: u32 = {
         let signature = schema_signature(b"ssa-workflow:canonical-encode:v1;dependent-input");
         let signature = extend_schema_signature(signature, P::SCHEMA_SIGNATURE);
         extend_schema_signature(signature, S::SCHEMA_SIGNATURE)
     };
+}
+
+unsafe impl<P: CanonicalEncode, S: CanonicalEncode> CanonicalEncode for DependentInput<P, S> {
     const SIZE: usize = P::SIZE + S::SIZE;
 
     unsafe fn encode_into(&self, buffer: &mut [u8]) {
@@ -70,9 +73,7 @@ impl<S> DependentStochasticInput<(), S> {
     }
 }
 
-unsafe impl<P: CanonicalEncode, S: CanonicalEncode> CanonicalEncode
-    for DependentStochasticInput<P, S>
-{
+unsafe impl<P: CacheSchema, S: CacheSchema> CacheSchema for DependentStochasticInput<P, S> {
     const SCHEMA_SIGNATURE: u32 = {
         let signature =
             schema_signature(b"ssa-workflow:canonical-encode:v1;dependent-stochastic-input");
@@ -80,6 +81,11 @@ unsafe impl<P: CanonicalEncode, S: CanonicalEncode> CanonicalEncode
         let signature = extend_schema_signature(signature, S::SCHEMA_SIGNATURE);
         extend_schema_signature(signature, u64::SCHEMA_SIGNATURE)
     };
+}
+
+unsafe impl<P: CanonicalEncode, S: CanonicalEncode> CanonicalEncode
+    for DependentStochasticInput<P, S>
+{
     const SIZE: usize = P::SIZE + S::SIZE + u64::SIZE;
 
     unsafe fn encode_into(&self, buffer: &mut [u8]) {

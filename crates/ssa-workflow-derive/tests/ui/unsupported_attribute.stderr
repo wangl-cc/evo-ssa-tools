@@ -1,5 +1,5 @@
-error: unsupported canonical_encode attribute
- --> tests/ui/unsupported_attribute.rs:4:20
+error: unsupported cache_schema attribute
+ --> tests/ui/unsupported_attribute.rs:4:16
   |
-4 | #[canonical_encode(foo)]
-  |                    ^^^
+4 | #[cache_schema(foo)]
+  |                ^^^

@@ -47,6 +47,22 @@ const fn crc32c_update_byte(mut crc: u32, byte: u8) -> u32 {
     crc
 }
 
+/// Stable cache-boundary schema signature.
+///
+/// This signature is included in persistent storage namespaces for both inputs and outputs. It is
+/// not required to be globally unique, but it must change whenever this type's cache-visible schema
+/// changes incompatibly within a computation keyspace.
+///
+/// # Safety
+///
+/// Manual implementations are unsafe because the persistent cache relies on this signature to avoid
+/// interpreting old bytes as a different input or output schema. Incorrect implementations can
+/// cause cache misses or stale cache reuse.
+pub unsafe trait CacheSchema {
+    /// Stable discriminator for this type's cache schema.
+    const SCHEMA_SIGNATURE: u32;
+}
+
 /// Encode a key payload into canonical bytes.
 ///
 /// Implementations should be deterministic and consistent across different builds and runs, and
@@ -54,10 +70,9 @@ const fn crc32c_update_byte(mut crc: u32, byte: u8) -> u32 {
 ///
 /// # Schema signature
 ///
-/// `SCHEMA_SIGNATURE` is included in persistent storage namespaces. It is not required to be
-/// globally unique, but it must change whenever this type's canonical encoding changes
-/// incompatibly within a computation keyspace. This includes field order, field meaning, field
-/// type, and primitive encoding policy changes.
+/// [`CacheSchema::SCHEMA_SIGNATURE`] is included in persistent storage namespaces. For input types,
+/// it must change whenever this type's canonical key encoding changes incompatibly. This includes
+/// field order, field meaning, field type, and primitive encoding policy changes.
 ///
 /// # Portability
 ///
@@ -74,13 +89,12 @@ const fn crc32c_update_byte(mut crc: u32, byte: u8) -> u32 {
 /// # Safety
 ///
 /// Manual implementations are unsafe because the cache system relies on `SIZE`,
-/// `SCHEMA_SIGNATURE`, and `encode_into` being mutually consistent. Incorrect implementations can
-/// cause cache misses, stale cache reuse, or buffer access outside the documented payload range.
-pub unsafe trait CanonicalEncode {
+/// [`CacheSchema::SCHEMA_SIGNATURE`], and `encode_into` being mutually consistent. Incorrect
+/// implementations can cause cache misses, stale cache reuse, or buffer access outside the
+/// documented payload range.
+pub unsafe trait CanonicalEncode: CacheSchema {
     /// Number of payload bytes written by [`Self::encode_into`].
     const SIZE: usize;
-    /// Stable discriminator for this type's key encoding schema.
-    const SCHEMA_SIGNATURE: u32;
 
     /// Encode self into the provided buffer.
     ///
@@ -104,8 +118,11 @@ pub unsafe trait CanonicalEncode {
     }
 }
 
-unsafe impl CanonicalEncode for () {
+unsafe impl CacheSchema for () {
     const SCHEMA_SIGNATURE: u32 = schema_signature(b"ssa-workflow:canonical-encode:v1;unit");
+}
+
+unsafe impl CanonicalEncode for () {
     const SIZE: usize = 0;
 
     #[inline]
@@ -121,15 +138,18 @@ unsafe impl CanonicalEncode for () {
 /// # Example
 ///
 /// ```
-/// use ssa_workflow::cache::{CanonicalEncode, CanonicalEncodeWriter};
+/// use ssa_workflow::cache::{CacheSchema, CanonicalEncode, CanonicalEncodeWriter};
 ///
 /// struct Params {
 ///     rate: f64,
 ///     grid: [u16; 2],
 /// }
 ///
-/// unsafe impl CanonicalEncode for Params {
+/// unsafe impl CacheSchema for Params {
 ///     const SCHEMA_SIGNATURE: u32 = 1;
+/// }
+///
+/// unsafe impl CanonicalEncode for Params {
 ///     const SIZE: usize = f64::SIZE + <[u16; 2]>::SIZE;
 ///
 ///     unsafe fn encode_into(&self, buffer: &mut [u8]) {
@@ -184,9 +204,12 @@ impl<'a> CanonicalEncodeWriter<'a> {
 macro_rules! impl_encode_for_int {
     ($($t:path => ($size:literal, $schema:literal)),+ $(,)?) => {
         $(
+            unsafe impl CacheSchema for $t {
+                const SCHEMA_SIGNATURE: u32 = schema_signature($schema.as_bytes());
+            }
+
             unsafe impl CanonicalEncode for $t {
                 const SIZE: usize = $size;
-                const SCHEMA_SIGNATURE: u32 = schema_signature($schema.as_bytes());
 
                 #[inline]
                 unsafe fn encode_into(&self, buffer: &mut [u8]) {
@@ -220,9 +243,12 @@ compile_error!("ssa-workflow supports only 64-bit targets");
 macro_rules! impl_encode_for_float {
     ($($t:ident => ($size:literal, $schema:literal)),+ $(,)?) => {
         $(
+            unsafe impl CacheSchema for $t {
+                const SCHEMA_SIGNATURE: u32 = schema_signature($schema.as_bytes());
+            }
+
             unsafe impl CanonicalEncode for $t {
                 const SIZE: usize = $size;
-                const SCHEMA_SIGNATURE: u32 = schema_signature($schema.as_bytes());
 
                 #[inline]
                 unsafe fn encode_into(&self, buffer: &mut [u8]) {
@@ -247,8 +273,7 @@ impl_encode_for_float!(
 
 macro_rules! impl_encode_for_tuple {
     ($($T:ident $idx:tt),+) => {
-        unsafe impl<$($T: CanonicalEncode),+> CanonicalEncode for ($($T,)+) {
-            const SIZE: usize = 0 $(+ $T::SIZE)+;
+        unsafe impl<$($T: CacheSchema),+> CacheSchema for ($($T,)+) {
             const SCHEMA_SIGNATURE: u32 = {
                 let signature = schema_signature(b"ssa-workflow:canonical-encode:v1;tuple");
                 $(
@@ -256,6 +281,10 @@ macro_rules! impl_encode_for_tuple {
                 )+
                 signature
             };
+        }
+
+        unsafe impl<$($T: CanonicalEncode),+> CanonicalEncode for ($($T,)+) {
+            const SIZE: usize = 0 $(+ $T::SIZE)+;
 
             #[allow(unused_assignments)]
             unsafe fn encode_into(&self, buffer: &mut [u8]) {
@@ -284,12 +313,15 @@ impl_encode_for_tuple!(T0 0, T1 1, T2 2, T3 3, T4 4, T5 5, T6 6, T7 7, T8 8, T9 
 impl_encode_for_tuple!(T0 0, T1 1, T2 2, T3 3, T4 4, T5 5, T6 6, T7 7, T8 8, T9 9, T10 10);
 impl_encode_for_tuple!(T0 0, T1 1, T2 2, T3 3, T4 4, T5 5, T6 6, T7 7, T8 8, T9 9, T10 10, T11 11);
 
-unsafe impl<T: CanonicalEncode, const N: usize> CanonicalEncode for [T; N] {
+unsafe impl<T: CacheSchema, const N: usize> CacheSchema for [T; N] {
     const SCHEMA_SIGNATURE: u32 = {
         let signature = schema_signature(b"ssa-workflow:canonical-encode:v1;array");
         let signature = extend_schema_signature(signature, T::SCHEMA_SIGNATURE);
         extend_schema_signature_usize(signature, N)
     };
+}
+
+unsafe impl<T: CanonicalEncode, const N: usize> CanonicalEncode for [T; N] {
     const SIZE: usize = T::SIZE * N;
 
     unsafe fn encode_into(&self, buf: &mut [u8]) {
@@ -303,11 +335,26 @@ unsafe impl<T: CanonicalEncode, const N: usize> CanonicalEncode for [T; N] {
     }
 }
 
+unsafe impl<T: CacheSchema> CacheSchema for Vec<T> {
+    const SCHEMA_SIGNATURE: u32 = {
+        let signature = schema_signature(b"ssa-workflow:cache-schema:v1;vec");
+        extend_schema_signature(signature, T::SCHEMA_SIGNATURE)
+    };
+}
+
+unsafe impl CacheSchema for String {
+    const SCHEMA_SIGNATURE: u32 = schema_signature(b"ssa-workflow:cache-schema:v1;string");
+}
+
+unsafe impl CacheSchema for bool {
+    const SCHEMA_SIGNATURE: u32 = schema_signature(b"ssa-workflow:cache-schema:v1;bool");
+}
+
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::{
-        CanonicalEncode, CanonicalEncodeWriter, extend_schema_signature,
+        CacheSchema, CanonicalEncode, CanonicalEncodeWriter, extend_schema_signature,
         extend_schema_signature_usize, schema_signature,
     };
 
@@ -317,8 +364,11 @@ mod tests {
         counts: [u16; 3],
     }
 
-    unsafe impl CanonicalEncode for SearchKey {
+    unsafe impl CacheSchema for SearchKey {
         const SCHEMA_SIGNATURE: u32 = 1;
+    }
+
+    unsafe impl CanonicalEncode for SearchKey {
         const SIZE: usize = u64::SIZE + f64::SIZE + <[u16; 3]>::SIZE;
 
         unsafe fn encode_into(&self, buffer: &mut [u8]) {

@@ -1,5 +1,5 @@
 use super::{
-    Cache, CanonicalEncode, CloneShared, EncodedCache,
+    Cache, CacheSchema, CanonicalEncode, CloneShared, EncodedCache,
     codec::{CloneFresh, CodecEngine},
     storage::{EncodedStorage, StorageNamespace},
 };
@@ -69,12 +69,13 @@ impl<SP: Clone, CE: CloneFresh> Clone for PersistentCacheProvider<SP, CE> {
 impl<T, SP, CE> CacheProvider<T> for PersistentCacheProvider<SP, CE>
 where
     SP: StorageProvider,
+    T: CacheSchema,
     CE: CodecEngine<T> + CloneFresh + Send + Sync + 'static,
 {
     type Cache = EncodedCache<SP::Storage, CE>;
 
     fn bind<I: CanonicalEncode>(self, path: &ComputationPath) -> Result<Self::Cache> {
-        let namespace = StorageNamespace::new::<I>(path, CE::VALUE_FORMAT);
+        let namespace = StorageNamespace::new::<I, T>(path, CE::VALUE_FORMAT);
         let storage = self.storage_provider.open_storage(&namespace)?;
         Ok(EncodedCache::new(storage, self.codec.clone_fresh()))
     }

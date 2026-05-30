@@ -1,7 +1,7 @@
-use ssa_workflow_derive::CanonicalEncode;
+use ssa_workflow_derive::CacheSchema;
 
-#[derive(CanonicalEncode)]
-#[canonical_encode(foo)]
+#[derive(CacheSchema)]
+#[cache_schema(foo)]
 struct UnsupportedAttribute {
     value: u64,
 }

@@ -1,7 +1,7 @@
-error: missing #[canonical_encode(version = N)]
+error: missing #[cache_schema(version = N)]
  --> tests/ui/missing_version.rs:3:10
   |
-3 | #[derive(CanonicalEncode)]
-  |          ^^^^^^^^^^^^^^^
+3 | #[derive(CacheSchema)]
+  |          ^^^^^^^^^^^
   |
-  = note: this error originates in the derive macro `CanonicalEncode` (in Nightly builds, run with -Z macro-backtrace for more info)
+  = note: this error originates in the derive macro `CacheSchema` (in Nightly builds, run with -Z macro-backtrace for more info)

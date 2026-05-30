@@ -115,7 +115,7 @@ use std::marker::PhantomData;
 
 use crate::{
     Compute, Result,
-    cache::{Cache, CacheProvider, CanonicalEncode, CloneShared},
+    cache::{Cache, CacheProvider, CacheSchema, CanonicalEncode, CloneShared},
     compute::{
         NoFunction,
         stream::{MultiStreams, SeedSource, SingleStream, StreamSeed, StreamSpec},
@@ -165,13 +165,16 @@ impl<P> From<(P, u64)> for StochasticInput<P> {
     }
 }
 
-unsafe impl<P: CanonicalEncode> CanonicalEncode for StochasticInput<P> {
+unsafe impl<P: CacheSchema> CacheSchema for StochasticInput<P> {
     const SCHEMA_SIGNATURE: u32 = {
         let signature =
             crate::cache::schema_signature(b"ssa-workflow:canonical-encode:v1;stochastic-input");
         let signature = crate::cache::extend_schema_signature(signature, P::SCHEMA_SIGNATURE);
         crate::cache::extend_schema_signature(signature, u64::SCHEMA_SIGNATURE)
     };
+}
+
+unsafe impl<P: CanonicalEncode> CanonicalEncode for StochasticInput<P> {
     const SIZE: usize = P::SIZE + u64::SIZE;
 
     unsafe fn encode_into(&self, buffer: &mut [u8]) {

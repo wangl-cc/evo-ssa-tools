@@ -1,5 +1,5 @@
-error: duplicate canonical_encode version
- --> tests/ui/duplicate_version.rs:4:33
+error: duplicate cache_schema version
+ --> tests/ui/duplicate_version.rs:4:29
   |
-4 | #[canonical_encode(version = 1, version = 2)]
-  |                                 ^^^^^^^
+4 | #[cache_schema(version = 1, version = 2)]
+  |                             ^^^^^^^

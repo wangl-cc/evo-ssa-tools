@@ -12,4 +12,4 @@ pub mod prelude;
 pub use compute::{BatchExecution, Compute, InterruptSignal};
 pub use error::{Error, Result};
 #[cfg(feature = "derive")]
-pub use ssa_workflow_derive::CanonicalEncode;
+pub use ssa_workflow_derive::{CacheSchema, CanonicalEncode};

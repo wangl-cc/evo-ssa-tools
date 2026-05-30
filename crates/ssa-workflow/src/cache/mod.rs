@@ -10,8 +10,8 @@ macro_rules! warn {
     ($($arg:tt)*) => { eprintln!($($arg)*) };
 }
 pub use canonical_encode::{
-    CanonicalEncode, CanonicalEncodeWriter, extend_schema_signature, extend_schema_signature_usize,
-    schema_signature,
+    CacheSchema, CanonicalEncode, CanonicalEncodeWriter, extend_schema_signature,
+    extend_schema_signature_usize, schema_signature,
 };
 pub use encoded::EncodedCache;
 #[cfg(feature = "lru")]

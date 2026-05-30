@@ -1,8 +1,9 @@
 use ssa_workflow_derive::CanonicalEncode;
 
 #[derive(CanonicalEncode)]
-enum BadEnum {
-    A(u8),
+#[canonical_encode(version = 1)]
+struct VersionOnCanonicalEncode {
+    value: u64,
 }
 
 fn main() {}

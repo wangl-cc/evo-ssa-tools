@@ -1,24 +1,35 @@
-use workflow::cache::CanonicalEncode;
+use workflow::cache::{CacheSchema, CanonicalEncode};
 
-#[derive(ssa_workflow_derive::CanonicalEncode)]
-#[canonical_encode(version = 1, crate = "workflow")]
+#[derive(ssa_workflow_derive::CacheSchema, ssa_workflow_derive::CanonicalEncode)]
+#[cache_schema(version = 1, crate = "workflow")]
+#[canonical_encode(crate = "workflow")]
 struct NamedKey<T> {
     generation: u64,
     selection: T,
     counts: [u16; 2],
 }
 
-#[derive(ssa_workflow_derive::CanonicalEncode)]
-#[canonical_encode(version = 1, crate = "workflow")]
+#[derive(ssa_workflow_derive::CacheSchema, ssa_workflow_derive::CanonicalEncode)]
+#[cache_schema(version = 1, crate = "workflow")]
+#[canonical_encode(crate = "workflow")]
 struct TupleKey(u16, u64);
 
-#[derive(ssa_workflow_derive::CanonicalEncode)]
+#[derive(ssa_workflow_derive::CacheSchema, ssa_workflow_derive::CanonicalEncode)]
 #[allow(dead_code)]
-#[canonical_encode(version = 1, crate = "workflow")]
+#[cache_schema(version = 1, crate = "workflow")]
+#[canonical_encode(crate = "workflow")]
 struct UnitKey;
 
-#[derive(ssa_workflow_derive::CanonicalEncode)]
-#[canonical_encode(version = 1, crate = "workflow")]
+#[derive(ssa_workflow_derive::CacheSchema)]
+#[cache_schema(version = 1, crate = "workflow")]
+struct OutputValue {
+    total: f64,
+    label: String,
+}
+
+#[derive(ssa_workflow_derive::CacheSchema, ssa_workflow_derive::CanonicalEncode)]
+#[cache_schema(version = 1, crate = "workflow")]
+#[canonical_encode(crate = "workflow")]
 enum OptionKey {
     Fast,
     Accurate,
@@ -26,24 +37,47 @@ enum OptionKey {
 }
 
 mod version_one {
-    #[derive(ssa_workflow_derive::CanonicalEncode)]
-    #[canonical_encode(version = 1, crate = "workflow")]
+    #[derive(ssa_workflow_derive::CacheSchema, ssa_workflow_derive::CanonicalEncode)]
+    #[cache_schema(version = 1, crate = "workflow")]
+    #[canonical_encode(crate = "workflow")]
     pub struct Key {
         pub value: u64,
     }
 }
 
 mod version_two {
-    #[derive(ssa_workflow_derive::CanonicalEncode)]
-    #[canonical_encode(version = 2, crate = "workflow")]
+    #[derive(ssa_workflow_derive::CacheSchema, ssa_workflow_derive::CanonicalEncode)]
+    #[cache_schema(version = 2, crate = "workflow")]
+    #[canonical_encode(crate = "workflow")]
     pub struct Key {
         pub value: u64,
     }
 }
 
+mod field_name_one {
+    #[derive(ssa_workflow_derive::CacheSchema, ssa_workflow_derive::CanonicalEncode)]
+    #[cache_schema(version = 1, crate = "workflow")]
+    #[canonical_encode(crate = "workflow")]
+    pub struct Key {
+        pub birth_rate: f64,
+        pub death_rate: f64,
+    }
+}
+
+mod field_name_two {
+    #[derive(ssa_workflow_derive::CacheSchema, ssa_workflow_derive::CanonicalEncode)]
+    #[cache_schema(version = 1, crate = "workflow")]
+    #[canonical_encode(crate = "workflow")]
+    pub struct Key {
+        pub lambda: f64,
+        pub death_rate: f64,
+    }
+}
+
 mod option_order_one {
-    #[derive(ssa_workflow_derive::CanonicalEncode)]
-    #[canonical_encode(version = 1, crate = "workflow")]
+    #[derive(ssa_workflow_derive::CacheSchema, ssa_workflow_derive::CanonicalEncode)]
+    #[cache_schema(version = 1, crate = "workflow")]
+    #[canonical_encode(crate = "workflow")]
     pub enum Key {
         Alpha,
         Beta,
@@ -51,8 +85,9 @@ mod option_order_one {
 }
 
 mod option_order_two {
-    #[derive(ssa_workflow_derive::CanonicalEncode)]
-    #[canonical_encode(version = 1, crate = "workflow")]
+    #[derive(ssa_workflow_derive::CacheSchema, ssa_workflow_derive::CanonicalEncode)]
+    #[cache_schema(version = 1, crate = "workflow")]
+    #[canonical_encode(crate = "workflow")]
     pub enum Key {
         Beta,
         Alpha,
@@ -60,8 +95,9 @@ mod option_order_two {
 }
 
 mod option_append_one {
-    #[derive(ssa_workflow_derive::CanonicalEncode)]
-    #[canonical_encode(version = 1, crate = "workflow")]
+    #[derive(ssa_workflow_derive::CacheSchema, ssa_workflow_derive::CanonicalEncode)]
+    #[cache_schema(version = 1, crate = "workflow")]
+    #[canonical_encode(crate = "workflow")]
     pub enum Key {
         Alpha,
         Beta,
@@ -69,8 +105,9 @@ mod option_append_one {
 }
 
 mod option_append_two {
-    #[derive(ssa_workflow_derive::CanonicalEncode)]
-    #[canonical_encode(version = 1, crate = "workflow")]
+    #[derive(ssa_workflow_derive::CacheSchema, ssa_workflow_derive::CanonicalEncode)]
+    #[cache_schema(version = 1, crate = "workflow")]
+    #[canonical_encode(crate = "workflow")]
     pub enum Key {
         Alpha,
         Beta,
@@ -122,6 +159,18 @@ fn derive_unit_struct_has_zero_size() {
 }
 
 #[test]
+fn derive_cache_schema_supports_output_only_types() {
+    let value = OutputValue {
+        total: 1.25,
+        label: "cached".to_owned(),
+    };
+
+    assert_eq!(value.total, 1.25);
+    assert_eq!(value.label, "cached");
+    assert_ne!(OutputValue::SCHEMA_SIGNATURE, 0);
+}
+
+#[test]
 fn derive_unit_enum_encodes_declaration_order_as_u8() {
     let mut buffer = [0xff; OptionKey::SIZE];
 
@@ -146,6 +195,24 @@ fn derive_version_changes_schema_signature() {
         version_one::Key::SCHEMA_SIGNATURE,
         version_two::Key::SCHEMA_SIGNATURE,
         "schema version changes must select a different persistent cache namespace"
+    );
+}
+
+#[test]
+fn derive_field_name_changes_schema_signature() {
+    let _ = field_name_one::Key {
+        birth_rate: 1.0,
+        death_rate: 2.0,
+    };
+    let _ = field_name_two::Key {
+        lambda: 1.0,
+        death_rate: 2.0,
+    };
+
+    assert_ne!(
+        field_name_one::Key::SCHEMA_SIGNATURE,
+        field_name_two::Key::SCHEMA_SIGNATURE,
+        "field names are part of the conservative derived schema contract"
     );
 }
 

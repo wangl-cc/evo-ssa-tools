@@ -1,5 +1,5 @@
 error: CanonicalEncode can only be derived for unit enum variants
- --> tests/ui/enum.rs:6:5
+ --> tests/ui/enum.rs:5:5
   |
-6 |     A(u8),
+5 |     A(u8),
   |     ^

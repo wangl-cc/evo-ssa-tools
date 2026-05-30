@@ -1,0 +1,5 @@
+error: canonical_encode no longer accepts version; use #[cache_schema(version = N)]
+ --> tests/ui/canonical_encode_version.rs:4:20
+  |
+4 | #[canonical_encode(version = 1)]
+  |                    ^^^^^^^
