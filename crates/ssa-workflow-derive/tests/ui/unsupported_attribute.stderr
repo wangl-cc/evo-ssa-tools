@@ -1,0 +1,5 @@
+error: unsupported canonical_encode attribute
+ --> tests/ui/unsupported_attribute.rs:4:20
+  |
+4 | #[canonical_encode(foo)]
+  |                    ^^^

@@ -13,6 +13,7 @@ struct NamedKey<T> {
 struct TupleKey(u16, u64);
 
 #[derive(ssa_workflow_derive::CanonicalEncode)]
+#[allow(dead_code)]
 #[canonical_encode(version = 1)]
 struct UnitKey;
 

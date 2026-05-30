@@ -73,13 +73,17 @@ fn workflow_crate_path() -> syn::Result<proc_macro2::TokenStream> {
         )
     })?;
 
-    Ok(match found {
+    Ok(workflow_crate_path_from_found(found))
+}
+
+fn workflow_crate_path_from_found(found: FoundCrate) -> proc_macro2::TokenStream {
+    match found {
         FoundCrate::Itself => quote!(crate),
         FoundCrate::Name(name) => {
             let ident = syn::Ident::new(&name, proc_macro2::Span::call_site());
             quote!(::#ident)
         }
-    })
+    }
 }
 
 fn parse_version(attrs: &[Attribute]) -> syn::Result<u8> {
@@ -154,4 +158,23 @@ fn collect_struct_fields(
 
 fn type_schema(ty: &syn::Type) -> String {
     ty.to_token_stream().to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn workflow_crate_path_uses_crate_for_current_package() {
+        let path = workflow_crate_path_from_found(FoundCrate::Itself);
+
+        assert_eq!(path.to_string(), "crate");
+    }
+
+    #[test]
+    fn workflow_crate_path_uses_resolved_extern_name() {
+        let path = workflow_crate_path_from_found(FoundCrate::Name("workflow".to_owned()));
+
+        assert_eq!(path.to_string(), ":: workflow");
+    }
 }

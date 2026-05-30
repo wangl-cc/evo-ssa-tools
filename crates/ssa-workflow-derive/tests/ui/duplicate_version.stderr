@@ -1,0 +1,5 @@
+error: duplicate canonical_encode version
+ --> tests/ui/duplicate_version.rs:4:33
+  |
+4 | #[canonical_encode(version = 1, version = 2)]
+  |                                 ^^^^^^^
