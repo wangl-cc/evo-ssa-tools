@@ -1,8 +1,8 @@
 use proc_macro::TokenStream;
 use quote::{ToTokens, quote};
 use syn::{
-    Attribute, Data, DeriveInput, Fields, Generics, Index, LitInt, LitStr, Path, parse_macro_input,
-    parse_quote,
+    Attribute, Data, DeriveInput, Fields, Generics, Index, LitInt, LitStr, Path, Variant,
+    parse_macro_input, parse_quote,
 };
 
 #[proc_macro_derive(CanonicalEncode, attributes(canonical_encode))]
@@ -18,22 +18,28 @@ struct CanonicalEncodeAttrs {
     workflow_crate: Path,
 }
 
+enum EncodeBody {
+    Struct {
+        field_tys: Vec<syn::Type>,
+        field_accesses: Vec<proc_macro2::TokenStream>,
+        schema_parts: Vec<String>,
+    },
+    UnitEnum {
+        variants: Vec<syn::Ident>,
+        schema_parts: Vec<String>,
+    },
+}
+
 fn expand_canonical_encode(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
     let ident = input.ident;
     let attrs = input.attrs;
-
-    let (field_tys, field_accesses, field_schema): (Vec<_>, Vec<_>, Vec<_>) = match input.data {
-        Data::Struct(data) => collect_struct_fields(data.fields),
-        Data::Enum(data) => {
-            return Err(syn::Error::new_spanned(
-                data.enum_token,
-                "CanonicalEncode can only be derived for structs",
-            ));
-        }
+    let encode_body = match input.data {
+        Data::Struct(data) => collect_struct_body(data.fields),
+        Data::Enum(data) => collect_unit_enum_body(data.enum_token, data.variants)?,
         Data::Union(data) => {
             return Err(syn::Error::new_spanned(
                 data.union_token,
-                "CanonicalEncode can only be derived for structs",
+                "CanonicalEncode can only be derived for structs or unit enums",
             ));
         }
     };
@@ -41,31 +47,71 @@ fn expand_canonical_encode(input: DeriveInput) -> syn::Result<proc_macro2::Token
     let workflow_crate = canonical_attrs.workflow_crate;
     let generics = add_trait_bounds(input.generics, &workflow_crate);
     let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
-    let schema = format!(
-        "ssa-workflow:canonical-encode:v1;version={};type={ident};fields=[{}]",
-        canonical_attrs.version,
-        field_schema.join(","),
-    );
-    let schema = syn::LitStr::new(&schema, proc_macro2::Span::call_site());
 
-    Ok(quote! {
-        unsafe impl #impl_generics #workflow_crate::cache::CanonicalEncode for #ident #ty_generics #where_clause {
-            const SIZE: usize = 0 #( + <#field_tys as #workflow_crate::cache::CanonicalEncode>::SIZE )*;
-            const SCHEMA_SIGNATURE: u32 = {
-                let signature = #workflow_crate::cache::schema_signature(#schema.as_bytes());
-                #(
-                    let signature = #workflow_crate::cache::extend_schema_signature(
-                        signature,
-                        <#field_tys as #workflow_crate::cache::CanonicalEncode>::SCHEMA_SIGNATURE,
-                    );
-                )*
-                signature
-            };
+    Ok(match encode_body {
+        EncodeBody::Struct {
+            field_tys,
+            field_accesses,
+            schema_parts,
+        } => {
+            let schema = format!(
+                "ssa-workflow:canonical-encode:v1;version={};type={ident};fields=[{}]",
+                canonical_attrs.version,
+                schema_parts.join(","),
+            );
+            let schema = syn::LitStr::new(&schema, proc_macro2::Span::call_site());
+            quote! {
+                unsafe impl #impl_generics #workflow_crate::cache::CanonicalEncode for #ident #ty_generics #where_clause {
+                    const SIZE: usize = 0 #( + <#field_tys as #workflow_crate::cache::CanonicalEncode>::SIZE )*;
+                    const SCHEMA_SIGNATURE: u32 = {
+                        let signature = #workflow_crate::cache::schema_signature(#schema.as_bytes());
+                        #(
+                            let signature = #workflow_crate::cache::extend_schema_signature(
+                                signature,
+                                <#field_tys as #workflow_crate::cache::CanonicalEncode>::SCHEMA_SIGNATURE,
+                            );
+                        )*
+                        signature
+                    };
 
-            unsafe fn encode_into(&self, buffer: &mut [u8]) {
-                let mut writer = #workflow_crate::cache::CanonicalEncodeWriter::for_type::<Self>(buffer);
-                #( writer.write(&self.#field_accesses); )*
-                writer.finish();
+                    unsafe fn encode_into(&self, buffer: &mut [u8]) {
+                        let mut writer = #workflow_crate::cache::CanonicalEncodeWriter::for_type::<Self>(buffer);
+                        #( writer.write(&self.#field_accesses); )*
+                        writer.finish();
+                    }
+                }
+            }
+        }
+        EncodeBody::UnitEnum {
+            variants,
+            schema_parts,
+        } => {
+            let schema = format!(
+                "ssa-workflow:canonical-encode:v1;version={};type={ident};variants=[{}]",
+                canonical_attrs.version,
+                schema_parts.join(","),
+            );
+            let schema = syn::LitStr::new(&schema, proc_macro2::Span::call_site());
+            let ordinals: Vec<u8> = (0..variants.len()).map(|index| index as u8).collect();
+            quote! {
+                unsafe impl #impl_generics #workflow_crate::cache::CanonicalEncode for #ident #ty_generics #where_clause {
+                    const SIZE: usize = <u8 as #workflow_crate::cache::CanonicalEncode>::SIZE;
+                    const SCHEMA_SIGNATURE: u32 = {
+                        let signature = #workflow_crate::cache::schema_signature(#schema.as_bytes());
+                        #workflow_crate::cache::extend_schema_signature(
+                            signature,
+                            <u8 as #workflow_crate::cache::CanonicalEncode>::SCHEMA_SIGNATURE,
+                        )
+                    };
+
+                    unsafe fn encode_into(&self, buffer: &mut [u8]) {
+                        let variant = match self {
+                            #( Self::#variants => #ordinals, )*
+                        };
+                        let mut writer = #workflow_crate::cache::CanonicalEncodeWriter::for_type::<Self>(buffer);
+                        writer.write(&variant).finish();
+                    }
+                }
             }
         }
     })
@@ -126,6 +172,38 @@ fn add_trait_bounds(mut generics: Generics, workflow_crate: &Path) -> Generics {
     generics
 }
 
+fn collect_struct_body(fields: Fields) -> EncodeBody {
+    let (field_tys, field_accesses, schema_parts) = collect_struct_fields(fields);
+    EncodeBody::Struct {
+        field_tys,
+        field_accesses,
+        schema_parts,
+    }
+}
+
+fn collect_unit_enum_body(
+    enum_token: syn::token::Enum,
+    variants: impl IntoIterator<Item = Variant>,
+) -> syn::Result<EncodeBody> {
+    let (variants, schema_parts) = collect_unit_enum_variants(variants)?;
+    if variants.is_empty() {
+        return Err(syn::Error::new_spanned(
+            enum_token,
+            "CanonicalEncode cannot be derived for empty enums",
+        ));
+    }
+    if variants.len() > u8::MAX as usize + 1 {
+        return Err(syn::Error::new_spanned(
+            enum_token,
+            "CanonicalEncode unit enums support at most 256 variants",
+        ));
+    }
+    Ok(EncodeBody::UnitEnum {
+        variants,
+        schema_parts,
+    })
+}
+
 fn collect_struct_fields(
     fields: Fields,
 ) -> (Vec<syn::Type>, Vec<proc_macro2::TokenStream>, Vec<String>) {
@@ -156,6 +234,32 @@ fn collect_struct_fields(
     }
 
     (field_tys, field_accesses, field_schema)
+}
+
+fn collect_unit_enum_variants(
+    variants: impl IntoIterator<Item = Variant>,
+) -> syn::Result<(Vec<syn::Ident>, Vec<String>)> {
+    let mut variant_idents = Vec::new();
+    let mut variant_schema = Vec::new();
+
+    for (index, variant) in variants.into_iter().enumerate() {
+        if let Some((_, discriminant)) = variant.discriminant {
+            return Err(syn::Error::new_spanned(
+                discriminant,
+                "CanonicalEncode unit enum discriminants are not supported; variants encode by declaration order",
+            ));
+        }
+        if !matches!(variant.fields, Fields::Unit) {
+            return Err(syn::Error::new_spanned(
+                variant.ident,
+                "CanonicalEncode can only be derived for unit enum variants",
+            ));
+        }
+        variant_schema.push(format!("{index}:{}", variant.ident));
+        variant_idents.push(variant.ident);
+    }
+
+    Ok((variant_idents, variant_schema))
 }
 
 fn type_schema(ty: &syn::Type) -> String {

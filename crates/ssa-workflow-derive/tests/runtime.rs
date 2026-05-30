@@ -17,6 +17,14 @@ struct TupleKey(u16, u64);
 #[canonical_encode(version = 1, crate = "workflow")]
 struct UnitKey;
 
+#[derive(ssa_workflow_derive::CanonicalEncode)]
+#[canonical_encode(version = 1, crate = "workflow")]
+enum OptionKey {
+    Fast,
+    Accurate,
+    Slow,
+}
+
 mod version_one {
     #[derive(ssa_workflow_derive::CanonicalEncode)]
     #[canonical_encode(version = 1, crate = "workflow")]
@@ -30,6 +38,43 @@ mod version_two {
     #[canonical_encode(version = 2, crate = "workflow")]
     pub struct Key {
         pub value: u64,
+    }
+}
+
+mod option_order_one {
+    #[derive(ssa_workflow_derive::CanonicalEncode)]
+    #[canonical_encode(version = 1, crate = "workflow")]
+    pub enum Key {
+        Alpha,
+        Beta,
+    }
+}
+
+mod option_order_two {
+    #[derive(ssa_workflow_derive::CanonicalEncode)]
+    #[canonical_encode(version = 1, crate = "workflow")]
+    pub enum Key {
+        Beta,
+        Alpha,
+    }
+}
+
+mod option_append_one {
+    #[derive(ssa_workflow_derive::CanonicalEncode)]
+    #[canonical_encode(version = 1, crate = "workflow")]
+    pub enum Key {
+        Alpha,
+        Beta,
+    }
+}
+
+mod option_append_two {
+    #[derive(ssa_workflow_derive::CanonicalEncode)]
+    #[canonical_encode(version = 1, crate = "workflow")]
+    pub enum Key {
+        Alpha,
+        Beta,
+        Gamma,
     }
 }
 
@@ -77,10 +122,58 @@ fn derive_unit_struct_has_zero_size() {
 }
 
 #[test]
+fn derive_unit_enum_encodes_declaration_order_as_u8() {
+    let mut buffer = [0xff; OptionKey::SIZE];
+
+    assert_eq!(OptionKey::SIZE, 1);
+    assert_eq!(
+        unsafe { OptionKey::Fast.encode_with_buffer(&mut buffer) },
+        [0]
+    );
+    assert_eq!(
+        unsafe { OptionKey::Accurate.encode_with_buffer(&mut buffer) },
+        [1]
+    );
+    assert_eq!(
+        unsafe { OptionKey::Slow.encode_with_buffer(&mut buffer) },
+        [2]
+    );
+}
+
+#[test]
 fn derive_version_changes_schema_signature() {
     assert_ne!(
         version_one::Key::SCHEMA_SIGNATURE,
         version_two::Key::SCHEMA_SIGNATURE,
         "schema version changes must select a different persistent cache namespace"
+    );
+}
+
+#[test]
+fn derive_unit_enum_order_changes_schema_signature() {
+    let _ = option_order_one::Key::Alpha;
+    let _ = option_order_one::Key::Beta;
+    let _ = option_order_two::Key::Beta;
+    let _ = option_order_two::Key::Alpha;
+
+    assert_ne!(
+        option_order_one::Key::SCHEMA_SIGNATURE,
+        option_order_two::Key::SCHEMA_SIGNATURE,
+        "unit enum declaration order changes must select a different persistent cache namespace"
+    );
+}
+
+#[test]
+fn derive_unit_enum_append_changes_schema_signature() {
+    let _ = option_append_one::Key::Alpha;
+    let _ = option_append_one::Key::Beta;
+    let _ = option_append_two::Key::Alpha;
+    let _ = option_append_two::Key::Beta;
+    let _ = option_append_two::Key::Gamma;
+
+    assert_ne!(
+        option_append_one::Key::SCHEMA_SIGNATURE,
+        option_append_two::Key::SCHEMA_SIGNATURE,
+        "unit enum variants are part of the conservative derived schema contract"
     );
 }
