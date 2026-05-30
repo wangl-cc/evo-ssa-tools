@@ -134,7 +134,7 @@ where
         I: CanonicalEncode,
     {
         let path = ComputationPath::root(self.id);
-        let cache = self.provider.bind(&path)?;
+        let cache = self.provider.bind::<I>(&path)?;
         Ok(DeterministicTask {
             path,
             cache,
@@ -268,7 +268,7 @@ mod tests {
     impl<T> CacheProvider<T> for FailingProvider {
         type Cache = ();
 
-        fn bind(self, _: &ComputationPath) -> Result<Self::Cache> {
+        fn bind<I: CanonicalEncode>(self, _: &ComputationPath) -> Result<Self::Cache> {
             Err(crate::Error::Compute(
                 std::io::Error::other("bind failed").into(),
             ))

@@ -121,7 +121,6 @@ fn dependent_input_encodes_param_before_source() {
 
     let mut expected = Vec::new();
     expected.extend_from_slice(&0x0102u16.to_be_bytes());
-    expected.extend_from_slice(&u16::SCHEMA_SIGNATURE.to_be_bytes());
     expected.extend_from_slice(&0x0304u16.to_be_bytes());
     assert_eq!(encoded, expected);
 }
@@ -134,7 +133,6 @@ fn dependent_stochastic_input_encodes_param_source_then_repetition() {
 
     let mut expected = Vec::new();
     expected.extend_from_slice(&0x0102u16.to_be_bytes());
-    expected.extend_from_slice(&u16::SCHEMA_SIGNATURE.to_be_bytes());
     expected.extend_from_slice(&0x0304u16.to_be_bytes());
     expected.extend_from_slice(&5u64.to_be_bytes());
     assert_eq!(encoded, expected);

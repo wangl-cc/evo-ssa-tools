@@ -1,5 +1,5 @@
 use super::{
-    Cache, CloneShared, EncodedCache,
+    Cache, CanonicalEncode, CloneShared, EncodedCache,
     codec::{CloneFresh, CodecEngine},
     storage::{EncodedStorage, StorageNamespace},
 };
@@ -10,14 +10,14 @@ pub trait CacheProvider<T> {
     /// Bound cache used by the execution path.
     type Cache: Cache<T> + CloneShared;
 
-    /// Bind the provider to a computation path, consuming it.
-    fn bind(self, path: &ComputationPath) -> Result<Self::Cache>;
+    /// Bind the provider to a computation path and input schema, consuming it.
+    fn bind<I: CanonicalEncode>(self, path: &ComputationPath) -> Result<Self::Cache>;
 }
 
 impl<T> CacheProvider<T> for () {
     type Cache = ();
 
-    fn bind(self, _path: &ComputationPath) -> Result<Self::Cache> {
+    fn bind<I: CanonicalEncode>(self, _path: &ComputationPath) -> Result<Self::Cache> {
         Ok(())
     }
 }
@@ -73,8 +73,8 @@ where
 {
     type Cache = EncodedCache<SP::Storage, CE>;
 
-    fn bind(self, path: &ComputationPath) -> Result<Self::Cache> {
-        let namespace = StorageNamespace::new(path, CE::VALUE_FORMAT);
+    fn bind<I: CanonicalEncode>(self, path: &ComputationPath) -> Result<Self::Cache> {
+        let namespace = StorageNamespace::new::<I>(path, CE::VALUE_FORMAT);
         let storage = self.storage_provider.open_storage(&namespace)?;
         Ok(EncodedCache::new(storage, self.codec.clone_fresh()))
     }
@@ -132,7 +132,7 @@ mod tests {
             PersistentCacheProvider::new(FailingStorageProvider, FixtureEngine::default());
         let path = ComputationPath::root_from_str("provider-bind-failure-v1");
 
-        let result = <_ as CacheProvider<u32>>::bind(provider, &path);
+        let result = <_ as CacheProvider<u32>>::bind::<u16>(provider, &path);
 
         assert!(matches!(result, Err(Error::Compute(_))));
     }

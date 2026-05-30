@@ -1,6 +1,3 @@
-/// Number of bytes used to prefix a cache key with its schema signature.
-pub const SCHEMA_SIGNATURE_SIZE: usize = 4;
-
 /// Compute a CRC32C schema signature.
 ///
 /// This is intentionally small: the signature is a key-schema discriminator, not a globally unique
@@ -57,9 +54,9 @@ const fn crc32c_update_byte(mut crc: u32, byte: u8) -> u32 {
 ///
 /// # Schema signature
 ///
-/// `SCHEMA_SIGNATURE` is written before the payload when a value is used as a cache key. It is not
-/// required to be globally unique, but it must change whenever this type's canonical encoding
-/// changes incompatibly within a cache keyspace. This includes field order, field meaning, field
+/// `SCHEMA_SIGNATURE` is included in persistent storage namespaces. It is not required to be
+/// globally unique, but it must change whenever this type's canonical encoding changes
+/// incompatibly within a computation keyspace. This includes field order, field meaning, field
 /// type, and primitive encoding policy changes.
 ///
 /// # Portability
@@ -82,8 +79,6 @@ const fn crc32c_update_byte(mut crc: u32, byte: u8) -> u32 {
 pub unsafe trait CanonicalEncode {
     /// Number of payload bytes written by [`Self::encode_into`].
     const SIZE: usize;
-    /// Number of bytes written by [`Self::encode_key_with_buffer`].
-    const KEY_SIZE: usize = SCHEMA_SIGNATURE_SIZE + Self::SIZE;
     /// Stable discriminator for this type's key encoding schema.
     const SCHEMA_SIGNATURE: u32;
 
@@ -106,18 +101,6 @@ pub unsafe trait CanonicalEncode {
     unsafe fn encode_with_buffer<'b>(&self, buffer: &'b mut [u8]) -> &'b [u8] {
         unsafe { self.encode_into(buffer) };
         &buffer[..Self::SIZE]
-    }
-
-    /// Encode self as a cache key, prefixing the payload with [`Self::SCHEMA_SIGNATURE`].
-    ///
-    /// ## Safety
-    ///
-    /// The buffer must have length at least `Self::KEY_SIZE`.
-    /// Implementations must only access `buffer[..Self::KEY_SIZE]`.
-    unsafe fn encode_key_with_buffer<'b>(&self, buffer: &'b mut [u8]) -> &'b [u8] {
-        buffer[..SCHEMA_SIGNATURE_SIZE].copy_from_slice(&Self::SCHEMA_SIGNATURE.to_be_bytes());
-        unsafe { self.encode_into(&mut buffer[SCHEMA_SIGNATURE_SIZE..Self::KEY_SIZE]) };
-        &buffer[..Self::KEY_SIZE]
     }
 }
 
@@ -467,24 +450,6 @@ mod tests {
         expected.extend_from_slice(&0x0b0cu16.to_be_bytes());
         expected.extend_from_slice(&0x0d0eu16.to_be_bytes());
         assert_eq!(encoded, expected);
-    }
-
-    #[test]
-    fn test_key_encode_prefixes_schema_signature() {
-        let value = SearchKey {
-            generation: 0x0102_0304_0506_0708,
-            selection: -0.0,
-            counts: [0x090a, 0x0b0c, 0x0d0e],
-        };
-        let mut payload_buffer = vec![0u8; SearchKey::SIZE];
-        let payload = unsafe { value.encode_with_buffer(&mut payload_buffer) }.to_vec();
-
-        let mut key_buffer = vec![0u8; SearchKey::KEY_SIZE];
-        let key = unsafe { value.encode_key_with_buffer(&mut key_buffer) };
-
-        let mut expected = SearchKey::SCHEMA_SIGNATURE.to_be_bytes().to_vec();
-        expected.extend_from_slice(&payload);
-        assert_eq!(key, expected);
     }
 
     #[test]

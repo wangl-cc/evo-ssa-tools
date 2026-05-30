@@ -51,11 +51,6 @@ fn derive_named_struct_adds_trait_bounds_and_encodes_in_field_order() {
 
     assert_eq!(Key::SIZE, expected.len());
     assert_eq!(encoded, expected);
-
-    let mut key_buffer = vec![0u8; Key::KEY_SIZE];
-    let key = unsafe { value.encode_key_with_buffer(&mut key_buffer) };
-    assert_eq!(&key[..4], &Key::SCHEMA_SIGNATURE.to_be_bytes());
-    assert_eq!(&key[4..], expected);
 }
 
 #[test]
@@ -85,6 +80,6 @@ fn derive_version_changes_schema_signature() {
     assert_ne!(
         version_one::Key::SCHEMA_SIGNATURE,
         version_two::Key::SCHEMA_SIGNATURE,
-        "schema version changes must select a different cache key prefix"
+        "schema version changes must select a different persistent cache namespace"
     );
 }

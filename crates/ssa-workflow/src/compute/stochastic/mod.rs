@@ -329,7 +329,7 @@ where
     /// Bind the provider and build this stochastic task.
     pub fn build(self) -> Result<BuildStochasticTask<CP, P, O, S::Seed, F>> {
         let path = ComputationPath::root(self.id);
-        let cache = self.provider.bind(&path)?;
+        let cache = self.provider.bind::<StochasticInput<P>>(&path)?;
         let seed = self.streams.derive_seed(&path);
         Ok(StochasticTask {
             path,

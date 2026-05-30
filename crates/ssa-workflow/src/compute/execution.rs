@@ -16,8 +16,9 @@ use crate::{
 ///
 /// # Cache key
 ///
-/// `Input` is encoded into canonical bytes via [`CanonicalEncode`]. A schema signature prefix plus
-/// those payload bytes form the cache key.
+/// `Input` is encoded into canonical payload bytes via [`CanonicalEncode`]. Persistent cache
+/// namespaces include the input schema signature, so incompatible input schema changes select a
+/// different storage namespace while the per-entry key stays payload-only.
 /// If you change the meaning of your input encoding or the semantics of the computation, treat it
 /// as a new keyspace.
 pub trait Compute {
@@ -45,8 +46,8 @@ pub trait Compute {
     ///
     /// # Safety
     ///
-    /// The buffer must have length at least `Self::Input::KEY_SIZE`.
-    /// Implementations should only access `buffer[..Self::Input::KEY_SIZE]`.
+    /// The buffer must have length at least `Self::Input::SIZE`.
+    /// Implementations should only access `buffer[..Self::Input::SIZE]`.
     ///
     /// See [`CanonicalEncode`] for more details.
     unsafe fn execute_one_with_buffer(
@@ -55,7 +56,7 @@ pub trait Compute {
         encode_buffer: &mut [u8],
     ) -> Result<Self::Output> {
         // Safety: The safety is guaranteed by the caller.
-        let encoded = unsafe { input.encode_key_with_buffer(encode_buffer) };
+        let encoded = unsafe { input.encode_with_buffer(encode_buffer) };
         self.execute_with_encoded_input(input, encoded)
     }
 
@@ -66,8 +67,8 @@ pub trait Compute {
     /// If you need to execute multiple ordered inputs in parallel, use [`Self::with_inputs`]
     /// instead.
     fn execute_one(&mut self, input: Self::Input) -> Result<Self::Output> {
-        let mut encode_buffer = vec![0u8; Self::Input::KEY_SIZE];
-        // Safety: The buffer is initialized with length Self::Input::KEY_SIZE.
+        let mut encode_buffer = vec![0u8; Self::Input::SIZE];
+        // Safety: The buffer is initialized with length Self::Input::SIZE.
         unsafe { self.execute_one_with_buffer(input, &mut encode_buffer) }
     }
 
@@ -148,13 +149,7 @@ where
         let signal = self.interrupt_signal;
         let compute = self.compute;
         self.inputs.into_par_iter().map_init(
-            move || {
-                (
-                    vec![0u8; C::Input::KEY_SIZE],
-                    compute.clone(),
-                    signal.clone(),
-                )
-            },
+            move || (vec![0u8; C::Input::SIZE], compute.clone(), signal.clone()),
             |(buffer, compute, signal), input| {
                 if let Some(signal) = signal
                     && signal.is_interrupted()
@@ -162,7 +157,7 @@ where
                     return Err(Error::Interrupted);
                 }
 
-                // Safety: The buffer is initialized with length Self::Input::KEY_SIZE.
+                // Safety: The buffer is initialized with length Self::Input::SIZE.
                 unsafe { compute.execute_one_with_buffer(input, buffer) }
             },
         )
@@ -266,17 +261,15 @@ mod tests {
             let mut compute = EncodedEcho {
                 calls: Arc::clone(&calls),
             };
-            let mut buffer = vec![0xAA; u16::KEY_SIZE + 1];
+            let mut buffer = vec![0xAA; u16::SIZE + 1];
 
             // Safety: the buffer is longer than the required u16 canonical key encoding.
             let output = unsafe { compute.execute_one_with_buffer(0x1234, &mut buffer) }?;
 
-            let mut expected = Vec::new();
-            expected.extend_from_slice(&u16::SCHEMA_SIGNATURE.to_be_bytes());
-            expected.extend_from_slice(&0x1234u16.to_be_bytes());
+            let expected = 0x1234u16.to_be_bytes();
             assert_eq!(output, expected);
-            assert_eq!(&buffer[..u16::KEY_SIZE], expected);
-            assert_eq!(buffer[u16::KEY_SIZE], 0xAA);
+            assert_eq!(&buffer[..u16::SIZE], expected);
+            assert_eq!(buffer[u16::SIZE], 0xAA);
             assert_eq!(calls.load(Ordering::SeqCst), 1);
             Ok(())
         }

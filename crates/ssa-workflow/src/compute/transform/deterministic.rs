@@ -3,7 +3,7 @@ use std::marker::PhantomData;
 use super::DependentInput;
 use crate::{
     Compute,
-    cache::{Cache, CacheProvider, CanonicalEncode, CloneShared, SCHEMA_SIGNATURE_SIZE},
+    cache::{Cache, CacheProvider, CanonicalEncode, CloneShared},
     compute::NoFunction,
     error::Result,
     identity::{ComputationId, ComputationPath},
@@ -81,8 +81,8 @@ where
     }
 
     fn upstream_encoded(encoded: &[u8]) -> &[u8] {
-        let start = SCHEMA_SIGNATURE_SIZE + P::SIZE;
-        &encoded[start..start + U::Input::KEY_SIZE]
+        let start = P::SIZE;
+        &encoded[start..start + U::Input::SIZE]
     }
 
     fn call(&self, upstream: U::Output, param: Self::Param) -> Result<O> {
@@ -231,7 +231,7 @@ where
     /// Bind the cache provider and build the transform.
     pub fn build(self) -> Result<Transform<U, CP::Cache, F, O>> {
         let path = self.upstream.computation_path().child(self.id);
-        let cache = self.provider.bind(&path)?;
+        let cache = self.provider.bind::<F::Input>(&path)?;
         Ok(Transform {
             path,
             upstream: self.upstream,
@@ -313,7 +313,7 @@ mod tests {
     impl<T> CacheProvider<T> for FailingProvider {
         type Cache = ();
 
-        fn bind(self, _: &ComputationPath) -> Result<Self::Cache> {
+        fn bind<I: CanonicalEncode>(self, _: &ComputationPath) -> Result<Self::Cache> {
             Err(crate::Error::Compute("bind failed".into()))
         }
     }

@@ -1,6 +1,6 @@
 use crate::{
     Result,
-    cache::{Cache, CloneShared, provider::CacheProvider},
+    cache::{Cache, CanonicalEncode, CloneShared, provider::CacheProvider},
     identity::ComputationPath,
 };
 
@@ -33,7 +33,7 @@ where
 {
     type Cache = C;
 
-    fn bind(self, _: &ComputationPath) -> Result<Self::Cache> {
+    fn bind<I: CanonicalEncode>(self, _: &ComputationPath) -> Result<Self::Cache> {
         Ok(self.cache)
     }
 }
@@ -48,7 +48,7 @@ mod tests {
     fn bind_returns_owned_hash_cache() -> Result<()> {
         let provider = ManagedMemoryCache::from_cache(HashObjectCache::<u32>::default());
         let path = ComputationPath::root_from_str("answer-v1");
-        let mut cache = provider.bind(&path)?;
+        let mut cache = provider.bind::<u32>(&path)?;
 
         let value = cache.fetch_or_execute(b"k", || Ok(7))?;
         let reused = cache.fetch_or_execute(b"k", || Ok(9))?;

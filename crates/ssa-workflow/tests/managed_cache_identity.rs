@@ -97,7 +97,10 @@ fn named_streams_affect_rng_but_not_cache_namespace() -> Result<()> {
         .cache(ManagedHashCache::<u64>::default())
         .build()?;
 
-    let namespace = StorageNamespace::new(task.computation_path(), ValueFormat::new("memory-v1"));
+    let namespace = StorageNamespace::new::<StochasticInput<u64>>(
+        task.computation_path(),
+        ValueFormat::new("memory-v1"),
+    );
     assert!(namespace.as_str().contains("computation-named-streams-v1"));
     assert!(!namespace.as_str().contains("waiting"));
     assert!(!namespace.as_str().contains("choice"));
@@ -145,7 +148,7 @@ fn managed_transform_uses_child_path_for_output_space() -> Result<()> {
     assert_eq!(stage2_calls.load(Ordering::SeqCst), 8);
 
     let namespace =
-        StorageNamespace::new(transform.computation_path(), ValueFormat::new("memory-v1"));
+        StorageNamespace::new::<usize>(transform.computation_path(), ValueFormat::new("memory-v1"));
     assert!(namespace.as_str().contains("plus-one-v1_double-v1"));
     Ok(())
 }
@@ -162,8 +165,10 @@ fn stochastic_transform_path_extends_source_path() -> Result<()> {
         .cache(ManagedHashCache::<u64>::default())
         .build()?;
 
-    let namespace =
-        StorageNamespace::new(transform.computation_path(), ValueFormat::new("memory-v1"));
+    let namespace = StorageNamespace::new::<DependentStochasticInput<(), StochasticInput<()>>>(
+        transform.computation_path(),
+        ValueFormat::new("memory-v1"),
+    );
     assert!(namespace.as_str().contains("resample-v1_trajectory-v1"));
 
     let input = DependentStochasticInput::from_source(StochasticInput::new((), 0), 0);
@@ -422,10 +427,11 @@ mod persistent_fjall3 {
         let input = StochasticInput::new((), 9);
         let _ = task.execute_one(input.clone())?;
 
-        let namespace = StorageNamespace::new(task.computation_path(), layout);
+        let namespace =
+            StorageNamespace::new::<StochasticInput<()>>(task.computation_path(), layout);
         let store = Fjall3Store::open(db, namespace.as_str())?;
-        let mut key_buffer = vec![0u8; StochasticInput::<()>::KEY_SIZE];
-        let key = unsafe { input.encode_key_with_buffer(&mut key_buffer) };
+        let mut key_buffer = vec![0u8; StochasticInput::<()>::SIZE];
+        let key = unsafe { input.encode_with_buffer(&mut key_buffer) };
 
         assert!(store.fetch_encoded(key)?.is_some());
         Ok(())

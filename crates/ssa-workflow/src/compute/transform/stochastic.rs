@@ -3,7 +3,7 @@ use std::marker::PhantomData;
 use super::DependentStochasticInput;
 use crate::{
     Compute,
-    cache::{Cache, CacheProvider, CanonicalEncode, CloneShared, SCHEMA_SIGNATURE_SIZE},
+    cache::{Cache, CacheProvider, CanonicalEncode, CloneShared},
     compute::{
         NoFunction,
         stream::{MultiStreams, SeedSource, SingleStream, StreamSpec},
@@ -20,8 +20,8 @@ where
     P: CanonicalEncode,
     I: CanonicalEncode,
 {
-    let start = SCHEMA_SIGNATURE_SIZE + P::SIZE;
-    &encoded[start..start + I::KEY_SIZE]
+    let start = P::SIZE;
+    &encoded[start..start + I::SIZE]
 }
 
 /// Internal function wrapper for non-parameterized stochastic transforms.
@@ -281,7 +281,7 @@ where
     /// Bind the cache provider and build the stochastic transform.
     pub fn build(self) -> Result<BuildStochasticTransform<CP, U, T, O, S::Seed>> {
         let path = self.upstream.computation_path().child(self.id);
-        let cache = self.provider.bind(&path)?;
+        let cache = self.provider.bind::<T::Input>(&path)?;
         let seed = self.streams.derive_seed(&path);
         Ok(StochasticTransform {
             path,
