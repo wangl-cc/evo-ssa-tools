@@ -424,8 +424,8 @@ mod persistent_fjall3 {
 
         let namespace = StorageNamespace::new(task.computation_path(), layout);
         let store = Fjall3Store::open(db, namespace.as_str())?;
-        let mut key_buffer = vec![0u8; StochasticInput::<()>::SIZE];
-        let key = unsafe { input.encode_with_buffer(&mut key_buffer) };
+        let mut key_buffer = vec![0u8; StochasticInput::<()>::KEY_SIZE];
+        let key = unsafe { input.encode_key_with_buffer(&mut key_buffer) };
 
         assert!(store.fetch_encoded(key)?.is_some());
         Ok(())

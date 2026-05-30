@@ -165,8 +165,8 @@ fn encoded_cache_treats_checked_corruption_as_miss_in_execution_flow() -> Result
     assert_eq!(compute.execute_one(3usize)?, 30);
     assert_eq!(compute_calls.load(Ordering::SeqCst), 1);
 
-    let mut key_buffer = vec![0u8; usize::SIZE];
-    let key = unsafe { 3usize.encode_with_buffer(&mut key_buffer) }.to_vec();
+    let mut key_buffer = vec![0u8; usize::KEY_SIZE];
+    let key = unsafe { 3usize.encode_key_with_buffer(&mut key_buffer) }.to_vec();
     let mut corrupted = store_handle
         .fetch_encoded(&key)?
         .expect("value should have been stored")

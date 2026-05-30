@@ -1,5 +1,8 @@
 //! Common imports for end-user workflow definitions.
 
+#[cfg(feature = "derive")]
+pub use ssa_workflow_derive::CanonicalEncode;
+
 #[cfg(feature = "bitcode06")]
 pub use crate::cache::codec::Bitcode06;
 #[cfg(feature = "postcard")]

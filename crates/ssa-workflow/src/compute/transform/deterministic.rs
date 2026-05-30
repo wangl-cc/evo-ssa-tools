@@ -3,7 +3,7 @@ use std::marker::PhantomData;
 use super::DependentInput;
 use crate::{
     Compute,
-    cache::{Cache, CacheProvider, CanonicalEncode, CloneShared},
+    cache::{Cache, CacheProvider, CanonicalEncode, CloneShared, SCHEMA_SIGNATURE_SIZE},
     compute::NoFunction,
     error::Result,
     identity::{ComputationId, ComputationPath},
@@ -81,7 +81,8 @@ where
     }
 
     fn upstream_encoded(encoded: &[u8]) -> &[u8] {
-        &encoded[P::SIZE..P::SIZE + U::Input::SIZE]
+        let start = SCHEMA_SIGNATURE_SIZE + P::SIZE;
+        &encoded[start..start + U::Input::KEY_SIZE]
     }
 
     fn call(&self, upstream: U::Output, param: Self::Param) -> Result<O> {

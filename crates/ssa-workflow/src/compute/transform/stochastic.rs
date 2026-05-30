@@ -3,7 +3,7 @@ use std::marker::PhantomData;
 use super::DependentStochasticInput;
 use crate::{
     Compute,
-    cache::{Cache, CacheProvider, CanonicalEncode, CloneShared},
+    cache::{Cache, CacheProvider, CanonicalEncode, CloneShared, SCHEMA_SIGNATURE_SIZE},
     compute::{
         NoFunction,
         stream::{MultiStreams, SeedSource, SingleStream, StreamSpec},
@@ -20,7 +20,8 @@ where
     P: CanonicalEncode,
     I: CanonicalEncode,
 {
-    &encoded[P::SIZE..P::SIZE + I::SIZE]
+    let start = SCHEMA_SIGNATURE_SIZE + P::SIZE;
+    &encoded[start..start + I::KEY_SIZE]
 }
 
 /// Internal function wrapper for non-parameterized stochastic transforms.

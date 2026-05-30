@@ -1,9 +1,9 @@
-use crate::cache::CanonicalEncode;
+use crate::cache::{CanonicalEncode, extend_schema_signature, schema_signature};
 
 /// Input for a parameterized dependent transform.
 ///
-/// Canonical encoding is `param` followed by `source`, which groups cache keys by transform
-/// parameter for prefix-oriented storage backends.
+/// Canonical payload encoding is `param` followed by the full source key, which groups cache keys
+/// by transform parameter for prefix-oriented storage backends.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DependentInput<P, S> {
     /// Parameter for the dependent transform.
@@ -19,20 +19,26 @@ impl<P, S> DependentInput<P, S> {
     }
 }
 
-impl<P: CanonicalEncode, S: CanonicalEncode> CanonicalEncode for DependentInput<P, S> {
-    const SIZE: usize = P::SIZE + S::SIZE;
+unsafe impl<P: CanonicalEncode, S: CanonicalEncode> CanonicalEncode for DependentInput<P, S> {
+    const SCHEMA_SIGNATURE: u32 = {
+        let signature = schema_signature(b"ssa-workflow:canonical-encode:v1;dependent-input");
+        let signature = extend_schema_signature(signature, P::SCHEMA_SIGNATURE);
+        extend_schema_signature(signature, S::SCHEMA_SIGNATURE)
+    };
+    const SIZE: usize = P::SIZE + S::KEY_SIZE;
 
     unsafe fn encode_into(&self, buffer: &mut [u8]) {
         unsafe {
             self.param.encode_into(&mut buffer[..P::SIZE]);
-            self.source.encode_into(&mut buffer[P::SIZE..Self::SIZE]);
+            self.source
+                .encode_key_with_buffer(&mut buffer[P::SIZE..Self::SIZE]);
         }
     }
 }
 
 /// Input for a stochastic dependent transform.
 ///
-/// Canonical encoding is `param | source | transform_repetition_index`.
+/// Canonical payload encoding is `param | source key | transform_repetition_index`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DependentStochasticInput<P, S> {
     /// Parameter for the stochastic dependent transform.
@@ -65,16 +71,25 @@ impl<S> DependentStochasticInput<(), S> {
     }
 }
 
-impl<P: CanonicalEncode, S: CanonicalEncode> CanonicalEncode for DependentStochasticInput<P, S> {
-    const SIZE: usize = P::SIZE + S::SIZE + u64::SIZE;
+unsafe impl<P: CanonicalEncode, S: CanonicalEncode> CanonicalEncode
+    for DependentStochasticInput<P, S>
+{
+    const SCHEMA_SIGNATURE: u32 = {
+        let signature =
+            schema_signature(b"ssa-workflow:canonical-encode:v1;dependent-stochastic-input");
+        let signature = extend_schema_signature(signature, P::SCHEMA_SIGNATURE);
+        let signature = extend_schema_signature(signature, S::SCHEMA_SIGNATURE);
+        extend_schema_signature(signature, u64::SCHEMA_SIGNATURE)
+    };
+    const SIZE: usize = P::SIZE + S::KEY_SIZE + u64::SIZE;
 
     unsafe fn encode_into(&self, buffer: &mut [u8]) {
         unsafe {
             self.param.encode_into(&mut buffer[..P::SIZE]);
             self.source
-                .encode_into(&mut buffer[P::SIZE..P::SIZE + S::SIZE]);
+                .encode_key_with_buffer(&mut buffer[P::SIZE..P::SIZE + S::KEY_SIZE]);
             self.repetition_index
-                .encode_into(&mut buffer[P::SIZE + S::SIZE..Self::SIZE]);
+                .encode_into(&mut buffer[P::SIZE + S::KEY_SIZE..Self::SIZE]);
         }
     }
 }
