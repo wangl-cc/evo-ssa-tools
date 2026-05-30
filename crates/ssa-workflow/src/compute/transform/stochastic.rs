@@ -6,7 +6,7 @@ use crate::{
     cache::{Cache, CacheProvider, CanonicalEncode, CloneShared},
     compute::{
         NoFunction,
-        stream::{MultiStreams, RandomVariable, SeedSource, SingleStream, StreamSpec},
+        stream::{MultiStreams, SeedSource, SingleStream, StreamSpec},
     },
     error::Result,
     identity::{ComputationId, ComputationPath},
@@ -203,14 +203,14 @@ where
     U: Compute,
 {
     /// Replace the default single RNG stream with named streams.
-    pub fn streams<const N: usize>(
+    pub fn streams<const N: usize, I: Into<MultiStreams<N>>>(
         self,
-        variables: [RandomVariable; N],
+        variables: I,
     ) -> StochasticTransformBuilder<U, NoFunction, (), MultiStreams<N>, CP> {
         StochasticTransformBuilder {
             upstream: self.upstream,
             id: self.id,
-            streams: MultiStreams::new(variables),
+            streams: variables.into(),
             transform: self.transform,
             provider: self.provider,
             _output: PhantomData,

@@ -382,9 +382,6 @@ fn stochastic_transform_without_param_uses_source_and_repetition() -> Result<()>
 
 #[test]
 fn named_stochastic_transform_uses_distinct_streams_and_hits_cache() -> Result<()> {
-    const LEFT: RandomVariable = RandomVariable::new("analysis-left-v1");
-    const RIGHT: RandomVariable = RandomVariable::new("analysis-right-v1");
-
     let transform_calls = Arc::new(AtomicUsize::new(0));
     let source = DeterministicTask::builder("source-value-v1")
         .function(|input: u16| Ok(input * 2))
@@ -393,7 +390,7 @@ fn named_stochastic_transform_uses_distinct_streams_and_hits_cache() -> Result<(
 
     let mut transform = source
         .stochastic_transform("analysis-named-sample-v1")
-        .streams([LEFT, RIGHT])
+        .streams(["left", "right"])
         .function_with_param({
             let transform_calls = Arc::clone(&transform_calls);
             move |rngs, value, offset: u16| {
@@ -422,9 +419,6 @@ fn named_stochastic_transform_uses_distinct_streams_and_hits_cache() -> Result<(
 
 #[test]
 fn cloned_named_stochastic_transform_shares_cache() -> Result<()> {
-    const LEFT: RandomVariable = RandomVariable::new("analysis-left-v1");
-    const RIGHT: RandomVariable = RandomVariable::new("analysis-right-v1");
-
     let transform_calls = Arc::new(AtomicUsize::new(0));
     let source = DeterministicTask::builder("source-value-v1")
         .function(|input: u16| Ok(input * 2))
@@ -433,7 +427,7 @@ fn cloned_named_stochastic_transform_shares_cache() -> Result<()> {
 
     let mut transform = source
         .stochastic_transform("analysis-named-resample-v1")
-        .streams([LEFT, RIGHT])
+        .streams(["left", "right"])
         .function({
             let transform_calls = Arc::clone(&transform_calls);
             move |rngs, value| {
@@ -458,9 +452,6 @@ fn cloned_named_stochastic_transform_shares_cache() -> Result<()> {
 
 #[test]
 fn named_stochastic_transform_without_param_uses_distinct_streams() -> Result<()> {
-    const LEFT: RandomVariable = RandomVariable::new("analysis-left-v1");
-    const RIGHT: RandomVariable = RandomVariable::new("analysis-right-v1");
-
     let transform_calls = Arc::new(AtomicUsize::new(0));
     let source = DeterministicTask::builder("source-value-v1")
         .function(|input: u16| Ok(input * 2))
@@ -469,7 +460,7 @@ fn named_stochastic_transform_without_param_uses_distinct_streams() -> Result<()
 
     let mut transform = source
         .stochastic_transform("analysis-named-resample-v1")
-        .streams([LEFT, RIGHT])
+        .streams(["left", "right"])
         .function({
             let transform_calls = Arc::clone(&transform_calls);
             move |rngs, value| {

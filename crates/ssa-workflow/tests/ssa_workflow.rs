@@ -6,8 +6,6 @@ use std::sync::{
 use rand::RngExt;
 use ssa_workflow::{error::Result, prelude::*};
 
-const WAITING_TIME: RandomVariable = RandomVariable::new("ssa-waiting-time-v1");
-const REACTION_CHOICE: RandomVariable = RandomVariable::new("ssa-reaction-choice-v1");
 const INITIAL_CELLS: u32 = 25;
 const MAX_EVENTS: u32 = 64;
 
@@ -27,7 +25,7 @@ fn birth_death_ssa_transform_is_reproducible_and_cached() -> Result<()> {
     let summary_calls_clone = Arc::clone(&summary_calls);
 
     let transform = StochasticTask::builder("birth-death-ssa-integration-v1")
-        .streams([WAITING_TIME, REACTION_CHOICE])
+        .streams(["waiting_time", "reaction_choice"])
         .function(move |streams, (initial_cells, max_events): (u32, u32)| {
             ssa_calls_clone.fetch_add(1, Ordering::SeqCst);
 

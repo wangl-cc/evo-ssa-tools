@@ -110,6 +110,18 @@ impl<const N: usize> MultiStreams<N> {
     }
 }
 
+impl<const N: usize> From<[RandomVariable; N]> for MultiStreams<N> {
+    fn from(variables: [RandomVariable; N]) -> Self {
+        Self::new(variables)
+    }
+}
+
+impl<const N: usize> From<[&'static str; N]> for MultiStreams<N> {
+    fn from(names: [&'static str; N]) -> Self {
+        Self::new(names.map(RandomVariable::new))
+    }
+}
+
 impl<const N: usize> StreamSpec for MultiStreams<N> {
     type Seed = StreamSeeds<N>;
 
@@ -191,9 +203,9 @@ mod tests {
     use super::*;
     use crate::identity::ComputationId;
 
-    const MAIN_VARIABLE: RandomVariable = RandomVariable::new("ssa-main-v1");
-    const SEGREGATION_VARIABLE: RandomVariable = RandomVariable::new("model-segregation-v1");
-    const MUTATION_VARIABLE: RandomVariable = RandomVariable::new("model-mutation-v1");
+    const MAIN_VARIABLE: RandomVariable = RandomVariable::new("main");
+    const SEGREGATION_VARIABLE: RandomVariable = RandomVariable::new("segregation");
+    const MUTATION_VARIABLE: RandomVariable = RandomVariable::new("mutation");
 
     fn test_path() -> ComputationPath {
         ComputationPath::root_from_str("experiment-ssa-workflow-test-v1")
@@ -277,8 +289,8 @@ mod tests {
 
             let first = rng.next_u64();
             let second = rng.next_u64();
-            assert_eq!(first, 2995826121996810498);
-            assert_eq!(second, 8097071445023789793);
+            assert_eq!(first, 14830145518112621704);
+            assert_eq!(second, 12584622603152527866);
         }
 
         #[test]
@@ -304,6 +316,22 @@ mod tests {
 
     mod rng_bundle {
         use super::*;
+
+        #[test]
+        fn from_str_array_matches_new() {
+            let from_names = MultiStreams::from(["segregation", "mutation"]);
+            let from_new = MultiStreams::new([SEGREGATION_VARIABLE, MUTATION_VARIABLE]);
+
+            assert_eq!(from_names, from_new);
+        }
+
+        #[test]
+        fn from_variable_array_matches_new() {
+            let from_variables = MultiStreams::from([SEGREGATION_VARIABLE, MUTATION_VARIABLE]);
+            let from_new = MultiStreams::new([SEGREGATION_VARIABLE, MUTATION_VARIABLE]);
+
+            assert_eq!(from_variables, from_new);
+        }
 
         #[test]
         fn named_streams_reuse_the_seed_for_duplicate_variable_names() {

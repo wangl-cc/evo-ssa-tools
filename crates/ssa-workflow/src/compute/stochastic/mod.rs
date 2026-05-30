@@ -9,11 +9,8 @@
 //! ```rust
 //! # use ssa_workflow::prelude::*;
 //! # use rand::{Rng, RngExt};
-//! const WAITING_TIME: RandomVariable = RandomVariable::new("ssa-waiting-time-v1");
-//! const REACTION_CHOICE: RandomVariable = RandomVariable::new("ssa-reaction-choice-v1");
-//!
 //! let task = StochasticTask::builder("birth-death-ssa-v1")
-//!     .streams([WAITING_TIME, REACTION_CHOICE])
+//!     .streams(["waiting_time", "reaction_choice"])
 //!     .function(|streams, (initial_cells, max_events): (u32, u32)| {
 //!         let [waiting_time_rng, reaction_choice_rng] = streams.as_mut();
 //!         let birth_rate = 0.8;
@@ -128,7 +125,7 @@ use crate::{
     cache::{Cache, CacheProvider, CanonicalEncode, CloneShared},
     compute::{
         NoFunction,
-        stream::{MultiStreams, RandomVariable, SeedSource, SingleStream, StreamSeed, StreamSpec},
+        stream::{MultiStreams, SeedSource, SingleStream, StreamSeed, StreamSpec},
     },
     identity::{ComputationId, ComputationPath},
 };
@@ -297,13 +294,13 @@ impl<P, O, F, S, CP> StochasticTaskBuilder<P, O, F, S, CP> {
 
 impl<CP> StochasticTaskBuilder<(), (), NoFunction, SingleStream, CP> {
     /// Replace the default single RNG stream with named streams.
-    pub fn streams<const N: usize>(
+    pub fn streams<const N: usize, I: Into<MultiStreams<N>>>(
         self,
-        variables: [RandomVariable; N],
+        variables: I,
     ) -> StochasticTaskBuilder<(), (), NoFunction, MultiStreams<N>, CP> {
         StochasticTaskBuilder {
             id: self.id,
-            streams: MultiStreams::new(variables),
+            streams: variables.into(),
             function: self.function,
             provider: self.provider,
             _phantom: PhantomData,
@@ -365,9 +362,6 @@ mod tests {
     use super::*;
     use crate::cache::memory::ManagedHashCache;
 
-    const MAIN_VARIABLE: RandomVariable = RandomVariable::new("ssa-main-v1");
-    const SEGREGATION_VARIABLE: RandomVariable = RandomVariable::new("model-segregation-v1");
-
     fn test_function(rng: &mut Xoshiro256PlusPlus, _: ()) -> Result<u64> {
         Ok(rng.next_u64())
     }
@@ -378,7 +372,7 @@ mod tests {
         #[test]
         fn test_stochastic_task_reproducible_with_streams() -> Result<()> {
             let mut task = StochasticTask::builder("test-stochastic-streams-v1")
-                .streams([MAIN_VARIABLE, SEGREGATION_VARIABLE])
+                .streams(["main", "segregation"])
                 .function(|rngs, param| {
                     let [main_rng, segregation_rng] = rngs.as_mut();
                     Ok([

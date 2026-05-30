@@ -7,7 +7,7 @@ use rand::Rng;
 use ssa_workflow::{
     Compute,
     cache::{ManagedHashCache, codec::ValueFormat, storage::StorageNamespace},
-    compute::{DependentStochasticInput, RandomVariable, StochasticInput},
+    compute::{DependentStochasticInput, StochasticInput},
     error::Result,
     prelude::*,
 };
@@ -85,13 +85,10 @@ fn independent_managed_hash_providers_do_not_share_space() -> Result<()> {
 
 #[test]
 fn named_streams_affect_rng_but_not_cache_namespace() -> Result<()> {
-    const WAITING: RandomVariable = RandomVariable::new("waiting-v1");
-    const CHOICE: RandomVariable = RandomVariable::new("choice-v1");
-
     let calls = Arc::new(AtomicUsize::new(0));
     let calls_clone = Arc::clone(&calls);
     let mut task = StochasticTask::builder("computation-named-streams-v1")
-        .streams([WAITING, CHOICE])
+        .streams(["waiting", "choice"])
         .function(move |rng, input: u64| {
             calls_clone.fetch_add(1, Ordering::SeqCst);
             let [waiting, choice] = rng.as_mut();
