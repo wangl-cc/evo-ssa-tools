@@ -21,12 +21,16 @@ lru = { version = "0.18" }
 nohash-hasher = { version = "0.2.0" }
 parking_lot = { version = "0.12" }
 postcard = { version = "1.1", default-features = false }
+proc-macro2 = { version = "1" }
+quote = { version = "1" }
 rand = { version = "0.10", default-features = false, features = ["alloc"] }
 rapidhash = { version = "4.2.2" }
 rayon = { version = "1.10.0" }
 serde = { version = "1", default-features = false }
+syn = { version = "2", features = ["full"] }
 tempfile = { version = "3.20.0" }
 thiserror = { version = "2" }
+trybuild = { version = "1" }
 zerocopy = { version = "0.8.26" }
 zstd = { version = "0.13", default-features = false }
 

@@ -9,7 +9,10 @@ macro_rules! warn {
 macro_rules! warn {
     ($($arg:tt)*) => { eprintln!($($arg)*) };
 }
-pub use canonical_encode::{CanonicalEncode, CanonicalEncodeWriter};
+pub use canonical_encode::{
+    CacheSchema, CanonicalEncode, CanonicalEncodeWriter, extend_schema_signature,
+    extend_schema_signature_usize, schema_signature,
+};
 pub use encoded::EncodedCache;
 #[cfg(feature = "lru")]
 pub use memory::ManagedLruCache;

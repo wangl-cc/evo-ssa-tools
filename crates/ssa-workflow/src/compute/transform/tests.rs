@@ -119,7 +119,10 @@ fn dependent_input_encodes_param_before_source() {
     let mut buffer = vec![0u8; DependentInput::<u16, u16>::SIZE];
     let encoded = unsafe { input.encode_with_buffer(&mut buffer) };
 
-    assert_eq!(encoded, &[0x01, 0x02, 0x03, 0x04]);
+    let mut expected = Vec::new();
+    expected.extend_from_slice(&0x0102u16.to_be_bytes());
+    expected.extend_from_slice(&0x0304u16.to_be_bytes());
+    assert_eq!(encoded, expected);
 }
 
 #[test]
@@ -128,7 +131,11 @@ fn dependent_stochastic_input_encodes_param_source_then_repetition() {
     let mut buffer = vec![0u8; DependentStochasticInput::<u16, u16>::SIZE];
     let encoded = unsafe { input.encode_with_buffer(&mut buffer) };
 
-    assert_eq!(encoded, &[0x01, 0x02, 0x03, 0x04, 0, 0, 0, 0, 0, 0, 0, 5]);
+    let mut expected = Vec::new();
+    expected.extend_from_slice(&0x0102u16.to_be_bytes());
+    expected.extend_from_slice(&0x0304u16.to_be_bytes());
+    expected.extend_from_slice(&5u64.to_be_bytes());
+    assert_eq!(encoded, expected);
 }
 
 #[test]

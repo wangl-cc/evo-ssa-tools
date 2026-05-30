@@ -1,5 +1,8 @@
 //! Common imports for end-user workflow definitions.
 
+#[cfg(feature = "derive")]
+pub use ssa_workflow_derive::{CacheSchema, CanonicalEncode};
+
 #[cfg(feature = "bitcode06")]
 pub use crate::cache::codec::Bitcode06;
 #[cfg(feature = "postcard")]
@@ -16,7 +19,7 @@ pub use crate::cache::memory::ManagedLruCache;
 pub use crate::cache::storage::Fjall3StorageProvider;
 pub use crate::{
     Compute, InterruptSignal,
-    cache::{CanonicalEncode, StorageProviderExt, memory::ManagedHashCache},
+    cache::{CacheSchema, CanonicalEncode, StorageProviderExt, memory::ManagedHashCache},
     compute::{
         DependentInput, DependentStochasticInput, DeterministicTask, RandomVariable, RngBundle,
         StochasticInput, StochasticTask, StochasticTransform, Transform, TransformExt,

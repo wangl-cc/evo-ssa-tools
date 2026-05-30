@@ -1,0 +1,5 @@
+error: duplicate cache_schema version
+ --> tests/ui/cache_schema/duplicate_version.rs:4:29
+  |
+4 | #[cache_schema(version = 1, version = 2)]
+  |                             ^^^^^^^

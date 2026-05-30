@@ -81,7 +81,8 @@ where
     }
 
     fn upstream_encoded(encoded: &[u8]) -> &[u8] {
-        &encoded[P::SIZE..P::SIZE + U::Input::SIZE]
+        let start = P::SIZE;
+        &encoded[start..start + U::Input::SIZE]
     }
 
     fn call(&self, upstream: U::Output, param: Self::Param) -> Result<O> {
@@ -230,7 +231,7 @@ where
     /// Bind the cache provider and build the transform.
     pub fn build(self) -> Result<Transform<U, CP::Cache, F, O>> {
         let path = self.upstream.computation_path().child(self.id);
-        let cache = self.provider.bind(&path)?;
+        let cache = self.provider.bind::<F::Input>(&path)?;
         Ok(Transform {
             path,
             upstream: self.upstream,
@@ -312,7 +313,7 @@ mod tests {
     impl<T> CacheProvider<T> for FailingProvider {
         type Cache = ();
 
-        fn bind(self, _: &ComputationPath) -> Result<Self::Cache> {
+        fn bind<I: CanonicalEncode>(self, _: &ComputationPath) -> Result<Self::Cache> {
             Err(crate::Error::Compute("bind failed".into()))
         }
     }

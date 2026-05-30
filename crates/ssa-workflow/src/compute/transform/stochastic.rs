@@ -20,7 +20,8 @@ where
     P: CanonicalEncode,
     I: CanonicalEncode,
 {
-    &encoded[P::SIZE..P::SIZE + I::SIZE]
+    let start = P::SIZE;
+    &encoded[start..start + I::SIZE]
 }
 
 /// Internal function wrapper for non-parameterized stochastic transforms.
@@ -280,7 +281,7 @@ where
     /// Bind the cache provider and build the stochastic transform.
     pub fn build(self) -> Result<BuildStochasticTransform<CP, U, T, O, S::Seed>> {
         let path = self.upstream.computation_path().child(self.id);
-        let cache = self.provider.bind(&path)?;
+        let cache = self.provider.bind::<T::Input>(&path)?;
         let seed = self.streams.derive_seed(&path);
         Ok(StochasticTransform {
             path,

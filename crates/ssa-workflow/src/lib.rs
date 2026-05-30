@@ -1,6 +1,8 @@
 #![doc = include_str!("../README.md")]
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 
+extern crate self as ssa_workflow;
+
 pub mod cache;
 pub mod compute;
 pub mod error;
@@ -9,3 +11,5 @@ pub mod prelude;
 
 pub use compute::{BatchExecution, Compute, InterruptSignal};
 pub use error::{Error, Result};
+#[cfg(feature = "derive")]
+pub use ssa_workflow_derive::{CacheSchema, CanonicalEncode};

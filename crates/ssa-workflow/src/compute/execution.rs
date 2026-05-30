@@ -16,9 +16,11 @@ use crate::{
 ///
 /// # Cache key
 ///
-/// `Input` is encoded into canonical bytes via [`CanonicalEncode`]. Those bytes are the cache key.
-/// If you change the meaning of your input encoding or the semantics of the computation, treat it
-/// as a new keyspace.
+/// `Input` is encoded into canonical payload bytes via [`CanonicalEncode`]. Persistent cache
+/// namespaces include input and output schema signatures, so incompatible cache-boundary schema
+/// changes select a different storage namespace while the per-entry key stays payload-only. If you
+/// change the meaning of your input encoding, output value schema, or the semantics of the
+/// computation, treat it as a new keyspace.
 pub trait Compute {
     /// Input type that can be canonical-encoded into a cache key.
     type Input: CanonicalEncode;
@@ -261,11 +263,13 @@ mod tests {
             };
             let mut buffer = vec![0xAA; u16::SIZE + 1];
 
-            // Safety: the buffer is longer than the required u16 canonical encoding.
+            // Safety: the buffer is longer than the required u16 canonical key encoding.
             let output = unsafe { compute.execute_one_with_buffer(0x1234, &mut buffer) }?;
 
-            assert_eq!(output, [0x12, 0x34]);
-            assert_eq!(buffer, [0x12, 0x34, 0xAA]);
+            let expected = 0x1234u16.to_be_bytes();
+            assert_eq!(output, expected);
+            assert_eq!(&buffer[..u16::SIZE], expected);
+            assert_eq!(buffer[u16::SIZE], 0xAA);
             assert_eq!(calls.load(Ordering::SeqCst), 1);
             Ok(())
         }

@@ -125,7 +125,7 @@ let task = DeterministicTask::builder("summary-statistics-v1")
 # }
 ```
 
-Identifiers use stable segments with ASCII letters, digits, and `-`; `_` is reserved for derived cache names. Prefer lowercase kebab-case and bump the version when the meaning of a result changes. Persistent namespace names use `_` between path or codec segments and `__` between the computation path and codec format.
+Identifiers use stable segments with ASCII letters, digits, and `-`; `_` is reserved for derived cache names. Prefer lowercase kebab-case and bump the version when the meaning of a result changes. Persistent namespace names use `_` between path or codec segments and `__` between the computation path, codec format, input schema signature, and output schema signature.
 
 Dependent computation paths render from the current result back to their roots. For example, a transform id `summary-v1` built from a task id `trajectory-v1` renders as `summary-v1_trajectory-v1`, read as "summary of trajectory". Persistent namespaces and RNG seed material use this same segment order.
 
@@ -240,6 +240,7 @@ Use `Lz4` when speed matters. Use `Zstd` when stronger compression is worth the 
 
 - `bitcode06` (disabled by default): `bitcode` 0.6 serialization/deserialization via `Bitcode06`.
 - `compress` (enabled by `lz4` or `zstd`): framed compression layer and checksum support.
+- `derive` (disabled by default): re-export `#[derive(CacheSchema)]` for cache values and `#[derive(CanonicalEncode)]` for cache inputs. Derived cache schemas must specify `#[cache_schema(version = N)]`; derived canonical inputs should derive both traits, with `CacheSchema` providing the schema signature and `CanonicalEncode` providing only fixed-width key encoding. The derived schema contract is conservative: struct field names, field order, field types, unit enum variant names, and variant order are part of the signature. Unit enum variants encode as `u8` values in declaration order; explicit enum discriminants are rejected. If the `ssa-workflow` dependency is renamed, add `crate = "renamed_crate"` to the derive attribute.
 - `fjall3` (disabled by default): Fjall v3 storage provider.
 - `lru` (disabled by default): bounded in-memory cache with LRU eviction.
 - `lz4` (disabled by default): `Lz4` compression.

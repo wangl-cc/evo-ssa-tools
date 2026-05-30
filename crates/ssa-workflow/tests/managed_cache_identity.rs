@@ -97,7 +97,10 @@ fn named_streams_affect_rng_but_not_cache_namespace() -> Result<()> {
         .cache(ManagedHashCache::<u64>::default())
         .build()?;
 
-    let namespace = StorageNamespace::new(task.computation_path(), ValueFormat::new("memory-v1"));
+    let namespace = StorageNamespace::new::<StochasticInput<u64>, u64>(
+        task.computation_path(),
+        ValueFormat::new("memory-v1"),
+    );
     assert!(namespace.as_str().contains("computation-named-streams-v1"));
     assert!(!namespace.as_str().contains("waiting"));
     assert!(!namespace.as_str().contains("choice"));
@@ -144,8 +147,10 @@ fn managed_transform_uses_child_path_for_output_space() -> Result<()> {
     assert_eq!(stage1_calls.load(Ordering::SeqCst), 8);
     assert_eq!(stage2_calls.load(Ordering::SeqCst), 8);
 
-    let namespace =
-        StorageNamespace::new(transform.computation_path(), ValueFormat::new("memory-v1"));
+    let namespace = StorageNamespace::new::<usize, usize>(
+        transform.computation_path(),
+        ValueFormat::new("memory-v1"),
+    );
     assert!(namespace.as_str().contains("plus-one-v1_double-v1"));
     Ok(())
 }
@@ -162,8 +167,10 @@ fn stochastic_transform_path_extends_source_path() -> Result<()> {
         .cache(ManagedHashCache::<u64>::default())
         .build()?;
 
-    let namespace =
-        StorageNamespace::new(transform.computation_path(), ValueFormat::new("memory-v1"));
+    let namespace = StorageNamespace::new::<DependentStochasticInput<(), StochasticInput<()>>, u64>(
+        transform.computation_path(),
+        ValueFormat::new("memory-v1"),
+    );
     assert!(namespace.as_str().contains("resample-v1_trajectory-v1"));
 
     let input = DependentStochasticInput::from_source(StochasticInput::new((), 0), 0);
@@ -410,6 +417,41 @@ mod persistent_fjall3 {
     }
 
     #[test]
+    fn output_schema_changes_persistent_namespace() -> Result<()> {
+        let (_dir, _db, storage_provider) = make_storage_provider()?;
+        let provider = cache_provider(storage_provider);
+        let calls = Arc::new(AtomicUsize::new(0));
+        let input = StochasticInput::new((), 1);
+
+        let mut first = StochasticTask::builder("output-schema-v1")
+            .function({
+                let calls = Arc::clone(&calls);
+                move |_rng, ()| {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    Ok(11u32)
+                }
+            })
+            .cache(provider.clone())
+            .build()?;
+        assert_eq!(first.execute_one(input.clone())?, 11);
+
+        let mut second = StochasticTask::builder("output-schema-v1")
+            .function({
+                let calls = Arc::clone(&calls);
+                move |_rng, ()| {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    Ok(22u64)
+                }
+            })
+            .cache(provider)
+            .build()?;
+        assert_eq!(second.execute_one(input)?, 22);
+
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        Ok(())
+    }
+
+    #[test]
     fn namespace_stores_raw_canonical_entry_keys() -> Result<()> {
         let (_dir, db, storage_provider) = make_storage_provider()?;
         let layout = <Bitcode06 as CodecEngine<u64>>::VALUE_FORMAT;
@@ -422,7 +464,8 @@ mod persistent_fjall3 {
         let input = StochasticInput::new((), 9);
         let _ = task.execute_one(input.clone())?;
 
-        let namespace = StorageNamespace::new(task.computation_path(), layout);
+        let namespace =
+            StorageNamespace::new::<StochasticInput<()>, u64>(task.computation_path(), layout);
         let store = Fjall3Store::open(db, namespace.as_str())?;
         let mut key_buffer = vec![0u8; StochasticInput::<()>::SIZE];
         let key = unsafe { input.encode_with_buffer(&mut key_buffer) };

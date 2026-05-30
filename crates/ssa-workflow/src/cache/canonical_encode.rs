@@ -1,7 +1,69 @@
-/// Encode a key into canonical bytes.
+/// Compute a CRC32C schema signature.
+///
+/// This is intentionally small: the signature is a key-schema discriminator, not a globally unique
+/// identifier or cryptographic hash.
+pub const fn schema_signature(bytes: &[u8]) -> u32 {
+    !crc32c_update_bytes(!0u32, bytes)
+}
+
+/// Extend a schema signature with another 32-bit schema component.
+pub const fn extend_schema_signature(signature: u32, value: u32) -> u32 {
+    let bytes = value.to_be_bytes();
+    !crc32c_update_bytes(!signature, &bytes)
+}
+
+/// Extend a schema signature with a `usize` schema component.
+pub const fn extend_schema_signature_usize(signature: u32, value: usize) -> u32 {
+    let bytes = value.to_be_bytes();
+    !crc32c_update_bytes(!signature, &bytes)
+}
+
+const fn crc32c_update_bytes(mut crc: u32, bytes: &[u8]) -> u32 {
+    let mut i = 0usize;
+    while i < bytes.len() {
+        crc = crc32c_update_byte(crc, bytes[i]);
+        i += 1;
+    }
+    crc
+}
+
+const fn crc32c_update_byte(mut crc: u32, byte: u8) -> u32 {
+    crc ^= byte as u32;
+    let mut bit = 0;
+    while bit < 8 {
+        let mask = 0u32.wrapping_sub(crc & 1);
+        crc = (crc >> 1) ^ (0x82f6_3b78 & mask);
+        bit += 1;
+    }
+    crc
+}
+
+/// Stable cache-boundary schema signature.
+///
+/// This signature is included in persistent storage namespaces for both inputs and outputs. It is
+/// not required to be globally unique, but it must change whenever this type's cache-visible schema
+/// changes incompatibly within a computation keyspace.
+///
+/// # Safety
+///
+/// Manual implementations are unsafe because the persistent cache relies on this signature to avoid
+/// interpreting old bytes as a different input or output schema. Incorrect implementations can
+/// cause cache misses or stale cache reuse.
+pub unsafe trait CacheSchema {
+    /// Stable discriminator for this type's cache schema.
+    const SCHEMA_SIGNATURE: u32;
+}
+
+/// Encode a key payload into canonical bytes.
 ///
 /// Implementations should be deterministic and consistent across different builds and runs, and
 /// must always write exactly `Self::SIZE` bytes.
+///
+/// # Schema signature
+///
+/// [`CacheSchema::SCHEMA_SIGNATURE`] is included in persistent storage namespaces. For input types,
+/// it must change whenever this type's canonical key encoding changes incompatibly. This includes
+/// field order, field meaning, field type, and primitive encoding policy changes.
 ///
 /// # Portability
 ///
@@ -14,7 +76,15 @@
 /// - For floats, NaN values are normalized to a canonical NaN, and -0.0 is treated as +0.0.
 /// - For tuples and arrays, the encoding is the concatenation of the encodings of each element.
 /// - For custom structs, [`CanonicalEncodeWriter`] can write each field in sequence.
-pub trait CanonicalEncode {
+///
+/// # Safety
+///
+/// Manual implementations are unsafe because the cache system relies on `SIZE`,
+/// [`CacheSchema::SCHEMA_SIGNATURE`], and `encode_into` being mutually consistent. Incorrect
+/// implementations can cause cache misses, stale cache reuse, or buffer access outside the
+/// documented payload range.
+pub unsafe trait CanonicalEncode: CacheSchema {
+    /// Number of payload bytes written by [`Self::encode_into`].
     const SIZE: usize;
 
     /// Encode self into the provided buffer.
@@ -39,7 +109,11 @@ pub trait CanonicalEncode {
     }
 }
 
-impl CanonicalEncode for () {
+unsafe impl CacheSchema for () {
+    const SCHEMA_SIGNATURE: u32 = schema_signature(b"ssa-workflow:cache-schema:v1;unit");
+}
+
+unsafe impl CanonicalEncode for () {
     const SIZE: usize = 0;
 
     #[inline]
@@ -55,14 +129,18 @@ impl CanonicalEncode for () {
 /// # Example
 ///
 /// ```
-/// use ssa_workflow::cache::{CanonicalEncode, CanonicalEncodeWriter};
+/// use ssa_workflow::cache::{CacheSchema, CanonicalEncode, CanonicalEncodeWriter};
 ///
 /// struct Params {
 ///     rate: f64,
 ///     grid: [u16; 2],
 /// }
 ///
-/// impl CanonicalEncode for Params {
+/// unsafe impl CacheSchema for Params {
+///     const SCHEMA_SIGNATURE: u32 = 1;
+/// }
+///
+/// unsafe impl CanonicalEncode for Params {
 ///     const SIZE: usize = f64::SIZE + <[u16; 2]>::SIZE;
 ///
 ///     unsafe fn encode_into(&self, buffer: &mut [u8]) {
@@ -115,9 +193,13 @@ impl<'a> CanonicalEncodeWriter<'a> {
 }
 
 macro_rules! impl_encode_for_int {
-    ($($t:path => $size:literal),+ $(,)?) => {
+    ($($t:path => ($size:literal, $schema:literal)),+ $(,)?) => {
         $(
-            impl CanonicalEncode for $t {
+            unsafe impl CacheSchema for $t {
+                const SCHEMA_SIGNATURE: u32 = schema_signature($schema.as_bytes());
+            }
+
+            unsafe impl CanonicalEncode for $t {
                 const SIZE: usize = $size;
 
                 #[inline]
@@ -129,16 +211,34 @@ macro_rules! impl_encode_for_int {
     };
 }
 
-impl_encode_for_int!(u8 => 1, u16 => 2, u32 => 4, u64 => 8, usize => 8, u128 => 16);
-impl_encode_for_int!(i8 => 1, i16 => 2, i32 => 4, i64 => 8, isize => 8, i128 => 16);
+impl_encode_for_int!(
+    u8 => (1, "ssa-workflow:cache-schema:v1;u8-be"),
+    u16 => (2, "ssa-workflow:cache-schema:v1;u16-be"),
+    u32 => (4, "ssa-workflow:cache-schema:v1;u32-be"),
+    u64 => (8, "ssa-workflow:cache-schema:v1;u64-be"),
+    usize => (8, "ssa-workflow:cache-schema:v1;usize64-be"),
+    u128 => (16, "ssa-workflow:cache-schema:v1;u128-be"),
+);
+impl_encode_for_int!(
+    i8 => (1, "ssa-workflow:cache-schema:v1;i8-be"),
+    i16 => (2, "ssa-workflow:cache-schema:v1;i16-be"),
+    i32 => (4, "ssa-workflow:cache-schema:v1;i32-be"),
+    i64 => (8, "ssa-workflow:cache-schema:v1;i64-be"),
+    isize => (8, "ssa-workflow:cache-schema:v1;isize64-be"),
+    i128 => (16, "ssa-workflow:cache-schema:v1;i128-be"),
+);
 
 #[cfg(not(target_pointer_width = "64"))]
 compile_error!("ssa-workflow supports only 64-bit targets");
 
 macro_rules! impl_encode_for_float {
-    ($($t:ident => $size:literal),+ $(,)?) => {
+    ($($t:ident => ($size:literal, $schema:literal)),+ $(,)?) => {
         $(
-            impl CanonicalEncode for $t {
+            unsafe impl CacheSchema for $t {
+                const SCHEMA_SIGNATURE: u32 = schema_signature($schema.as_bytes());
+            }
+
+            unsafe impl CanonicalEncode for $t {
                 const SIZE: usize = $size;
 
                 #[inline]
@@ -157,11 +257,24 @@ macro_rules! impl_encode_for_float {
     };
 }
 
-impl_encode_for_float!(f32 => 4, f64 => 8);
+impl_encode_for_float!(
+    f32 => (4, "ssa-workflow:cache-schema:v1;f32-be-canonical-nan-pos-zero"),
+    f64 => (8, "ssa-workflow:cache-schema:v1;f64-be-canonical-nan-pos-zero"),
+);
 
 macro_rules! impl_encode_for_tuple {
     ($($T:ident $idx:tt),+) => {
-        impl<$($T: CanonicalEncode),+> CanonicalEncode for ($($T,)+) {
+        unsafe impl<$($T: CacheSchema),+> CacheSchema for ($($T,)+) {
+            const SCHEMA_SIGNATURE: u32 = {
+                let signature = schema_signature(b"ssa-workflow:cache-schema:v1;tuple");
+                $(
+                    let signature = extend_schema_signature(signature, $T::SCHEMA_SIGNATURE);
+                )+
+                signature
+            };
+        }
+
+        unsafe impl<$($T: CanonicalEncode),+> CanonicalEncode for ($($T,)+) {
             const SIZE: usize = 0 $(+ $T::SIZE)+;
 
             #[allow(unused_assignments)]
@@ -191,7 +304,15 @@ impl_encode_for_tuple!(T0 0, T1 1, T2 2, T3 3, T4 4, T5 5, T6 6, T7 7, T8 8, T9 
 impl_encode_for_tuple!(T0 0, T1 1, T2 2, T3 3, T4 4, T5 5, T6 6, T7 7, T8 8, T9 9, T10 10);
 impl_encode_for_tuple!(T0 0, T1 1, T2 2, T3 3, T4 4, T5 5, T6 6, T7 7, T8 8, T9 9, T10 10, T11 11);
 
-impl<T: CanonicalEncode, const N: usize> CanonicalEncode for [T; N] {
+unsafe impl<T: CacheSchema, const N: usize> CacheSchema for [T; N] {
+    const SCHEMA_SIGNATURE: u32 = {
+        let signature = schema_signature(b"ssa-workflow:cache-schema:v1;array");
+        let signature = extend_schema_signature(signature, T::SCHEMA_SIGNATURE);
+        extend_schema_signature_usize(signature, N)
+    };
+}
+
+unsafe impl<T: CanonicalEncode, const N: usize> CanonicalEncode for [T; N] {
     const SIZE: usize = T::SIZE * N;
 
     unsafe fn encode_into(&self, buf: &mut [u8]) {
@@ -205,10 +326,28 @@ impl<T: CanonicalEncode, const N: usize> CanonicalEncode for [T; N] {
     }
 }
 
+unsafe impl<T: CacheSchema> CacheSchema for Vec<T> {
+    const SCHEMA_SIGNATURE: u32 = {
+        let signature = schema_signature(b"ssa-workflow:cache-schema:v1;vec");
+        extend_schema_signature(signature, T::SCHEMA_SIGNATURE)
+    };
+}
+
+unsafe impl CacheSchema for String {
+    const SCHEMA_SIGNATURE: u32 = schema_signature(b"ssa-workflow:cache-schema:v1;string");
+}
+
+unsafe impl CacheSchema for bool {
+    const SCHEMA_SIGNATURE: u32 = schema_signature(b"ssa-workflow:cache-schema:v1;bool");
+}
+
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
-    use super::{CanonicalEncode, CanonicalEncodeWriter};
+    use super::{
+        CacheSchema, CanonicalEncode, CanonicalEncodeWriter, extend_schema_signature,
+        extend_schema_signature_usize, schema_signature,
+    };
 
     struct SearchKey {
         generation: u64,
@@ -216,7 +355,11 @@ mod tests {
         counts: [u16; 3],
     }
 
-    impl CanonicalEncode for SearchKey {
+    unsafe impl CacheSchema for SearchKey {
+        const SCHEMA_SIGNATURE: u32 = 1;
+    }
+
+    unsafe impl CanonicalEncode for SearchKey {
         const SIZE: usize = u64::SIZE + f64::SIZE + <[u16; 3]>::SIZE;
 
         unsafe fn encode_into(&self, buffer: &mut [u8]) {
@@ -232,6 +375,26 @@ mod tests {
     fn test_float_encode_size_matches_type_width() {
         assert_eq!(f32::SIZE, 4);
         assert_eq!(f64::SIZE, 8);
+    }
+
+    #[test]
+    fn test_schema_signature_matches_crc32c() {
+        let schema = b"ssa-workflow:cache-schema:v1;test";
+        assert_eq!(schema_signature(schema), crc32c::crc32c(schema));
+    }
+
+    #[test]
+    fn test_extend_schema_signature_matches_crc32c() {
+        let schema = b"ssa-workflow:cache-schema:v1;test";
+        let mut expected = schema.to_vec();
+        expected.extend_from_slice(&0x0102_0304u32.to_be_bytes());
+        expected.extend_from_slice(&5usize.to_be_bytes());
+
+        let signature = schema_signature(schema);
+        let signature = extend_schema_signature(signature, 0x0102_0304);
+        let signature = extend_schema_signature_usize(signature, 5);
+
+        assert_eq!(signature, crc32c::crc32c(&expected));
     }
 
     #[test]

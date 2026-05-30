@@ -247,7 +247,7 @@ mod tests {
             std::collections::hash_map::RandomState::default(),
         );
         let path = ComputationPath::root_from_str("managed-hash-v1");
-        let mut cache = provider.bind(&path)?;
+        let mut cache = provider.bind::<u32>(&path)?;
 
         let value = cache.fetch_or_execute(b"k", || Ok(42u32))?;
         assert_eq!(value, 42);

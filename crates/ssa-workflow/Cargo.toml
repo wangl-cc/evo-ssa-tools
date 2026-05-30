@@ -18,6 +18,7 @@ postcard = { workspace = true, optional = true }
 rand = { workspace = true }
 rayon = { workspace = true }
 serde = { workspace = true, optional = true }
+ssa-workflow-derive = { path = "../ssa-workflow-derive", version = "0.6.0", optional = true }
 thiserror = { workspace = true }
 zstd = { workspace = true, optional = true }
 
@@ -28,6 +29,7 @@ tempfile = { workspace = true }
 default = []
 bitcode06 = ["dep:bitcode"]
 compress = []
+derive = ["dep:ssa-workflow-derive"]
 fjall3 = ["dep:fjall3"]
 log = ["dep:log"]
 lru = ["dep:lru"]
