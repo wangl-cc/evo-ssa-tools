@@ -21,7 +21,7 @@ impl<P, S> DependentInput<P, S> {
 
 unsafe impl<P: CacheSchema, S: CacheSchema> CacheSchema for DependentInput<P, S> {
     const SCHEMA_SIGNATURE: u32 = {
-        let signature = schema_signature(b"ssa-workflow:canonical-encode:v1;dependent-input");
+        let signature = schema_signature(b"ssa-workflow:cache-schema:v1;dependent-input");
         let signature = extend_schema_signature(signature, P::SCHEMA_SIGNATURE);
         extend_schema_signature(signature, S::SCHEMA_SIGNATURE)
     };
@@ -76,7 +76,7 @@ impl<S> DependentStochasticInput<(), S> {
 unsafe impl<P: CacheSchema, S: CacheSchema> CacheSchema for DependentStochasticInput<P, S> {
     const SCHEMA_SIGNATURE: u32 = {
         let signature =
-            schema_signature(b"ssa-workflow:canonical-encode:v1;dependent-stochastic-input");
+            schema_signature(b"ssa-workflow:cache-schema:v1;dependent-stochastic-input");
         let signature = extend_schema_signature(signature, P::SCHEMA_SIGNATURE);
         let signature = extend_schema_signature(signature, S::SCHEMA_SIGNATURE);
         extend_schema_signature(signature, u64::SCHEMA_SIGNATURE)

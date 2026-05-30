@@ -168,7 +168,7 @@ impl<P> From<(P, u64)> for StochasticInput<P> {
 unsafe impl<P: CacheSchema> CacheSchema for StochasticInput<P> {
     const SCHEMA_SIGNATURE: u32 = {
         let signature =
-            crate::cache::schema_signature(b"ssa-workflow:canonical-encode:v1;stochastic-input");
+            crate::cache::schema_signature(b"ssa-workflow:cache-schema:v1;stochastic-input");
         let signature = crate::cache::extend_schema_signature(signature, P::SCHEMA_SIGNATURE);
         crate::cache::extend_schema_signature(signature, u64::SCHEMA_SIGNATURE)
     };
