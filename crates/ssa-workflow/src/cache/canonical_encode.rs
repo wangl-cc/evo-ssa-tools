@@ -195,6 +195,10 @@ impl<T: CanonicalEncode, const N: usize> CanonicalEncode for [T; N] {
     const SIZE: usize = T::SIZE * N;
 
     unsafe fn encode_into(&self, buf: &mut [u8]) {
+        if T::SIZE == 0 {
+            return;
+        }
+
         for (item, chunk) in self.iter().zip(buf.chunks_exact_mut(T::SIZE)) {
             unsafe { item.encode_into(chunk) }
         }
@@ -296,6 +300,15 @@ mod tests {
         expected.extend_from_slice(&0x0304u16.to_be_bytes());
         expected.extend_from_slice(&0x0506u16.to_be_bytes());
         assert_eq!(encoded, expected);
+    }
+
+    #[test]
+    fn test_zero_sized_array_encode_is_empty() {
+        let value = [(); 8];
+        let mut buffer = [];
+        let encoded = unsafe { value.encode_with_buffer(&mut buffer) };
+
+        assert!(encoded.is_empty());
     }
 
     #[test]
