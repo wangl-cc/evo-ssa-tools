@@ -1,0 +1,40 @@
+[package]
+name = "ssa-workflow"
+version = "0.6.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+bitcode = { workspace = true, optional = true }
+blake3 = { workspace = true }
+crc32c = { workspace = true }
+fjall3 = { workspace = true, default-features = false, optional = true }
+log = { workspace = true, optional = true }
+lru = { workspace = true, optional = true }
+lz4_flex = { workspace = true, optional = true }
+parking_lot = { workspace = true }
+postcard = { workspace = true, optional = true }
+rand = { workspace = true }
+rayon = { workspace = true }
+serde = { workspace = true, optional = true }
+thiserror = { workspace = true }
+zstd = { workspace = true, optional = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[features]
+default = []
+bitcode06 = ["dep:bitcode"]
+compress = []
+fjall3 = ["dep:fjall3"]
+log = ["dep:log"]
+lru = ["dep:lru"]
+lz4 = ["compress", "dep:lz4_flex"]
+migrate = []
+postcard = ["dep:postcard", "dep:serde"]
+zstd = ["compress", "dep:zstd"]
+
+[lints]
+workspace = true
