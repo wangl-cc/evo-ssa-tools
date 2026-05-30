@@ -1,0 +1,5 @@
+error: duplicate canonical_encode crate
+ --> tests/ui/duplicate_crate.rs:4:53
+  |
+4 | #[canonical_encode(version = 1, crate = "workflow", crate = "other_workflow")]
+  |                                                     ^^^^^

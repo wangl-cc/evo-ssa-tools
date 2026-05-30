@@ -1,7 +1,7 @@
 use workflow::cache::CanonicalEncode;
 
 #[derive(ssa_workflow_derive::CanonicalEncode)]
-#[canonical_encode(version = 1)]
+#[canonical_encode(version = 1, crate = "workflow")]
 struct NamedKey<T> {
     generation: u64,
     selection: T,
@@ -9,17 +9,17 @@ struct NamedKey<T> {
 }
 
 #[derive(ssa_workflow_derive::CanonicalEncode)]
-#[canonical_encode(version = 1)]
+#[canonical_encode(version = 1, crate = "workflow")]
 struct TupleKey(u16, u64);
 
 #[derive(ssa_workflow_derive::CanonicalEncode)]
 #[allow(dead_code)]
-#[canonical_encode(version = 1)]
+#[canonical_encode(version = 1, crate = "workflow")]
 struct UnitKey;
 
 mod version_one {
     #[derive(ssa_workflow_derive::CanonicalEncode)]
-    #[canonical_encode(version = 1)]
+    #[canonical_encode(version = 1, crate = "workflow")]
     pub struct Key {
         pub value: u64,
     }
@@ -27,7 +27,7 @@ mod version_one {
 
 mod version_two {
     #[derive(ssa_workflow_derive::CanonicalEncode)]
-    #[canonical_encode(version = 2)]
+    #[canonical_encode(version = 2, crate = "workflow")]
     pub struct Key {
         pub value: u64,
     }

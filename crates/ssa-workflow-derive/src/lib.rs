@@ -1,8 +1,8 @@
 use proc_macro::TokenStream;
-use proc_macro_crate::{FoundCrate, crate_name};
 use quote::{ToTokens, quote};
 use syn::{
-    Attribute, Data, DeriveInput, Fields, Generics, Index, LitInt, parse_macro_input, parse_quote,
+    Attribute, Data, DeriveInput, Fields, Generics, Index, LitInt, LitStr, Path, parse_macro_input,
+    parse_quote,
 };
 
 #[proc_macro_derive(CanonicalEncode, attributes(canonical_encode))]
@@ -13,12 +13,14 @@ pub fn derive_canonical_encode(input: TokenStream) -> TokenStream {
         .into()
 }
 
+struct CanonicalEncodeAttrs {
+    version: u8,
+    workflow_crate: Path,
+}
+
 fn expand_canonical_encode(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
     let ident = input.ident;
     let attrs = input.attrs;
-    let workflow_crate = workflow_crate_path()?;
-    let generics = add_trait_bounds(input.generics, &workflow_crate);
-    let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
 
     let (field_tys, field_accesses, field_schema): (Vec<_>, Vec<_>, Vec<_>) = match input.data {
         Data::Struct(data) => collect_struct_fields(data.fields),
@@ -35,9 +37,13 @@ fn expand_canonical_encode(input: DeriveInput) -> syn::Result<proc_macro2::Token
             ));
         }
     };
-    let version = parse_version(&attrs)?;
+    let canonical_attrs = parse_canonical_encode_attrs(&attrs)?;
+    let workflow_crate = canonical_attrs.workflow_crate;
+    let generics = add_trait_bounds(input.generics, &workflow_crate);
+    let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
     let schema = format!(
-        "ssa-workflow:canonical-encode:v1;version={version};type={ident};fields=[{}]",
+        "ssa-workflow:canonical-encode:v1;version={};type={ident};fields=[{}]",
+        canonical_attrs.version,
         field_schema.join(","),
     );
     let schema = syn::LitStr::new(&schema, proc_macro2::Span::call_site());
@@ -65,29 +71,9 @@ fn expand_canonical_encode(input: DeriveInput) -> syn::Result<proc_macro2::Token
     })
 }
 
-fn workflow_crate_path() -> syn::Result<proc_macro2::TokenStream> {
-    let found = crate_name("ssa-workflow").map_err(|error| {
-        syn::Error::new(
-            proc_macro2::Span::call_site(),
-            format!("failed to resolve ssa-workflow crate: {error}"),
-        )
-    })?;
-
-    Ok(workflow_crate_path_from_found(found))
-}
-
-fn workflow_crate_path_from_found(found: FoundCrate) -> proc_macro2::TokenStream {
-    match found {
-        FoundCrate::Itself => quote!(crate),
-        FoundCrate::Name(name) => {
-            let ident = syn::Ident::new(&name, proc_macro2::Span::call_site());
-            quote!(::#ident)
-        }
-    }
-}
-
-fn parse_version(attrs: &[Attribute]) -> syn::Result<u8> {
+fn parse_canonical_encode_attrs(attrs: &[Attribute]) -> syn::Result<CanonicalEncodeAttrs> {
     let mut version = None;
+    let mut workflow_crate = None;
     for attr in attrs {
         if !attr.path().is_ident("canonical_encode") {
             continue;
@@ -95,6 +81,16 @@ fn parse_version(attrs: &[Attribute]) -> syn::Result<u8> {
 
         attr.parse_nested_meta(|meta| {
             if !meta.path.is_ident("version") {
+                if meta.path.is_ident("crate") {
+                    if workflow_crate.is_some() {
+                        return Err(meta.error("duplicate canonical_encode crate"));
+                    }
+                    let value = meta.value()?;
+                    let lit: LitStr = value.parse()?;
+                    workflow_crate = Some(lit.parse::<Path>()?);
+                    return Ok(());
+                }
+
                 return Err(meta.error("unsupported canonical_encode attribute"));
             }
             if version.is_some() {
@@ -107,15 +103,21 @@ fn parse_version(attrs: &[Attribute]) -> syn::Result<u8> {
         })?;
     }
 
-    version.ok_or_else(|| {
+    let version = version.ok_or_else(|| {
         syn::Error::new(
             proc_macro2::Span::call_site(),
             "missing #[canonical_encode(version = N)]",
         )
+    })?;
+    let workflow_crate = workflow_crate.unwrap_or_else(|| parse_quote!(::ssa_workflow));
+
+    Ok(CanonicalEncodeAttrs {
+        version,
+        workflow_crate,
     })
 }
 
-fn add_trait_bounds(mut generics: Generics, workflow_crate: &proc_macro2::TokenStream) -> Generics {
+fn add_trait_bounds(mut generics: Generics, workflow_crate: &Path) -> Generics {
     for param in generics.type_params_mut() {
         param.bounds.push(parse_quote!(
             #workflow_crate::cache::CanonicalEncode
@@ -165,16 +167,29 @@ mod tests {
     use super::*;
 
     #[test]
-    fn workflow_crate_path_uses_crate_for_current_package() {
-        let path = workflow_crate_path_from_found(FoundCrate::Itself);
+    fn attrs_default_to_standard_workflow_crate_path() {
+        let attrs: Vec<Attribute> = vec![parse_quote!(#[canonical_encode(version = 7)])];
 
-        assert_eq!(path.to_string(), "crate");
+        let parsed = parse_canonical_encode_attrs(&attrs).unwrap();
+
+        assert_eq!(parsed.version, 7);
+        assert_eq!(
+            parsed.workflow_crate.to_token_stream().to_string(),
+            ":: ssa_workflow"
+        );
     }
 
     #[test]
-    fn workflow_crate_path_uses_resolved_extern_name() {
-        let path = workflow_crate_path_from_found(FoundCrate::Name("workflow".to_owned()));
+    fn attrs_can_override_workflow_crate_path() {
+        let attrs: Vec<Attribute> =
+            vec![parse_quote!(#[canonical_encode(version = 7, crate = "workflow")])];
 
-        assert_eq!(path.to_string(), ":: workflow");
+        let parsed = parse_canonical_encode_attrs(&attrs).unwrap();
+
+        assert_eq!(parsed.version, 7);
+        assert_eq!(
+            parsed.workflow_crate.to_token_stream().to_string(),
+            "workflow"
+        );
     }
 }

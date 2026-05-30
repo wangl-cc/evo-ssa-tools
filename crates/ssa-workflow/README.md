@@ -240,7 +240,7 @@ Use `Lz4` when speed matters. Use `Zstd` when stronger compression is worth the 
 
 - `bitcode06` (disabled by default): `bitcode` 0.6 serialization/deserialization via `Bitcode06`.
 - `compress` (enabled by `lz4` or `zstd`): framed compression layer and checksum support.
-- `derive` (disabled by default): re-export `#[derive(CanonicalEncode)]` for struct, tuple struct, and unit struct inputs. Derived inputs must specify `#[canonical_encode(version = N)]`; the version is included in the generated schema signature.
+- `derive` (disabled by default): re-export `#[derive(CanonicalEncode)]` for struct, tuple struct, and unit struct inputs. Derived inputs must specify `#[canonical_encode(version = N)]`; the version is included in the generated schema signature. If the `ssa-workflow` dependency is renamed, use `#[canonical_encode(version = N, crate = "renamed_crate")]`.
 - `fjall3` (disabled by default): Fjall v3 storage provider.
 - `lru` (disabled by default): bounded in-memory cache with LRU eviction.
 - `lz4` (disabled by default): `Lz4` compression.
