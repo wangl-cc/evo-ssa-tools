@@ -61,12 +61,10 @@ mod tests {
     }
 
     #[test]
-    fn alias_matches_versioned_engine() -> Result<()> {
-        let mut engine = Bitcode06::default();
-        let encoded = engine.encode(&1024u64).unwrap().to_vec();
-        let decoded: u64 = engine.decode(&encoded)?;
-        assert_eq!(decoded, 1024);
-        Ok(())
+    fn value_format_is_stable_namespace_segment() {
+        let format = <Bitcode06 as CodecEngine<u64>>::VALUE_FORMAT;
+
+        assert_eq!(format.to_string(), "bitcode06-v1");
     }
 
     #[test]
