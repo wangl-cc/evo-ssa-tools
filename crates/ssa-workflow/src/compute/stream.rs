@@ -395,7 +395,7 @@ mod tests {
         }
 
         #[test]
-        fn rng_streams_support_multiple_mutable_rngs() {
+        fn rng_bundle_supports_multiple_mutable_rngs() {
             let mut streams = MultiStreams::new([SEGREGATION_VARIABLE, MUTATION_VARIABLE])
                 .derive_seed(&test_path())
                 .make_rng(b"input-A");

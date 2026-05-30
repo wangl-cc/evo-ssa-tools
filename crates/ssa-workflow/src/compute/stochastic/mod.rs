@@ -107,7 +107,7 @@
 //! derivation, the RNG algorithm, or canonical encoding for [`StochasticInput`].
 //!
 //! Named streams are independent across random variables. Reordering
-//! calls that use different streams from the same [`RngStreams`](crate::compute::RngStreams) bundle
+//! calls that use different streams from the same [`RngBundle`](crate::compute::RngBundle) bundle
 //! does not change the sequence produced by any individual stream.
 //!
 //! Changes to any seed input change the corresponding RNG stream:
@@ -193,7 +193,7 @@ impl<P: CanonicalEncode> CanonicalEncode for StochasticInput<P> {
 ///   computation path and the unnamed stream.
 /// - `StochasticTask<C, P, O, StreamSeeds<N>, F>` stores pre-derived
 ///   [`StreamSeeds<N>`](crate::compute::stream::StreamSeeds). Each input uses `StreamSeeds<N> +
-///   encoded_input -> RngStreams<N>`.
+///   encoded_input -> RngBundle<N>`.
 ///
 /// Most callers use the constructors and do not name the full generic type.
 ///
