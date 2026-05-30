@@ -91,9 +91,9 @@ where
 
 /// Dependent deterministic transform node.
 ///
-/// A [`Transform`] composes an upstream `upstream` stage with a local deterministic transform. The
-/// final executable node stores its computation path for cache namespaces and downstream
-/// transforms.
+/// A [`Transform`] runs an upstream computation and then applies a local deterministic function to
+/// the upstream output. Its computation path extends the upstream path with the transform id, so
+/// changing an upstream task selects a different cache namespace for the transform result.
 pub struct Transform<U, C, F, O> {
     path: ComputationPath,
     upstream: U,
@@ -227,7 +227,7 @@ where
     F::Input: CanonicalEncode,
     CP: CacheProvider<O>,
 {
-    /// Bind providers recursively and build the transform stage.
+    /// Bind the cache provider and build the transform.
     pub fn build(self) -> Result<Transform<U, CP::Cache, F, O>> {
         let path = self.upstream.computation_path().child(self.id);
         let cache = self.provider.bind(&path)?;

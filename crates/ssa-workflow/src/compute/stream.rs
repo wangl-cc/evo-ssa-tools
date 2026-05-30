@@ -1,4 +1,4 @@
-//! RNG stream identifiers and stream specifications.
+//! Random stream labels and RNG bundles for stochastic workflows.
 
 use rand::{SeedableRng, rngs::Xoshiro256PlusPlus};
 
@@ -6,10 +6,12 @@ use crate::identity::{ComputationPath, IdentifierSegmentChain, SEGMENT_ENCODED_S
 
 const STREAM_SEED_CONTEXT: &str = "wangl-cc/evo-ssa-tools ssa-workflow stochastic stream seed v1";
 
-/// Stable label for a model random variable with its own reproducible RNG stream.
+/// Stable name for one random variable in a stochastic computation.
 ///
-/// Random variable names are opaque seed labels, not storage namespace segments.
-/// Changing a label changes the derived stream for that variable.
+/// Use the same name whenever you want the same random variable to keep the
+/// same reproducible stream. Changing a name changes that stream's random
+/// sequence. Stream names are seed labels only; they are not part of persistent
+/// storage namespaces.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct RandomVariable(&'static str);
 
@@ -42,31 +44,34 @@ mod private {
     impl<const N: usize> Sealed for StreamSeeds<N> {}
 }
 
-/// RNG stream used by stochastic tasks and transforms.
+/// Describes which random streams a stochastic function receives.
+///
+/// Choose this through builder methods such as
+/// `StochasticTask::builder(...).streams(["waiting", "choice"])`.
 pub trait StreamSpec: private::Sealed {
-    /// Build-time seed value stored by the compute node.
+    /// Seed material prepared when the task or transform is built.
     type Seed: SeedSource;
 
-    /// Derive the build-time seed value for this stream spec and computation path.
+    /// Prepare seed material for this stream spec and computation path.
     fn derive_seed(&self, path: &ComputationPath) -> Self::Seed;
 }
 
-/// Seed material for stochastic tasks and transforms.
+/// Prepared seed material for stochastic tasks and transforms.
 ///
-/// A seed source is derived once while building a compute node. Each execution
-/// then calls [`SeedSource::make_rng`] with the canonical encoded input bytes to
-/// create the runtime RNG passed to the user function.
+/// Most users do not need to name this trait. It connects a stream spec to the
+/// RNG value passed to the stochastic function for one input.
 pub trait SeedSource: private::Sealed + Clone + Send + Sync + 'static {
     /// Runtime RNG argument passed to the user function.
     type Rng: 'static;
 
-    /// Create the runtime RNG for one canonical encoded input.
+    /// Create the RNG for one encoded input.
     fn make_rng(&self, encoded_input: &[u8]) -> Self::Rng;
 }
 
 /// Single-stream RNG specification.
 ///
-/// Used when you only need one RNG stream.
+/// This is the default. The stochastic function receives one
+/// `Xoshiro256PlusPlus` RNG.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SingleStream;
 
@@ -79,7 +84,7 @@ impl StreamSpec for SingleStream {
 }
 
 impl ComputationPath {
-    /// Derive the opaque seed for one random variable stream.
+    /// Prepare the seed for one named random variable stream.
     pub fn derive_seed(&self, variable: RandomVariable) -> StreamSeed {
         let mut hasher = blake3::Hasher::new_derive_key(STREAM_SEED_CONTEXT);
         self.hash_segments(&mut hasher);
@@ -90,16 +95,17 @@ impl ComputationPath {
     }
 }
 
-/// Multi-stream RNG specification
+/// Multi-stream RNG specification.
 ///
-/// Used when you need multiple RNG streams. Each stream have its own name.
+/// Use this when a stochastic function needs several independent named random streams.
+/// The function receives an [`RngBundle`] in the same order as the configured names.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct MultiStreams<const N: usize> {
     variables: [RandomVariable; N],
 }
 
 impl<const N: usize> MultiStreams<N> {
-    /// Create a named stream specification from stable random variable names.
+    /// Create a multi-stream specification from stable random variable names.
     pub const fn new(variables: [RandomVariable; N]) -> Self {
         Self { variables }
     }
@@ -131,10 +137,9 @@ impl<const N: usize> StreamSpec for MultiStreams<N> {
     }
 }
 
-/// Opaque seed for one RNG stream in one simulation model.
+/// Prepared seed for one random stream.
 ///
-/// A `StreamSeed` is derived from a computation path and random variable name.
-/// It is not itself an RNG, combines it with the canonical encoded input bytes for one execution.
+/// The same `StreamSeed` and encoded input always produce the same RNG sequence.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct StreamSeed {
     bytes: [u8; 32],
@@ -155,12 +160,10 @@ impl SeedSource for StreamSeed {
     }
 }
 
-/// Opaque fixed-size seed bundle for named RNG streams.
+/// Prepared seeds for a multi-stream stochastic function.
 ///
 /// The bundle stores one [`StreamSeed`] per configured random variable,
-/// in the same order as the corresponding [`MultiStream`] specification.
-/// Like `StreamSeed`, this is build-time seed material; each execution mixes
-/// in the canonical encoded input bytes before constructing runtime RNGs.
+/// in the same order as the corresponding [`MultiStreams`] specification.
 #[derive(Clone, PartialEq, Eq)]
 pub struct StreamSeeds<const N: usize> {
     seeds: [StreamSeed; N],
@@ -181,9 +184,10 @@ impl<const N: usize> SeedSource for StreamSeeds<N> {
     }
 }
 
-/// Owned fixed-size RNG bundle.
+/// Fixed-size bundle of RNGs.
 ///
-/// It's contains multiple [`Xoshiro256PlusPlus`] RNGs, one per configured random variable.
+/// This is passed to multi-stream stochastic functions. Use `as_mut` to destructure the bundle
+/// into mutable RNG references.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RngBundle<const N: usize> {
     rngs: [Xoshiro256PlusPlus; N],
@@ -198,6 +202,8 @@ impl<const N: usize> AsMut<[Xoshiro256PlusPlus; N]> for RngBundle<N> {
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
+    use std::sync::LazyLock;
+
     use rand::Rng;
 
     use super::*;
@@ -207,9 +213,8 @@ mod tests {
     const SEGREGATION_VARIABLE: RandomVariable = RandomVariable::new("segregation");
     const MUTATION_VARIABLE: RandomVariable = RandomVariable::new("mutation");
 
-    fn test_path() -> ComputationPath {
-        ComputationPath::root_from_str("experiment-ssa-workflow-test-v1")
-    }
+    static TEST_PATH: LazyLock<ComputationPath> =
+        LazyLock::new(|| ComputationPath::root_from_str("experiment-ssa-workflow-test-v1"));
 
     mod identifiers {
         use super::*;
@@ -224,6 +229,16 @@ mod tests {
             assert_eq!(model.to_string(), "experiment-test-v1");
             assert_eq!(variable.to_string(), "αβγ/ℝⁿ/𝔼[X_t]/λ₁→∞");
         }
+
+        #[test]
+        fn multi_stream_keep_order() {
+            let streams = MultiStreams::from(["x", "y", "z"]);
+            assert_eq!(streams.variables(), &[
+                RandomVariable::new("x"),
+                RandomVariable::new("y"),
+                RandomVariable::new("z"),
+            ]);
+        }
     }
 
     mod stream_seed {
@@ -231,19 +246,20 @@ mod tests {
 
         #[test]
         fn debug_output_is_redacted() {
-            let stream_seed = test_path().derive_seed(MAIN_VARIABLE);
-
-            let stream_debug = format!("{stream_seed:?}");
-
+            let single_stream_seed = SingleStream.derive_seed(&TEST_PATH);
+            let stream_debug = format!("{single_stream_seed:?}");
             assert_eq!(stream_debug, "StreamSeed { .. }");
-            assert!(!stream_debug.contains("bytes"));
+
+            let multi_stream = MultiStreams::from(["x", "y", "z"]);
+            let multi_stream_seed = multi_stream.derive_seed(&TEST_PATH);
+            let multi_stream_debug = format!("{multi_stream_seed:?}");
+            assert_eq!(multi_stream_debug, "StreamSeed { .. }");
         }
 
         #[test]
         fn streams_are_stable_and_isolated() {
-            let path = test_path();
-            let segregation_seed = path.derive_seed(SEGREGATION_VARIABLE);
-            let mutation_seed = path.derive_seed(MUTATION_VARIABLE);
+            let segregation_seed = TEST_PATH.derive_seed(SEGREGATION_VARIABLE);
+            let mutation_seed = TEST_PATH.derive_seed(MUTATION_VARIABLE);
             let mut segregation1 = segregation_seed.make_rng(b"input-A");
             let mut segregation2 = segregation_seed.make_rng(b"input-A");
             let mut mutation = mutation_seed.make_rng(b"input-A");
@@ -254,7 +270,7 @@ mod tests {
 
         #[test]
         fn input_bytes_change_stream() {
-            let seed = test_path().derive_seed(SEGREGATION_VARIABLE);
+            let seed = TEST_PATH.derive_seed(SEGREGATION_VARIABLE);
             let mut rng_a = seed.make_rng(b"input-A");
             let mut rng_b = seed.make_rng(b"input-B");
 
@@ -275,7 +291,7 @@ mod tests {
 
         #[test]
         fn single_stream_known_sequence() {
-            let seed = SingleStream.derive_seed(&test_path());
+            let seed = SingleStream.derive_seed(&TEST_PATH);
             let mut rng = seed.make_rng(b"input-A");
 
             assert_eq!(rng.next_u64(), 9757323776284558303);
@@ -284,7 +300,7 @@ mod tests {
 
         #[test]
         fn named_stream_known_sequence() {
-            let seed = test_path().derive_seed(SEGREGATION_VARIABLE);
+            let seed = TEST_PATH.derive_seed(SEGREGATION_VARIABLE);
             let mut rng = seed.make_rng(b"input-A");
 
             let first = rng.next_u64();
@@ -295,9 +311,8 @@ mod tests {
 
         #[test]
         fn single_stream_is_isolated_from_named_stream() {
-            let path = test_path();
-            let stream_seed = path.derive_seed(MAIN_VARIABLE);
-            let mut single_rng = SingleStream.derive_seed(&path).make_rng(b"input-A");
+            let stream_seed = TEST_PATH.derive_seed(MAIN_VARIABLE);
+            let mut single_rng = SingleStream.derive_seed(&TEST_PATH).make_rng(b"input-A");
             let mut stream_rng = stream_seed.make_rng(b"input-A");
 
             assert_ne!(single_rng.next_u64(), stream_rng.next_u64());
@@ -305,9 +320,8 @@ mod tests {
 
         #[test]
         fn single_stream_is_the_empty_random_variable() {
-            let path = test_path();
-            let empty_variable_seed = path.derive_seed(RandomVariable::new(""));
-            let mut single_rng = SingleStream.derive_seed(&path).make_rng(b"input-A");
+            let empty_variable_seed = TEST_PATH.derive_seed(RandomVariable::new(""));
+            let mut single_rng = SingleStream.derive_seed(&TEST_PATH).make_rng(b"input-A");
             let mut empty_variable_rng = empty_variable_seed.make_rng(b"input-A");
 
             assert_eq!(single_rng.next_u64(), empty_variable_rng.next_u64());
@@ -336,7 +350,7 @@ mod tests {
         #[test]
         fn named_streams_reuse_the_seed_for_duplicate_variable_names() {
             let mut streams = MultiStreams::new([SEGREGATION_VARIABLE, SEGREGATION_VARIABLE])
-                .derive_seed(&test_path())
+                .derive_seed(&TEST_PATH)
                 .make_rng(b"input-A");
             let [left, right] = streams.as_mut();
 
@@ -345,13 +359,15 @@ mod tests {
 
         #[test]
         fn named_streams_match_individually_derived_variable_streams() {
-            let path = test_path();
-            let mut direct_segregation =
-                path.derive_seed(SEGREGATION_VARIABLE).make_rng(b"input-A");
-            let mut direct_mutation = path.derive_seed(MUTATION_VARIABLE).make_rng(b"input-A");
+            let mut direct_segregation = TEST_PATH
+                .derive_seed(SEGREGATION_VARIABLE)
+                .make_rng(b"input-A");
+            let mut direct_mutation = TEST_PATH
+                .derive_seed(MUTATION_VARIABLE)
+                .make_rng(b"input-A");
 
             let mut streams = MultiStreams::new([SEGREGATION_VARIABLE, MUTATION_VARIABLE])
-                .derive_seed(&path)
+                .derive_seed(&TEST_PATH)
                 .make_rng(b"input-A");
             let [bundled_segregation, bundled_mutation] = streams.as_mut();
 
@@ -364,14 +380,16 @@ mod tests {
 
         #[test]
         fn adding_or_reordering_named_streams_does_not_change_each_variable_stream() {
-            let path = test_path();
-            let mut direct_segregation =
-                path.derive_seed(SEGREGATION_VARIABLE).make_rng(b"input-A");
-            let mut direct_mutation = path.derive_seed(MUTATION_VARIABLE).make_rng(b"input-A");
+            let mut direct_segregation = TEST_PATH
+                .derive_seed(SEGREGATION_VARIABLE)
+                .make_rng(b"input-A");
+            let mut direct_mutation = TEST_PATH
+                .derive_seed(MUTATION_VARIABLE)
+                .make_rng(b"input-A");
 
             let mut expanded =
                 MultiStreams::new([MAIN_VARIABLE, SEGREGATION_VARIABLE, MUTATION_VARIABLE])
-                    .derive_seed(&path)
+                    .derive_seed(&TEST_PATH)
                     .make_rng(b"input-A");
             let [_main, expanded_segregation, expanded_mutation] = expanded.as_mut();
             assert_eq!(
@@ -380,11 +398,14 @@ mod tests {
             );
             assert_eq!(expanded_mutation.next_u64(), direct_mutation.next_u64());
 
-            let mut direct_segregation =
-                path.derive_seed(SEGREGATION_VARIABLE).make_rng(b"input-A");
-            let mut direct_mutation = path.derive_seed(MUTATION_VARIABLE).make_rng(b"input-A");
+            let mut direct_segregation = TEST_PATH
+                .derive_seed(SEGREGATION_VARIABLE)
+                .make_rng(b"input-A");
+            let mut direct_mutation = TEST_PATH
+                .derive_seed(MUTATION_VARIABLE)
+                .make_rng(b"input-A");
             let mut reordered = MultiStreams::new([MUTATION_VARIABLE, SEGREGATION_VARIABLE])
-                .derive_seed(&path)
+                .derive_seed(&TEST_PATH)
                 .make_rng(b"input-A");
             let [reordered_mutation, reordered_segregation] = reordered.as_mut();
             assert_eq!(
@@ -397,7 +418,7 @@ mod tests {
         #[test]
         fn rng_bundle_supports_multiple_mutable_rngs() {
             let mut streams = MultiStreams::new([SEGREGATION_VARIABLE, MUTATION_VARIABLE])
-                .derive_seed(&test_path())
+                .derive_seed(&TEST_PATH)
                 .make_rng(b"input-A");
             let [segregation_rng, mutation_rng] = streams.as_mut();
 
@@ -409,9 +430,8 @@ mod tests {
 
         #[test]
         fn rng_stream_bundle_as_mut_preserves_order() {
-            let path = test_path();
             let mut streams = MultiStreams::new([SEGREGATION_VARIABLE, MUTATION_VARIABLE])
-                .derive_seed(&path)
+                .derive_seed(&TEST_PATH)
                 .make_rng(b"input-A");
             let [segregation_rng, mutation_rng] = streams.as_mut();
 
@@ -419,7 +439,7 @@ mod tests {
             let mutation_value = mutation_rng.next_u64();
 
             let mut streams = MultiStreams::new([SEGREGATION_VARIABLE, MUTATION_VARIABLE])
-                .derive_seed(&path)
+                .derive_seed(&TEST_PATH)
                 .make_rng(b"input-A");
             let [owned_segregation_rng, owned_mutation_rng] = streams.as_mut();
 

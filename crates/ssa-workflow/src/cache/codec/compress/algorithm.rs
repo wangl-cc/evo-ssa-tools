@@ -5,9 +5,9 @@ pub(super) mod sealed {
     pub trait Sealed {}
 }
 
-/// Compression algorithm
+/// Compression algorithm used by [`CompressedCodec`].
 ///
-/// Implementors provide a block-level compress/decompress pair used by [`CompressedCodec`].
+/// This trait is sealed; choose one of the crate-provided compressors such as `Lz4` or `Zstd`.
 ///
 /// This trait does not decide *when* compression should be attempted or skipped.
 /// That policy lives in [`CompressedCodec`]. `Compress` only describes how to

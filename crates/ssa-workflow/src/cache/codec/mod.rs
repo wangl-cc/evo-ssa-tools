@@ -35,7 +35,7 @@
 
 use crate::identity::{IdentifierSegmentChain, assert_identifier_segment};
 
-/// Stable name for bytes written by a codec pipeline.
+/// Stable name for bytes written by a codec stack.
 ///
 /// Persistent cache namespaces include this value, so changing it intentionally separates old and
 /// new cache entries. Keep names stable for compatible bytes and use a new versioned segment when

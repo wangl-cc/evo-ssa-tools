@@ -1,10 +1,9 @@
 //! Reproducible stochastic compute tasks.
 //!
-//! This module provides [`StochasticTask`], [`StochasticInput`], and stream seed types for
-//! deterministic RNG stream construction.
+//! This module provides [`StochasticTask`] and [`StochasticInput`] for reproducible simulations.
 //!
-//! For simulations with multiple random variables, prefer configuring named RNG streams up front.
-//! Each variable gets an independent deterministic stream for every input:
+//! For simulations with multiple random variables, configure named streams up front. Each name gets
+//! its own reproducible RNG for every input:
 //!
 //! ```rust
 //! # use ssa_workflow::prelude::*;
@@ -46,7 +45,7 @@
 //! # Ok::<_, ssa_workflow::Error>(())
 //! ```
 //!
-//! If the simulation has one natural random trajectory, use the single-stream constructor:
+//! If the simulation has one natural random trajectory, keep the default single stream:
 //!
 //! ```rust
 //! # use ssa_workflow::prelude::*;
@@ -86,11 +85,11 @@
 //! # Ok::<_, ssa_workflow::Error>(())
 //! ```
 //!
-//! Seed derivation is per stream name:
+//! Stream names are stable semantic inputs. Changing a stream name changes only that stream's
+//! random sequence.
 //!
 //! ```text
-//! stream: ComputationPath + variable name -> StreamSeed
-//! rng:    StreamSeed + encoded_input -> Xoshiro256PlusPlus
+//! computation path + stream name + encoded input -> RNG
 //! ```
 //!
 //! The default single stream is the unnamed stream, so it uses the same seed as
@@ -98,23 +97,17 @@
 //!
 //! # RNG stability
 //!
-//! RNG streams are stable across compatible `ssa-workflow` releases for the
-//! same [`ComputationId`], [`RandomVariable`] names, canonical input encoding,
-//! and `StochasticInput::repetition_index`.
-//!
-//! Any crate change that alters the RNG stream for the same computation path, stream label, and
-//! encoded input is a breaking change. This includes changes to stream
-//! derivation, the RNG algorithm, or canonical encoding for [`StochasticInput`].
+//! RNG streams are stable across compatible `ssa-workflow` releases for the same
+//! [`ComputationId`], stream names, canonical input encoding, and
+//! `StochasticInput::repetition_index`.
 //!
 //! Named streams are independent across random variables. Reordering
 //! calls that use different streams from the same [`RngBundle`](crate::compute::RngBundle) bundle
 //! does not change the sequence produced by any individual stream.
 //!
-//! Changes to any seed input change the corresponding RNG stream:
-//! computation path, random variable, encoded parameter bytes, or repetition index.
-//! The order passed to [`StochasticTaskBuilder::streams`] only changes the order in which streams
-//! are delivered to the function; each variable's stream seed is derived independently. Reusing the
-//! same variable name twice intentionally produces the same stream twice.
+//! The order passed to [`StochasticTaskBuilder::streams`] only changes how streams are delivered to
+//! the function. Each stream is keyed by name. Reusing the same name twice intentionally produces
+//! the same stream twice.
 //! Within one stream, random values are consumed sequentially; changing how many values that stream
 //! consumes can change later values from the same stream.
 
@@ -133,14 +126,14 @@ use crate::{
 type BuildStochasticTask<CP, P, O, S, F> =
     StochasticTask<<CP as CacheProvider<O>>::Cache, P, O, S, F>;
 
-/// Input for stochastic computation.
+/// Input for one stochastic execution.
 ///
 /// This wraps a deterministic parameter value (`param`) with a `repetition_index`.
 ///
 /// The pair serves two roles:
 ///
 /// - It is the canonical input used for cache-key construction.
-/// - It identifies one reproducible random stream when used with [`StochasticInput`].
+/// - It selects one reproducible stochastic repetition.
 ///
 /// # Encoding
 ///
@@ -184,22 +177,15 @@ impl<P: CanonicalEncode> CanonicalEncode for StochasticInput<P> {
     }
 }
 
-/// Memoized stochastic compute node with reproducible randomness.
+/// Memoized stochastic task with reproducible randomness.
 ///
-/// `StochasticTask` is shared by the single-stream and named-stream constructors. The stored
-/// `seed` field is generic:
-///
-/// - `StochasticTask<C, P, O, StreamSeed, F>` stores one [`StreamSeed`] derived from the
-///   computation path and the unnamed stream.
-/// - `StochasticTask<C, P, O, StreamSeeds<N>, F>` stores pre-derived
-///   [`StreamSeeds<N>`](crate::compute::stream::StreamSeeds). Each input uses `StreamSeeds<N> +
-///   encoded_input -> RngBundle<N>`.
-///
-/// Most callers use the constructors and do not name the full generic type.
+/// Create a task with [`StochasticTask::builder`], attach a function and cache provider, then call
+/// `build`.
 ///
 /// # Caching / keyspace contract
 ///
-/// The computation path selects the cache namespace and is also used for RNG seed derivation.
+/// The computation id selects the cache namespace and the reproducible RNG stream family. Bump the
+/// id when the task's output semantics change.
 #[derive(Debug)]
 pub struct StochasticTask<C, P, O, S, F> {
     path: ComputationPath,
@@ -210,7 +196,7 @@ pub struct StochasticTask<C, P, O, S, F> {
 }
 
 impl StochasticTask<(), (), (), StreamSeed, NoFunction> {
-    /// Start a stochastic task builder for a computation id.
+    /// Start a stochastic task builder for a stable computation id.
     pub fn builder(id: impl Into<ComputationId>) -> StochasticTaskBuilder {
         StochasticTaskBuilder {
             id: id.into(),
@@ -293,7 +279,7 @@ impl<P, O, F, S, CP> StochasticTaskBuilder<P, O, F, S, CP> {
 }
 
 impl<CP> StochasticTaskBuilder<(), (), NoFunction, SingleStream, CP> {
-    /// Replace the default single RNG stream with named streams.
+    /// Replace the default single stream with named streams.
     pub fn streams<const N: usize, I: Into<MultiStreams<N>>>(
         self,
         variables: I,

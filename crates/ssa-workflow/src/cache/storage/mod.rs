@@ -8,7 +8,7 @@
 //!
 //! - `Fjall3Store`: raw Fjall v3 keyspace-backed storage, opened manually by namespace name when
 //!   the `fjall3` feature is enabled.
-//! - `Fjall3StorageProvider`: recipe that opens named keyspaces in an existing Fjall v3 database
+//! - `Fjall3StorageProvider`: provider that opens named keyspaces in an existing Fjall v3 database
 //!   with shared keyspace creation options when the `fjall3` feature is enabled.
 //!
 //! Stores do not add namespacing on top of the underlying database. Reuse the same partition,

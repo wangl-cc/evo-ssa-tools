@@ -6,7 +6,7 @@ You describe a workflow as ordinary Rust tasks and transforms, provide inputs, a
 
 ## When This Crate Fits
 
-Use `ssa-workflow` when the workflow is driven by the parameter sets you actually ask for. Instead of splitting work into a large batch-generation phase and a later analysis phase, you define simulations and analyses as one dependency graph, submit the requested inputs, and let the crate compute only the missing intermediate and final results.
+Use `ssa-workflow` when the workflow is driven by the parameter sets you actually ask for. Instead of splitting work into a large batch-generation phase and a later analysis phase, you define simulations and analyses as linked tasks and transforms, submit the requested inputs, and let the crate compute only the missing intermediate and final results.
 
 This fits workflows where:
 

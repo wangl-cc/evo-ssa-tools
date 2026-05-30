@@ -103,7 +103,12 @@ where
     }
 }
 
-/// Stochastic transform derived from an upstream compute node.
+/// Dependent stochastic transform node.
+///
+/// A [`StochasticTransform`] runs an upstream computation and then applies a local stochastic
+/// function to the upstream output. Its computation path extends the upstream path with the
+/// transform id, so changing an upstream task selects a different cache namespace and RNG family
+/// for the transform result.
 pub struct StochasticTransform<U, C, F, O, S> {
     path: ComputationPath,
     upstream: U,
@@ -202,7 +207,7 @@ impl<U, CP> StochasticTransformBuilder<U, NoFunction, (), SingleStream, CP>
 where
     U: Compute,
 {
-    /// Replace the default single RNG stream with named streams.
+    /// Replace the default single stream with named streams.
     pub fn streams<const N: usize, I: Into<MultiStreams<N>>>(
         self,
         variables: I,
@@ -272,7 +277,7 @@ where
     T: StochasticTransformFn<U, <S::Seed as SeedSource>::Rng, O>,
     CP: CacheProvider<O>,
 {
-    /// Bind providers recursively and build the stochastic transform.
+    /// Bind the cache provider and build the stochastic transform.
     pub fn build(self) -> Result<BuildStochasticTransform<CP, U, T, O, S::Seed>> {
         let path = self.upstream.computation_path().child(self.id);
         let cache = self.provider.bind(&path)?;

@@ -1,13 +1,12 @@
 /// Encode a key into canonical bytes.
 ///
 /// Implementations should be deterministic and consistent across different builds and runs, and
-/// always have a consistent size `Self::SIZE`.
+/// must always write exactly `Self::SIZE` bytes.
 ///
 /// # Portability
 ///
 /// `ssa-workflow` targets 64-bit platforms only. This avoids platform-dependent key encodings
-/// (e.g.
-/// `usize` width) and makes cache keys stable across builds.
+/// such as `usize` width and makes cache keys stable across builds.
 ///
 /// # Implementations
 ///
@@ -22,8 +21,8 @@ pub trait CanonicalEncode {
     ///
     /// ## Safety
     ///
-    /// The buffer must be with length at least `Self::SIZE`.
-    /// And implementation should only access buffer[..Self::SIZE].
+    /// The buffer must have length at least `Self::SIZE`.
+    /// Implementations must only access `buffer[..Self::SIZE]`.
     unsafe fn encode_into(&self, buffer: &mut [u8]);
 
     /// Encode self into the provided buffer and return the encoded bytes.
@@ -32,8 +31,8 @@ pub trait CanonicalEncode {
     ///
     /// ## Safety
     ///
-    /// The buffer must be with length at least `Self::SIZE`.
-    /// And implementation should only access buffer[..Self::SIZE].
+    /// The buffer must have length at least `Self::SIZE`.
+    /// Implementations must only access `buffer[..Self::SIZE]`.
     unsafe fn encode_with_buffer<'b>(&self, buffer: &'b mut [u8]) -> &'b [u8] {
         unsafe { self.encode_into(buffer) };
         &buffer[..Self::SIZE]

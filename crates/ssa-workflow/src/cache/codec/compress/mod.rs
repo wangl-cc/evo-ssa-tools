@@ -90,29 +90,15 @@ impl<E, C, P> CompressedCodecBuilder<E, C, P> {
     }
 }
 
-/// Compression wrapper engine over a base serialization engine.
+/// Codec adapter that stores values in a framed compressed format.
 ///
-/// Each worker gets its own independent engine instance with a fresh inner engine and
-/// scratch buffers; the compression policy is cloned rather than shared.
+/// The inner codec serializes `T`; this adapter then stores either the raw serialized bytes or a
+/// compressed frame, depending on the configured [`CompressPolicy`]. On reads, it recovers the
+/// serialized bytes and passes them back to the inner codec.
 ///
-/// Payloads larger than `u32::MAX` bytes are outside the supported design envelope of the
-/// compressed frame format and are skipped when compression would be attempted.
-///
-/// Encoding path:
-///
-/// - Serialize `T` with the inner engine `E`.
-/// - Optionally reject oversized serialized payloads with [`CompressedCodecBuilder::with_max_len`]
-///   before building a cache frame.
-/// - Ask policy `P` whether the serialized form should stay raw or attempt compression with `C`.
-/// - If compression is attempted, ask `P` whether to keep the compressed frame or fall back to raw.
-///
-/// Decoding path:
-///
-/// - Inspect the frame header.
-/// - Either borrow the raw payload directly or decompress it into scratch space.
-/// - Pass the recovered serialized bytes back to `E::decode`.
-/// - Optionally reject oversized compressed payloads with [`CompressedCodecBuilder::with_max_len`]
-///   before allocating decode scratch space.
+/// Use [`CompressCodecExt::compress`] for the ergonomic builder API. Use
+/// [`CompressedCodecBuilder::with_max_len`] to reject oversized payloads during encode and decode;
+/// passing `0` disables that limit.
 pub struct CompressedCodec<E, C, P = DefaultCompressPolicy> {
     inner: E,
     frame: CompressFrame<C>,

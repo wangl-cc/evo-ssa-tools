@@ -23,17 +23,10 @@ impl Error {
     }
 }
 
-/// CRC32C wrapper engine over a base serialization engine.
+/// Codec adapter that adds a trailing CRC32C checksum.
 ///
-/// Encoding path:
-///
-/// - Serialize `T` with the inner engine `E`.
-/// - Append a trailing CRC32C checksum over the serialized payload.
-///
-/// Decoding path:
-///
-/// - Split the raw payload from the trailing checksum.
-/// - Verify the checksum before handing bytes back to `E::decode`.
+/// The inner codec serializes and deserializes `T`; this adapter stores the serialized bytes with
+/// a checksum so corrupted cache entries can be detected on read.
 pub struct CheckedCodec<E> {
     inner: E,
     scratch: Vec<u8>,
