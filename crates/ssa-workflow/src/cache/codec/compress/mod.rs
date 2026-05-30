@@ -153,7 +153,7 @@ where
     C: Compress + CloneFresh,
     P: CompressPolicy + Clone,
 {
-    const VALUE_FORMAT: ValueFormat = ValueFormat::concat(&E::VALUE_FORMAT, C::VALUE_FORMAT_SUFFIX);
+    const VALUE_FORMAT: ValueFormat = ValueFormat::concat(&E::VALUE_FORMAT, C::FORMAT_ID);
 
     fn encode(&mut self, value: &T) -> Result<&[u8], SkipReason> {
         let Self {
@@ -284,9 +284,11 @@ mod tests {
         }
     }
 
+    impl algorithm::sealed::Sealed for TestCompress {}
+
     impl Compress for TestCompress {
         const ALGORITHM_ID: u8 = 15;
-        const VALUE_FORMAT_SUFFIX: &'static str = "test-compress-v1";
+        const FORMAT_ID: &'static str = "test-compress-v1";
 
         fn max_output_size(&self, input_len: usize) -> usize {
             input_len.max(1)

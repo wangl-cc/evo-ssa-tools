@@ -360,9 +360,11 @@ mod tests {
     #[derive(Default)]
     struct ShortDecodeCompress;
 
+    impl super::super::algorithm::sealed::Sealed for ShortDecodeCompress {}
+
     impl Compress for ShortDecodeCompress {
         const ALGORITHM_ID: u8 = 14;
-        const VALUE_FORMAT_SUFFIX: &'static str = "test-short-decode-v1";
+        const FORMAT_ID: &'static str = "test-short-decode-v1";
 
         fn max_output_size(&self, input_len: usize) -> usize {
             input_len
@@ -389,9 +391,11 @@ mod tests {
     #[derive(Default)]
     struct ErrorDecodeCompress;
 
+    impl super::super::algorithm::sealed::Sealed for ErrorDecodeCompress {}
+
     impl Compress for ErrorDecodeCompress {
         const ALGORITHM_ID: u8 = 13;
-        const VALUE_FORMAT_SUFFIX: &'static str = "test-error-decode-v1";
+        const FORMAT_ID: &'static str = "test-error-decode-v1";
 
         fn max_output_size(&self, input_len: usize) -> usize {
             input_len
@@ -414,9 +418,11 @@ mod tests {
     #[derive(Default)]
     struct TestCompress;
 
+    impl super::super::algorithm::sealed::Sealed for TestCompress {}
+
     impl Compress for TestCompress {
         const ALGORITHM_ID: u8 = 15;
-        const VALUE_FORMAT_SUFFIX: &'static str = "test-frame-v1";
+        const FORMAT_ID: &'static str = "test-frame-v1";
 
         fn max_output_size(&self, input_len: usize) -> usize {
             input_len.max(1)

@@ -1,6 +1,10 @@
 use super::{CloneFresh, frame::Error};
 use crate::Result;
 
+pub(super) mod sealed {
+    pub trait Sealed {}
+}
+
 /// Compression algorithm
 ///
 /// Implementors provide a block-level compress/decompress pair used by [`CompressedCodec`].
@@ -10,7 +14,7 @@ use crate::Result;
 /// transform one raw byte slice into one compressed byte slice and back.
 ///
 /// [`CompressedCodec`]: [super::CompressedCodec]
-pub trait Compress {
+pub trait Compress: sealed::Sealed {
     /// Algorithm identifier stored in the low 4 bits of the frame header.
     ///
     /// Assigned ids in the current format:
@@ -21,15 +25,14 @@ pub trait Compress {
     /// - `3..=15`: currently unassigned
     const ALGORITHM_ID: u8;
 
-    /// Stable value-format suffix for this compression algorithm.
+    /// Format identifier for compressed data.
     ///
-    /// Follow the [module naming convention](super#naming-convention).
-    ///
-    /// Built-in suffixes:
+    /// Used to determine the namespace of the data. Any change to this value will
+    /// invalidate existing caches.
     ///
     /// - [`Lz4`][`lz4::Lz4`]: `"lz4-v1"`
     /// - [`Zstd`][`zstd::Zstd`]: `"zstd-v1"`
-    const VALUE_FORMAT_SUFFIX: &'static str;
+    const FORMAT_ID: &'static str;
 
     /// Return the maximum output size to compress `input_len` bytes.
     ///
@@ -79,9 +82,11 @@ pub(super) mod lz4 {
         }
     }
 
+    impl sealed::Sealed for Lz4 {}
+
     impl Compress for Lz4 {
         const ALGORITHM_ID: u8 = 1;
-        const VALUE_FORMAT_SUFFIX: &'static str = "lz4-v1";
+        const FORMAT_ID: &'static str = "lz4-v1";
 
         fn max_output_size(&self, input_len: usize) -> usize {
             lz4_flex::block::get_maximum_output_size(input_len)
@@ -210,9 +215,11 @@ pub(super) mod zstd {
         }
     }
 
+    impl sealed::Sealed for Zstd {}
+
     impl Compress for Zstd {
         const ALGORITHM_ID: u8 = 2;
-        const VALUE_FORMAT_SUFFIX: &'static str = "zstd-v1";
+        const FORMAT_ID: &'static str = "zstd-v1";
 
         fn max_output_size(&self, input_len: usize) -> usize {
             ::zstd::zstd_safe::compress_bound(input_len)
