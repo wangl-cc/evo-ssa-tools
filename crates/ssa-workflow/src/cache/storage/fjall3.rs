@@ -1,6 +1,6 @@
 //! Fjall v3 storage provider and raw store helpers.
 
-use super::{EncodedStorage, StorageNamespace, StorageResult};
+use super::{EncodedStorage, StorageError, StorageNamespace, StorageResult};
 use crate::{Result, cache::StorageProvider};
 
 /// Fjall v3-backed raw store bound to a single keyspace.
@@ -15,6 +15,9 @@ pub struct Fjall3Store {
 }
 
 impl Fjall3Store {
+    const BACKEND_NAME: &'static str = "Fjall v3";
+    const MAX_KEYSPACE_NAME_LEN: usize = 255;
+
     /// Open or create a keyspace-backed store inside an existing Fjall v3 database.
     pub fn open(database: fjall3::Database, keyspace_name: impl AsRef<str>) -> StorageResult<Self> {
         Self::open_with_options(
@@ -30,8 +33,23 @@ impl Fjall3Store {
         keyspace_name: impl AsRef<str>,
         create_options: fjall3::KeyspaceCreateOptions,
     ) -> StorageResult<Self> {
-        let handle = database.keyspace(keyspace_name.as_ref(), || create_options)?;
+        let keyspace_name = keyspace_name.as_ref();
+        Self::validate_keyspace_name_len(keyspace_name)?;
+        let handle = database.keyspace(keyspace_name, || create_options)?;
         Ok(Self { handle })
+    }
+
+    fn validate_keyspace_name_len(name: &str) -> StorageResult<()> {
+        let len = name.len();
+        if !(1..=Self::MAX_KEYSPACE_NAME_LEN).contains(&len) {
+            return Err(StorageError::InvalidNamespaceNameLength {
+                backend: Self::BACKEND_NAME,
+                len,
+                max_len: Self::MAX_KEYSPACE_NAME_LEN,
+            });
+        }
+
+        Ok(())
     }
 }
 
@@ -168,6 +186,29 @@ mod tests {
         assert_eq!(cache_b.fetch_or_execute(b"k", || Ok(2))?, 2);
         assert_eq!(cache_a.fetch_or_execute(b"k", || Ok(3))?, 1);
         assert_eq!(cache_b.fetch_or_execute(b"k", || Ok(4))?, 2);
+        Ok(())
+    }
+
+    #[test]
+    fn test_fjall3_store_rejects_invalid_keyspace_name_length() -> Result<()> {
+        let tmp = tempfile::tempdir().unwrap();
+        let db = ::fjall3::Database::builder(&tmp)
+            .open()
+            .map_err(StorageError::from)?;
+
+        for name in ["", &"a".repeat(Fjall3Store::MAX_KEYSPACE_NAME_LEN + 1)] {
+            let result = Fjall3Store::open(db.clone(), name);
+
+            assert!(matches!(
+                result,
+                Err(StorageError::InvalidNamespaceNameLength {
+                    backend: Fjall3Store::BACKEND_NAME,
+                    len,
+                    max_len: Fjall3Store::MAX_KEYSPACE_NAME_LEN,
+                }) if len == name.len()
+            ));
+        }
+
         Ok(())
     }
 }

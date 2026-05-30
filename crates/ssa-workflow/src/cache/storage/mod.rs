@@ -25,6 +25,13 @@ pub use fjall3::{Fjall3StorageProvider, Fjall3Store};
 /// Errors produced by storage backends.
 #[derive(thiserror::Error, Debug)]
 pub enum StorageError {
+    #[error("{backend} namespace name length must be in 1..={max_len} bytes, got {len}")]
+    InvalidNamespaceNameLength {
+        backend: &'static str,
+        len: usize,
+        max_len: usize,
+    },
+
     #[cfg(feature = "fjall3")]
     #[error("Fjall v3 database error")]
     Fjall3(#[from] ::fjall3::Error),
