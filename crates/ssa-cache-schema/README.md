@@ -41,6 +41,8 @@ struct Resized {
 
 Rust module paths are not included, so moving a type between modules does not change its fingerprint. Use `#[cache_schema(version = "...")]` to intentionally change the fingerprint when a semantic format version changes or when a same-shaped type should not remain cache-compatible.
 
+Serde attributes are ignored by `CacheSchema`. For example, `#[serde(skip)]` does not remove a field from the cache schema and `#[serde(rename = "...")]` does not rename it for fingerprinting. Use `cache_schema` attributes or a manual implementation when serde behavior should affect cache compatibility.
+
 Field reorder, field add/remove, field type changes, enum variant reorder, and enum variant add/remove change the fingerprint by default.
 
 ## Writer Contract

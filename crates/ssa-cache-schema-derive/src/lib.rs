@@ -15,8 +15,6 @@ pub fn derive_cache_schema(input: TokenStream) -> TokenStream {
 }
 
 fn expand_cache_schema(input: DeriveInput) -> Result<TokenStream2> {
-    reject_serde_attrs(&input.attrs)?;
-
     let ident = input.ident;
     let attrs = TypeAttrs::parse(&input.attrs, &ident)?;
     let mut generics = input.generics;
@@ -52,10 +50,6 @@ fn expand_struct_body(
     schema_path: &TokenStream2,
     fields: &Fields,
 ) -> Result<TokenStream2> {
-    for field in fields {
-        reject_serde_attrs(&field.attrs)?;
-    }
-
     let name = attrs.name_tokens();
     let version = attrs.version_tokens();
     let field_tokens = expand_fields(fields, schema_path)?;
@@ -73,13 +67,6 @@ fn expand_enum_body(
     schema_path: &TokenStream2,
     variants: &[Variant],
 ) -> Result<TokenStream2> {
-    for variant in variants {
-        reject_serde_attrs(&variant.attrs)?;
-        for field in &variant.fields {
-            reject_serde_attrs(&field.attrs)?;
-        }
-    }
-
     let name = attrs.name_tokens();
     let version = attrs.version_tokens();
     let variants = variants
@@ -207,18 +194,6 @@ fn is_crate_attr(path: &Path) -> bool {
             .segments
             .first()
             .is_some_and(|segment| segment.ident == "crate")
-}
-
-fn reject_serde_attrs(attrs: &[Attribute]) -> Result<()> {
-    for attr in attrs {
-        if attr.path().is_ident("serde") {
-            return Err(Error::new_spanned(
-                attr,
-                "CacheSchema derive does not support serde attributes; use cache_schema attributes or write CacheSchema manually",
-            ));
-        }
-    }
-    Ok(())
 }
 
 #[derive(Default)]
