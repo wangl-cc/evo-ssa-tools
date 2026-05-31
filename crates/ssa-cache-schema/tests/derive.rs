@@ -5,7 +5,7 @@ use std::marker::PhantomData;
 use ssa_cache_schema::{CacheSchema, schema_fingerprint};
 
 #[test]
-fn default_type_name_and_module_affect_fingerprint() {
+fn default_type_name_affects_fingerprint_and_module_move_is_transparent() {
     #[derive(CacheSchema)]
     struct First {
         value: u32,
@@ -29,7 +29,7 @@ fn default_type_name_and_module_affect_fingerprint() {
         schema_fingerprint::<First>(),
         schema_fingerprint::<Second>()
     );
-    assert_ne!(
+    assert_eq!(
         schema_fingerprint::<First>(),
         schema_fingerprint::<moved::First>()
     );
@@ -56,6 +56,26 @@ fn type_rust_rename_and_module_move_can_keep_schema_identity() {
     assert_eq!(
         schema_fingerprint::<Original>(),
         schema_fingerprint::<moved::Renamed>()
+    );
+}
+
+#[test]
+fn type_module_attr_can_intentionally_split_schema_identity() {
+    #[derive(CacheSchema)]
+    #[cache_schema(rename = "Config")]
+    struct DefaultModule {
+        value: u32,
+    }
+
+    #[derive(CacheSchema)]
+    #[cache_schema(module = "stable::module", rename = "Config")]
+    struct ExplicitModule {
+        value: u32,
+    }
+
+    assert_ne!(
+        schema_fingerprint::<DefaultModule>(),
+        schema_fingerprint::<ExplicitModule>()
     );
 }
 
