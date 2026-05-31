@@ -57,6 +57,6 @@ Borrow and ownership wrappers are transparent: `&T`, `&mut T`, `Box<T>`, and `Co
 
 ## Writer Contract
 
-`SchemaWriter` streams canonical schema tokens directly into BLAKE3 rather than storing schema bytes. Each token uses an explicit tag plus fixed-width integers or length-prefixed strings, so adjacent values cannot be misread as a different schema tree.
+`SchemaWriter` streams canonical schema tokens directly into BLAKE3 rather than storing schema bytes. Every fingerprint is seeded with the fixed `ssa-cache-schema:v1` domain/version header before type-specific tokens are written. Each token uses an explicit tag plus fixed-width integers or length-prefixed strings, so adjacent values cannot be misread as a different schema tree.
 
 `CacheSchema` implementations should describe the serialized cache format, not Rust memory layout. Recursive schemas are not expanded automatically in this first version; write a manual implementation or introduce an explicit reference scheme before using recursive types.
