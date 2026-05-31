@@ -1,0 +1,50 @@
+# SSA Cache Schema
+
+`ssa-cache-schema` provides stable schema fingerprints for cache wire formats. It describes the logical shape of a type, writes that schema into a deterministic token stream, and hashes it with BLAKE3 truncated to 128 bits.
+
+The crate is intentionally separate from `ssa-workflow` cache storage. It can be used to evolve cache schema identity independently before deciding how persistent caches should consume the fingerprint.
+
+## Basic Usage
+
+Derive `CacheSchema` for ordinary structs and enums, then call `schema_fingerprint::<T>()` when a stable schema identity is needed.
+
+```rust
+use ssa_cache_schema::{schema_fingerprint, CacheSchema};
+
+#[derive(CacheSchema)]
+struct Params {
+    width: u32,
+    height: u32,
+}
+
+let first = schema_fingerprint::<Params>();
+let second = schema_fingerprint::<Params>();
+assert_eq!(first, second);
+```
+
+The default `derive` feature re-exports the derive macro from `ssa-cache-schema-derive`. Disable default features if you only need the runtime trait and want to provide manual implementations.
+
+## Compatibility Attributes
+
+Use `#[cache_schema(rename = "...")]` when a Rust field, variant, or type is renamed but should keep the old schema identity.
+
+```rust
+use ssa_cache_schema::CacheSchema;
+
+#[derive(CacheSchema)]
+struct Resized {
+    #[cache_schema(rename = "width")]
+    w: u32,
+    height: u32,
+}
+```
+
+Type-level `#[cache_schema(module = "...")]` can preserve identity after moving a type between Rust modules, and `#[cache_schema(version = "...")]` can intentionally salt the schema when a semantic format version changes.
+
+Field reorder, field add/remove, field type changes, enum variant reorder, and enum variant add/remove change the fingerprint by default.
+
+## Writer Contract
+
+`SchemaWriter` streams canonical schema tokens directly into BLAKE3 rather than storing schema bytes. Each token uses an explicit tag plus fixed-width integers or length-prefixed strings, so adjacent values cannot be misread as a different schema tree.
+
+`CacheSchema` implementations should describe the serialized cache format, not Rust memory layout. Recursive schemas are not expanded automatically in this first version; write a manual implementation or introduce an explicit reference scheme before using recursive types.
