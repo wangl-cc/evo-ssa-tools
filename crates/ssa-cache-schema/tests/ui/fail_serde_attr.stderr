@@ -1,0 +1,5 @@
+error: CacheSchema derive does not support serde attributes; use cache_schema attributes or write CacheSchema manually
+ --> tests/ui/fail_serde_attr.rs:5:5
+  |
+5 |     #[serde(skip)]
+  |     ^^^^^^^^^^^^^^

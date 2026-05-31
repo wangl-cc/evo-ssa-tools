@@ -1,0 +1,5 @@
+error: unsupported cache_schema field attribute
+ --> tests/ui/fail_field_attr.rs:5:20
+  |
+5 |     #[cache_schema(skip)]
+  |                    ^^^^
