@@ -16,5 +16,15 @@ trybuild = { workspace = true }
 default = ["derive"]
 derive = ["dep:ssa-cache-schema-derive"]
 
+[[test]]
+name = "derive"
+path = "tests/derive.rs"
+required-features = ["derive"]
+
+[[test]]
+name = "derive_compile"
+path = "tests/derive_compile.rs"
+required-features = ["derive"]
+
 [lints]
 workspace = true
