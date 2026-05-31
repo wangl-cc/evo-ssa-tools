@@ -10,6 +10,6 @@ Generic implementations add `CacheSchema` bounds for the field types that are ac
 
 ## Attributes
 
-The macro accepts `#[cache_schema(rename = "...")]` on fields, variants, and types to keep schema identity stable across Rust renames. Types also support `#[cache_schema(module = "...")]` for module moves, `#[cache_schema(version = "...")]` for explicit schema salt, and `#[cache_schema(crate = path)]` when the runtime crate is imported through a non-default path.
+The macro accepts `#[cache_schema(rename = "...")]` on fields, variants, and types to keep schema identity stable across Rust renames. Rust module paths are not included by default, so module moves are schema-transparent. Types also support `#[cache_schema(module = "...")]` for an explicit namespace salt, `#[cache_schema(version = "...")]` for explicit schema salt, and `#[cache_schema(crate = path)]` when the runtime crate is imported through a non-default path.
 
 Unsupported `cache_schema` keys, duplicate keys, serde attributes, and unions are rejected at compile time. The macro does not interpret serde behavior; `CacheSchema` is intended to describe the cache wire schema directly.

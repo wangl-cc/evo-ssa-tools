@@ -268,7 +268,7 @@ impl TypeAttrs {
     fn module_tokens(&self) -> TokenStream2 {
         match &self.module {
             Some(module) => quote! { #module },
-            None => quote! { module_path!() },
+            None => quote! { "" },
         }
     }
 

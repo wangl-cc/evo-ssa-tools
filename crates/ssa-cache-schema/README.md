@@ -39,7 +39,7 @@ struct Resized {
 }
 ```
 
-Type-level `#[cache_schema(module = "...")]` can preserve identity after moving a type between Rust modules, and `#[cache_schema(version = "...")]` can intentionally salt the schema when a semantic format version changes.
+Rust module paths are not included by default, so moving a type between modules does not change its fingerprint. Type-level `#[cache_schema(module = "...")]` can add an explicit namespace salt when two same-named schemas should be kept distinct, and `#[cache_schema(version = "...")]` can intentionally salt the schema when a semantic format version changes.
 
 Field reorder, field add/remove, field type changes, enum variant reorder, and enum variant add/remove change the fingerprint by default.
 
