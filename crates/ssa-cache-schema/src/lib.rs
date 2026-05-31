@@ -67,7 +67,7 @@ pub trait CacheSchema {
 }
 
 /// Compute the BLAKE3-128 schema fingerprint for `T`.
-pub fn schema_fingerprint<T: CacheSchema>() -> SchemaFingerprint {
+pub fn schema_fingerprint<T: CacheSchema + ?Sized>() -> SchemaFingerprint {
     let mut writer = SchemaWriter::new();
     T::write_schema(&mut writer);
     writer.finish_fingerprint()
@@ -304,6 +304,12 @@ impl CacheSchema for () {
 
 impl CacheSchema for String {
     fn write_schema(w: &mut SchemaWriter) {
+        str::write_schema(w);
+    }
+}
+
+impl CacheSchema for str {
+    fn write_schema(w: &mut SchemaWriter) {
         w.seq_begin("String");
         u8::write_schema(w);
         w.seq_end();
@@ -311,6 +317,12 @@ impl CacheSchema for String {
 }
 
 impl<T: CacheSchema> CacheSchema for Vec<T> {
+    fn write_schema(w: &mut SchemaWriter) {
+        <[T]>::write_schema(w);
+    }
+}
+
+impl<T: CacheSchema> CacheSchema for [T] {
     fn write_schema(w: &mut SchemaWriter) {
         w.seq_begin("Vec");
         T::write_schema(w);
@@ -363,10 +375,107 @@ impl<T: CacheSchema + ?Sized> CacheSchema for Box<T> {
     }
 }
 
+impl<T: CacheSchema + ?Sized> CacheSchema for &T {
+    fn write_schema(w: &mut SchemaWriter) {
+        T::write_schema(w);
+    }
+}
+
+impl<T: CacheSchema + ?Sized> CacheSchema for &mut T {
+    fn write_schema(w: &mut SchemaWriter) {
+        T::write_schema(w);
+    }
+}
+
+impl<'a, T> CacheSchema for std::borrow::Cow<'a, T>
+where
+    T: CacheSchema + ToOwned + ?Sized,
+{
+    fn write_schema(w: &mut SchemaWriter) {
+        T::write_schema(w);
+    }
+}
+
 impl<T> CacheSchema for PhantomData<T> {
     fn write_schema(w: &mut SchemaWriter) {
         w.primitive("PhantomData");
     }
+}
+
+impl<K: CacheSchema, V: CacheSchema, S> CacheSchema for std::collections::HashMap<K, V, S> {
+    fn write_schema(w: &mut SchemaWriter) {
+        write_map_schema::<K, V>(w);
+    }
+}
+
+impl<K: CacheSchema, V: CacheSchema> CacheSchema for std::collections::BTreeMap<K, V> {
+    fn write_schema(w: &mut SchemaWriter) {
+        write_map_schema::<K, V>(w);
+    }
+}
+
+impl<T: CacheSchema, S> CacheSchema for std::collections::HashSet<T, S> {
+    fn write_schema(w: &mut SchemaWriter) {
+        write_set_schema::<T>(w);
+    }
+}
+
+impl<T: CacheSchema> CacheSchema for std::collections::BTreeSet<T> {
+    fn write_schema(w: &mut SchemaWriter) {
+        write_set_schema::<T>(w);
+    }
+}
+
+impl<T: CacheSchema> CacheSchema for std::num::Wrapping<T> {
+    fn write_schema(w: &mut SchemaWriter) {
+        T::write_schema(w);
+    }
+}
+
+impl<T: CacheSchema> CacheSchema for std::num::Saturating<T> {
+    fn write_schema(w: &mut SchemaWriter) {
+        T::write_schema(w);
+    }
+}
+
+macro_rules! impl_nonzero_schema {
+    ($($ty:ty => $inner:ty),+ $(,)?) => {
+        $(
+            impl CacheSchema for $ty {
+                fn write_schema(w: &mut SchemaWriter) {
+                    <$inner>::write_schema(w);
+                }
+            }
+        )+
+    };
+}
+
+impl_nonzero_schema!(
+    std::num::NonZeroU8 => u8,
+    std::num::NonZeroU16 => u16,
+    std::num::NonZeroU32 => u32,
+    std::num::NonZeroU64 => u64,
+    std::num::NonZeroU128 => u128,
+    std::num::NonZeroUsize => usize,
+    std::num::NonZeroI8 => i8,
+    std::num::NonZeroI16 => i16,
+    std::num::NonZeroI32 => i32,
+    std::num::NonZeroI64 => i64,
+    std::num::NonZeroI128 => i128,
+    std::num::NonZeroIsize => isize,
+);
+
+fn write_map_schema<K: CacheSchema, V: CacheSchema>(w: &mut SchemaWriter) {
+    w.map_begin("Map");
+    K::write_schema(w);
+    V::write_schema(w);
+    w.map_end();
+}
+
+fn write_set_schema<T: CacheSchema>(w: &mut SchemaWriter) {
+    w.seq_begin("Set");
+    T::write_schema(w);
+    w.seq_end();
 }
 
 macro_rules! impl_tuple_schema {
@@ -401,6 +510,12 @@ impl_tuple_schema!(T0 0, T1 1, T2 2, T3 3, T4 4, T5 5, T6 6, T7 7, T8 8, T9 9, T
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
+    use std::{
+        borrow::Cow,
+        collections::{BTreeMap, BTreeSet, HashMap, HashSet},
+        num::{NonZeroU32, Saturating, Wrapping},
+    };
+
     use super::*;
 
     #[test]
@@ -468,6 +583,51 @@ mod tests {
         assert_eq!(
             schema_fingerprint::<Box<Box<u32>>>(),
             schema_fingerprint::<u32>()
+        );
+    }
+
+    #[test]
+    fn borrowed_forms_are_schema_transparent() {
+        assert_eq!(
+            schema_fingerprint::<&'static u32>(),
+            schema_fingerprint::<u32>()
+        );
+        assert_eq!(
+            schema_fingerprint::<&'static mut u32>(),
+            schema_fingerprint::<u32>()
+        );
+        assert_eq!(
+            schema_fingerprint::<Cow<'static, u32>>(),
+            schema_fingerprint::<u32>()
+        );
+    }
+
+    #[test]
+    fn borrowed_text_matches_owned_text_schema() {
+        assert_eq!(schema_fingerprint::<str>(), schema_fingerprint::<String>());
+        assert_eq!(
+            schema_fingerprint::<&'static str>(),
+            schema_fingerprint::<String>()
+        );
+        assert_eq!(
+            schema_fingerprint::<Cow<'static, str>>(),
+            schema_fingerprint::<String>()
+        );
+    }
+
+    #[test]
+    fn borrowed_slices_match_vec_schema() {
+        assert_eq!(
+            schema_fingerprint::<[u32]>(),
+            schema_fingerprint::<Vec<u32>>()
+        );
+        assert_eq!(
+            schema_fingerprint::<&'static [u32]>(),
+            schema_fingerprint::<Vec<u32>>()
+        );
+        assert_eq!(
+            schema_fingerprint::<Cow<'static, [u32]>>(),
+            schema_fingerprint::<Vec<u32>>()
         );
     }
 
@@ -544,6 +704,54 @@ mod tests {
         let seq = seq.finish_fingerprint();
 
         assert_ne!(map, seq);
+    }
+
+    #[test]
+    fn map_collections_use_logical_map_schema() {
+        assert_eq!(
+            schema_fingerprint::<HashMap<u32, u64>>(),
+            schema_fingerprint::<BTreeMap<u32, u64>>()
+        );
+        assert_ne!(
+            schema_fingerprint::<HashMap<u32, u64>>(),
+            schema_fingerprint::<HashMap<u64, u64>>()
+        );
+        assert_ne!(
+            schema_fingerprint::<HashMap<u32, u64>>(),
+            schema_fingerprint::<HashMap<u32, u32>>()
+        );
+    }
+
+    #[test]
+    fn set_collections_use_logical_set_schema() {
+        assert_eq!(
+            schema_fingerprint::<HashSet<u32>>(),
+            schema_fingerprint::<BTreeSet<u32>>()
+        );
+        assert_ne!(
+            schema_fingerprint::<HashSet<u32>>(),
+            schema_fingerprint::<HashSet<u64>>()
+        );
+        assert_ne!(
+            schema_fingerprint::<HashSet<u32>>(),
+            schema_fingerprint::<Vec<u32>>()
+        );
+    }
+
+    #[test]
+    fn numeric_wrappers_use_inner_numeric_schema() {
+        assert_eq!(
+            schema_fingerprint::<Wrapping<u32>>(),
+            schema_fingerprint::<u32>()
+        );
+        assert_eq!(
+            schema_fingerprint::<Saturating<u32>>(),
+            schema_fingerprint::<u32>()
+        );
+        assert_eq!(
+            schema_fingerprint::<NonZeroU32>(),
+            schema_fingerprint::<u32>()
+        );
     }
 
     #[test]
