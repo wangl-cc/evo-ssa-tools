@@ -20,13 +20,14 @@
 //! assert_eq!(first, second);
 //! ```
 //!
-//! Serde attributes are intentionally not interpreted by the derive macro:
+//! Serde attributes are intentionally ignored by the derive macro; use `cache_schema`
+//! attributes or a manual implementation when serde behavior should affect the cache schema:
 //!
-//! ```compile_fail
+//! ```rust
 //! use ssa_cache_schema::CacheSchema;
 //!
 //! #[derive(CacheSchema)]
-//! struct Bad {
+//! struct WithSerdeAttr {
 //!     #[serde(skip)]
 //!     value: u32,
 //! }

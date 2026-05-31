@@ -22,6 +22,22 @@ enum Event<T> {
     Empty,
 }
 
+#[derive(CacheSchema)]
+#[serde(rename = "serde-name")]
+struct SerdeAttrsAreIgnored {
+    #[serde(rename = "serde_value", skip)]
+    value: u32,
+}
+
+#[derive(CacheSchema)]
+enum SerdeVariantAttrsAreIgnored {
+    #[serde(rename = "serde_created")]
+    Created {
+        #[serde(rename = "serde_id")]
+        id: u64,
+    },
+}
+
 struct NoSchema;
 
 #[derive(CacheSchema)]
@@ -55,6 +71,8 @@ struct CrateAlias {
 fn main() {
     let _ = schema_fingerprint::<Stable<'static, u32, 4>>();
     let _ = schema_fingerprint::<Event<u32>>();
+    let _ = schema_fingerprint::<SerdeAttrsAreIgnored>();
+    let _ = schema_fingerprint::<SerdeVariantAttrsAreIgnored>();
     let _ = schema_fingerprint::<MarkerOnly<NoSchema>>();
     let _ = schema_fingerprint::<AssocField<Provider>>();
     let _ = schema_alias::schema_fingerprint::<CrateAlias>();
