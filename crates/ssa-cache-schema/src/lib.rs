@@ -304,7 +304,7 @@ impl CacheSchema for () {
 
 impl CacheSchema for String {
     fn write_schema(w: &mut SchemaWriter) {
-        w.seq_begin("StringUtf8");
+        w.seq_begin("String");
         u8::write_schema(w);
         w.seq_end();
     }
