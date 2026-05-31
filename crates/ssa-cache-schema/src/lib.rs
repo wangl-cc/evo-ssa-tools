@@ -439,11 +439,11 @@ impl<T: CacheSchema> CacheSchema for std::num::Saturating<T> {
 }
 
 macro_rules! impl_nonzero_schema {
-    ($($ty:ty => $inner:ty),+ $(,)?) => {
+    ($($ty:ty => $name:literal),+ $(,)?) => {
         $(
             impl CacheSchema for $ty {
                 fn write_schema(w: &mut SchemaWriter) {
-                    <$inner>::write_schema(w);
+                    w.primitive($name);
                 }
             }
         )+
@@ -451,18 +451,18 @@ macro_rules! impl_nonzero_schema {
 }
 
 impl_nonzero_schema!(
-    std::num::NonZeroU8 => u8,
-    std::num::NonZeroU16 => u16,
-    std::num::NonZeroU32 => u32,
-    std::num::NonZeroU64 => u64,
-    std::num::NonZeroU128 => u128,
-    std::num::NonZeroUsize => usize,
-    std::num::NonZeroI8 => i8,
-    std::num::NonZeroI16 => i16,
-    std::num::NonZeroI32 => i32,
-    std::num::NonZeroI64 => i64,
-    std::num::NonZeroI128 => i128,
-    std::num::NonZeroIsize => isize,
+    std::num::NonZeroU8 => "NonZeroU8",
+    std::num::NonZeroU16 => "NonZeroU16",
+    std::num::NonZeroU32 => "NonZeroU32",
+    std::num::NonZeroU64 => "NonZeroU64",
+    std::num::NonZeroU128 => "NonZeroU128",
+    std::num::NonZeroUsize => "NonZeroUsize",
+    std::num::NonZeroI8 => "NonZeroI8",
+    std::num::NonZeroI16 => "NonZeroI16",
+    std::num::NonZeroI32 => "NonZeroI32",
+    std::num::NonZeroI64 => "NonZeroI64",
+    std::num::NonZeroI128 => "NonZeroI128",
+    std::num::NonZeroIsize => "NonZeroIsize",
 );
 
 fn write_map_schema<K: CacheSchema, V: CacheSchema>(w: &mut SchemaWriter) {
@@ -739,7 +739,7 @@ mod tests {
     }
 
     #[test]
-    fn numeric_wrappers_use_inner_numeric_schema() {
+    fn arithmetic_wrappers_use_inner_numeric_schema() {
         assert_eq!(
             schema_fingerprint::<Wrapping<u32>>(),
             schema_fingerprint::<u32>()
@@ -748,7 +748,15 @@ mod tests {
             schema_fingerprint::<Saturating<u32>>(),
             schema_fingerprint::<u32>()
         );
+    }
+
+    #[test]
+    fn nonzero_wrappers_use_distinct_schema() {
         assert_eq!(
+            schema_fingerprint::<NonZeroU32>(),
+            schema_fingerprint::<NonZeroU32>()
+        );
+        assert_ne!(
             schema_fingerprint::<NonZeroU32>(),
             schema_fingerprint::<u32>()
         );
