@@ -353,9 +353,7 @@ impl<T: CacheSchema, const N: usize> CacheSchema for [T; N] {
 
 impl<T: CacheSchema + ?Sized> CacheSchema for Box<T> {
     fn write_schema(w: &mut SchemaWriter) {
-        w.seq_begin("Box");
         T::write_schema(w);
-        w.seq_end();
     }
 }
 
@@ -452,6 +450,18 @@ mod tests {
         assert_ne!(
             schema_fingerprint::<Box<u32>>(),
             schema_fingerprint::<Box<u64>>()
+        );
+    }
+
+    #[test]
+    fn ownership_wrappers_are_schema_transparent() {
+        assert_eq!(
+            schema_fingerprint::<Box<u32>>(),
+            schema_fingerprint::<u32>()
+        );
+        assert_eq!(
+            schema_fingerprint::<Box<Box<u32>>>(),
+            schema_fingerprint::<u32>()
         );
     }
 
