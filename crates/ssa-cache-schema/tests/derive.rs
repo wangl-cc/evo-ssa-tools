@@ -1,0 +1,390 @@
+#![allow(dead_code)]
+
+use std::marker::PhantomData;
+
+use ssa_cache_schema::{CacheSchema, schema_fingerprint};
+
+#[test]
+fn default_type_name_and_module_affect_fingerprint() {
+    #[derive(CacheSchema)]
+    struct First {
+        value: u32,
+    }
+
+    #[derive(CacheSchema)]
+    struct Second {
+        value: u32,
+    }
+
+    mod moved {
+        use ssa_cache_schema::CacheSchema;
+
+        #[derive(CacheSchema)]
+        pub(super) struct First {
+            pub(super) value: u32,
+        }
+    }
+
+    assert_ne!(
+        schema_fingerprint::<First>(),
+        schema_fingerprint::<Second>()
+    );
+    assert_ne!(
+        schema_fingerprint::<First>(),
+        schema_fingerprint::<moved::First>()
+    );
+}
+
+#[test]
+fn type_rust_rename_and_module_move_can_keep_schema_identity() {
+    #[derive(CacheSchema)]
+    #[cache_schema(module = "original::module", rename = "Original")]
+    struct Original {
+        value: u32,
+    }
+
+    mod moved {
+        use ssa_cache_schema::CacheSchema;
+
+        #[derive(CacheSchema)]
+        #[cache_schema(module = "original::module", rename = "Original")]
+        pub(super) struct Renamed {
+            pub(super) value: u32,
+        }
+    }
+
+    assert_eq!(
+        schema_fingerprint::<Original>(),
+        schema_fingerprint::<moved::Renamed>()
+    );
+}
+
+#[test]
+fn field_rust_rename_without_schema_rename_changes_fingerprint() {
+    #[derive(CacheSchema)]
+    #[cache_schema(module = "test", rename = "Shape")]
+    struct Old {
+        width: u32,
+    }
+
+    #[derive(CacheSchema)]
+    #[cache_schema(module = "test", rename = "Shape")]
+    struct New {
+        w: u32,
+    }
+
+    assert_ne!(schema_fingerprint::<Old>(), schema_fingerprint::<New>());
+}
+
+#[test]
+fn field_rust_rename_can_keep_schema_name() {
+    #[derive(CacheSchema)]
+    #[cache_schema(module = "test", rename = "Shape")]
+    struct Old {
+        width: u32,
+    }
+
+    #[derive(CacheSchema)]
+    #[cache_schema(module = "test", rename = "Shape")]
+    struct New {
+        #[cache_schema(rename = "width")]
+        w: u32,
+    }
+
+    assert_eq!(schema_fingerprint::<Old>(), schema_fingerprint::<New>());
+}
+
+#[test]
+fn field_reorder_changes_fingerprint() {
+    #[derive(CacheSchema)]
+    #[cache_schema(module = "test", rename = "Shape")]
+    struct WidthHeight {
+        width: u32,
+        height: u32,
+    }
+
+    #[derive(CacheSchema)]
+    #[cache_schema(module = "test", rename = "Shape")]
+    struct HeightWidth {
+        height: u32,
+        width: u32,
+    }
+
+    assert_ne!(
+        schema_fingerprint::<WidthHeight>(),
+        schema_fingerprint::<HeightWidth>()
+    );
+}
+
+#[test]
+fn field_add_remove_changes_fingerprint() {
+    #[derive(CacheSchema)]
+    #[cache_schema(module = "test", rename = "Shape")]
+    struct OneField {
+        width: u32,
+    }
+
+    #[derive(CacheSchema)]
+    #[cache_schema(module = "test", rename = "Shape")]
+    struct TwoFields {
+        width: u32,
+        height: u32,
+    }
+
+    assert_ne!(
+        schema_fingerprint::<OneField>(),
+        schema_fingerprint::<TwoFields>()
+    );
+}
+
+#[test]
+fn field_type_change_changes_fingerprint() {
+    #[derive(CacheSchema)]
+    #[cache_schema(module = "test", rename = "Shape")]
+    struct U32Width {
+        width: u32,
+    }
+
+    #[derive(CacheSchema)]
+    #[cache_schema(module = "test", rename = "Shape")]
+    struct U64Width {
+        width: u64,
+    }
+
+    assert_ne!(
+        schema_fingerprint::<U32Width>(),
+        schema_fingerprint::<U64Width>()
+    );
+}
+
+#[test]
+fn named_and_tuple_fields_are_distinct() {
+    #[derive(CacheSchema)]
+    #[cache_schema(module = "test", rename = "Shape")]
+    struct Named {
+        value: u32,
+    }
+
+    #[derive(CacheSchema)]
+    #[cache_schema(module = "test", rename = "Shape")]
+    struct Tuple(u32);
+
+    assert_ne!(schema_fingerprint::<Named>(), schema_fingerprint::<Tuple>());
+}
+
+#[test]
+fn tuple_field_rename_can_name_wire_field() {
+    #[derive(CacheSchema)]
+    #[cache_schema(module = "test", rename = "Shape")]
+    struct Named {
+        value: u32,
+    }
+
+    #[derive(CacheSchema)]
+    #[cache_schema(module = "test", rename = "Shape")]
+    struct Tuple(#[cache_schema(rename = "value")] u32);
+
+    assert_eq!(schema_fingerprint::<Named>(), schema_fingerprint::<Tuple>());
+}
+
+#[test]
+fn variant_rust_rename_without_schema_rename_changes_fingerprint() {
+    #[derive(CacheSchema)]
+    #[cache_schema(module = "test", rename = "Event")]
+    enum Old {
+        Created,
+    }
+
+    #[derive(CacheSchema)]
+    #[cache_schema(module = "test", rename = "Event")]
+    enum New {
+        Made,
+    }
+
+    assert_ne!(schema_fingerprint::<Old>(), schema_fingerprint::<New>());
+}
+
+#[test]
+fn variant_rust_rename_can_keep_schema_name() {
+    #[derive(CacheSchema)]
+    #[cache_schema(module = "test", rename = "Event")]
+    enum Old {
+        Created { id: u64 },
+    }
+
+    #[derive(CacheSchema)]
+    #[cache_schema(module = "test", rename = "Event")]
+    enum New {
+        #[cache_schema(rename = "Created")]
+        Made { id: u64 },
+    }
+
+    assert_eq!(schema_fingerprint::<Old>(), schema_fingerprint::<New>());
+}
+
+#[test]
+fn variant_reorder_changes_fingerprint() {
+    #[derive(CacheSchema)]
+    #[cache_schema(module = "test", rename = "Event")]
+    enum First {
+        Created,
+        Deleted,
+    }
+
+    #[derive(CacheSchema)]
+    #[cache_schema(module = "test", rename = "Event")]
+    enum Second {
+        Deleted,
+        Created,
+    }
+
+    assert_ne!(
+        schema_fingerprint::<First>(),
+        schema_fingerprint::<Second>()
+    );
+}
+
+#[test]
+fn variant_add_remove_changes_fingerprint() {
+    #[derive(CacheSchema)]
+    #[cache_schema(module = "test", rename = "Event")]
+    enum One {
+        Created,
+    }
+
+    #[derive(CacheSchema)]
+    #[cache_schema(module = "test", rename = "Event")]
+    enum Two {
+        Created,
+        Deleted,
+    }
+
+    assert_ne!(schema_fingerprint::<One>(), schema_fingerprint::<Two>());
+}
+
+#[test]
+fn variant_field_shape_changes_fingerprint() {
+    #[derive(CacheSchema)]
+    #[cache_schema(module = "test", rename = "Event")]
+    enum StructVariant {
+        Created { id: u64 },
+    }
+
+    #[derive(CacheSchema)]
+    #[cache_schema(module = "test", rename = "Event")]
+    enum TupleVariant {
+        Created(u64),
+    }
+
+    #[derive(CacheSchema)]
+    #[cache_schema(module = "test", rename = "Event")]
+    enum TypeChanged {
+        Created { id: u32 },
+    }
+
+    assert_ne!(
+        schema_fingerprint::<StructVariant>(),
+        schema_fingerprint::<TupleVariant>()
+    );
+    assert_ne!(
+        schema_fingerprint::<StructVariant>(),
+        schema_fingerprint::<TypeChanged>()
+    );
+}
+
+#[test]
+fn nested_type_change_changes_outer_fingerprint() {
+    #[derive(CacheSchema)]
+    #[cache_schema(module = "test", rename = "Inner")]
+    struct InnerU32 {
+        value: u32,
+    }
+
+    #[derive(CacheSchema)]
+    #[cache_schema(module = "test", rename = "Inner")]
+    struct InnerU64 {
+        value: u64,
+    }
+
+    #[derive(CacheSchema)]
+    #[cache_schema(module = "test", rename = "Outer")]
+    struct OuterU32 {
+        inner: InnerU32,
+    }
+
+    #[derive(CacheSchema)]
+    #[cache_schema(module = "test", rename = "Outer")]
+    struct OuterU64 {
+        inner: InnerU64,
+    }
+
+    assert_ne!(
+        schema_fingerprint::<OuterU32>(),
+        schema_fingerprint::<OuterU64>()
+    );
+}
+
+#[test]
+fn type_version_changes_fingerprint() {
+    #[derive(CacheSchema)]
+    #[cache_schema(module = "test", rename = "Versioned", version = "v1")]
+    struct V1 {
+        value: u32,
+    }
+
+    #[derive(CacheSchema)]
+    #[cache_schema(module = "test", rename = "Versioned", version = "v2")]
+    struct V2 {
+        value: u32,
+    }
+
+    assert_ne!(schema_fingerprint::<V1>(), schema_fingerprint::<V2>());
+}
+
+#[test]
+fn supports_tuple_unit_generic_and_phantom_shapes() {
+    #[derive(CacheSchema)]
+    #[cache_schema(module = "test", rename = "Tuple")]
+    struct Tuple<T>(T, String);
+
+    #[derive(CacheSchema)]
+    #[cache_schema(module = "test", rename = "Unit")]
+    struct Unit;
+
+    #[derive(CacheSchema)]
+    #[cache_schema(module = "test", rename = "WithPhantom")]
+    struct WithPhantom<T> {
+        value: u32,
+        marker: PhantomData<T>,
+    }
+
+    let tuple = schema_fingerprint::<Tuple<u32>>();
+    let unit = schema_fingerprint::<Unit>();
+    let phantom_u32 = schema_fingerprint::<WithPhantom<u32>>();
+    let phantom_u64 = schema_fingerprint::<WithPhantom<u64>>();
+
+    assert_ne!(tuple, unit);
+    assert_eq!(phantom_u32, phantom_u64);
+}
+
+#[test]
+fn supports_lifetime_const_generics_and_where_clauses() {
+    #[derive(CacheSchema)]
+    #[cache_schema(module = "test", rename = "BorrowedArray")]
+    struct BorrowedArray<'a, T, const N: usize>
+    where
+        T: 'a,
+    {
+        values: [T; N],
+        marker: PhantomData<&'a T>,
+    }
+
+    assert_ne!(
+        schema_fingerprint::<BorrowedArray<'static, u32, 2>>(),
+        schema_fingerprint::<BorrowedArray<'static, u32, 3>>()
+    );
+    assert_ne!(
+        schema_fingerprint::<BorrowedArray<'static, u32, 2>>(),
+        schema_fingerprint::<BorrowedArray<'static, u64, 2>>()
+    );
+}
