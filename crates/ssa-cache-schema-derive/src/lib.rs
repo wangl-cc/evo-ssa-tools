@@ -56,13 +56,12 @@ fn expand_struct_body(
         reject_serde_attrs(&field.attrs)?;
     }
 
-    let module = attrs.module_tokens();
     let name = attrs.name_tokens();
     let version = attrs.version_tokens();
     let field_tokens = expand_fields(fields, schema_path)?;
 
     Ok(quote! {
-        w.struct_begin(#module, #name);
+        w.struct_begin(#name);
         #version
         #field_tokens
         w.struct_end();
@@ -81,7 +80,6 @@ fn expand_enum_body(
         }
     }
 
-    let module = attrs.module_tokens();
     let name = attrs.name_tokens();
     let version = attrs.version_tokens();
     let variants = variants
@@ -91,7 +89,7 @@ fn expand_enum_body(
         .collect::<Result<Vec<_>>>()?;
 
     Ok(quote! {
-        w.enum_begin(#module, #name);
+        w.enum_begin(#name);
         #version
         #(#variants)*
         w.enum_end();
@@ -226,7 +224,6 @@ fn reject_serde_attrs(attrs: &[Attribute]) -> Result<()> {
 #[derive(Default)]
 struct TypeAttrs {
     rename: Option<LitStr>,
-    module: Option<LitStr>,
     version: Option<LitStr>,
     schema_crate: Option<Path>,
 }
@@ -241,8 +238,6 @@ impl TypeAttrs {
             attr.parse_nested_meta(|meta| {
                 if meta.path.is_ident("rename") {
                     parse_lit_str_value(&mut parsed.rename, meta, "rename")
-                } else if meta.path.is_ident("module") {
-                    parse_lit_str_value(&mut parsed.module, meta, "module")
                 } else if meta.path.is_ident("version") {
                     parse_lit_str_value(&mut parsed.version, meta, "version")
                 } else if is_crate_attr(&meta.path) {
@@ -262,13 +257,6 @@ impl TypeAttrs {
         match &self.schema_crate {
             Some(schema_crate) => quote_path(schema_crate),
             None => default_schema_path(),
-        }
-    }
-
-    fn module_tokens(&self) -> TokenStream2 {
-        match &self.module {
-            Some(module) => quote! { #module },
-            None => quote! { "" },
         }
     }
 

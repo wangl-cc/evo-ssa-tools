@@ -38,7 +38,7 @@ fn default_type_name_affects_fingerprint_and_module_move_is_transparent() {
 #[test]
 fn type_rust_rename_and_module_move_can_keep_schema_identity() {
     #[derive(CacheSchema)]
-    #[cache_schema(module = "original::module", rename = "Original")]
+    #[cache_schema(rename = "Original")]
     struct Original {
         value: u32,
     }
@@ -47,7 +47,7 @@ fn type_rust_rename_and_module_move_can_keep_schema_identity() {
         use ssa_cache_schema::CacheSchema;
 
         #[derive(CacheSchema)]
-        #[cache_schema(module = "original::module", rename = "Original")]
+        #[cache_schema(rename = "Original")]
         pub(super) struct Renamed {
             pub(super) value: u32,
         }
@@ -60,35 +60,15 @@ fn type_rust_rename_and_module_move_can_keep_schema_identity() {
 }
 
 #[test]
-fn type_module_attr_can_intentionally_split_schema_identity() {
-    #[derive(CacheSchema)]
-    #[cache_schema(rename = "Config")]
-    struct DefaultModule {
-        value: u32,
-    }
-
-    #[derive(CacheSchema)]
-    #[cache_schema(module = "stable::module", rename = "Config")]
-    struct ExplicitModule {
-        value: u32,
-    }
-
-    assert_ne!(
-        schema_fingerprint::<DefaultModule>(),
-        schema_fingerprint::<ExplicitModule>()
-    );
-}
-
-#[test]
 fn field_rust_rename_without_schema_rename_changes_fingerprint() {
     #[derive(CacheSchema)]
-    #[cache_schema(module = "test", rename = "Shape")]
+    #[cache_schema(rename = "Shape")]
     struct Old {
         width: u32,
     }
 
     #[derive(CacheSchema)]
-    #[cache_schema(module = "test", rename = "Shape")]
+    #[cache_schema(rename = "Shape")]
     struct New {
         w: u32,
     }
@@ -99,13 +79,13 @@ fn field_rust_rename_without_schema_rename_changes_fingerprint() {
 #[test]
 fn field_rust_rename_can_keep_schema_name() {
     #[derive(CacheSchema)]
-    #[cache_schema(module = "test", rename = "Shape")]
+    #[cache_schema(rename = "Shape")]
     struct Old {
         width: u32,
     }
 
     #[derive(CacheSchema)]
-    #[cache_schema(module = "test", rename = "Shape")]
+    #[cache_schema(rename = "Shape")]
     struct New {
         #[cache_schema(rename = "width")]
         w: u32,
@@ -117,14 +97,14 @@ fn field_rust_rename_can_keep_schema_name() {
 #[test]
 fn field_reorder_changes_fingerprint() {
     #[derive(CacheSchema)]
-    #[cache_schema(module = "test", rename = "Shape")]
+    #[cache_schema(rename = "Shape")]
     struct WidthHeight {
         width: u32,
         height: u32,
     }
 
     #[derive(CacheSchema)]
-    #[cache_schema(module = "test", rename = "Shape")]
+    #[cache_schema(rename = "Shape")]
     struct HeightWidth {
         height: u32,
         width: u32,
@@ -139,13 +119,13 @@ fn field_reorder_changes_fingerprint() {
 #[test]
 fn field_add_remove_changes_fingerprint() {
     #[derive(CacheSchema)]
-    #[cache_schema(module = "test", rename = "Shape")]
+    #[cache_schema(rename = "Shape")]
     struct OneField {
         width: u32,
     }
 
     #[derive(CacheSchema)]
-    #[cache_schema(module = "test", rename = "Shape")]
+    #[cache_schema(rename = "Shape")]
     struct TwoFields {
         width: u32,
         height: u32,
@@ -160,13 +140,13 @@ fn field_add_remove_changes_fingerprint() {
 #[test]
 fn field_type_change_changes_fingerprint() {
     #[derive(CacheSchema)]
-    #[cache_schema(module = "test", rename = "Shape")]
+    #[cache_schema(rename = "Shape")]
     struct U32Width {
         width: u32,
     }
 
     #[derive(CacheSchema)]
-    #[cache_schema(module = "test", rename = "Shape")]
+    #[cache_schema(rename = "Shape")]
     struct U64Width {
         width: u64,
     }
@@ -180,13 +160,13 @@ fn field_type_change_changes_fingerprint() {
 #[test]
 fn named_and_tuple_fields_are_distinct() {
     #[derive(CacheSchema)]
-    #[cache_schema(module = "test", rename = "Shape")]
+    #[cache_schema(rename = "Shape")]
     struct Named {
         value: u32,
     }
 
     #[derive(CacheSchema)]
-    #[cache_schema(module = "test", rename = "Shape")]
+    #[cache_schema(rename = "Shape")]
     struct Tuple(u32);
 
     assert_ne!(schema_fingerprint::<Named>(), schema_fingerprint::<Tuple>());
@@ -195,13 +175,13 @@ fn named_and_tuple_fields_are_distinct() {
 #[test]
 fn tuple_field_rename_can_name_wire_field() {
     #[derive(CacheSchema)]
-    #[cache_schema(module = "test", rename = "Shape")]
+    #[cache_schema(rename = "Shape")]
     struct Named {
         value: u32,
     }
 
     #[derive(CacheSchema)]
-    #[cache_schema(module = "test", rename = "Shape")]
+    #[cache_schema(rename = "Shape")]
     struct Tuple(#[cache_schema(rename = "value")] u32);
 
     assert_eq!(schema_fingerprint::<Named>(), schema_fingerprint::<Tuple>());
@@ -210,13 +190,13 @@ fn tuple_field_rename_can_name_wire_field() {
 #[test]
 fn variant_rust_rename_without_schema_rename_changes_fingerprint() {
     #[derive(CacheSchema)]
-    #[cache_schema(module = "test", rename = "Event")]
+    #[cache_schema(rename = "Event")]
     enum Old {
         Created,
     }
 
     #[derive(CacheSchema)]
-    #[cache_schema(module = "test", rename = "Event")]
+    #[cache_schema(rename = "Event")]
     enum New {
         Made,
     }
@@ -227,13 +207,13 @@ fn variant_rust_rename_without_schema_rename_changes_fingerprint() {
 #[test]
 fn variant_rust_rename_can_keep_schema_name() {
     #[derive(CacheSchema)]
-    #[cache_schema(module = "test", rename = "Event")]
+    #[cache_schema(rename = "Event")]
     enum Old {
         Created { id: u64 },
     }
 
     #[derive(CacheSchema)]
-    #[cache_schema(module = "test", rename = "Event")]
+    #[cache_schema(rename = "Event")]
     enum New {
         #[cache_schema(rename = "Created")]
         Made { id: u64 },
@@ -245,14 +225,14 @@ fn variant_rust_rename_can_keep_schema_name() {
 #[test]
 fn variant_reorder_changes_fingerprint() {
     #[derive(CacheSchema)]
-    #[cache_schema(module = "test", rename = "Event")]
+    #[cache_schema(rename = "Event")]
     enum First {
         Created,
         Deleted,
     }
 
     #[derive(CacheSchema)]
-    #[cache_schema(module = "test", rename = "Event")]
+    #[cache_schema(rename = "Event")]
     enum Second {
         Deleted,
         Created,
@@ -267,13 +247,13 @@ fn variant_reorder_changes_fingerprint() {
 #[test]
 fn variant_add_remove_changes_fingerprint() {
     #[derive(CacheSchema)]
-    #[cache_schema(module = "test", rename = "Event")]
+    #[cache_schema(rename = "Event")]
     enum One {
         Created,
     }
 
     #[derive(CacheSchema)]
-    #[cache_schema(module = "test", rename = "Event")]
+    #[cache_schema(rename = "Event")]
     enum Two {
         Created,
         Deleted,
@@ -285,19 +265,19 @@ fn variant_add_remove_changes_fingerprint() {
 #[test]
 fn variant_field_shape_changes_fingerprint() {
     #[derive(CacheSchema)]
-    #[cache_schema(module = "test", rename = "Event")]
+    #[cache_schema(rename = "Event")]
     enum StructVariant {
         Created { id: u64 },
     }
 
     #[derive(CacheSchema)]
-    #[cache_schema(module = "test", rename = "Event")]
+    #[cache_schema(rename = "Event")]
     enum TupleVariant {
         Created(u64),
     }
 
     #[derive(CacheSchema)]
-    #[cache_schema(module = "test", rename = "Event")]
+    #[cache_schema(rename = "Event")]
     enum TypeChanged {
         Created { id: u32 },
     }
@@ -315,25 +295,25 @@ fn variant_field_shape_changes_fingerprint() {
 #[test]
 fn nested_type_change_changes_outer_fingerprint() {
     #[derive(CacheSchema)]
-    #[cache_schema(module = "test", rename = "Inner")]
+    #[cache_schema(rename = "Inner")]
     struct InnerU32 {
         value: u32,
     }
 
     #[derive(CacheSchema)]
-    #[cache_schema(module = "test", rename = "Inner")]
+    #[cache_schema(rename = "Inner")]
     struct InnerU64 {
         value: u64,
     }
 
     #[derive(CacheSchema)]
-    #[cache_schema(module = "test", rename = "Outer")]
+    #[cache_schema(rename = "Outer")]
     struct OuterU32 {
         inner: InnerU32,
     }
 
     #[derive(CacheSchema)]
-    #[cache_schema(module = "test", rename = "Outer")]
+    #[cache_schema(rename = "Outer")]
     struct OuterU64 {
         inner: InnerU64,
     }
@@ -347,13 +327,13 @@ fn nested_type_change_changes_outer_fingerprint() {
 #[test]
 fn type_version_changes_fingerprint() {
     #[derive(CacheSchema)]
-    #[cache_schema(module = "test", rename = "Versioned", version = "v1")]
+    #[cache_schema(rename = "Versioned", version = "v1")]
     struct V1 {
         value: u32,
     }
 
     #[derive(CacheSchema)]
-    #[cache_schema(module = "test", rename = "Versioned", version = "v2")]
+    #[cache_schema(rename = "Versioned", version = "v2")]
     struct V2 {
         value: u32,
     }
@@ -365,20 +345,20 @@ fn type_version_changes_fingerprint() {
 fn non_cache_schema_attrs_do_not_affect_fingerprint() {
     #[doc = "ignored by CacheSchema"]
     #[derive(CacheSchema)]
-    #[cache_schema(module = "test", rename = "Documented")]
+    #[cache_schema(rename = "Documented")]
     struct WithAttrs {
         #[doc = "also ignored"]
         value: u32,
     }
 
     #[derive(CacheSchema)]
-    #[cache_schema(module = "test", rename = "Documented")]
+    #[cache_schema(rename = "Documented")]
     struct Plain {
         value: u32,
     }
 
     #[derive(CacheSchema)]
-    #[cache_schema(module = "test", rename = "DocumentedEvent")]
+    #[cache_schema(rename = "DocumentedEvent")]
     enum WithVariantAttrs {
         #[doc = "ignored variant documentation"]
         Created {
@@ -388,7 +368,7 @@ fn non_cache_schema_attrs_do_not_affect_fingerprint() {
     }
 
     #[derive(CacheSchema)]
-    #[cache_schema(module = "test", rename = "DocumentedEvent")]
+    #[cache_schema(rename = "DocumentedEvent")]
     enum PlainVariant {
         Created { id: u64 },
     }
@@ -406,15 +386,15 @@ fn non_cache_schema_attrs_do_not_affect_fingerprint() {
 #[test]
 fn supports_tuple_unit_generic_and_phantom_shapes() {
     #[derive(CacheSchema)]
-    #[cache_schema(module = "test", rename = "Tuple")]
+    #[cache_schema(rename = "Tuple")]
     struct Tuple<T>(T, String);
 
     #[derive(CacheSchema)]
-    #[cache_schema(module = "test", rename = "Unit")]
+    #[cache_schema(rename = "Unit")]
     struct Unit;
 
     #[derive(CacheSchema)]
-    #[cache_schema(module = "test", rename = "WithPhantom")]
+    #[cache_schema(rename = "WithPhantom")]
     struct WithPhantom<T> {
         value: u32,
         marker: PhantomData<T>,
@@ -432,7 +412,7 @@ fn supports_tuple_unit_generic_and_phantom_shapes() {
 #[test]
 fn supports_lifetime_const_generics_and_where_clauses() {
     #[derive(CacheSchema)]
-    #[cache_schema(module = "test", rename = "BorrowedArray")]
+    #[cache_schema(rename = "BorrowedArray")]
     struct BorrowedArray<'a, T, const N: usize>
     where
         T: 'a,
