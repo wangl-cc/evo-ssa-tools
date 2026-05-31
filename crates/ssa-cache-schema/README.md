@@ -53,7 +53,7 @@ Borrow and ownership wrappers are transparent: `&T`, `&mut T`, `Box<T>`, and `Co
 
 `HashMap<K, V>` and `BTreeMap<K, V>` share the same logical map schema. `HashSet<T>` and `BTreeSet<T>` share the same logical set schema. This schema only describes the cache value shape; deterministic value encoding still needs to handle map/set iteration order at the serialization layer.
 
-`Wrapping<T>`, `Saturating<T>`, and `NonZero*` integer wrappers use the same schema as their inner numeric representation. If wrapper semantics should invalidate old cache entries, bump `#[cache_schema(version = "...")]` on the enclosing type or write a manual schema.
+`Wrapping<T>` and `Saturating<T>` use the same schema as their inner numeric representation. `NonZero*` integer wrappers use distinct schemas because they reject zero values; changing between `u32` and `NonZeroU32` is treated as a cache-incompatible schema change.
 
 ## Writer Contract
 
