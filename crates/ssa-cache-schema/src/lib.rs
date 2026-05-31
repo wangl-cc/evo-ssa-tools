@@ -7,16 +7,21 @@
 //! resulting canonical bytes are hashed with BLAKE3 and truncated to 128 bits.
 //!
 //! ```rust
+//! # #[cfg(feature = "derive")]
 //! use ssa_cache_schema::{CacheSchema, schema_fingerprint};
 //!
+//! # #[cfg(feature = "derive")]
 //! #[derive(CacheSchema)]
 //! struct Params {
 //!     width: u32,
 //!     height: u32,
 //! }
 //!
+//! # #[cfg(feature = "derive")]
 //! let first = schema_fingerprint::<Params>();
+//! # #[cfg(feature = "derive")]
 //! let second = schema_fingerprint::<Params>();
+//! # #[cfg(feature = "derive")]
 //! assert_eq!(first, second);
 //! ```
 //!
@@ -24,8 +29,10 @@
 //! attributes or a manual implementation when serde behavior should affect the cache schema:
 //!
 //! ```rust
+//! # #[cfg(feature = "derive")]
 //! use ssa_cache_schema::CacheSchema;
 //!
+//! # #[cfg(feature = "derive")]
 //! #[derive(CacheSchema)]
 //! struct WithSerdeAttr {
 //!     #[serde(skip)]
