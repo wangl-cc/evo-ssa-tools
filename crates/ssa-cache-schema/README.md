@@ -2,11 +2,11 @@
 
 `ssa-cache-schema` provides stable schema fingerprints for cache wire formats. It describes the logical shape of a type, writes that schema into a deterministic token stream, and hashes it with BLAKE3 truncated to 128 bits.
 
-The crate is intentionally separate from `ssa-workflow` cache storage. It can be used to evolve cache schema identity independently before deciding how persistent caches should consume the fingerprint.
+The crate is intentionally separate from `ssa-workflow` cache storage. It can be used to evolve schema fingerprinting independently before deciding how persistent caches should consume the fingerprint.
 
 ## Basic Usage
 
-Derive `CacheSchema` for ordinary structs and enums, then call `schema_fingerprint::<T>()` when a stable schema identity is needed.
+Derive `CacheSchema` for ordinary structs and enums, then call `schema_fingerprint::<T>()` when a stable schema fingerprint is needed.
 
 ```rust
 use ssa_cache_schema::{schema_fingerprint, CacheSchema};
@@ -26,7 +26,7 @@ The default `derive` feature re-exports the derive macro from `ssa-cache-schema-
 
 ## Compatibility Attributes
 
-Use `#[cache_schema(rename = "...")]` when a Rust field, variant, or type is renamed but should keep the old schema identity.
+Use `#[cache_schema(rename = "...")]` when a Rust field, variant, or type is renamed but should keep its previous schema name.
 
 ```rust
 use ssa_cache_schema::CacheSchema;

@@ -5,7 +5,7 @@ use std::marker::PhantomData;
 use ssa_cache_schema::{CacheSchema, schema_fingerprint};
 
 #[test]
-fn default_type_name_affects_fingerprint_and_module_move_is_transparent() {
+fn default_type_name_affects_fingerprint() {
     #[derive(CacheSchema)]
     struct First {
         value: u32,
@@ -29,17 +29,12 @@ fn default_type_name_affects_fingerprint_and_module_move_is_transparent() {
         schema_fingerprint::<First>(),
         schema_fingerprint::<Second>()
     );
-    assert_eq!(
-        schema_fingerprint::<First>(),
-        schema_fingerprint::<moved::First>()
-    );
 }
 
 #[test]
-fn type_rust_rename_and_module_move_can_keep_schema_identity() {
+fn module_move_does_not_affect_fingerprint() {
     #[derive(CacheSchema)]
-    #[cache_schema(rename = "Original")]
-    struct Original {
+    struct Params {
         value: u32,
     }
 
@@ -47,15 +42,34 @@ fn type_rust_rename_and_module_move_can_keep_schema_identity() {
         use ssa_cache_schema::CacheSchema;
 
         #[derive(CacheSchema)]
-        #[cache_schema(rename = "Original")]
-        pub(super) struct Renamed {
+        pub(super) struct Params {
             pub(super) value: u32,
         }
     }
 
     assert_eq!(
+        schema_fingerprint::<Params>(),
+        schema_fingerprint::<moved::Params>()
+    );
+}
+
+#[test]
+fn type_rust_rename_can_keep_schema_name() {
+    #[derive(CacheSchema)]
+    #[cache_schema(rename = "Original")]
+    struct Original {
+        value: u32,
+    }
+
+    #[derive(CacheSchema)]
+    #[cache_schema(rename = "Original")]
+    struct Renamed {
+        value: u32,
+    }
+
+    assert_eq!(
         schema_fingerprint::<Original>(),
-        schema_fingerprint::<moved::Renamed>()
+        schema_fingerprint::<Renamed>()
     );
 }
 
