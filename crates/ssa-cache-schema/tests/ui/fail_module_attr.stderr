@@ -1,0 +1,5 @@
+error: unsupported cache_schema type attribute
+ --> tests/ui/fail_module_attr.rs:4:16
+  |
+4 | #[cache_schema(module = "old::module")]
+  |                ^^^^^^

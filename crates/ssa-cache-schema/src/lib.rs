@@ -88,9 +88,8 @@ impl SchemaWriter {
     }
 
     /// Begin a struct schema.
-    pub fn struct_begin(&mut self, module_path: &'static str, name: &'static str) {
+    pub fn struct_begin(&mut self, name: &'static str) {
         self.tag(Tag::StructBegin);
-        self.str(module_path);
         self.str(name);
     }
 
@@ -100,9 +99,8 @@ impl SchemaWriter {
     }
 
     /// Begin an enum schema.
-    pub fn enum_begin(&mut self, module_path: &'static str, name: &'static str) {
+    pub fn enum_begin(&mut self, name: &'static str) {
         self.tag(Tag::EnumBegin);
-        self.str(module_path);
         self.str(name);
     }
 
@@ -314,7 +312,7 @@ impl<T: CacheSchema> CacheSchema for Vec<T> {
 
 impl<T: CacheSchema> CacheSchema for Option<T> {
     fn write_schema(w: &mut SchemaWriter) {
-        w.enum_begin("core::option", "Option");
+        w.enum_begin("Option");
         w.variant_begin(0, "None");
         w.variant_end();
         w.variant_begin(1, "Some");
@@ -328,7 +326,7 @@ impl<T: CacheSchema> CacheSchema for Option<T> {
 
 impl<T: CacheSchema, E: CacheSchema> CacheSchema for Result<T, E> {
     fn write_schema(w: &mut SchemaWriter) {
-        w.enum_begin("core::result", "Result");
+        w.enum_begin("Result");
         w.variant_begin(0, "Ok");
         w.field_begin(0, None);
         T::write_schema(w);

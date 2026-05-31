@@ -4,7 +4,7 @@ use ssa_cache_schema::{CacheSchema, schema_fingerprint};
 use ssa_cache_schema as schema_alias;
 
 #[derive(CacheSchema)]
-#[cache_schema(module = "stable::module", rename = "StableName", version = "v1")]
+#[cache_schema(rename = "StableName", version = "v1")]
 struct Stable<'a, T, const N: usize>
 where
     T: 'a,
@@ -15,7 +15,7 @@ where
 }
 
 #[derive(CacheSchema)]
-#[cache_schema(module = "stable::module", rename = "Event")]
+#[cache_schema(rename = "Event")]
 enum Event<T> {
     #[cache_schema(rename = "Created")]
     Made { value: T },
@@ -25,7 +25,7 @@ enum Event<T> {
 struct NoSchema;
 
 #[derive(CacheSchema)]
-#[cache_schema(module = "stable::module", rename = "MarkerOnly")]
+#[cache_schema(rename = "MarkerOnly")]
 struct MarkerOnly<T> {
     marker: PhantomData<T>,
 }
@@ -41,13 +41,13 @@ impl HasAssoc for Provider {
 }
 
 #[derive(CacheSchema)]
-#[cache_schema(module = "stable::module", rename = "AssocField")]
+#[cache_schema(rename = "AssocField")]
 struct AssocField<T: HasAssoc> {
     value: <T as HasAssoc>::Assoc,
 }
 
 #[derive(CacheSchema)]
-#[cache_schema(crate = schema_alias, module = "stable::module", rename = "CrateAlias")]
+#[cache_schema(crate = schema_alias, rename = "CrateAlias")]
 struct CrateAlias {
     value: u32,
 }
