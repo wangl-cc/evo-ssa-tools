@@ -342,6 +342,48 @@ fn type_version_changes_fingerprint() {
 }
 
 #[test]
+fn non_cache_schema_attrs_do_not_affect_fingerprint() {
+    #[doc = "ignored by CacheSchema"]
+    #[derive(CacheSchema)]
+    #[cache_schema(module = "test", rename = "Documented")]
+    struct WithAttrs {
+        #[doc = "also ignored"]
+        value: u32,
+    }
+
+    #[derive(CacheSchema)]
+    #[cache_schema(module = "test", rename = "Documented")]
+    struct Plain {
+        value: u32,
+    }
+
+    #[derive(CacheSchema)]
+    #[cache_schema(module = "test", rename = "DocumentedEvent")]
+    enum WithVariantAttrs {
+        #[doc = "ignored variant documentation"]
+        Created {
+            #[doc = "ignored field documentation"]
+            id: u64,
+        },
+    }
+
+    #[derive(CacheSchema)]
+    #[cache_schema(module = "test", rename = "DocumentedEvent")]
+    enum PlainVariant {
+        Created { id: u64 },
+    }
+
+    assert_eq!(
+        schema_fingerprint::<WithAttrs>(),
+        schema_fingerprint::<Plain>()
+    );
+    assert_eq!(
+        schema_fingerprint::<WithVariantAttrs>(),
+        schema_fingerprint::<PlainVariant>()
+    );
+}
+
+#[test]
 fn supports_tuple_unit_generic_and_phantom_shapes() {
     #[derive(CacheSchema)]
     #[cache_schema(module = "test", rename = "Tuple")]
