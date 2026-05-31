@@ -45,6 +45,16 @@ Serde attributes are ignored by `CacheSchema`. For example, `#[serde(skip)]` doe
 
 Field reorder, field add/remove, field type changes, enum variant reorder, and enum variant add/remove change the fingerprint by default.
 
+## Provided Standard Schemas
+
+The runtime crate provides schemas for primitive numeric types, `bool`, `char`, `()`, tuples up to arity 12, arrays, `String`, `str`, slices, `Vec<T>`, `Option<T>`, `Result<T, E>`, `Box<T>`, references, `Cow<'_, T>`, `PhantomData<T>`, common map/set collections, and numeric wrappers in `std::num`.
+
+Borrow and ownership wrappers are transparent: `&T`, `&mut T`, `Box<T>`, and `Cow<'_, T>` use `T`'s schema. `String` and `str` share one text schema, and `Vec<T>` and `[T]` share one sequence schema.
+
+`HashMap<K, V>` and `BTreeMap<K, V>` share the same logical map schema. `HashSet<T>` and `BTreeSet<T>` share the same logical set schema. This schema only describes the cache value shape; deterministic value encoding still needs to handle map/set iteration order at the serialization layer.
+
+`Wrapping<T>`, `Saturating<T>`, and `NonZero*` integer wrappers use the same schema as their inner numeric representation. If wrapper semantics should invalidate old cache entries, bump `#[cache_schema(version = "...")]` on the enclosing type or write a manual schema.
+
 ## Writer Contract
 
 `SchemaWriter` streams canonical schema tokens directly into BLAKE3 rather than storing schema bytes. Each token uses an explicit tag plus fixed-width integers or length-prefixed strings, so adjacent values cannot be misread as a different schema tree.
