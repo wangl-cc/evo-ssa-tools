@@ -1,3 +1,6 @@
+#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
+#![cfg_attr(coverage_nightly, allow(unused_features))]
+
 //! Stable schema fingerprints for cache wire formats.
 //!
 //! `CacheSchema` describes the serialized shape of a type, not its Rust memory layout. The
@@ -501,5 +504,48 @@ mod tests {
         let second = second.finish_fingerprint();
 
         assert_ne!(first, second);
+    }
+
+    #[test]
+    fn unit_schema_is_distinct_from_single_empty_tuple_like_field() {
+        assert_ne!(schema_fingerprint::<()>(), schema_fingerprint::<((),)>());
+    }
+
+    #[test]
+    fn map_schema_tokens_are_part_of_fingerprint() {
+        let mut map = SchemaWriter::new();
+        map.map_begin("Map");
+        u32::write_schema(&mut map);
+        u64::write_schema(&mut map);
+        map.map_end();
+        let map = map.finish_fingerprint();
+
+        let mut seq = SchemaWriter::new();
+        seq.seq_begin("Map");
+        u32::write_schema(&mut seq);
+        u64::write_schema(&mut seq);
+        seq.seq_end();
+        let seq = seq.finish_fingerprint();
+
+        assert_ne!(map, seq);
+    }
+
+    #[test]
+    fn default_writer_matches_new_writer() {
+        let mut from_default = SchemaWriter::default();
+        from_default.primitive("u32");
+
+        let mut from_new = SchemaWriter::new();
+        from_new.primitive("u32");
+
+        assert_eq!(
+            from_default.finish_fingerprint(),
+            from_new.finish_fingerprint()
+        );
+    }
+
+    #[test]
+    fn debug_output_names_writer_without_exposing_hasher_state() {
+        assert_eq!(format!("{:?}", SchemaWriter::new()), "SchemaWriter { .. }");
     }
 }
