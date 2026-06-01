@@ -1,3 +1,5 @@
+//! Public store facade and commit/open orchestration.
+
 use std::{fs, sync::Arc};
 
 use parking_lot::RwLock;
@@ -6,19 +8,17 @@ use crate::{
     batch::{CommitStats, WriteBatch, flush_ranges, has_duplicate_keys, is_sorted_by_key},
     cursor::{RangeCursor, SegmentRangeCursor},
     error::{Error, Result},
-    format::{open_segment, shard_for_key, write_segment},
+    format::{OpenedSegment, SegmentOpenOptions, SegmentWriter, ShardPolicy},
     lookup::{OrderedLookup, fetch_from_shard},
     manifest::{
-        SegmentManifestEntry, StoreManifest, ensure_store_dirs, final_segment_path, load_manifest,
-        next_segment_file_name, now_unix_millis, segment_dir, store_manifest, sync_dir,
-        temp_segment_path,
+        SegmentManifestEntry, StoreManifest, StorePaths, next_segment_file_name, now_unix_millis,
     },
     options::StoreOptions,
-    state::{ShardState, StoreInner, StoreState, segment_state_from_opened},
+    state::{SegmentState, ShardState, StoreInner, StoreState},
 };
 
-#[derive(Clone)]
 /// Persistent append-only cache store.
+#[derive(Clone)]
 pub struct Store {
     pub(crate) inner: Arc<StoreInner>,
 }
@@ -27,15 +27,16 @@ impl Store {
     /// Opens an existing store or creates an empty one at `options.root`.
     pub fn open(options: StoreOptions) -> Result<Self> {
         options.validate()?;
-        ensure_store_dirs(&options.root, options.shard_count)?;
-        let manifest = match load_manifest(&options.root)? {
+        let paths = StorePaths::new(&options.root);
+        paths.ensure_dirs(options.shard_count)?;
+        let manifest = match StoreManifest::load(&options.root)? {
             Some(manifest) => {
                 manifest.validate_options(&options)?;
                 manifest
             }
             None => {
                 let manifest = StoreManifest::new(&options);
-                store_manifest(&options.root, &manifest)?;
+                manifest.store(&options.root)?;
                 manifest
             }
         };
@@ -47,15 +48,14 @@ impl Store {
                 .last()
                 .map(|entry| entry.max_key.clone());
             for entry in &manifest.shards[shard_id] {
-                let path = final_segment_path(&options.root, shard_id, &entry.file_name);
-                if let Some(segment) = open_segment(
-                    path,
-                    shard_id,
-                    options.key_len,
-                    options.value_layout,
-                    options.codec_version,
-                )? {
-                    segment_states.push(Arc::new(segment_state_from_opened(segment)));
+                let path = paths.final_segment(shard_id, &entry.file_name);
+                if let Some(segment) = OpenedSegment::open(path, SegmentOpenOptions {
+                    expected_shard: shard_id,
+                    expected_key_len: options.key_len,
+                    expected_value_layout: options.value_layout,
+                    expected_codec_version: options.codec_version,
+                })? {
+                    segment_states.push(Arc::new(SegmentState::from_opened(segment)));
                 }
             }
             shards.push(ShardState {
@@ -72,8 +72,8 @@ impl Store {
         })
     }
 
-    #[must_use]
     /// Starts a buffered write batch.
+    #[must_use]
     pub fn begin_batch(&self) -> WriteBatch {
         WriteBatch::default()
     }
@@ -86,14 +86,11 @@ impl Store {
         }
 
         let mut sharded = vec![Vec::new(); self.inner.options.shard_count];
+        let shard_policy = self.shard_policy();
         for (key, value) in batch.entries {
             self.validate_key_len(&key)?;
             self.validate_value_len(&value)?;
-            let shard = shard_for_key(
-                &key,
-                self.inner.options.shard_count,
-                self.inner.options.shard_key_offset,
-            );
+            let shard = shard_policy.shard_for_key(&key);
             sharded[shard].push((key, value));
         }
 
@@ -133,28 +130,28 @@ impl Store {
                 let segment_id = next_segment_id;
                 next_segment_id += 1;
                 let file_name = next_segment_file_name(segment_id);
-                let temp_path = temp_segment_path(&self.inner.options.root, shard_id, segment_id);
-                let final_path = final_segment_path(&self.inner.options.root, shard_id, &file_name);
-                let (footer, _block_index) = write_segment(
+                let paths = StorePaths::new(&self.inner.options.root);
+                let temp_path = paths.temp_segment(shard_id, segment_id);
+                let final_path = paths.final_segment(shard_id, &file_name);
+                let (footer, _block_index) = SegmentWriter::new(
                     &temp_path,
                     shard_id,
                     self.inner.options.key_len,
                     self.inner.options.value_layout,
                     self.inner.options.codec_version,
                     self.inner.options.target_block_size,
-                    segment_entries,
-                )?;
+                )
+                .write(segment_entries)?;
                 fs::rename(&temp_path, &final_path)?;
-                sync_dir(&segment_dir(&self.inner.options.root, shard_id))?;
-                let opened = open_segment(
-                    final_path.clone(),
-                    shard_id,
-                    self.inner.options.key_len,
-                    self.inner.options.value_layout,
-                    self.inner.options.codec_version,
-                )?
+                paths.sync_segment_dir(shard_id)?;
+                let opened = OpenedSegment::open(final_path.clone(), SegmentOpenOptions {
+                    expected_shard: shard_id,
+                    expected_key_len: self.inner.options.key_len,
+                    expected_value_layout: self.inner.options.value_layout,
+                    expected_codec_version: self.inner.options.codec_version,
+                })?
                 .expect("freshly written segment should reopen");
-                let segment_state = Arc::new(segment_state_from_opened(opened));
+                let segment_state = Arc::new(SegmentState::from_opened(opened));
                 manifest.shards[shard_id].push(SegmentManifestEntry {
                     file_name,
                     min_key: footer.min_key.clone(),
@@ -174,7 +171,7 @@ impl Store {
 
         manifest.next_segment_id = next_segment_id;
         manifest.target_block_size = self.inner.options.target_block_size;
-        store_manifest(&self.inner.options.root, &manifest)?;
+        manifest.store(&self.inner.options.root)?;
 
         for (shard_id, segment, max_key) in new_segments {
             state.shards[shard_id].segments.push(segment);
@@ -223,8 +220,8 @@ impl Store {
         lookup.visit_many_slice(keys, visitor)
     }
 
-    #[must_use]
     /// Creates a reusable ordered lookup session with per-shard cursor state.
+    #[must_use]
     pub fn lookup_session(&self) -> OrderedLookup {
         OrderedLookup::new(self.clone(), self.inner.options.shard_count)
     }
@@ -234,11 +231,7 @@ impl Store {
     /// This exists for completeness; ordered batch lookup is the optimized path.
     pub fn fetch_one(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {
         self.validate_key_len(key)?;
-        let shard_id = shard_for_key(
-            key,
-            self.inner.options.shard_count,
-            self.inner.options.shard_key_offset,
-        );
+        let shard_id = self.shard_policy().shard_for_key(key);
         let state = self.inner.state.read();
         let shard = &state.shards[shard_id];
         fetch_from_shard(
@@ -347,5 +340,12 @@ impl Store {
             });
         }
         Ok(())
+    }
+
+    fn shard_policy(&self) -> ShardPolicy {
+        ShardPolicy::new(
+            self.inner.options.shard_count,
+            self.inner.options.shard_key_offset,
+        )
     }
 }

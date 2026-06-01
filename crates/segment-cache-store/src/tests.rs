@@ -7,8 +7,8 @@ use std::{
 
 use crate::{
     CommitStats, Error, Result, Store, StoreOptions, ValueLayout,
-    format::{FOOTER_MAGIC, shard_for_key},
-    manifest::{manifest_path, segment_dir},
+    format::{FOOTER_MAGIC, ShardPolicy},
+    manifest::StorePaths,
 };
 
 fn options(tempdir: &tempfile::TempDir) -> StoreOptions {
@@ -256,7 +256,7 @@ fn manifest_is_line_oriented_v1_text() -> Result<()> {
     let store = Store::open(options(&tempdir))?;
     commit_entries(&store, &[(make_key(1, 0, 0), make_value(1, 8))], true)?;
 
-    let manifest = fs::read_to_string(manifest_path(tempdir.path()))?;
+    let manifest = fs::read_to_string(StorePaths::new(tempdir.path()).manifest())?;
 
     assert!(manifest.starts_with("segment-cache-store manifest v1\n"));
     assert!(manifest.contains("version=1\n"));
@@ -271,7 +271,7 @@ fn manifest_is_line_oriented_v1_text() -> Result<()> {
 fn malformed_manifest_is_rejected() -> Result<()> {
     let tempdir = tempfile::tempdir()?;
     fs::write(
-        manifest_path(tempdir.path()),
+        StorePaths::new(tempdir.path()).manifest(),
         "not a segment-cache manifest\n",
     )?;
 
@@ -388,18 +388,13 @@ fn shard_local_out_of_order_append_is_rejected() -> Result<()> {
     let store = Store::open(options(&tempdir))?;
     let first = make_key(1, 1, 10);
     let second = make_key(1, 1, 1);
-    let first_shard = shard_for_key(
-        &first,
+    let shard_policy = ShardPolicy::new(
         store.inner.options.shard_count,
         store.inner.options.shard_key_offset,
     );
+    let first_shard = shard_policy.shard_for_key(&first);
     let mut candidate = second.clone();
-    while shard_for_key(
-        &candidate,
-        store.inner.options.shard_count,
-        store.inner.options.shard_key_offset,
-    ) != first_shard
-    {
+    while shard_policy.shard_for_key(&candidate) != first_shard {
         let rep = u64::from_be_bytes(candidate[8..16].try_into().expect("rep bytes")) + 1;
         candidate[8..16].copy_from_slice(&rep.to_be_bytes());
     }
@@ -588,7 +583,7 @@ fn orphan_segment_is_ignored_until_manifest_references_it() -> Result<()> {
     let store = Store::open(options.clone())?;
     commit_entries(&store, &[(make_key(1, 1, 0), make_value(1, 8))], true)?;
 
-    let orphan_dir = segment_dir(&options.root, 0);
+    let orphan_dir = StorePaths::new(&options.root).segment_dir(0);
     let orphan_path = orphan_dir.join("segment-orphan.seg");
     fs::write(orphan_path, b"not a real segment")?;
 

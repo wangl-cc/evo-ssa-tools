@@ -1,3 +1,5 @@
+//! Error types and cache-specific error classification.
+
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
     #[error("I/O error")]
@@ -34,6 +36,18 @@ pub enum Error {
 
     #[error("corrupt or malformed block")]
     CorruptBlock,
+}
+
+impl Error {
+    /// Returns true when a read error should degrade to a cache miss.
+    pub(crate) fn is_cache_miss_corruption(&self) -> bool {
+        match self {
+            Self::CorruptBlock => true,
+            Self::UnsupportedFormatVersion { .. } => true,
+            Self::Io(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => true,
+            _ => false,
+        }
+    }
 }
 
 pub type Result<T, E = Error> = std::result::Result<T, E>;

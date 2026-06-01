@@ -1,11 +1,8 @@
+//! Streaming ordered range cursors.
+
 use std::sync::Arc;
 
-use crate::{
-    block::DecodedBlock,
-    error::Result,
-    options::ValueLayout,
-    state::{SegmentState, find_block_index, is_block_miss_error, load_segment_block_reusing},
-};
+use crate::{block::DecodedBlock, error::Result, options::ValueLayout, state::SegmentState};
 
 /// Streaming cursor over records in key order.
 pub struct RangeCursor {
@@ -123,7 +120,7 @@ impl SegmentRangeCursor {
     ) -> Result<Self> {
         let block_index = start
             .as_deref()
-            .map_or(0, |start| find_block_index(&segment, start));
+            .map_or(0, |start| segment.find_block_index(start));
         let mut cursor = Self {
             segment,
             key_len,
@@ -194,8 +191,7 @@ impl SegmentRangeCursor {
             let block_index = self.block_index;
             self.block_index += 1;
             let buffer = std::mem::take(&mut self.spare_block_bytes);
-            let block = match load_segment_block_reusing(
-                &self.segment,
+            let block = match self.segment.load_block_reusing(
                 block_index,
                 self.key_len,
                 self.value_layout,
@@ -203,7 +199,7 @@ impl SegmentRangeCursor {
                 buffer,
             ) {
                 Ok(block) => block,
-                Err(error) if is_block_miss_error(&error) => continue,
+                Err(error) if error.is_cache_miss_corruption() => continue,
                 Err(error) => return Err(error),
             };
 

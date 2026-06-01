@@ -1,9 +1,11 @@
+//! Write-batch container and shard-local batching utilities.
+
 use std::ops::Range;
 
 use crate::error::Result;
 
-#[derive(Clone, Debug, Default)]
 /// Buffered writes for one atomic manifest publish.
+#[derive(Clone, Debug, Default)]
 pub struct WriteBatch {
     pub(crate) entries: Vec<(Vec<u8>, Vec<u8>)>,
     pub(crate) bytes: usize,
@@ -54,8 +56,8 @@ impl WriteBatch {
     }
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
 /// Summary returned after a successful batch commit.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct CommitStats {
     /// Records published.
     pub records: usize,

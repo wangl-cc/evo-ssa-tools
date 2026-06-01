@@ -1,11 +1,10 @@
+//! Ordered lookup implementation and reusable lookup-session state.
+
 use crate::{
     error::{Error, Result},
-    format::{DecodedBlock, shard_for_key},
+    format::{DecodedBlock, ShardPolicy},
     options::ValueLayout,
-    state::{
-        SegmentState, ShardState, find_block_index, is_block_miss_error, load_segment_block,
-        load_segment_block_reusing,
-    },
+    state::{SegmentState, ShardState},
     store::Store,
 };
 
@@ -92,21 +91,15 @@ impl OrderedLookup {
         F: FnMut(usize, Option<&[u8]>),
     {
         let state = self.store.inner.state.read();
+        let shard_policy = ShardPolicy::new(
+            self.store.inner.options.shard_count,
+            self.store.inner.options.shard_key_offset,
+        );
         let mut start = 0usize;
         while start < keys.len() {
-            let shard_id = shard_for_key(
-                keys[start].as_ref(),
-                self.store.inner.options.shard_count,
-                self.store.inner.options.shard_key_offset,
-            );
+            let shard_id = shard_policy.shard_for_key(keys[start].as_ref());
             let mut end = start + 1;
-            while end < keys.len()
-                && shard_for_key(
-                    keys[end].as_ref(),
-                    self.store.inner.options.shard_count,
-                    self.store.inner.options.shard_key_offset,
-                ) == shard_id
-            {
+            while end < keys.len() && shard_policy.shard_for_key(keys[end].as_ref()) == shard_id {
                 end += 1;
             }
 
@@ -210,7 +203,7 @@ fn fetch_from_shard_with_state(
         state.loaded_block = None;
     }
 
-    let block_index = find_block_index(segment, key);
+    let block_index = segment.find_block_index(key);
     let block = if let Some(state) = lookup_state.as_deref_mut() {
         if let Some(loaded) = state.loaded_block.as_ref()
             && state.current_block_index == Some(block_index)
@@ -219,15 +212,9 @@ fn fetch_from_shard_with_state(
         {
             None
         } else {
-            match load_segment_block(
-                segment,
-                block_index,
-                key_len,
-                value_layout,
-                verify_block_checksums,
-            ) {
+            match segment.load_block(block_index, key_len, value_layout, verify_block_checksums) {
                 Ok(block) => state.loaded_block = Some(block),
-                Err(error) if is_block_miss_error(&error) => {
+                Err(error) if error.is_cache_miss_corruption() => {
                     state.current_block_index = Some(block_index);
                     state.loaded_block = None;
                     return Ok(None);
@@ -237,15 +224,9 @@ fn fetch_from_shard_with_state(
             None
         }
     } else {
-        match load_segment_block(
-            segment,
-            block_index,
-            key_len,
-            value_layout,
-            verify_block_checksums,
-        ) {
+        match segment.load_block(block_index, key_len, value_layout, verify_block_checksums) {
             Ok(block) => Some(block),
-            Err(error) if is_block_miss_error(&error) => return Ok(None),
+            Err(error) if error.is_cache_miss_corruption() => return Ok(None),
             Err(error) => return Err(error),
         }
     };
@@ -255,15 +236,11 @@ fn fetch_from_shard_with_state(
             .loaded_block
             .as_ref()
             .expect("lookup state block should exist"),
-        (_, Some(block)) => return Ok(find_value_in_block(&block, key, key_len)),
+        (_, Some(block)) => return Ok(block.find_value(key)),
         _ => unreachable!(),
     };
 
-    Ok(find_value_in_block(block, key, key_len))
-}
-
-fn find_value_in_block(block: &DecodedBlock, key: &[u8], key_len: usize) -> Option<Vec<u8>> {
-    block.find_value(key, key_len)
+    Ok(block.find_value(key))
 }
 
 fn process_shard_keys<K, F>(
@@ -317,7 +294,7 @@ where
 
         let block = match ensure_loaded_block(segment, lookup_state, block_index, options) {
             Ok(block) => block,
-            Err(error) if is_block_miss_error(&error) => {
+            Err(error) if error.is_cache_miss_corruption() => {
                 let block_end = block_end_from_index(segment, block_index, keys, key_index);
                 for offset in key_index..block_end {
                     visitor(base_index + offset, None);
@@ -344,7 +321,6 @@ where
             block,
             &keys[key_index..block_end],
             base_index + key_index,
-            options.key_len,
             visitor,
         );
         key_index = block_end;
@@ -380,17 +356,12 @@ where
     block_end
 }
 
-fn process_block_keys<K, F>(
-    block: &DecodedBlock,
-    keys: &[K],
-    base_index: usize,
-    key_len: usize,
-    visitor: &mut F,
-) where
+fn process_block_keys<K, F>(block: &DecodedBlock, keys: &[K], base_index: usize, visitor: &mut F)
+where
     K: AsRef<[u8]>,
     F: FnMut(usize, Option<&[u8]>),
 {
-    let mut records = block.records(key_len).peekable();
+    let mut records = block.records().peekable();
 
     for (offset, key) in keys.iter().enumerate() {
         let key = key.as_ref();
@@ -453,7 +424,7 @@ fn initial_block_index(
         }
     }
 
-    find_block_index(segment, key)
+    segment.find_block_index(key)
 }
 
 fn reset_segment_if_needed(lookup_state: &mut ShardLookupState, segment_index: usize) {
@@ -480,8 +451,7 @@ fn ensure_loaded_block<'a>(
             .take()
             .map(DecodedBlock::into_bytes)
             .unwrap_or_default();
-        lookup_state.loaded_block = Some(load_segment_block_reusing(
-            segment,
+        lookup_state.loaded_block = Some(segment.load_block_reusing(
             block_index,
             options.key_len,
             options.value_layout,

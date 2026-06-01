@@ -1,3 +1,5 @@
+//! Bounds-checked little-endian readers for fixed on-disk records.
+
 use crate::error::{Error, Result};
 
 pub(crate) fn read_u32(bytes: &[u8], cursor: &mut usize) -> Result<u32> {
