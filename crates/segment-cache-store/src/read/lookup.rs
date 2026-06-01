@@ -304,7 +304,10 @@ where
     K: AsRef<[u8]>,
     F: FnMut(usize, Option<&[u8]>),
 {
-    let mut records = block.records().peekable();
+    let start_index = keys
+        .first()
+        .map_or(0, |key| block.lower_bound_index(key.as_ref()));
+    let mut records = block.records_from(start_index).peekable();
 
     for (offset, key) in keys.iter().enumerate() {
         let key = key.as_ref();

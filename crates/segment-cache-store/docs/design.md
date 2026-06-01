@@ -79,7 +79,7 @@ The manifest stores:
 - target block size used by the most recent writer
 - shard algorithm version
 - next segment id
-- visible segments for each shard
+- visible segments for each shard, including file length and a CRC32C fingerprint for sync/offline validation
 
 Segments on disk that are not referenced by the manifest are ignored.
 
@@ -98,9 +98,11 @@ target_block_size=<usize>
 shard_algorithm=lexicographic-prefix-v1
 next_segment_id=<u64>
 [shard 0]
-segment<TAB>file_name<TAB>min_key_hex<TAB>max_key_hex<TAB>record_count<TAB>created_at_unix_millis
+segment<TAB>file_name<TAB>min_key_hex<TAB>max_key_hex<TAB>record_count<TAB>created_at_unix_millis<TAB>file_len<TAB>file_crc32c_hex
 ...
 ```
+
+On open, the store rejects malformed manifests, duplicate segment filenames, invalid segment filenames, and `next_segment_id` values that could reuse an existing segment filename. For referenced segments, normal open validates the file length, footer, block index, and manifest footer metadata. The full-file CRC32C is recorded for stable file identity during sync or offline validation; it is not used as the normal open gate because that would turn one corrupted data block into a whole-segment miss instead of preserving block-local corruption semantics.
 
 ## Segment File Layout
 
@@ -322,6 +324,7 @@ This store follows cache semantics:
 - orphan temp file: ignored
 - orphan segment not referenced by manifest: ignored
 - missing segment referenced by manifest: behaves like missing keyspace
+- referenced segment with the wrong file length or mismatched footer metadata: ignored
 
 The store is allowed to forget data. It is not allowed to return wrong data.
 
@@ -333,7 +336,7 @@ The current shard algorithm uses lexicographic prefix partitioning rather than h
 
 This preserves the natural locality of ordered key streams. Hash-based sharding destroyed that locality and hurt ordered lookup performance significantly.
 
-The prefix begins at `StoreOptions::shard_key_offset`. The default skips a leading 16-byte namespace/version prefix, which avoids putting every record in shard 0 when the first key fields are constant. Stores persist the shard key offset in the manifest because changing it would change shard assignment.
+The prefix begins at `StoreOptions::shard_key_offset`. The default is `0`, which is valid for every non-empty key length and is the least surprising behavior for a standalone low-level store. Workloads with a fixed namespace/version prefix should set `with_shard_key_offset(...)` to the first byte of the varying ordered key fields. Stores persist the shard key offset in the manifest because changing it would change shard assignment.
 
 ### Sparse In-Memory Block Index
 

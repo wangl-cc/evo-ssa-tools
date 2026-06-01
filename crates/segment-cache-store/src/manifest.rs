@@ -7,11 +7,14 @@
 //! owns manifest I/O; segment file code only consumes the resulting entries.
 
 use std::{
+    collections::BTreeSet,
     fs::{self, File},
-    io::Write,
+    io::{Read, Write},
     path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
+
+use crc32c::crc32c_append;
 
 use crate::{
     error::{Error, Result},
@@ -90,17 +93,20 @@ pub(crate) struct SegmentManifestEntry {
     pub max_key: Vec<u8>,
     pub record_count: u64,
     pub created_at_unix_millis: u128,
+    pub file_fingerprint: SegmentFileFingerprint,
 }
 
 impl SegmentManifestEntry {
     fn encode_line(&self) -> String {
         format!(
-            "segment\t{}\t{}\t{}\t{}\t{}",
+            "segment\t{}\t{}\t{}\t{}\t{}\t{}\t{:08x}",
             self.file_name,
             HexBytes::encode(&self.min_key),
             HexBytes::encode(&self.max_key),
             self.record_count,
             self.created_at_unix_millis,
+            self.file_fingerprint.len,
+            self.file_fingerprint.crc32c,
         )
     }
 
@@ -124,6 +130,12 @@ impl SegmentManifestEntry {
         let Some(created_at_unix_millis) = fields.next() else {
             return manifest_parse("missing segment creation time");
         };
+        let Some(file_len) = fields.next() else {
+            return manifest_parse("missing segment file length");
+        };
+        let Some(file_crc32c) = fields.next() else {
+            return manifest_parse("missing segment file checksum");
+        };
         if fields.next().is_some() {
             return manifest_parse("too many segment fields");
         }
@@ -139,7 +151,60 @@ impl SegmentManifestEntry {
                     reason: "invalid segment creation time".to_owned(),
                 }
             })?,
+            file_fingerprint: SegmentFileFingerprint {
+                len: file_len.parse().map_err(|_| Error::ManifestParse {
+                    reason: "invalid segment file length".to_owned(),
+                })?,
+                crc32c: u32::from_str_radix(file_crc32c, 16).map_err(|_| Error::ManifestParse {
+                    reason: "invalid segment file checksum".to_owned(),
+                })?,
+            },
         })
+    }
+
+    pub(crate) fn matches_segment_footer(
+        &self,
+        min_key: &[u8],
+        max_key: &[u8],
+        record_count: u64,
+    ) -> bool {
+        self.min_key == min_key && self.max_key == max_key && self.record_count == record_count
+    }
+}
+
+/// Stable identity metadata for an immutable segment file.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct SegmentFileFingerprint {
+    pub len: u64,
+    pub crc32c: u32,
+}
+
+impl SegmentFileFingerprint {
+    pub(crate) fn read_len_from_path(path: &Path) -> Result<Option<u64>> {
+        match fs::metadata(path) {
+            Ok(metadata) => Ok(Some(metadata.len())),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    pub(crate) fn read_from_path(path: &Path) -> Result<Option<Self>> {
+        let mut file = match File::open(path) {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error.into()),
+        };
+        let len = file.metadata()?.len();
+        let mut crc32c = 0;
+        let mut buffer = [0u8; 64 * 1024];
+        loop {
+            let read = file.read(&mut buffer)?;
+            if read == 0 {
+                break;
+            }
+            crc32c = crc32c_append(crc32c, &buffer[..read]);
+        }
+        Ok(Some(Self { len, crc32c }))
     }
 }
 
@@ -254,12 +319,32 @@ impl StoreManifest {
                 reason: "shards_len",
             });
         }
+        let mut seen_files = BTreeSet::new();
+        let mut max_segment_id: Option<u64> = None;
         for shard in &self.shards {
             let mut previous_max: Option<&[u8]> = None;
             for entry in shard {
                 self.validate_segment_entry(entry, previous_max)?;
+                let Some(segment_id) = segment_id_from_file_name(&entry.file_name) else {
+                    return Err(Error::ManifestMismatch {
+                        reason: "segment_file_name",
+                    });
+                };
+                if !seen_files.insert(entry.file_name.as_str()) {
+                    return Err(Error::ManifestMismatch {
+                        reason: "duplicate_segment_file",
+                    });
+                }
+                max_segment_id = Some(max_segment_id.map_or(segment_id, |max| max.max(segment_id)));
                 previous_max = Some(&entry.max_key);
             }
+        }
+        if let Some(max_segment_id) = max_segment_id
+            && self.next_segment_id <= max_segment_id
+        {
+            return Err(Error::ManifestMismatch {
+                reason: "next_segment_id",
+            });
         }
         Ok(())
     }
@@ -446,6 +531,14 @@ pub(crate) fn next_segment_file_name(segment_id: u64) -> String {
     format!("segment-{segment_id:020}.seg")
 }
 
+fn segment_id_from_file_name(file_name: &str) -> Option<u64> {
+    file_name
+        .strip_prefix("segment-")?
+        .strip_suffix(".seg")?
+        .parse()
+        .ok()
+}
+
 pub(crate) fn now_unix_millis() -> u128 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -497,19 +590,27 @@ next_segment_id=0
                 manifest_with_segment_line("not-segment"),
                 manifest_with_segment_line("segment\tfile"),
                 manifest_with_segment_line(
-                    "segment\tfile\t00000000000000000000000000000000\t\
-                     00000000000000000000000000000001\tnot-a-count\t0",
+                    "segment\tsegment-00000000000000000000.seg\t00000000000000000000000000000000\t\
+                     00000000000000000000000000000001\tnot-a-count\t0\t1\t00000000",
                 ),
                 manifest_with_segment_line(
-                    "segment\tfile\t00000000000000000000000000000000\t\
-                     00000000000000000000000000000001\t1\tnot-a-time",
+                    "segment\tsegment-00000000000000000000.seg\t00000000000000000000000000000000\t\
+                     00000000000000000000000000000001\t1\tnot-a-time\t1\t00000000",
                 ),
                 manifest_with_segment_line(
-                    "segment\tfile\txyz\t00000000000000000000000000000001\t1\t0",
+                    "segment\tsegment-00000000000000000000.seg\txyz\t00000000000000000000000000000001\t1\t0\t1\t00000000",
                 ),
                 manifest_with_segment_line(
-                    "segment\tfile\t00000000000000000000000000000000\t\
-                     00000000000000000000000000000001\t1\t0\textra",
+                    "segment\tsegment-00000000000000000000.seg\t00000000000000000000000000000000\t\
+                     00000000000000000000000000000001\t1\t0\t1\tnot-crc",
+                ),
+                manifest_with_segment_line(
+                    "segment\tsegment-00000000000000000000.seg\t00000000000000000000000000000000\t\
+                     00000000000000000000000000000001\t1\t0\tnot-len\t00000000",
+                ),
+                manifest_with_segment_line(
+                    "segment\tsegment-00000000000000000000.seg\t00000000000000000000000000000000\t\
+                     00000000000000000000000000000001\t1\t0\t1\t00000000\textra",
                 ),
             ] {
                 assert!(matches!(
@@ -537,7 +638,7 @@ shard_key_offset=16
 target_block_size=256
 shard_algorithm=lexicographic-prefix-v1
 next_segment_id=0
-segment\tfile\t00000000000000000000000000000000\t00000000000000000000000000000001\t1\t0
+	segment\tsegment-00000000000000000000.seg\t00000000000000000000000000000000\t00000000000000000000000000000001\t1\t0\t1\t00000000
 "
                 ),
                 Err(Error::ManifestParse { .. })
@@ -551,11 +652,13 @@ segment\tfile\t00000000000000000000000000000000\t0000000000000000000000000000000
         #[test]
         fn rejects_invalid_segment_ranges() {
             let reversed = StoreManifest::parse(&manifest_with_segment_line(
-                "segment\tfile\t00000000000000000000000000000002\t\
-             00000000000000000000000000000001\t1\t0",
+                "segment\tsegment-00000000000000000000.seg\t00000000000000000000000000000002\t\
+             00000000000000000000000000000001\t1\t0\t1\t00000000",
             ))
             .expect("manifest syntax should parse");
-            let options = StoreOptions::new("", 16).with_shard_count(1);
+            let options = StoreOptions::new("", 16)
+                .with_shard_count(1)
+                .with_shard_key_offset(16);
             assert!(matches!(
                 reversed.validate_options(&options),
                 Err(Error::ManifestMismatch {
@@ -564,8 +667,8 @@ segment\tfile\t00000000000000000000000000000000\t0000000000000000000000000000000
             ));
 
             let mut overlapping = StoreManifest::parse(&manifest_with_segment_line(
-                "segment\tfile\t00000000000000000000000000000000\t\
-             00000000000000000000000000000001\t1\t0",
+                "segment\tsegment-00000000000000000000.seg\t00000000000000000000000000000000\t\
+             00000000000000000000000000000001\t1\t0\t1\t00000000",
             ))
             .expect("manifest syntax should parse");
             let duplicate = overlapping.shards[0][0].clone();

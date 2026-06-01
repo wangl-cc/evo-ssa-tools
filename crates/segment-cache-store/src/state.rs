@@ -2,7 +2,7 @@
 
 use std::{fs::File, sync::Arc};
 
-use parking_lot::RwLock;
+use parking_lot::{Mutex, RwLock};
 
 use crate::{
     error::Result,
@@ -15,6 +15,7 @@ use crate::{
 
 pub(crate) struct StoreInner {
     pub(crate) options: StoreOptions,
+    pub(crate) commit_lock: Mutex<()>,
     pub(crate) state: RwLock<StoreState>,
 }
 

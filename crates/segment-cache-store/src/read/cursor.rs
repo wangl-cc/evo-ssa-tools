@@ -1,6 +1,6 @@
 //! Streaming ordered range cursors.
 
-use std::sync::Arc;
+use std::{cmp::Ordering, collections::BinaryHeap, sync::Arc};
 
 use crate::{
     error::Result, options::ValueLayout, segment::block::DecodedBlock, state::SegmentState,
@@ -19,7 +19,9 @@ impl RangeCursor {
                 active_cursor_index: 0,
             }
         } else {
-            MergeMode::KWayMerge
+            MergeMode::KWayMerge {
+                heap: MergeHeap::from_cursors(&cursors),
+            }
         };
         Self {
             cursors,
@@ -47,13 +49,7 @@ impl RangeCursor {
 
     fn next_cursor_index(&mut self) -> Option<usize> {
         match &mut self.merge_mode {
-            MergeMode::KWayMerge => self
-                .cursors
-                .iter()
-                .enumerate()
-                .filter_map(|(index, cursor)| cursor.current_key().map(|key| (index, key)))
-                .min_by(|(_, left), (_, right)| left.cmp(right))
-                .map(|(index, _)| index),
+            MergeMode::KWayMerge { heap } => heap.pop_cursor_index(),
             MergeMode::Concatenate {
                 active_cursor_index,
             } => {
@@ -69,13 +65,19 @@ impl RangeCursor {
     }
 
     fn advance_active_cursor(&mut self, cursor_index: usize) {
-        if let MergeMode::Concatenate {
-            active_cursor_index,
-        } = &mut self.merge_mode
-            && *active_cursor_index == cursor_index
-            && self.cursors[cursor_index].current_key().is_none()
-        {
-            *active_cursor_index += 1;
+        match &mut self.merge_mode {
+            MergeMode::KWayMerge { heap } => {
+                heap.push_cursor(cursor_index, &self.cursors[cursor_index]);
+            }
+            MergeMode::Concatenate {
+                active_cursor_index,
+            } => {
+                if *active_cursor_index == cursor_index
+                    && self.cursors[cursor_index].current_key().is_none()
+                {
+                    *active_cursor_index += 1;
+                }
+            }
         }
     }
 }
@@ -91,10 +93,66 @@ impl Iterator for RangeCursor {
     }
 }
 
-#[derive(Clone, Copy)]
 enum MergeMode {
-    KWayMerge,
+    KWayMerge { heap: MergeHeap },
     Concatenate { active_cursor_index: usize },
+}
+
+struct MergeHeap {
+    entries: BinaryHeap<MergeEntry>,
+}
+
+impl MergeHeap {
+    fn from_cursors(cursors: &[SegmentRangeCursor]) -> Self {
+        let mut heap = Self {
+            entries: BinaryHeap::new(),
+        };
+        for (index, cursor) in cursors.iter().enumerate() {
+            heap.push_cursor(index, cursor);
+        }
+        heap
+    }
+
+    fn push_cursor(&mut self, cursor_index: usize, cursor: &SegmentRangeCursor) {
+        if let Some(key) = cursor.current_key() {
+            self.entries.push(MergeEntry {
+                key: key.to_vec(),
+                cursor_index,
+            });
+        }
+    }
+
+    fn pop_cursor_index(&mut self) -> Option<usize> {
+        self.entries.pop().map(|entry| entry.cursor_index)
+    }
+}
+
+struct MergeEntry {
+    key: Vec<u8>,
+    cursor_index: usize,
+}
+
+impl Eq for MergeEntry {}
+
+impl PartialEq for MergeEntry {
+    fn eq(&self, other: &Self) -> bool {
+        self.key == other.key && self.cursor_index == other.cursor_index
+    }
+}
+
+impl Ord for MergeEntry {
+    fn cmp(&self, other: &Self) -> Ordering {
+        other
+            .key
+            .cmp(&self.key)
+            .then_with(|| other.cursor_index.cmp(&self.cursor_index))
+    }
+}
+
+impl PartialOrd for MergeEntry {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
 }
 
 pub(crate) struct SegmentRangeCursor {

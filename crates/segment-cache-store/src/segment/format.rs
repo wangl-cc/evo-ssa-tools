@@ -96,7 +96,9 @@ impl BlockIndexCodec {
                 version: footer.version,
             });
         }
-        self.decode_entries(&bytes)
+        let entries = self.decode_entries(&bytes)?;
+        self.validate_entries(&entries, footer)?;
+        Ok(entries)
     }
 
     fn decode_entries(&self, bytes: &[u8]) -> Result<Vec<BlockIndexEntry>> {
@@ -111,7 +113,63 @@ impl BlockIndexCodec {
                 record_count: read_u32(bytes, &mut cursor)?,
             });
         }
+        if cursor != bytes.len() {
+            return Err(Error::UnsupportedFormatVersion { version: 0 });
+        }
         Ok(entries)
+    }
+
+    fn validate_entries(&self, entries: &[BlockIndexEntry], footer: &SegmentFooter) -> Result<()> {
+        if entries.is_empty() || footer.record_count == 0 {
+            return Err(Error::UnsupportedFormatVersion {
+                version: footer.version,
+            });
+        }
+        if entries[0].first_key != footer.min_key {
+            return Err(Error::UnsupportedFormatVersion {
+                version: footer.version,
+            });
+        }
+
+        let mut expected_offset = 0u64;
+        let mut decoded_records = 0u64;
+        let mut previous_first_key: Option<&[u8]> = None;
+        for entry in entries {
+            if entry.block_len == 0
+                || entry.record_count == 0
+                || entry.block_offset != expected_offset
+                || entry.first_key.len() != self.key_len
+                || entry.first_key.as_slice() > footer.max_key.as_slice()
+            {
+                return Err(Error::UnsupportedFormatVersion {
+                    version: footer.version,
+                });
+            }
+            if let Some(previous_first_key) = previous_first_key
+                && entry.first_key.as_slice() <= previous_first_key
+            {
+                return Err(Error::UnsupportedFormatVersion {
+                    version: footer.version,
+                });
+            }
+            expected_offset = expected_offset
+                .checked_add(u64::from(entry.block_len))
+                .ok_or(Error::UnsupportedFormatVersion {
+                    version: footer.version,
+                })?;
+            decoded_records = decoded_records
+                .checked_add(u64::from(entry.record_count))
+                .ok_or(Error::UnsupportedFormatVersion {
+                    version: footer.version,
+                })?;
+            previous_first_key = Some(entry.first_key.as_slice());
+        }
+        if expected_offset != footer.block_index_offset || decoded_records != footer.record_count {
+            return Err(Error::UnsupportedFormatVersion {
+                version: footer.version,
+            });
+        }
+        Ok(())
     }
 }
 
@@ -382,6 +440,7 @@ pub(crate) struct OpenedSegment {
     pub file: File,
     pub min_key: Vec<u8>,
     pub max_key: Vec<u8>,
+    pub record_count: u64,
     pub block_index: Vec<BlockIndexEntry>,
 }
 
@@ -408,6 +467,7 @@ impl OpenedSegment {
             file,
             min_key: footer.min_key,
             max_key: footer.max_key,
+            record_count: footer.record_count,
             block_index,
         }))
     }

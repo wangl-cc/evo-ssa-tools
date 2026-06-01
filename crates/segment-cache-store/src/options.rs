@@ -47,7 +47,7 @@ impl StoreOptions {
             key_len,
             value_layout: ValueLayout::Variable,
             shard_count: 8,
-            shard_key_offset: 16,
+            shard_key_offset: 0,
             codec_version: 0,
             verify_block_checksums: true,
             target_block_size: 16 * 1024,

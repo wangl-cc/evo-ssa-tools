@@ -28,6 +28,9 @@ pub enum Error {
     )]
     OutOfOrderAppend { shard: usize },
 
+    #[error("segment file already exists: {file_name}")]
+    SegmentFileAlreadyExists { file_name: String },
+
     #[error("store options do not match existing manifest: {reason}")]
     ManifestMismatch { reason: &'static str },
 

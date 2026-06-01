@@ -268,8 +268,11 @@ impl DecodedBlock {
         }
     }
 
-    pub(crate) fn records(&self) -> impl Iterator<Item = ParsedRecord<'_>> {
-        (0..self.record_count).filter_map(|index| self.record_at(index).ok())
+    pub(crate) fn records_from(
+        &self,
+        start_index: usize,
+    ) -> impl Iterator<Item = ParsedRecord<'_>> {
+        (start_index..self.record_count).filter_map(|index| self.record_at(index).ok())
     }
 
     pub(crate) fn record_count(&self) -> usize {

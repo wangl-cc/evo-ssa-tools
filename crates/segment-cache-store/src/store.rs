@@ -7,7 +7,8 @@ use parking_lot::RwLock;
 use crate::{
     error::{Error, Result},
     manifest::{
-        SegmentManifestEntry, StoreManifest, StorePaths, next_segment_file_name, now_unix_millis,
+        SegmentFileFingerprint, SegmentManifestEntry, StoreManifest, StorePaths,
+        next_segment_file_name, now_unix_millis,
     },
     options::StoreOptions,
     read::{
@@ -51,14 +52,30 @@ impl Store {
                 .map(|entry| entry.max_key.clone());
             for entry in &manifest.shards[shard_id] {
                 let path = paths.final_segment(shard_id, &entry.file_name);
-                if let Some(segment) = OpenedSegment::open(path, SegmentOpenOptions {
+                let Some(file_len) = SegmentFileFingerprint::read_len_from_path(&path)? else {
+                    continue;
+                };
+                if file_len != entry.file_fingerprint.len {
+                    continue;
+                }
+                let segment = match OpenedSegment::open(path, SegmentOpenOptions {
                     expected_shard: shard_id,
                     expected_key_len: options.key_len,
                     expected_value_layout: options.value_layout,
                     expected_codec_version: options.codec_version,
                 })? {
-                    segment_states.push(Arc::new(SegmentState::from_opened(segment)));
-                }
+                    Some(segment)
+                        if entry.matches_segment_footer(
+                            &segment.min_key,
+                            &segment.max_key,
+                            segment.record_count,
+                        ) =>
+                    {
+                        segment
+                    }
+                    _ => continue,
+                };
+                segment_states.push(Arc::new(SegmentState::from_opened(segment)));
             }
             shards.push(ShardState {
                 segments: segment_states,
@@ -69,6 +86,7 @@ impl Store {
         Ok(Self {
             inner: Arc::new(StoreInner {
                 options,
+                commit_lock: parking_lot::Mutex::new(()),
                 state: RwLock::new(StoreState { manifest, shards }),
             }),
         })
@@ -86,6 +104,7 @@ impl Store {
         if batch.is_empty() {
             return Ok(CommitStats::default());
         }
+        let _commit_guard = self.inner.commit_lock.lock();
 
         let mut sharded = vec![Vec::new(); self.inner.options.shard_count];
         let shard_policy = self.shard_policy();
@@ -97,29 +116,35 @@ impl Store {
         }
 
         let mut stats = CommitStats::default();
-        let mut state = self.inner.state.write();
-        let mut next_segment_id = state.manifest.next_segment_id;
-        let mut manifest = state.manifest.clone();
+        let (mut next_segment_id, mut manifest) = {
+            let state = self.inner.state.read();
+            for (shard_id, shard_entries) in sharded.iter_mut().enumerate() {
+                if shard_entries.is_empty() {
+                    continue;
+                }
+                if batch.sorted {
+                    if !is_sorted_by_key(shard_entries) {
+                        shard_entries.sort_by(|left, right| left.0.cmp(&right.0));
+                    }
+                } else {
+                    shard_entries.sort_by(|left, right| left.0.cmp(&right.0));
+                }
+                if has_duplicate_keys(shard_entries) {
+                    return Err(Error::DuplicateKeyInBatch);
+                }
+                if let Some(last_max) = state.shards[shard_id].last_max_key.as_ref()
+                    && shard_entries[0].0.as_slice() <= last_max.as_slice()
+                {
+                    return Err(Error::OutOfOrderAppend { shard: shard_id });
+                }
+            }
+            (state.manifest.next_segment_id, state.manifest.clone())
+        };
         let mut new_segments = Vec::new();
 
         for (shard_id, shard_entries) in sharded.iter_mut().enumerate() {
             if shard_entries.is_empty() {
                 continue;
-            }
-            if batch.sorted {
-                if !is_sorted_by_key(shard_entries) {
-                    shard_entries.sort_by(|left, right| left.0.cmp(&right.0));
-                }
-            } else {
-                shard_entries.sort_by(|left, right| left.0.cmp(&right.0));
-            }
-            if has_duplicate_keys(shard_entries) {
-                return Err(Error::DuplicateKeyInBatch);
-            }
-            if let Some(last_max) = state.shards[shard_id].last_max_key.as_ref()
-                && shard_entries[0].0.as_slice() <= last_max.as_slice()
-            {
-                return Err(Error::OutOfOrderAppend { shard: shard_id });
             }
 
             for range in flush_ranges(
@@ -135,6 +160,9 @@ impl Store {
                 let paths = StorePaths::new(&self.inner.options.root);
                 let temp_path = paths.temp_segment(shard_id, segment_id);
                 let final_path = paths.final_segment(shard_id, &file_name);
+                if final_path.exists() {
+                    return Err(Error::SegmentFileAlreadyExists { file_name });
+                }
                 let (footer, _block_index) = SegmentWriter::new(
                     &temp_path,
                     shard_id,
@@ -144,6 +172,8 @@ impl Store {
                     self.inner.options.target_block_size,
                 )
                 .write(segment_entries)?;
+                let file_fingerprint = SegmentFileFingerprint::read_from_path(&temp_path)?
+                    .expect("freshly written segment should exist");
                 fs::rename(&temp_path, &final_path)?;
                 paths.sync_segment_dir(shard_id)?;
                 let opened = OpenedSegment::open(final_path.clone(), SegmentOpenOptions {
@@ -160,6 +190,7 @@ impl Store {
                     max_key: footer.max_key.clone(),
                     record_count: footer.record_count,
                     created_at_unix_millis: now_unix_millis(),
+                    file_fingerprint,
                 });
                 new_segments.push((shard_id, segment_state, footer.max_key));
                 stats.records += segment_entries.len();
@@ -175,6 +206,7 @@ impl Store {
         manifest.target_block_size = self.inner.options.target_block_size;
         manifest.store(&self.inner.options.root)?;
 
+        let mut state = self.inner.state.write();
         for (shard_id, segment, max_key) in new_segments {
             state.shards[shard_id].segments.push(segment);
             state.shards[shard_id].last_max_key = Some(max_key);
