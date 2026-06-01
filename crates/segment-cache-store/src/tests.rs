@@ -8,7 +8,7 @@ use std::{
 use crate::{
     CommitStats, Error, Result, Store, StoreOptions, ValueLayout,
     format::{FOOTER_MAGIC, ShardPolicy},
-    manifest::StorePaths,
+    manifest::{StoreManifest, StorePaths},
 };
 
 fn options(tempdir: &tempfile::TempDir) -> StoreOptions {
@@ -106,6 +106,22 @@ fn owned_batch_entries_round_trip() -> Result<()> {
 }
 
 #[test]
+fn empty_batch_flush_and_batch_len_are_noops() -> Result<()> {
+    let tempdir = tempfile::tempdir()?;
+    let store = Store::open(options(&tempdir))?;
+    let mut batch = store.begin_batch();
+    assert_eq!(batch.len(), 0);
+    batch.push(&make_key(1, 0, 0), &make_value(1, 8))?;
+    assert_eq!(batch.len(), 1);
+
+    let empty_stats = store.commit_batch(store.begin_batch())?;
+    assert_eq!(empty_stats, CommitStats::default());
+    store.flush()?;
+    assert_eq!(store.iter_all()?.count(), 0);
+    Ok(())
+}
+
+#[test]
 fn ordered_probe_matches_fetch_hit_pattern() -> Result<()> {
     let tempdir = tempfile::tempdir()?;
     let store = Store::open(options(&tempdir))?;
@@ -135,6 +151,46 @@ fn ordered_probe_matches_fetch_hit_pattern() -> Result<()> {
 }
 
 #[test]
+fn ordered_lookup_rejects_bad_key_streams() -> Result<()> {
+    let tempdir = tempfile::tempdir()?;
+    let store = Store::open(options(&tempdir))?;
+    let first = make_key(1, 0, 0);
+    let second = make_key(1, 0, 1);
+
+    let error = store
+        .fetch_many_ordered([second.as_slice(), first.as_slice()])
+        .unwrap_err();
+    assert!(matches!(error, Error::UnsortedLookupKeys));
+
+    let short = b"short".as_slice();
+    let error = store.probe_ordered([short]).unwrap_err();
+    assert!(matches!(error, Error::WrongKeyLength { .. }));
+    Ok(())
+}
+
+#[test]
+fn visit_many_ordered_matches_owned_fetch() -> Result<()> {
+    let tempdir = tempfile::tempdir()?;
+    let store = Store::open(options(&tempdir))?;
+    let entries: Vec<_> = (0..8u64)
+        .map(|rep| (make_key(1, 0, rep), make_value(rep as u8, 24)))
+        .collect();
+    commit_entries(&store, &entries, true)?;
+    let key_refs = entries
+        .iter()
+        .map(|(key, _)| key.as_slice())
+        .collect::<Vec<_>>();
+
+    let mut visited = vec![None; key_refs.len()];
+    store.visit_many_ordered(key_refs.iter().copied(), |index, value| {
+        visited[index] = value.map(ToOwned::to_owned);
+    })?;
+
+    assert_eq!(visited, store.fetch_many_ordered(key_refs.iter().copied())?);
+    Ok(())
+}
+
+#[test]
 fn ordered_lookup_session_can_restart_from_earlier_block() -> Result<()> {
     let tempdir = tempfile::tempdir()?;
     let store = Store::open(options(&tempdir))?;
@@ -150,6 +206,29 @@ fn ordered_lookup_session_can_restart_from_earlier_block() -> Result<()> {
 
     assert_eq!(first, second);
     assert_eq!(second.into_iter().flatten().count(), entries.len());
+    Ok(())
+}
+
+#[test]
+fn ordered_lookup_reports_misses_before_between_and_after_segments() -> Result<()> {
+    let tempdir = tempfile::tempdir()?;
+    let store = Store::open(options(&tempdir).with_flush_threshold_records(1))?;
+    let entries = vec![
+        (make_key(1, 0, 1), make_value(1, 8)),
+        (make_key(1, 0, 3), make_value(3, 8)),
+    ];
+    commit_entries(&store, &entries, true)?;
+    let keys = [
+        make_key(1, 0, 0),
+        make_key(1, 0, 1),
+        make_key(1, 0, 2),
+        make_key(1, 0, 3),
+        make_key(1, 0, 4),
+    ];
+
+    assert_eq!(store.probe_ordered(keys.iter().map(Vec::as_slice))?, vec![
+        false, true, false, true, false
+    ]);
     Ok(())
 }
 
@@ -171,6 +250,67 @@ fn range_iteration_returns_globally_sorted_records() -> Result<()> {
     let range = range?;
     assert_eq!(range.len(), 2);
     assert!(range.windows(2).all(|window| window[0].0 < window[1].0));
+    Ok(())
+}
+
+#[test]
+fn visit_range_matches_owned_range() -> Result<()> {
+    let tempdir = tempfile::tempdir()?;
+    let store = Store::open(options(&tempdir))?;
+    let entries: Vec<_> = (0..8u64)
+        .map(|rep| (make_key(1, 0, rep), make_value(rep as u8, 8)))
+        .collect();
+    commit_entries(&store, &entries, true)?;
+    let start = make_key(1, 0, 2);
+    let end = make_key(1, 0, 6);
+    let owned = store.range(&start, &end)?.collect::<Result<Vec<_>>>()?;
+    let mut visited = Vec::new();
+    store.visit_range(&start, &end, |key, value| {
+        visited.push((key.to_vec(), value.to_vec()));
+    })?;
+
+    assert_eq!(visited, owned);
+    Ok(())
+}
+
+#[test]
+fn range_outside_all_segments_returns_empty() -> Result<()> {
+    let tempdir = tempfile::tempdir()?;
+    let store = Store::open(options(&tempdir))?;
+    commit_entries(
+        &store,
+        &[
+            (make_key(2, 0, 0), make_value(1, 8)),
+            (make_key(3, 0, 0), make_value(2, 8)),
+        ],
+        true,
+    )?;
+
+    assert_eq!(
+        store.range(&make_key(0, 0, 0), &make_key(1, 0, 0))?.count(),
+        0
+    );
+    assert_eq!(
+        store.range(&make_key(4, 0, 0), &make_key(5, 0, 0))?.count(),
+        0
+    );
+    Ok(())
+}
+
+#[test]
+fn overlapping_shard_ranges_iterate_with_k_way_merge() -> Result<()> {
+    let tempdir = tempfile::tempdir()?;
+    let store = Store::open(options(&tempdir).with_shard_key_offset(4))?;
+    let entries = vec![
+        (make_key(1, 0, 0), make_value(1, 8)),
+        (make_key(1, u32::MAX, 0), make_value(2, 8)),
+        (make_key(2, 0, 0), make_value(3, 8)),
+        (make_key(2, u32::MAX, 0), make_value(4, 8)),
+    ];
+    commit_entries(&store, &entries, true)?;
+
+    let iterated = store.iter_all()?.collect::<Result<Vec<_>>>()?;
+    assert_eq!(iterated, entries);
     Ok(())
 }
 
@@ -285,6 +425,118 @@ fn malformed_manifest_is_rejected() -> Result<()> {
 }
 
 #[test]
+fn manifest_option_mismatches_are_rejected() -> Result<()> {
+    let tempdir = tempfile::tempdir()?;
+    let base_options = options(&tempdir);
+    let store = Store::open(base_options.clone())?;
+    commit_entries(&store, &[(make_key(1, 0, 0), make_value(1, 8))], true)?;
+    drop(store);
+
+    for mismatched in [
+        StoreOptions::new(tempdir.path(), 8)
+            .with_shard_count(4)
+            .with_shard_key_offset(8),
+        options(&tempdir).with_fixed_value_len(8),
+        options(&tempdir).with_shard_count(2),
+        options(&tempdir).with_shard_key_offset(0),
+    ] {
+        let error = match Store::open(mismatched) {
+            Ok(_) => panic!("mismatched manifest options should be rejected"),
+            Err(error) => error,
+        };
+        assert!(
+            matches!(
+                error,
+                Error::ManifestMismatch { .. } | Error::UnsupportedFormatVersion { .. }
+            ),
+            "unexpected error: {error:?}"
+        );
+    }
+
+    assert_eq!(Store::open(base_options)?.iter_all()?.count(), 1);
+    Ok(())
+}
+
+#[test]
+fn manifest_parser_rejects_malformed_segment_entries() {
+    for manifest in [
+        manifest_with_segment_line("not-segment"),
+        manifest_with_segment_line("segment\tfile"),
+        manifest_with_segment_line(
+            "segment\tfile\t00000000000000000000000000000000\t\
+             00000000000000000000000000000001\tnot-a-count\t0",
+        ),
+        manifest_with_segment_line(
+            "segment\tfile\t00000000000000000000000000000000\t\
+             00000000000000000000000000000001\t1\tnot-a-time",
+        ),
+        manifest_with_segment_line("segment\tfile\txyz\t00000000000000000000000000000001\t1\t0"),
+        manifest_with_segment_line(
+            "segment\tfile\t00000000000000000000000000000000\t\
+             00000000000000000000000000000001\t1\t0\textra",
+        ),
+    ] {
+        assert!(matches!(
+            StoreManifest::parse(&manifest),
+            Err(Error::ManifestParse { .. })
+        ));
+    }
+}
+
+#[test]
+fn manifest_parser_rejects_invalid_structure_and_ranges() {
+    assert!(matches!(
+        StoreManifest::parse(""),
+        Err(Error::ManifestParse { .. })
+    ));
+    assert!(matches!(
+        StoreManifest::parse(
+            "\
+segment-cache-store manifest v1
+version=1
+key_len=16
+value_layout=variable
+shard_count=1
+shard_key_offset=16
+target_block_size=256
+shard_algorithm=lexicographic-prefix-v1
+next_segment_id=0
+segment\tfile\t00000000000000000000000000000000\t00000000000000000000000000000001\t1\t0
+"
+        ),
+        Err(Error::ManifestParse { .. })
+    ));
+
+    let reversed = StoreManifest::parse(&manifest_with_segment_line(
+        "segment\tfile\t00000000000000000000000000000002\t\
+         00000000000000000000000000000001\t1\t0",
+    ))
+    .expect("manifest syntax should parse");
+    let options =
+        StoreOptions::new(tempfile::tempdir().expect("tempdir").path(), 16).with_shard_count(1);
+    assert!(matches!(
+        reversed.validate_options(&options),
+        Err(Error::ManifestMismatch {
+            reason: "segment_key_range"
+        })
+    ));
+
+    let mut overlapping = StoreManifest::parse(&manifest_with_segment_line(
+        "segment\tfile\t00000000000000000000000000000000\t\
+         00000000000000000000000000000001\t1\t0",
+    ))
+    .expect("manifest syntax should parse");
+    let duplicate = overlapping.shards[0][0].clone();
+    overlapping.shards[0].push(duplicate);
+    assert!(matches!(
+        overlapping.validate_options(&options),
+        Err(Error::ManifestMismatch {
+            reason: "segment_overlap"
+        })
+    ));
+}
+
+#[test]
 fn wrong_length_keys_are_rejected() -> Result<()> {
     let tempdir = tempfile::tempdir()?;
     let store = Store::open(options(&tempdir))?;
@@ -301,31 +553,31 @@ fn wrong_length_keys_are_rejected() -> Result<()> {
 #[test]
 fn invalid_store_options_are_rejected() -> Result<()> {
     let tempdir = tempfile::tempdir()?;
-    let error = match Store::open(StoreOptions::new(tempdir.path(), 16).with_shard_count(0)) {
-        Ok(_) => panic!("zero shards should be rejected"),
-        Err(error) => error,
-    };
-    assert!(matches!(error, Error::InvalidOptions { .. }));
-
-    let error = match Store::open(StoreOptions::new(tempdir.path(), 0)) {
-        Ok(_) => panic!("zero-length keys should be rejected"),
-        Err(error) => error,
-    };
-    assert!(matches!(error, Error::InvalidOptions { .. }));
-
-    let error = match Store::open(StoreOptions::new(tempdir.path(), 16).with_fixed_value_len(0)) {
-        Ok(_) => panic!("zero-length fixed values should be rejected"),
-        Err(error) => error,
-    };
-    assert!(matches!(error, Error::InvalidOptions { .. }));
+    for invalid in [
+        StoreOptions::new(tempdir.path(), 16).with_shard_count(0),
+        StoreOptions::new(tempdir.path(), 16).with_shard_count(usize::MAX),
+        StoreOptions::new(tempdir.path(), 0),
+        StoreOptions::new(tempdir.path(), usize::MAX),
+        StoreOptions::new(tempdir.path(), 16).with_fixed_value_len(0),
+        StoreOptions::new(tempdir.path(), 16).with_fixed_value_len(usize::MAX),
+        StoreOptions::new(tempdir.path(), 16).with_shard_key_offset(17),
+        StoreOptions::new(tempdir.path(), 16).with_flush_threshold_records(0),
+        StoreOptions::new(tempdir.path(), 16).with_flush_threshold_bytes(0),
+    ] {
+        let error = match Store::open(invalid) {
+            Ok(_) => panic!("invalid store options should be rejected"),
+            Err(error) => error,
+        };
+        assert!(matches!(error, Error::InvalidOptions { .. }));
+    }
     Ok(())
 }
 
 #[test]
 fn fixed_value_layout_round_trips_all_read_paths() -> Result<()> {
     let tempdir = tempfile::tempdir()?;
-    let store =
-        Store::open(options(&tempdir).with_value_layout(ValueLayout::Fixed { value_len: 32 }))?;
+    let options = options(&tempdir).with_value_layout(ValueLayout::Fixed { value_len: 32 });
+    let store = Store::open(options.clone())?;
     let entries = vec![
         (make_key(1, 0, 0), make_value(1, 32)),
         (make_key(1, 0, 1), make_value(2, 32)),
@@ -350,6 +602,10 @@ fn fixed_value_layout_round_trips_all_read_paths() -> Result<()> {
     );
     let scanned: Result<Vec<_>> = store.iter_all()?.collect();
     assert_eq!(scanned?, entries);
+    drop(store);
+
+    let reopened = Store::open(options)?;
+    assert_eq!(reopened.iter_all()?.collect::<Result<Vec<_>>>()?, entries);
     Ok(())
 }
 
@@ -415,6 +671,50 @@ fn first_segment_path(store: &Store) -> PathBuf {
     state.shards[shard_id].segments[0].path.clone()
 }
 
+fn first_segment_block_offset(store: &Store, block_index: usize) -> u64 {
+    let state = store.inner.state.read();
+    let segment = state
+        .shards
+        .iter()
+        .flat_map(|shard| &shard.segments)
+        .next()
+        .expect("segment should exist");
+    segment.block_index[block_index].block_offset
+}
+
+fn first_segment_block_index_offset(store: &Store) -> u64 {
+    let state = store.inner.state.read();
+    let segment = state
+        .shards
+        .iter()
+        .flat_map(|shard| &shard.segments)
+        .next()
+        .expect("segment should exist");
+    let last = segment
+        .block_index
+        .last()
+        .expect("segment should have at least one block");
+    last.block_offset + u64::from(last.block_len)
+}
+
+fn manifest_with_segment_line(segment_line: &str) -> String {
+    format!(
+        "\
+segment-cache-store manifest v1
+version=1
+key_len=16
+value_layout=variable
+shard_count=1
+shard_key_offset=16
+target_block_size=256
+shard_algorithm=lexicographic-prefix-v1
+next_segment_id=0
+[shard 0]
+{segment_line}
+"
+    )
+}
+
 #[test]
 fn corrupted_block_checksum_becomes_miss() -> Result<()> {
     let tempdir = tempfile::tempdir()?;
@@ -455,6 +755,38 @@ fn block_checksum_verification_can_be_disabled_for_benchmarks() -> Result<()> {
         .fetch_one(&key)?
         .expect("unchecked read should return corrupted bytes");
     assert_ne!(unchecked_value, value);
+    Ok(())
+}
+
+#[test]
+fn single_shard_store_round_trips_without_shard_prefix() -> Result<()> {
+    let tempdir = tempfile::tempdir()?;
+    let store = Store::open(options(&tempdir).with_shard_count(1))?;
+    let entries = vec![
+        (make_key(1, 0, 0), make_value(1, 8)),
+        (make_key(2, 0, 0), make_value(2, 8)),
+    ];
+    commit_entries(&store, &entries, true)?;
+
+    assert_eq!(store.iter_all()?.collect::<Result<Vec<_>>>()?, entries);
+    Ok(())
+}
+
+#[test]
+fn truncated_segment_file_is_ignored_on_reopen() -> Result<()> {
+    let tempdir = tempfile::tempdir()?;
+    let store = Store::open(options(&tempdir))?;
+    let key = make_key(1, 1, 0);
+    commit_entries(&store, &[(key.clone(), make_value(9, 16))], true)?;
+    let path = first_segment_path(&store);
+    OpenOptions::new()
+        .write(true)
+        .open(path)?
+        .set_len(u64::try_from(FOOTER_MAGIC.len() - 1).expect("magic len"))?;
+
+    let reopened = Store::open(options(&tempdir))?;
+    assert_eq!(reopened.fetch_one(&key)?, None);
+    assert_eq!(reopened.iter_all()?.count(), 0);
     Ok(())
 }
 
@@ -525,6 +857,57 @@ fn malformed_block_becomes_miss_in_all_read_paths() -> Result<()> {
 }
 
 #[test]
+fn corrupted_middle_block_only_loses_that_block() -> Result<()> {
+    let tempdir = tempfile::tempdir()?;
+    let options = options(&tempdir).with_target_block_size(96);
+    let store = Store::open(options.clone())?;
+    let entries: Vec<_> = (0..3u64)
+        .map(|rep| (make_key(1, 1, rep), make_value(rep as u8, 160)))
+        .collect();
+    commit_entries(&store, &entries, true)?;
+    let path = first_segment_path(&store);
+    let second_block_offset = first_segment_block_offset(&store, 1);
+    let mut file = OpenOptions::new().read(true).write(true).open(path)?;
+    file.seek(SeekFrom::Start(second_block_offset + 24))?;
+    file.write_all(&[0xFF])?;
+    file.sync_all()?;
+
+    let reopened = Store::open(options)?;
+    let key_refs = entries
+        .iter()
+        .map(|(key, _)| key.as_slice())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        reopened.fetch_many_ordered(key_refs.iter().copied())?,
+        vec![Some(entries[0].1.clone()), None, Some(entries[2].1.clone())]
+    );
+    assert_eq!(reopened.iter_all()?.collect::<Result<Vec<_>>>()?, vec![
+        entries[0].clone(),
+        entries[2].clone()
+    ]);
+    Ok(())
+}
+
+#[test]
+fn corrupted_block_index_hides_whole_segment() -> Result<()> {
+    let tempdir = tempfile::tempdir()?;
+    let store = Store::open(options(&tempdir))?;
+    let key = make_key(1, 1, 0);
+    commit_entries(&store, &[(key.clone(), make_value(9, 16))], true)?;
+    let path = first_segment_path(&store);
+    let block_index_offset = first_segment_block_index_offset(&store);
+    let mut file = OpenOptions::new().read(true).write(true).open(path)?;
+    file.seek(SeekFrom::Start(block_index_offset + 4))?;
+    file.write_all(&[0xFF])?;
+    file.sync_all()?;
+
+    let reopened = Store::open(options(&tempdir))?;
+    assert_eq!(reopened.fetch_one(&key)?, None);
+    assert_eq!(reopened.iter_all()?.count(), 0);
+    Ok(())
+}
+
+#[test]
 fn corrupted_footer_hides_whole_segment() -> Result<()> {
     let tempdir = tempfile::tempdir()?;
     let store = Store::open(options(&tempdir))?;
@@ -591,4 +974,38 @@ fn orphan_segment_is_ignored_until_manifest_references_it() -> Result<()> {
     let all: Result<Vec<_>> = reopened.iter_all()?.collect();
     assert_eq!(all?.len(), 1);
     Ok(())
+}
+
+#[test]
+fn cache_miss_error_classification_is_narrow() {
+    assert!(Error::CorruptBlock.is_cache_miss_corruption());
+    assert!(Error::UnsupportedFormatVersion { version: 1 }.is_cache_miss_corruption());
+    assert!(Error::Io(std::io::ErrorKind::UnexpectedEof.into()).is_cache_miss_corruption());
+    assert!(
+        !Error::WrongKeyLength {
+            expected: 16,
+            actual: 4,
+        }
+        .is_cache_miss_corruption()
+    );
+}
+
+#[test]
+fn value_layout_metadata_rejects_invalid_encodings() {
+    assert_eq!(
+        ValueLayout::parse_manifest_value("fixed:32").expect("fixed layout should parse"),
+        ValueLayout::Fixed { value_len: 32 }
+    );
+    assert!(matches!(
+        ValueLayout::parse_manifest_value("fixed:not-a-number"),
+        Err(Error::ManifestParse { .. })
+    ));
+    assert!(matches!(
+        ValueLayout::parse_manifest_value("unknown"),
+        Err(Error::ManifestParse { .. })
+    ));
+    assert!(matches!(
+        ValueLayout::from_segment_fields(7, 0),
+        Err(Error::UnsupportedFormatVersion { .. })
+    ));
 }

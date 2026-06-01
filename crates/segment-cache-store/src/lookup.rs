@@ -163,24 +163,6 @@ pub(crate) fn fetch_from_shard(
     value_layout: ValueLayout,
     verify_block_checksums: bool,
 ) -> Result<Option<Vec<u8>>> {
-    fetch_from_shard_with_state(
-        shard,
-        key,
-        key_len,
-        value_layout,
-        verify_block_checksums,
-        None,
-    )
-}
-
-fn fetch_from_shard_with_state(
-    shard: &ShardState,
-    key: &[u8],
-    key_len: usize,
-    value_layout: ValueLayout,
-    verify_block_checksums: bool,
-    mut lookup_state: Option<&mut ShardLookupState>,
-) -> Result<Option<Vec<u8>>> {
     let segment_index = match shard
         .segments
         .partition_point(|segment| segment.max_key.as_slice() < key)
@@ -194,52 +176,13 @@ fn fetch_from_shard_with_state(
         _ => return Ok(None),
     };
     let segment = &shard.segments[segment_index];
-
-    if let Some(state) = lookup_state.as_deref_mut()
-        && state.current_segment_index != Some(segment_index)
-    {
-        state.current_segment_index = Some(segment_index);
-        state.current_block_index = None;
-        state.loaded_block = None;
-    }
-
     let block_index = segment.find_block_index(key);
-    let block = if let Some(state) = lookup_state.as_deref_mut() {
-        if let Some(loaded) = state.loaded_block.as_ref()
-            && state.current_block_index == Some(block_index)
-            && loaded.first_key.as_slice() <= key
-            && key <= loaded.last_key.as_slice()
-        {
-            None
-        } else {
-            match segment.load_block(block_index, key_len, value_layout, verify_block_checksums) {
-                Ok(block) => state.loaded_block = Some(block),
-                Err(error) if error.is_cache_miss_corruption() => {
-                    state.current_block_index = Some(block_index);
-                    state.loaded_block = None;
-                    return Ok(None);
-                }
-                Err(error) => return Err(error),
-            }
-            None
-        }
-    } else {
-        match segment.load_block(block_index, key_len, value_layout, verify_block_checksums) {
-            Ok(block) => Some(block),
-            Err(error) if error.is_cache_miss_corruption() => return Ok(None),
-            Err(error) => return Err(error),
-        }
+    let block = match segment.load_block(block_index, key_len, value_layout, verify_block_checksums)
+    {
+        Ok(block) => block,
+        Err(error) if error.is_cache_miss_corruption() => return Ok(None),
+        Err(error) => return Err(error),
     };
-
-    let block = match (lookup_state.as_deref(), block) {
-        (Some(state), None) => state
-            .loaded_block
-            .as_ref()
-            .expect("lookup state block should exist"),
-        (_, Some(block)) => return Ok(block.find_value(key)),
-        _ => unreachable!(),
-    };
-
     Ok(block.find_value(key))
 }
 
