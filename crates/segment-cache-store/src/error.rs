@@ -51,3 +51,22 @@ impl Error {
 }
 
 pub type Result<T, E = Error> = std::result::Result<T, E>;
+
+#[cfg(test)]
+mod tests {
+    use super::Error;
+
+    #[test]
+    fn cache_miss_error_classification_is_narrow() {
+        assert!(Error::CorruptBlock.is_cache_miss_corruption());
+        assert!(Error::UnsupportedFormatVersion { version: 1 }.is_cache_miss_corruption());
+        assert!(Error::Io(std::io::ErrorKind::UnexpectedEof.into()).is_cache_miss_corruption());
+        assert!(
+            !Error::WrongKeyLength {
+                expected: 16,
+                actual: 4,
+            }
+            .is_cache_miss_corruption()
+        );
+    }
+}

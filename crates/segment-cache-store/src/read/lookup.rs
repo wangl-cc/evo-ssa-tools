@@ -2,8 +2,8 @@
 
 use crate::{
     error::{Error, Result},
-    format::{DecodedBlock, ShardPolicy},
     options::ValueLayout,
+    segment::format::{DecodedBlock, ShardPolicy},
     state::{SegmentState, ShardState},
     store::Store,
 };

@@ -9,10 +9,10 @@ use std::{fs::File, io};
 use crc32c::crc32c_append;
 
 use crate::{
-    binary::read_u32,
     error::{Error, Result},
-    format::BlockIndexEntry,
+    io::binary::read_u32,
     options::ValueLayout,
+    segment::format::BlockIndexEntry,
 };
 
 pub(crate) const BLOCK_HEADER_LEN: usize = 16;

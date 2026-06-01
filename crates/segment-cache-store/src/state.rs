@@ -1,16 +1,16 @@
 //! Runtime state shared by the public `Store`, lookup sessions, and cursors.
 
-#[cfg(test)]
-use std::path::PathBuf;
 use std::{fs::File, sync::Arc};
 
 use parking_lot::RwLock;
 
 use crate::{
     error::Result,
-    format::{BlockIndexEntry, DecodedBlock, OpenedSegment, read_block, read_block_reusing},
     manifest::StoreManifest,
     options::{StoreOptions, ValueLayout},
+    segment::format::{
+        BlockIndexEntry, DecodedBlock, OpenedSegment, read_block, read_block_reusing,
+    },
 };
 
 pub(crate) struct StoreInner {
@@ -30,8 +30,6 @@ pub(crate) struct ShardState {
 
 /// Visible immutable segment and its in-memory sparse block index.
 pub(crate) struct SegmentState {
-    #[cfg(test)]
-    pub(crate) path: PathBuf,
     pub(crate) file: File,
     pub(crate) min_key: Vec<u8>,
     pub(crate) max_key: Vec<u8>,
@@ -42,8 +40,6 @@ impl SegmentState {
     /// Converts a verified on-disk segment into the in-memory state used by readers.
     pub(crate) fn from_opened(opened: OpenedSegment) -> Self {
         Self {
-            #[cfg(test)]
-            path: opened.path,
             file: opened.file,
             min_key: opened.min_key,
             max_key: opened.max_key,

@@ -5,16 +5,18 @@ use std::{fs, sync::Arc};
 use parking_lot::RwLock;
 
 use crate::{
-    batch::{CommitStats, WriteBatch, flush_ranges, has_duplicate_keys, is_sorted_by_key},
-    cursor::{RangeCursor, SegmentRangeCursor},
     error::{Error, Result},
-    format::{OpenedSegment, SegmentOpenOptions, SegmentWriter, ShardPolicy},
-    lookup::{OrderedLookup, fetch_from_shard},
     manifest::{
         SegmentManifestEntry, StoreManifest, StorePaths, next_segment_file_name, now_unix_millis,
     },
     options::StoreOptions,
+    read::{
+        cursor::{RangeCursor, SegmentRangeCursor},
+        lookup::{OrderedLookup, fetch_from_shard},
+    },
+    segment::format::{OpenedSegment, SegmentOpenOptions, SegmentWriter, ShardPolicy},
     state::{SegmentState, ShardState, StoreInner, StoreState},
+    write::batch::{CommitStats, WriteBatch, flush_ranges, has_duplicate_keys, is_sorted_by_key},
 };
 
 /// Persistent append-only cache store.

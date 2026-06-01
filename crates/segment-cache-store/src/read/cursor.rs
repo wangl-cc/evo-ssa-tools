@@ -2,7 +2,9 @@
 
 use std::sync::Arc;
 
-use crate::{block::DecodedBlock, error::Result, options::ValueLayout, state::SegmentState};
+use crate::{
+    error::Result, options::ValueLayout, segment::block::DecodedBlock, state::SegmentState,
+};
 
 /// Streaming cursor over records in key order.
 pub struct RangeCursor {
@@ -155,7 +157,7 @@ impl SegmentRangeCursor {
         Ok((key, value))
     }
 
-    fn current_record(&self) -> Result<Option<crate::block::ParsedRecord<'_>>> {
+    fn current_record(&self) -> Result<Option<crate::segment::block::ParsedRecord<'_>>> {
         if self.exhausted {
             return Ok(None);
         }

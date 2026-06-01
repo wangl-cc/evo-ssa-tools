@@ -13,12 +13,12 @@ use std::{
 
 use crc32c::crc32c;
 
-pub(crate) use crate::block::{DecodedBlock, read_block, read_block_reusing};
+pub(crate) use crate::segment::block::{DecodedBlock, read_block, read_block_reusing};
 use crate::{
-    binary::{read_bytes, read_u32, read_u64},
-    block::{BLOCK_HEADER_LEN, BlockBuilder},
     error::{Error, Result},
+    io::binary::{read_bytes, read_u32, read_u64},
     options::ValueLayout,
+    segment::block::{BLOCK_HEADER_LEN, BlockBuilder},
 };
 
 pub(crate) const SEGMENT_FORMAT_VERSION: u32 = 1;
@@ -380,8 +380,6 @@ pub(crate) struct SegmentOpenOptions {
 #[derive(Debug)]
 pub(crate) struct OpenedSegment {
     pub file: File,
-    #[cfg(test)]
-    pub path: PathBuf,
     pub min_key: Vec<u8>,
     pub max_key: Vec<u8>,
     pub block_index: Vec<BlockIndexEntry>,
@@ -408,8 +406,6 @@ impl OpenedSegment {
             };
         Ok(Some(Self {
             file,
-            #[cfg(test)]
-            path,
             min_key: footer.min_key,
             max_key: footer.max_key,
             block_index,

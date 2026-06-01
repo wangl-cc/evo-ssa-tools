@@ -225,3 +225,29 @@ impl ValueLayout {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::ValueLayout;
+    use crate::Error;
+
+    #[test]
+    fn value_layout_metadata_rejects_invalid_encodings() {
+        assert_eq!(
+            ValueLayout::parse_manifest_value("fixed:32").expect("fixed layout should parse"),
+            ValueLayout::Fixed { value_len: 32 }
+        );
+        assert!(matches!(
+            ValueLayout::parse_manifest_value("fixed:not-a-number"),
+            Err(Error::ManifestParse { .. })
+        ));
+        assert!(matches!(
+            ValueLayout::parse_manifest_value("unknown"),
+            Err(Error::ManifestParse { .. })
+        ));
+        assert!(matches!(
+            ValueLayout::from_segment_fields(7, 0),
+            Err(Error::UnsupportedFormatVersion { .. })
+        ));
+    }
+}

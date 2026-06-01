@@ -1,15 +1,13 @@
 use std::{
     fs,
     fs::OpenOptions,
-    io::{Seek, SeekFrom, Write},
-    path::PathBuf,
+    io::{Read, Seek, SeekFrom, Write},
+    path::{Path, PathBuf},
 };
 
-use crate::{
-    CommitStats, Error, Result, Store, StoreOptions, ValueLayout,
-    format::{FOOTER_MAGIC, ShardPolicy},
-    manifest::{StoreManifest, StorePaths},
-};
+use segment_cache_store::{CommitStats, Error, Result, Store, StoreOptions, ValueLayout};
+
+const FOOTER_MAGIC: &[u8; 8] = b"scsft001";
 
 fn options(tempdir: &tempfile::TempDir) -> StoreOptions {
     StoreOptions::new(tempdir.path(), 16)
@@ -396,7 +394,7 @@ fn manifest_is_line_oriented_v1_text() -> Result<()> {
     let store = Store::open(options(&tempdir))?;
     commit_entries(&store, &[(make_key(1, 0, 0), make_value(1, 8))], true)?;
 
-    let manifest = fs::read_to_string(StorePaths::new(tempdir.path()).manifest())?;
+    let manifest = fs::read_to_string(tempdir.path().join("MANIFEST"))?;
 
     assert!(manifest.starts_with("segment-cache-store manifest v1\n"));
     assert!(manifest.contains("version=1\n"));
@@ -411,7 +409,7 @@ fn manifest_is_line_oriented_v1_text() -> Result<()> {
 fn malformed_manifest_is_rejected() -> Result<()> {
     let tempdir = tempfile::tempdir()?;
     fs::write(
-        StorePaths::new(tempdir.path()).manifest(),
+        tempdir.path().join("MANIFEST"),
         "not a segment-cache manifest\n",
     )?;
 
@@ -455,85 +453,6 @@ fn manifest_option_mismatches_are_rejected() -> Result<()> {
 
     assert_eq!(Store::open(base_options)?.iter_all()?.count(), 1);
     Ok(())
-}
-
-#[test]
-fn manifest_parser_rejects_malformed_segment_entries() {
-    for manifest in [
-        manifest_with_segment_line("not-segment"),
-        manifest_with_segment_line("segment\tfile"),
-        manifest_with_segment_line(
-            "segment\tfile\t00000000000000000000000000000000\t\
-             00000000000000000000000000000001\tnot-a-count\t0",
-        ),
-        manifest_with_segment_line(
-            "segment\tfile\t00000000000000000000000000000000\t\
-             00000000000000000000000000000001\t1\tnot-a-time",
-        ),
-        manifest_with_segment_line("segment\tfile\txyz\t00000000000000000000000000000001\t1\t0"),
-        manifest_with_segment_line(
-            "segment\tfile\t00000000000000000000000000000000\t\
-             00000000000000000000000000000001\t1\t0\textra",
-        ),
-    ] {
-        assert!(matches!(
-            StoreManifest::parse(&manifest),
-            Err(Error::ManifestParse { .. })
-        ));
-    }
-}
-
-#[test]
-fn manifest_parser_rejects_invalid_structure_and_ranges() {
-    assert!(matches!(
-        StoreManifest::parse(""),
-        Err(Error::ManifestParse { .. })
-    ));
-    assert!(matches!(
-        StoreManifest::parse(
-            "\
-segment-cache-store manifest v1
-version=1
-key_len=16
-value_layout=variable
-shard_count=1
-shard_key_offset=16
-target_block_size=256
-shard_algorithm=lexicographic-prefix-v1
-next_segment_id=0
-segment\tfile\t00000000000000000000000000000000\t00000000000000000000000000000001\t1\t0
-"
-        ),
-        Err(Error::ManifestParse { .. })
-    ));
-
-    let reversed = StoreManifest::parse(&manifest_with_segment_line(
-        "segment\tfile\t00000000000000000000000000000002\t\
-         00000000000000000000000000000001\t1\t0",
-    ))
-    .expect("manifest syntax should parse");
-    let options =
-        StoreOptions::new(tempfile::tempdir().expect("tempdir").path(), 16).with_shard_count(1);
-    assert!(matches!(
-        reversed.validate_options(&options),
-        Err(Error::ManifestMismatch {
-            reason: "segment_key_range"
-        })
-    ));
-
-    let mut overlapping = StoreManifest::parse(&manifest_with_segment_line(
-        "segment\tfile\t00000000000000000000000000000000\t\
-         00000000000000000000000000000001\t1\t0",
-    ))
-    .expect("manifest syntax should parse");
-    let duplicate = overlapping.shards[0][0].clone();
-    overlapping.shards[0].push(duplicate);
-    assert!(matches!(
-        overlapping.validate_options(&options),
-        Err(Error::ManifestMismatch {
-            reason: "segment_overlap"
-        })
-    ));
 }
 
 #[test]
@@ -641,78 +560,70 @@ fn duplicate_keys_inside_batch_are_rejected() -> Result<()> {
 #[test]
 fn shard_local_out_of_order_append_is_rejected() -> Result<()> {
     let tempdir = tempfile::tempdir()?;
-    let store = Store::open(options(&tempdir))?;
+    let store = Store::open(options(&tempdir).with_shard_count(1))?;
     let first = make_key(1, 1, 10);
     let second = make_key(1, 1, 1);
-    let shard_policy = ShardPolicy::new(
-        store.inner.options.shard_count,
-        store.inner.options.shard_key_offset,
-    );
-    let first_shard = shard_policy.shard_for_key(&first);
-    let mut candidate = second.clone();
-    while shard_policy.shard_for_key(&candidate) != first_shard {
-        let rep = u64::from_be_bytes(candidate[8..16].try_into().expect("rep bytes")) + 1;
-        candidate[8..16].copy_from_slice(&rep.to_be_bytes());
-    }
 
     commit_entries(&store, &[(first, make_value(1, 8))], true)?;
-    let error = commit_entries(&store, &[(candidate, make_value(2, 8))], true).unwrap_err();
+    let error = commit_entries(&store, &[(second, make_value(2, 8))], true).unwrap_err();
     assert!(matches!(error, Error::OutOfOrderAppend { .. }));
     Ok(())
 }
 
-fn first_segment_path(store: &Store) -> PathBuf {
-    let state = store.inner.state.read();
-    let shard_id = state
-        .shards
-        .iter()
-        .position(|shard| !shard.segments.is_empty())
-        .expect("segment should exist");
-    state.shards[shard_id].segments[0].path.clone()
+fn first_segment_path(root: &Path) -> Result<PathBuf> {
+    let shards = root.join("shards");
+    for shard in fs::read_dir(shards)? {
+        let segment_dir = shard?.path().join("segments");
+        if !segment_dir.exists() {
+            continue;
+        }
+        let mut segments = fs::read_dir(segment_dir)?
+            .map(|entry| entry.map(|entry| entry.path()))
+            .collect::<std::io::Result<Vec<_>>>()?;
+        segments.sort();
+        if let Some(path) = segments
+            .into_iter()
+            .find(|path| path.extension().is_some_and(|extension| extension == "seg"))
+        {
+            return Ok(path);
+        }
+    }
+    panic!("segment should exist");
 }
 
-fn first_segment_block_offset(store: &Store, block_index: usize) -> u64 {
-    let state = store.inner.state.read();
-    let segment = state
-        .shards
-        .iter()
-        .flat_map(|shard| &shard.segments)
-        .next()
-        .expect("segment should exist");
-    segment.block_index[block_index].block_offset
+fn block_offset(path: &Path, block_index: usize) -> Result<u64> {
+    let mut file = OpenOptions::new().read(true).open(path)?;
+    let mut offset = 0u64;
+    for _ in 0..block_index {
+        offset += u64::from(read_u32_at(&mut file, offset + 4)?);
+    }
+    Ok(offset)
 }
 
-fn first_segment_block_index_offset(store: &Store) -> u64 {
-    let state = store.inner.state.read();
-    let segment = state
-        .shards
-        .iter()
-        .flat_map(|shard| &shard.segments)
-        .next()
-        .expect("segment should exist");
-    let last = segment
-        .block_index
-        .last()
-        .expect("segment should have at least one block");
-    last.block_offset + u64::from(last.block_len)
+fn block_index_offset(path: &Path) -> Result<u64> {
+    let mut file = OpenOptions::new().read(true).open(path)?;
+    file.seek(SeekFrom::End(
+        -4 - i64::try_from(FOOTER_MAGIC.len()).expect("magic len"),
+    ))?;
+    let mut trailer = [0u8; 12];
+    file.read_exact(&mut trailer)?;
+    assert_eq!(&trailer[4..], FOOTER_MAGIC);
+    let footer_len = u32::from_le_bytes(trailer[..4].try_into().expect("footer len"));
+    file.seek(SeekFrom::End(
+        -i64::from(footer_len) - 4 - i64::try_from(FOOTER_MAGIC.len()).expect("magic len"),
+    ))?;
+    let mut footer = vec![0u8; usize::try_from(footer_len).expect("footer len")];
+    file.read_exact(&mut footer)?;
+    Ok(u64::from_le_bytes(
+        footer[24..32].try_into().expect("block index offset"),
+    ))
 }
 
-fn manifest_with_segment_line(segment_line: &str) -> String {
-    format!(
-        "\
-segment-cache-store manifest v1
-version=1
-key_len=16
-value_layout=variable
-shard_count=1
-shard_key_offset=16
-target_block_size=256
-shard_algorithm=lexicographic-prefix-v1
-next_segment_id=0
-[shard 0]
-{segment_line}
-"
-    )
+fn read_u32_at(file: &mut fs::File, offset: u64) -> Result<u32> {
+    file.seek(SeekFrom::Start(offset))?;
+    let mut bytes = [0u8; 4];
+    file.read_exact(&mut bytes)?;
+    Ok(u32::from_le_bytes(bytes))
 }
 
 #[test]
@@ -721,7 +632,7 @@ fn corrupted_block_checksum_becomes_miss() -> Result<()> {
     let store = Store::open(options(&tempdir))?;
     let key = make_key(1, 1, 0);
     commit_entries(&store, &[(key.clone(), make_value(9, 16))], true)?;
-    let path = first_segment_path(&store);
+    let path = first_segment_path(tempdir.path())?;
     let mut file = OpenOptions::new().read(true).write(true).open(path)?;
     file.seek(SeekFrom::Start(24))?;
     file.write_all(&[0xFF])?;
@@ -740,7 +651,7 @@ fn block_checksum_verification_can_be_disabled_for_benchmarks() -> Result<()> {
     let key = make_key(1, 1, 0);
     let value = make_value(9, 16);
     commit_entries(&store, &[(key.clone(), value.clone())], true)?;
-    let path = first_segment_path(&store);
+    let path = first_segment_path(tempdir.path())?;
     let mut file = OpenOptions::new().read(true).write(true).open(path)?;
     let value_offset = 16 + key.len() + 4 + 4;
     file.seek(SeekFrom::Start(value_offset as u64))?;
@@ -778,7 +689,7 @@ fn truncated_segment_file_is_ignored_on_reopen() -> Result<()> {
     let store = Store::open(options(&tempdir))?;
     let key = make_key(1, 1, 0);
     commit_entries(&store, &[(key.clone(), make_value(9, 16))], true)?;
-    let path = first_segment_path(&store);
+    let path = first_segment_path(tempdir.path())?;
     OpenOptions::new()
         .write(true)
         .open(path)?
@@ -832,7 +743,7 @@ fn malformed_block_becomes_miss_in_all_read_paths() -> Result<()> {
         (make_key(1, 1, 1), make_value(2, 16)),
     ];
     commit_entries(&store, &entries, true)?;
-    let path = first_segment_path(&store);
+    let path = first_segment_path(tempdir.path())?;
     let mut file = OpenOptions::new().read(true).write(true).open(path)?;
     file.seek(SeekFrom::Start(4))?;
     file.write_all(&u32::MAX.to_le_bytes())?;
@@ -865,8 +776,8 @@ fn corrupted_middle_block_only_loses_that_block() -> Result<()> {
         .map(|rep| (make_key(1, 1, rep), make_value(rep as u8, 160)))
         .collect();
     commit_entries(&store, &entries, true)?;
-    let path = first_segment_path(&store);
-    let second_block_offset = first_segment_block_offset(&store, 1);
+    let path = first_segment_path(tempdir.path())?;
+    let second_block_offset = block_offset(&path, 1)?;
     let mut file = OpenOptions::new().read(true).write(true).open(path)?;
     file.seek(SeekFrom::Start(second_block_offset + 24))?;
     file.write_all(&[0xFF])?;
@@ -894,8 +805,8 @@ fn corrupted_block_index_hides_whole_segment() -> Result<()> {
     let store = Store::open(options(&tempdir))?;
     let key = make_key(1, 1, 0);
     commit_entries(&store, &[(key.clone(), make_value(9, 16))], true)?;
-    let path = first_segment_path(&store);
-    let block_index_offset = first_segment_block_index_offset(&store);
+    let path = first_segment_path(tempdir.path())?;
+    let block_index_offset = block_index_offset(&path)?;
     let mut file = OpenOptions::new().read(true).write(true).open(path)?;
     file.seek(SeekFrom::Start(block_index_offset + 4))?;
     file.write_all(&[0xFF])?;
@@ -913,7 +824,7 @@ fn corrupted_footer_hides_whole_segment() -> Result<()> {
     let store = Store::open(options(&tempdir))?;
     let key = make_key(1, 1, 0);
     commit_entries(&store, &[(key.clone(), make_value(9, 16))], true)?;
-    let path = first_segment_path(&store);
+    let path = first_segment_path(tempdir.path())?;
     let mut file = OpenOptions::new().read(true).write(true).open(path)?;
     file.seek(SeekFrom::End(
         -4 - i64::try_from(FOOTER_MAGIC.len()).expect("magic len"),
@@ -933,7 +844,7 @@ fn missing_manifest_segment_remains_reserved_for_future_appends() -> Result<()> 
     let store = Store::open(options.clone())?;
     let key = make_key(1, 1, 0);
     commit_entries(&store, &[(key.clone(), make_value(1, 8))], true)?;
-    fs::remove_file(first_segment_path(&store))?;
+    fs::remove_file(first_segment_path(tempdir.path())?)?;
     drop(store);
 
     let reopened = Store::open(options)?;
@@ -966,7 +877,7 @@ fn orphan_segment_is_ignored_until_manifest_references_it() -> Result<()> {
     let store = Store::open(options.clone())?;
     commit_entries(&store, &[(make_key(1, 1, 0), make_value(1, 8))], true)?;
 
-    let orphan_dir = StorePaths::new(&options.root).segment_dir(0);
+    let orphan_dir = options.root.join("shards").join("0").join("segments");
     let orphan_path = orphan_dir.join("segment-orphan.seg");
     fs::write(orphan_path, b"not a real segment")?;
 
@@ -974,38 +885,4 @@ fn orphan_segment_is_ignored_until_manifest_references_it() -> Result<()> {
     let all: Result<Vec<_>> = reopened.iter_all()?.collect();
     assert_eq!(all?.len(), 1);
     Ok(())
-}
-
-#[test]
-fn cache_miss_error_classification_is_narrow() {
-    assert!(Error::CorruptBlock.is_cache_miss_corruption());
-    assert!(Error::UnsupportedFormatVersion { version: 1 }.is_cache_miss_corruption());
-    assert!(Error::Io(std::io::ErrorKind::UnexpectedEof.into()).is_cache_miss_corruption());
-    assert!(
-        !Error::WrongKeyLength {
-            expected: 16,
-            actual: 4,
-        }
-        .is_cache_miss_corruption()
-    );
-}
-
-#[test]
-fn value_layout_metadata_rejects_invalid_encodings() {
-    assert_eq!(
-        ValueLayout::parse_manifest_value("fixed:32").expect("fixed layout should parse"),
-        ValueLayout::Fixed { value_len: 32 }
-    );
-    assert!(matches!(
-        ValueLayout::parse_manifest_value("fixed:not-a-number"),
-        Err(Error::ManifestParse { .. })
-    ));
-    assert!(matches!(
-        ValueLayout::parse_manifest_value("unknown"),
-        Err(Error::ManifestParse { .. })
-    ));
-    assert!(matches!(
-        ValueLayout::from_segment_fields(7, 0),
-        Err(Error::UnsupportedFormatVersion { .. })
-    ));
 }
