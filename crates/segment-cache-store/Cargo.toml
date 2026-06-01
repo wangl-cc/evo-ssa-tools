@@ -1,0 +1,25 @@
+[package]
+name = "segment-cache-store"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bench]]
+harness = false
+name = "workload"
+
+[dependencies]
+crc32c = { workspace = true }
+parking_lot = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+criterion = { workspace = true }
+fjall3 = { package = "fjall", version = "3.1.4", default-features = false }
+rand = { workspace = true, features = ["std", "std_rng"] }
+redb = "3"
+tempfile = { workspace = true }
+
+[lints]
+workspace = true
