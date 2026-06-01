@@ -6,6 +6,7 @@ A collection of tools for evolutionary stochastic simulation and analysis.
 
 - [evo-marker](./crates/evo-marker/README.md): a crate for evolutionary marker tracking the cell lineage or other genetic markers.
 - [frequency](./crates/frequency/README.md): a crate for calculating the frequency of unique elements in iterators.
+- [segment-cache-store](./crates/segment-cache-store/README.md): a workload-shaped persistent segment store for computation-cache byte keys and values.
 - [ssa-workflow](./crates/ssa-workflow/README.md): a demand-driven SSA analysis workflow layer with reusable intermediate results.
 
 ## License
