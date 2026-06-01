@@ -109,3 +109,43 @@ impl<K, P> ChannelEditor<K, P> {
         self.updates
     }
 }
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn channel_editor_preserves_update_order() {
+        let mut editor = ChannelEditor::new();
+        editor.upsert(1, "birth");
+        editor.recompute(2);
+        editor.remove(3);
+
+        assert_eq!(editor.len(), 3);
+        assert!(!editor.is_empty());
+        assert_eq!(editor.into_updates(), vec![
+            ChannelUpdate::Upsert {
+                key: 1,
+                payload: "birth"
+            },
+            ChannelUpdate::Recompute { key: 2 },
+            ChannelUpdate::Remove { key: 3 },
+        ]);
+    }
+
+    #[test]
+    fn channel_editor_drain_clears_buffer() {
+        let mut editor: ChannelEditor<usize, ()> = ChannelEditor::new();
+        editor.recompute(1);
+        editor.recompute(2);
+
+        let updates: Vec<_> = editor.drain().collect();
+
+        assert_eq!(updates, vec![
+            ChannelUpdate::Recompute { key: 1 },
+            ChannelUpdate::Recompute { key: 2 },
+        ]);
+        assert!(editor.is_empty());
+    }
+}

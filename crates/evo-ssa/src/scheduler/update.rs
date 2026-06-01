@@ -255,3 +255,57 @@ pub(crate) fn global_to_family(offsets: &[usize], global_channel: usize) -> Opti
     let family = family.checked_sub(1)?;
     Some((family, global_channel - offsets[family]))
 }
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn static_channel_updates_global_writer_records_global_ids() {
+        let family_offsets = [0, 3, 8];
+        let mut updates = Vec::new();
+        let mut writer = StaticChannelUpdates::global(1, 3, &family_offsets, &mut updates);
+
+        writer.recompute(2);
+        writer.recompute_family(2, 4);
+        writer.recompute_global(7);
+
+        assert_eq!(updates, vec![5, 12, 7]);
+    }
+
+    #[test]
+    fn fixed_family_updates_writer_records_family_local_ids() {
+        let family_offsets = [0, 3, 8];
+        let mut updates = FixedFamilyChannelUpdates::<4>::default();
+        {
+            let mut writer = updates.writer(1, 3, &family_offsets);
+            writer.recompute(2);
+            writer.recompute_family(2, 4);
+            writer.recompute_global(7);
+        }
+
+        assert_eq!(
+            updates.pop(),
+            Some(FamilyChannelUpdate {
+                family: 1,
+                local_channel: 4,
+            })
+        );
+        assert_eq!(
+            updates.pop(),
+            Some(FamilyChannelUpdate {
+                family: 2,
+                local_channel: 4,
+            })
+        );
+        assert_eq!(
+            updates.pop(),
+            Some(FamilyChannelUpdate {
+                family: 1,
+                local_channel: 2,
+            })
+        );
+        assert_eq!(updates.pop(), None);
+    }
+}
