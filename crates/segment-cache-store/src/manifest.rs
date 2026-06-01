@@ -488,43 +488,46 @@ next_segment_id=0
         )
     }
 
-    #[test]
-    fn parser_rejects_malformed_segment_entries() {
-        for manifest in [
-            manifest_with_segment_line("not-segment"),
-            manifest_with_segment_line("segment\tfile"),
-            manifest_with_segment_line(
-                "segment\tfile\t00000000000000000000000000000000\t\
-                 00000000000000000000000000000001\tnot-a-count\t0",
-            ),
-            manifest_with_segment_line(
-                "segment\tfile\t00000000000000000000000000000000\t\
-                 00000000000000000000000000000001\t1\tnot-a-time",
-            ),
-            manifest_with_segment_line(
-                "segment\tfile\txyz\t00000000000000000000000000000001\t1\t0",
-            ),
-            manifest_with_segment_line(
-                "segment\tfile\t00000000000000000000000000000000\t\
-                 00000000000000000000000000000001\t1\t0\textra",
-            ),
-        ] {
+    mod parser {
+        use super::*;
+
+        #[test]
+        fn rejects_malformed_segment_entries() {
+            for manifest in [
+                manifest_with_segment_line("not-segment"),
+                manifest_with_segment_line("segment\tfile"),
+                manifest_with_segment_line(
+                    "segment\tfile\t00000000000000000000000000000000\t\
+                     00000000000000000000000000000001\tnot-a-count\t0",
+                ),
+                manifest_with_segment_line(
+                    "segment\tfile\t00000000000000000000000000000000\t\
+                     00000000000000000000000000000001\t1\tnot-a-time",
+                ),
+                manifest_with_segment_line(
+                    "segment\tfile\txyz\t00000000000000000000000000000001\t1\t0",
+                ),
+                manifest_with_segment_line(
+                    "segment\tfile\t00000000000000000000000000000000\t\
+                     00000000000000000000000000000001\t1\t0\textra",
+                ),
+            ] {
+                assert!(matches!(
+                    StoreManifest::parse(&manifest),
+                    Err(Error::ManifestParse { .. })
+                ));
+            }
+        }
+
+        #[test]
+        fn rejects_invalid_structure() {
             assert!(matches!(
-                StoreManifest::parse(&manifest),
+                StoreManifest::parse(""),
                 Err(Error::ManifestParse { .. })
             ));
-        }
-    }
-
-    #[test]
-    fn parser_rejects_invalid_structure_and_ranges() {
-        assert!(matches!(
-            StoreManifest::parse(""),
-            Err(Error::ManifestParse { .. })
-        ));
-        assert!(matches!(
-            StoreManifest::parse(
-                "\
+            assert!(matches!(
+                StoreManifest::parse(
+                    "\
 segment-cache-store manifest v1
 version=1
 key_len=16
@@ -536,35 +539,43 @@ shard_algorithm=lexicographic-prefix-v1
 next_segment_id=0
 segment\tfile\t00000000000000000000000000000000\t00000000000000000000000000000001\t1\t0
 "
-            ),
-            Err(Error::ManifestParse { .. })
-        ));
+                ),
+                Err(Error::ManifestParse { .. })
+            ));
+        }
+    }
 
-        let reversed = StoreManifest::parse(&manifest_with_segment_line(
-            "segment\tfile\t00000000000000000000000000000002\t\
-             00000000000000000000000000000001\t1\t0",
-        ))
-        .expect("manifest syntax should parse");
-        let options = StoreOptions::new("", 16).with_shard_count(1);
-        assert!(matches!(
-            reversed.validate_options(&options),
-            Err(Error::ManifestMismatch {
-                reason: "segment_key_range"
-            })
-        ));
+    mod validation {
+        use super::*;
 
-        let mut overlapping = StoreManifest::parse(&manifest_with_segment_line(
-            "segment\tfile\t00000000000000000000000000000000\t\
+        #[test]
+        fn rejects_invalid_segment_ranges() {
+            let reversed = StoreManifest::parse(&manifest_with_segment_line(
+                "segment\tfile\t00000000000000000000000000000002\t\
              00000000000000000000000000000001\t1\t0",
-        ))
-        .expect("manifest syntax should parse");
-        let duplicate = overlapping.shards[0][0].clone();
-        overlapping.shards[0].push(duplicate);
-        assert!(matches!(
-            overlapping.validate_options(&options),
-            Err(Error::ManifestMismatch {
-                reason: "segment_overlap"
-            })
-        ));
+            ))
+            .expect("manifest syntax should parse");
+            let options = StoreOptions::new("", 16).with_shard_count(1);
+            assert!(matches!(
+                reversed.validate_options(&options),
+                Err(Error::ManifestMismatch {
+                    reason: "segment_key_range"
+                })
+            ));
+
+            let mut overlapping = StoreManifest::parse(&manifest_with_segment_line(
+                "segment\tfile\t00000000000000000000000000000000\t\
+             00000000000000000000000000000001\t1\t0",
+            ))
+            .expect("manifest syntax should parse");
+            let duplicate = overlapping.shards[0][0].clone();
+            overlapping.shards[0].push(duplicate);
+            assert!(matches!(
+                overlapping.validate_options(&options),
+                Err(Error::ManifestMismatch {
+                    reason: "segment_overlap"
+                })
+            ));
+        }
     }
 }
