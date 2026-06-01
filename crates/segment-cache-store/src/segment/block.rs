@@ -142,13 +142,12 @@ impl<'a> BlockBuilder<'a> {
 /// Decoded block bytes plus derived offsets needed for zero-copy record access.
 #[derive(Debug)]
 pub(crate) struct DecodedBlock {
-    pub first_key: Vec<u8>,
-    pub last_key: Vec<u8>,
     record_count: usize,
     key_len: usize,
     value_layout: ValueLayout,
     keys_offset: usize,
     value_offsets_offset: usize,
+    last_key_offset: usize,
     value_lens_offset: usize,
     value_area_offset: usize,
     value_area_len: usize,
@@ -232,30 +231,34 @@ impl DecodedBlock {
         header.verify_checksum(&bytes, verify_checksum)?;
         let layout = BlockLayout::new(header.record_count, key_len, value_layout, header)?;
         let block = Self {
-            first_key: Vec::new(),
-            last_key: Vec::new(),
             record_count: header.record_count,
             key_len,
             value_layout,
             keys_offset: layout.keys_offset,
             value_offsets_offset: layout.value_offsets_offset,
+            last_key_offset: layout.keys_offset + (header.record_count - 1) * key_len,
             value_lens_offset: layout.value_lens_offset,
             value_area_offset: header.value_area_offset,
             value_area_len: header.value_area_len,
             bytes,
         };
         block.validate_value_table()?;
-        let first_key = block.key_at(0)?.to_vec();
-        let last_key = block.key_at(header.record_count - 1)?.to_vec();
-        Ok(Self {
-            first_key,
-            last_key,
-            ..block
-        })
+        block.validate_key_ordering(entry)?;
+        Ok(block)
     }
 
     pub(crate) fn into_bytes(self) -> Vec<u8> {
         self.bytes
+    }
+
+    pub(crate) fn first_key(&self) -> &[u8] {
+        let end = self.keys_offset + self.key_len;
+        &self.bytes[self.keys_offset..end]
+    }
+
+    pub(crate) fn last_key(&self) -> &[u8] {
+        let start = self.last_key_offset;
+        &self.bytes[start..start + self.key_len]
     }
 
     pub(crate) fn find_value(&self, key: &[u8]) -> Option<Vec<u8>> {
@@ -369,6 +372,22 @@ impl DecodedBlock {
                 return Err(Error::CorruptBlock);
             }
             previous_end = value_offset + value_len;
+        }
+        Ok(())
+    }
+
+    fn validate_key_ordering(&self, entry: &BlockIndexEntry) -> Result<()> {
+        let first_key = self.key_at(0)?;
+        if first_key != entry.first_key.as_slice() {
+            return Err(Error::CorruptBlock);
+        }
+        let mut previous = first_key;
+        for index in 1..self.record_count {
+            let current = self.key_at(index)?;
+            if current <= previous {
+                return Err(Error::CorruptBlock);
+            }
+            previous = current;
         }
         Ok(())
     }

@@ -125,7 +125,9 @@ It represents:
 The benchmark includes:
 
 - `segment`: fresh ordered read through `Store`
-- `segment_reused_lookup`: ordered read through one reused `OrderedLookup`
+- `segment_no_crc`: ordered read with block checksum verification disabled, isolating the CRC cost
+- `segment_block_{64,256,512,1024}k` and matching `..._no_crc` variants on the `large` profile, sweeping the segment block size
+- `segment_fixed_layout` and `segment_fixed_layout_no_crc` on the `small_fixed` profile, exercising the fixed-value-length layout
 - `fjall3`
 - `redb`
 
@@ -134,12 +136,13 @@ Why it matters:
 - ordered batch fetch is the primary design target for this backend
 - this is the most important direct comparison against general KV engines
 
-The two segment variants are both worth tracking:
+The segment variants are intended to isolate costs in the same store-level ordered batch path:
 
 - `segment` uses the store-level ordered batch API directly
-- `segment_reused_lookup` keeps one lookup session alive across the whole stream
+- `segment_no_crc` disables block checksum verification
+- block-size and fixed-layout variants attribute physical layout costs
 
-In principle the reused session should help by keeping more state warm. In practice it is also a useful regression check: if it is not faster, then the session machinery is not paying for itself yet.
+A separate reused-session benchmark is intentionally not registered here. The store-level batch API already creates and uses an `OrderedLookup` for the duration of each full ordered stream, so benchmarking one reused session over the same full stream mostly measures the same traversal and can be misleading unless the workload is specifically windowed across multiple adjacent calls.
 
 ### `append_commit`
 

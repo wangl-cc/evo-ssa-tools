@@ -448,6 +448,7 @@ impl<'a> ManifestParser<'a> {
     fn parse_shards(&mut self, shard_count: usize) -> Result<Vec<Vec<SegmentManifestEntry>>> {
         let mut shards = vec![Vec::new(); shard_count];
         let mut current_shard = None;
+        let mut seen_shards = vec![false; shard_count];
 
         for line in self.lines.by_ref() {
             if line.is_empty() {
@@ -457,6 +458,10 @@ impl<'a> ManifestParser<'a> {
                 if shard_id >= shard_count {
                     return manifest_parse("shard id out of range");
                 }
+                if seen_shards[shard_id] {
+                    return manifest_parse("duplicate shard header");
+                }
+                seen_shards[shard_id] = true;
                 current_shard = Some(shard_id);
                 continue;
             }
@@ -464,6 +469,10 @@ impl<'a> ManifestParser<'a> {
                 return manifest_parse("segment entry before shard header");
             };
             shards[shard_id].push(SegmentManifestEntry::parse_line(line)?);
+        }
+
+        if seen_shards.iter().any(|seen| !seen) {
+            return manifest_parse("missing shard section");
         }
 
         Ok(shards)

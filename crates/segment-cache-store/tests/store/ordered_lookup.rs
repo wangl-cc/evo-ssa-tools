@@ -110,3 +110,76 @@ fn reports_misses_before_between_and_after_segments() -> Result<()> {
     ]);
     Ok(())
 }
+
+#[test]
+fn miss_between_adjacent_blocks_returns_miss() -> Result<()> {
+    let tempdir = tempfile::tempdir()?;
+    let store = Store::open(
+        options(&tempdir)
+            .with_target_block_size(64)
+            .with_flush_threshold_records(128),
+    )?;
+    let entries = vec![
+        (make_key(1, 0, 0), make_value(1, 256)),
+        (make_key(1, 0, 2), make_value(2, 256)),
+        (make_key(1, 0, 4), make_value(3, 256)),
+    ];
+    commit_entries(&store, &entries, true)?;
+    let keys = [
+        make_key(1, 0, 0),
+        make_key(1, 0, 1),
+        make_key(1, 0, 2),
+        make_key(1, 0, 3),
+        make_key(1, 0, 4),
+    ];
+
+    assert_eq!(store.probe_ordered(keys.iter().map(Vec::as_slice))?, vec![
+        true, false, true, false, true
+    ]);
+    assert_eq!(
+        store.fetch_many_ordered(keys.iter().map(Vec::as_slice))?,
+        vec![
+            Some(make_value(1, 256)),
+            None,
+            Some(make_value(2, 256)),
+            None,
+            Some(make_value(3, 256)),
+        ]
+    );
+    Ok(())
+}
+
+#[test]
+fn visit_many_ordered_callback_can_commit_on_miss() -> Result<()> {
+    let tempdir = tempfile::tempdir()?;
+    let store = Store::open(options(&tempdir))?;
+    let existing = vec![
+        (make_key(1, 0, 0), make_value(1, 16)),
+        (make_key(1, 0, 1), make_value(2, 16)),
+    ];
+    commit_entries(&store, &existing, true)?;
+
+    let inserted = (make_key(1, 0, 2), make_value(9, 16));
+    let keys = [
+        existing[0].0.clone(),
+        existing[1].0.clone(),
+        inserted.0.clone(),
+    ];
+    let writer = store.clone();
+    let mut visited = Vec::new();
+    store.visit_many_ordered(keys.iter().map(Vec::as_slice), |_, value| {
+        if value.is_none() {
+            commit_entries(&writer, &[(inserted.0.clone(), inserted.1.clone())], true)
+                .expect("commit from visitor");
+        }
+        visited.push(value.map(ToOwned::to_owned));
+    })?;
+
+    assert_eq!(visited, vec![
+        Some(make_value(1, 16)),
+        Some(make_value(2, 16)),
+        None
+    ]);
+    assert_eq!(store.fetch_one(&inserted.0)?, Some(inserted.1));
+    Ok(())
+}

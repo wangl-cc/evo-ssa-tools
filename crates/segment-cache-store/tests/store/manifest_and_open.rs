@@ -56,6 +56,48 @@ fn malformed_manifest_is_rejected() -> Result<()> {
 }
 
 #[test]
+fn manifest_missing_shard_section_is_rejected() -> Result<()> {
+    let tempdir = tempfile::tempdir()?;
+    let store = Store::open(options(&tempdir))?;
+    drop(store);
+
+    let manifest_path = tempdir.path().join("MANIFEST");
+    let manifest = fs::read_to_string(&manifest_path)?;
+    let malformed = manifest.replacen("[shard 3]\n", "", 1);
+    assert_ne!(manifest, malformed);
+    fs::write(&manifest_path, malformed)?;
+
+    let error = match Store::open(options(&tempdir)) {
+        Ok(_) => panic!("manifest missing shard section should be rejected"),
+        Err(error) => error,
+    };
+
+    assert!(matches!(error, Error::ManifestParse { .. }));
+    Ok(())
+}
+
+#[test]
+fn manifest_duplicate_shard_header_is_rejected() -> Result<()> {
+    let tempdir = tempfile::tempdir()?;
+    let store = Store::open(options(&tempdir))?;
+    drop(store);
+
+    let manifest_path = tempdir.path().join("MANIFEST");
+    let manifest = fs::read_to_string(&manifest_path)?;
+    let malformed = manifest.replacen("[shard 1]\n", "[shard 0]\n", 1);
+    assert_ne!(manifest, malformed);
+    fs::write(&manifest_path, malformed)?;
+
+    let error = match Store::open(options(&tempdir)) {
+        Ok(_) => panic!("manifest duplicate shard header should be rejected"),
+        Err(error) => error,
+    };
+
+    assert!(matches!(error, Error::ManifestParse { .. }));
+    Ok(())
+}
+
+#[test]
 fn manifest_option_mismatches_are_rejected() -> Result<()> {
     let tempdir = tempfile::tempdir()?;
     let base_options = options(&tempdir);

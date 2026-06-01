@@ -87,9 +87,15 @@ impl BlockIndexCodec {
     }
 
     fn read_from(&self, file: &mut File, footer: &SegmentFooter) -> Result<Vec<BlockIndexEntry>> {
+        let file_len = file.metadata()?.len();
+        self.validate_index_region(footer, file_len)?;
         file.seek(SeekFrom::Start(footer.block_index_offset))?;
-        let mut bytes =
-            vec![0u8; usize::try_from(footer.block_index_len).expect("block index len should fit")];
+        let mut count_bytes = [0u8; 4];
+        file.read_exact(&mut count_bytes)?;
+        let declared_count = u32::from_le_bytes(count_bytes);
+        let expected_len = self.validate_declared_len(footer, declared_count)?;
+        file.seek(SeekFrom::Start(footer.block_index_offset))?;
+        let mut bytes = vec![0u8; expected_len];
         file.read_exact(&mut bytes)?;
         if crc32c(&bytes) != footer.block_index_crc {
             return Err(Error::UnsupportedFormatVersion {
@@ -101,9 +107,71 @@ impl BlockIndexCodec {
         Ok(entries)
     }
 
+    fn validate_index_region(&self, footer: &SegmentFooter, file_len: u64) -> Result<()> {
+        if footer.block_index_len < 4 || footer.block_index_offset > file_len {
+            return Err(Error::UnsupportedFormatVersion {
+                version: footer.version,
+            });
+        }
+        let end = footer
+            .block_index_offset
+            .checked_add(footer.block_index_len)
+            .ok_or(Error::UnsupportedFormatVersion {
+                version: footer.version,
+            })?;
+        if end > file_len {
+            return Err(Error::UnsupportedFormatVersion {
+                version: footer.version,
+            });
+        }
+        Ok(())
+    }
+
+    fn validate_declared_len(&self, footer: &SegmentFooter, declared_count: u32) -> Result<usize> {
+        let declared_count = u64::from(declared_count);
+        let per_entry_len = u64::try_from(self.key_len)
+            .map_err(|_| Error::UnsupportedFormatVersion {
+                version: footer.version,
+            })?
+            .checked_add(8 + 4 + 4)
+            .ok_or(Error::UnsupportedFormatVersion {
+                version: footer.version,
+            })?;
+        let expected_len = 4u64
+            .checked_add(declared_count.checked_mul(per_entry_len).ok_or(
+                Error::UnsupportedFormatVersion {
+                    version: footer.version,
+                },
+            )?)
+            .ok_or(Error::UnsupportedFormatVersion {
+                version: footer.version,
+            })?;
+        if declared_count == 0
+            || declared_count > footer.record_count
+            || expected_len != footer.block_index_len
+        {
+            return Err(Error::UnsupportedFormatVersion {
+                version: footer.version,
+            });
+        }
+        usize::try_from(expected_len).map_err(|_| Error::UnsupportedFormatVersion {
+            version: footer.version,
+        })
+    }
+
     fn decode_entries(&self, bytes: &[u8]) -> Result<Vec<BlockIndexEntry>> {
         let mut cursor = 0usize;
         let count = usize::try_from(read_u32(bytes, &mut cursor)?).expect("count should fit");
+        let expected_len = 4usize
+            .checked_add(
+                count
+                    .checked_mul(self.key_len + 8 + 4 + 4)
+                    .ok_or(Error::UnsupportedFormatVersion { version: 0 })?,
+            )
+            .ok_or(Error::UnsupportedFormatVersion { version: 0 })?;
+        if expected_len != bytes.len() {
+            return Err(Error::UnsupportedFormatVersion { version: 0 });
+        }
         let mut entries = Vec::with_capacity(count);
         for _ in 0..count {
             entries.push(BlockIndexEntry {
@@ -112,9 +180,6 @@ impl BlockIndexCodec {
                 block_len: read_u32(bytes, &mut cursor)?,
                 record_count: read_u32(bytes, &mut cursor)?,
             });
-        }
-        if cursor != bytes.len() {
-            return Err(Error::UnsupportedFormatVersion { version: 0 });
         }
         Ok(entries)
     }

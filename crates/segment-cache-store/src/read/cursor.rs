@@ -264,13 +264,13 @@ impl SegmentRangeCursor {
             };
 
             if let Some(end) = self.end.as_deref()
-                && block.first_key.as_slice() >= end
+                && block.first_key() >= end
             {
                 self.exhausted = true;
                 return Ok(());
             }
             if let Some(start) = self.start.as_deref()
-                && block.last_key.as_slice() < start
+                && block.last_key() < start
             {
                 continue;
             }

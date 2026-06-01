@@ -140,6 +140,12 @@ impl StoreOptions {
                 reason: "key_len must fit in u32",
             });
         }
+        if self.target_block_size > usize::try_from(u32::MAX).expect("u32 max should fit in usize")
+        {
+            return Err(Error::InvalidOptions {
+                reason: "target_block_size must fit in u32",
+            });
+        }
         if let ValueLayout::Fixed { value_len } = self.value_layout {
             if value_len == 0 {
                 return Err(Error::InvalidOptions {
@@ -228,9 +234,11 @@ impl ValueLayout {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use crate::Error;
+
     mod value_layout_metadata {
-        use super::super::ValueLayout;
-        use crate::Error;
+        use super::*;
 
         #[test]
         fn rejects_invalid_encodings() {

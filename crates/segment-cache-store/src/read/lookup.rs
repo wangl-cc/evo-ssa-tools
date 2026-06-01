@@ -1,5 +1,7 @@
 //! Ordered lookup implementation and reusable lookup-session state.
 
+use std::sync::Arc;
+
 use crate::{
     error::{Error, Result},
     options::ValueLayout,
@@ -90,11 +92,15 @@ impl OrderedLookup {
         K: AsRef<[u8]>,
         F: FnMut(usize, Option<&[u8]>),
     {
-        let state = self.store.inner.state.read();
         let shard_policy = ShardPolicy::new(
             self.store.inner.options.shard_count,
             self.store.inner.options.shard_key_offset,
         );
+        let options = LookupReadOptions {
+            key_len: self.store.inner.options.key_len,
+            value_layout: self.store.inner.options.value_layout,
+            verify_block_checksums: self.store.inner.options.verify_block_checksums,
+        };
         let mut start = 0usize;
         while start < keys.len() {
             let shard_id = shard_policy.shard_for_key(keys[start].as_ref());
@@ -103,16 +109,16 @@ impl OrderedLookup {
                 end += 1;
             }
 
+            let segments = {
+                let state = self.store.inner.state.read();
+                state.shards[shard_id].segments.clone()
+            };
             process_shard_keys(
-                &state.shards[shard_id],
+                segments.as_ref(),
                 &mut self.shard_states[shard_id],
                 &keys[start..end],
                 start,
-                LookupReadOptions {
-                    key_len: self.store.inner.options.key_len,
-                    value_layout: self.store.inner.options.value_layout,
-                    verify_block_checksums: self.store.inner.options.verify_block_checksums,
-                },
+                options,
                 &mut visitor,
             )?;
             start = end;
@@ -187,7 +193,7 @@ pub(crate) fn fetch_from_shard(
 }
 
 fn process_shard_keys<K, F>(
-    shard: &ShardState,
+    segments: &[Arc<SegmentState>],
     lookup_state: &mut ShardLookupState,
     keys: &[K],
     base_index: usize,
@@ -203,13 +209,13 @@ where
     }
 
     let mut key_index = 0usize;
-    let mut segment_index = initial_segment_index(shard, lookup_state, keys[0].as_ref());
+    let mut segment_index = initial_segment_index(segments, lookup_state, keys[0].as_ref());
     reset_segment_if_needed(lookup_state, segment_index);
 
     while key_index < keys.len() {
         let key = keys[key_index].as_ref();
 
-        if segment_index >= shard.segments.len() {
+        if segment_index >= segments.len() {
             while key_index < keys.len() {
                 visitor(base_index + key_index, None);
                 key_index += 1;
@@ -217,7 +223,7 @@ where
             break;
         }
 
-        let segment = &shard.segments[segment_index];
+        let segment = segments[segment_index].as_ref();
         if key > segment.max_key.as_slice() {
             segment_index += 1;
             reset_segment_if_needed(lookup_state, segment_index);
@@ -249,14 +255,23 @@ where
             }
             Err(error) => return Err(error),
         };
-        let block_upper = block.last_key.as_slice().min(segment.max_key.as_slice());
+        let block_upper = block.last_key().min(segment.max_key.as_slice());
         let mut block_end = key_index;
         while block_end < keys.len() && keys[block_end].as_ref() <= block_upper {
             block_end += 1;
         }
         if block_end == key_index {
-            lookup_state.current_block_index = block_index.checked_add(1);
-            lookup_state.loaded_block = None;
+            let next_first_key = segment
+                .block_index
+                .get(block_index + 1)
+                .map(|entry| entry.first_key.as_slice());
+            if next_first_key.is_some_and(|next| key >= next) {
+                lookup_state.current_block_index = block_index.checked_add(1);
+                lookup_state.loaded_block = None;
+            } else {
+                visitor(base_index + key_index, None);
+                key_index += 1;
+            }
             continue;
         }
 
@@ -327,20 +342,22 @@ where
     }
 }
 
-fn initial_segment_index(shard: &ShardState, lookup_state: &ShardLookupState, key: &[u8]) -> usize {
+fn initial_segment_index(
+    segments: &[Arc<SegmentState>],
+    lookup_state: &ShardLookupState,
+    key: &[u8],
+) -> usize {
     let candidate = lookup_state
         .current_segment_index
-        .filter(|&index| index < shard.segments.len());
+        .filter(|&index| index < segments.len());
     if let Some(index) = candidate {
-        let segment = &shard.segments[index];
+        let segment = segments[index].as_ref();
         if segment.min_key.as_slice() <= key {
             return index;
         }
     }
 
-    shard
-        .segments
-        .partition_point(|segment| segment.max_key.as_slice() < key)
+    segments.partition_point(|segment| segment.max_key.as_slice() < key)
 }
 
 fn initial_block_index(
@@ -349,8 +366,8 @@ fn initial_block_index(
     key: &[u8],
 ) -> usize {
     if let Some(block) = lookup_state.loaded_block.as_ref()
-        && block.first_key.as_slice() <= key
-        && key <= block.last_key.as_slice()
+        && block.first_key() <= key
+        && key <= block.last_key()
         && let Some(index) = lookup_state.current_block_index
     {
         return index;

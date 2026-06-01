@@ -17,7 +17,7 @@ fn wrong_length_keys_are_rejected() -> Result<()> {
 #[test]
 fn invalid_store_options_are_rejected() -> Result<()> {
     let tempdir = tempfile::tempdir()?;
-    for invalid in [
+    let mut invalid_options = vec![
         StoreOptions::new(tempdir.path(), 16).with_shard_count(0),
         StoreOptions::new(tempdir.path(), 16).with_shard_count(usize::MAX),
         StoreOptions::new(tempdir.path(), 0),
@@ -27,7 +27,17 @@ fn invalid_store_options_are_rejected() -> Result<()> {
         StoreOptions::new(tempdir.path(), 16).with_shard_key_offset(17),
         StoreOptions::new(tempdir.path(), 16).with_flush_threshold_records(0),
         StoreOptions::new(tempdir.path(), 16).with_flush_threshold_bytes(0),
-    ] {
+    ];
+    if let Some(oversized_target_block_size) = usize::try_from(u32::MAX)
+        .ok()
+        .and_then(|max| max.checked_add(1))
+    {
+        invalid_options.push(
+            StoreOptions::new(tempdir.path(), 16)
+                .with_target_block_size(oversized_target_block_size),
+        );
+    }
+    for invalid in invalid_options {
         let error = match Store::open(invalid) {
             Ok(_) => panic!("invalid store options should be rejected"),
             Err(error) => error,

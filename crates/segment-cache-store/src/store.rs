@@ -77,17 +77,14 @@ impl Store {
                 };
                 segment_states.push(Arc::new(SegmentState::from_opened(segment)));
             }
-            shards.push(ShardState {
-                segments: segment_states,
-                last_max_key,
-            });
+            shards.push(ShardState::new(segment_states, last_max_key));
         }
 
         Ok(Self {
             inner: Arc::new(StoreInner {
                 options,
                 commit_lock: parking_lot::Mutex::new(()),
-                state: RwLock::new(StoreState { manifest, shards }),
+                state: RwLock::new(StoreState::new(manifest, shards)),
             }),
         })
     }
@@ -140,7 +137,8 @@ impl Store {
             }
             (state.manifest.next_segment_id, state.manifest.clone())
         };
-        let mut new_segments = Vec::new();
+        let mut new_segments: Vec<Vec<Arc<SegmentState>>> =
+            vec![Vec::new(); self.inner.options.shard_count];
 
         for (shard_id, shard_entries) in sharded.iter_mut().enumerate() {
             if shard_entries.is_empty() {
@@ -163,7 +161,7 @@ impl Store {
                 if final_path.exists() {
                     return Err(Error::SegmentFileAlreadyExists { file_name });
                 }
-                let (footer, _block_index) = SegmentWriter::new(
+                let (footer, block_index) = SegmentWriter::new(
                     &temp_path,
                     shard_id,
                     self.inner.options.key_len,
@@ -176,14 +174,13 @@ impl Store {
                     .expect("freshly written segment should exist");
                 fs::rename(&temp_path, &final_path)?;
                 paths.sync_segment_dir(shard_id)?;
-                let opened = OpenedSegment::open(final_path.clone(), SegmentOpenOptions {
-                    expected_shard: shard_id,
-                    expected_key_len: self.inner.options.key_len,
-                    expected_value_layout: self.inner.options.value_layout,
-                    expected_codec_version: self.inner.options.codec_version,
-                })?
-                .expect("freshly written segment should reopen");
-                let segment_state = Arc::new(SegmentState::from_opened(opened));
+                let file = fs::File::open(&final_path)?;
+                let segment_state = Arc::new(SegmentState::from_written(
+                    file,
+                    footer.min_key.clone(),
+                    footer.max_key.clone(),
+                    block_index,
+                ));
                 manifest.shards[shard_id].push(SegmentManifestEntry {
                     file_name,
                     min_key: footer.min_key.clone(),
@@ -192,7 +189,7 @@ impl Store {
                     created_at_unix_millis: now_unix_millis(),
                     file_fingerprint,
                 });
-                new_segments.push((shard_id, segment_state, footer.max_key));
+                new_segments[shard_id].push(segment_state);
                 stats.records += segment_entries.len();
                 stats.bytes += segment_entries
                     .iter()
@@ -207,10 +204,17 @@ impl Store {
         manifest.store(&self.inner.options.root)?;
 
         let mut state = self.inner.state.write();
-        for (shard_id, segment, max_key) in new_segments {
-            state.shards[shard_id].segments.push(segment);
-            state.shards[shard_id].last_max_key = Some(max_key);
+        for (shard_id, shard_new_segments) in new_segments.into_iter().enumerate() {
+            if shard_new_segments.is_empty() {
+                continue;
+            }
+            let shard_state = &mut state.shards[shard_id];
+            let mut segments = shard_state.segments_as_vec();
+            segments.extend(shard_new_segments);
+            shard_state.last_max_key = segments.last().map(|segment| segment.max_key.clone());
+            shard_state.replace_segments(segments);
         }
+        state.refresh_visible_segments();
         state.manifest = manifest;
         Ok(stats)
     }
@@ -309,33 +313,27 @@ impl Store {
     }
 
     fn range_cursor(&self, start: Option<&[u8]>, end: Option<&[u8]>) -> Result<RangeCursor> {
-        let state = self.inner.state.read();
-        let mut segments = Vec::new();
-        for shard in &state.shards {
-            for segment in &shard.segments {
-                if let Some(start) = start
-                    && segment.max_key.as_slice() < start
-                {
-                    continue;
-                }
-                if let Some(end) = end
-                    && segment.min_key.as_slice() >= end
-                {
-                    continue;
-                }
-                segments.push(Arc::clone(segment));
+        let (visible, globally_disjoint) = {
+            let state = self.inner.state.read();
+            (
+                Arc::clone(&state.visible_segments.segments),
+                state.visible_segments.globally_disjoint,
+            )
+        };
+        let mut cursors = Vec::with_capacity(visible.len());
+        for segment in visible.iter() {
+            if let Some(start) = start
+                && segment.max_key.as_slice() < start
+            {
+                continue;
             }
-        }
-        drop(state);
-
-        segments.sort_by(|left, right| left.min_key.cmp(&right.min_key));
-        let globally_disjoint = segments
-            .windows(2)
-            .all(|window| window[0].max_key.as_slice() < window[1].min_key.as_slice());
-        let mut cursors = Vec::with_capacity(segments.len());
-        for segment in segments {
+            if let Some(end) = end
+                && segment.min_key.as_slice() >= end
+            {
+                continue;
+            }
             cursors.push(SegmentRangeCursor::new(
-                segment,
+                Arc::clone(segment),
                 self.inner.options.key_len,
                 self.inner.options.value_layout,
                 self.inner.options.verify_block_checksums,

@@ -174,6 +174,57 @@ fn corrupted_middle_block_only_loses_that_block() -> Result<()> {
 }
 
 #[test]
+fn corrupted_block_key_ordering_becomes_miss_in_ordered_reads() -> Result<()> {
+    let tempdir = tempfile::tempdir()?;
+    let store = Store::open(options(&tempdir))?;
+    let entries = vec![
+        (make_key(1, 1, 0), make_value(1, 16)),
+        (make_key(1, 1, 1), make_value(2, 16)),
+    ];
+    commit_entries(&store, &entries, true)?;
+    let path = first_segment_path(tempdir.path())?;
+    let key_len = entries[0].0.len();
+    mutate_block_payload(&path, 0, |payload| {
+        let first_key_start = 16usize;
+        let second_key_start = first_key_start + key_len;
+        payload.copy_within(first_key_start..second_key_start, second_key_start);
+    })?;
+
+    let reopened = Store::open(options(&tempdir))?;
+    let key_refs = entries
+        .iter()
+        .map(|(key, _)| key.as_slice())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        reopened.fetch_many_ordered(key_refs.iter().copied())?,
+        vec![None, None]
+    );
+    assert_eq!(reopened.probe_ordered(key_refs.iter().copied())?, vec![
+        false, false
+    ]);
+    assert!(reopened.iter_all()?.collect::<Result<Vec<_>>>()?.is_empty());
+    Ok(())
+}
+
+#[test]
+fn malformed_footer_block_index_metadata_hides_whole_segment() -> Result<()> {
+    let tempdir = tempfile::tempdir()?;
+    let store = Store::open(options(&tempdir))?;
+    let key = make_key(1, 1, 0);
+    commit_entries(&store, &[(key.clone(), make_value(9, 16))], true)?;
+    let path = first_segment_path(tempdir.path())?;
+    mutate_footer_payload(&path, |payload| {
+        payload[40..48].copy_from_slice(&0u64.to_le_bytes());
+    })?;
+
+    let reopened = Store::open(options(&tempdir))?;
+    assert_eq!(reopened.fetch_one(&key)?, None);
+    assert_eq!(reopened.probe_ordered([key.as_slice()])?, vec![false]);
+    assert_eq!(reopened.iter_all()?.count(), 0);
+    Ok(())
+}
+
+#[test]
 fn corrupted_block_index_hides_whole_segment() -> Result<()> {
     let tempdir = tempfile::tempdir()?;
     let store = Store::open(options(&tempdir))?;

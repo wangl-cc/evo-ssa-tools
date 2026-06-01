@@ -141,3 +141,38 @@ fn visit_many_ordered_slice_matches_fetch_many() -> Result<()> {
     );
     Ok(())
 }
+
+#[test]
+fn visit_many_ordered_slice_callback_can_commit_on_miss() -> Result<()> {
+    let tempdir = tempfile::tempdir()?;
+    let store = Store::open(options(&tempdir))?;
+    let existing = vec![
+        (make_key(1, 0, 10), make_value(1, 16)),
+        (make_key(1, 0, 11), make_value(2, 16)),
+    ];
+    commit_entries(&store, &existing, true)?;
+
+    let inserted = (make_key(1, 0, 12), make_value(7, 16));
+    let keys = vec![
+        existing[0].0.clone(),
+        existing[1].0.clone(),
+        inserted.0.clone(),
+    ];
+    let writer = store.clone();
+    let mut visited = Vec::new();
+    store.visit_many_ordered_slice(&keys, |_, value| {
+        if value.is_none() {
+            commit_entries(&writer, &[(inserted.0.clone(), inserted.1.clone())], true)
+                .expect("commit from visitor");
+        }
+        visited.push(value.map(ToOwned::to_owned));
+    })?;
+
+    assert_eq!(visited, vec![
+        Some(make_value(1, 16)),
+        Some(make_value(2, 16)),
+        None
+    ]);
+    assert_eq!(store.fetch_one(&inserted.0)?, Some(inserted.1));
+    Ok(())
+}
