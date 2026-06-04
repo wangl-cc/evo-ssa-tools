@@ -3,16 +3,16 @@
 
 /// Error returned when a parameter fails validation.
 ///
-/// The full diagnostic is available through [`std::fmt::Display`]. Use [`ParameterError::name`]
+/// The full diagnostic is available through [`std::fmt::Display`]. Use [`ValidationError::name`]
 /// when you need the failing parameter name separately.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ParameterError {
+pub struct ValidationError {
     name: &'static str,
     value: String,
     expected: &'static str,
 }
 
-impl ParameterError {
+impl ValidationError {
     /// Return the name of the parameter that failed validation.
     pub const fn name(&self) -> &'static str {
         self.name
@@ -28,7 +28,7 @@ impl ParameterError {
     }
 }
 
-impl std::fmt::Display for ParameterError {
+impl std::fmt::Display for ValidationError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
@@ -38,16 +38,16 @@ impl std::fmt::Display for ParameterError {
     }
 }
 
-impl std::error::Error for ParameterError {}
+impl std::error::Error for ValidationError {}
 
-/// Validate a parameter and return [`ParameterError`] on failure.
+/// Validate a parameter and return [`ValidationError`] on failure.
 ///
 /// # Examples
 ///
 /// ```
-/// use validate::{ParameterError, validate};
+/// use validate::{ValidationError, validate};
 ///
-/// fn configure(rate: f64, probability: f64) -> Result<(), ParameterError> {
+/// fn configure(rate: f64, probability: f64) -> Result<(), ValidationError> {
 ///     validate!(rate > 0.0)?;
 ///     validate!(0.0 <= probability <= 1.0)?;
 ///     validate!(rate, rate.is_finite(), "finite")?;
@@ -174,7 +174,7 @@ macro_rules! validate {
     (@cmp_expected <=, $bound:expr) => {
         concat!("<= ", stringify!($bound))
     };
-    // Convert a boolean validation result into `Result<(), ParameterError>`.
+    // Convert a boolean validation result into `Result<(), ValidationError>`.
     (@check $condition:expr, $name:expr, $value:expr, $expected:expr) => {{
         if $condition {
             ::core::result::Result::Ok(())
@@ -184,7 +184,7 @@ macro_rules! validate {
     }};
     // Build the diagnostic error. The value is formatted only on the failure path.
     (@invalid $name:expr, $value:expr, $expected:expr) => {
-        ::core::result::Result::Err($crate::ParameterError::__new(
+        ::core::result::Result::Err($crate::ValidationError::__new(
             $name,
             ::std::format!("{:?}", $value),
             $expected,
@@ -197,14 +197,14 @@ macro_rules! validate {
 mod tests {
     use super::*;
 
-    fn assert_parameter_error(error: ParameterError, name: &'static str, display: &str) {
+    fn assert_validation_error(error: ValidationError, name: &'static str, display: &str) {
         assert_eq!(error.name(), name);
         assert_eq!(error.to_string(), display);
     }
 
     #[test]
     fn display_orders_expected_before_actual_value() {
-        let error = ParameterError::__new("rate", "-1.0".to_owned(), "> 0.0");
+        let error = ValidationError::__new("rate", "-1.0".to_owned(), "> 0.0");
 
         assert_eq!(
             error.to_string(),
@@ -217,7 +217,7 @@ mod tests {
         let rate = -0.1;
         let error = validate!(rate > 0.0).unwrap_err();
 
-        assert_parameter_error(
+        assert_validation_error(
             error,
             "rate",
             "invalid parameter `rate`: expected > 0.0, got -0.1",
@@ -236,7 +236,7 @@ mod tests {
         let config = Config { steps: 0 };
         let error = validate!(config.steps >= 1).unwrap_err();
 
-        assert_parameter_error(
+        assert_validation_error(
             error,
             "steps",
             "invalid parameter `steps`: expected >= 1, got 0",
@@ -250,14 +250,14 @@ mod tests {
         }
 
         impl Config {
-            fn validate(&self) -> Result<(), ParameterError> {
+            fn validate(&self) -> Result<(), ValidationError> {
                 validate!(self.rate > 0.0)
             }
         }
 
         let error = Config { rate: 0.0 }.validate().unwrap_err();
 
-        assert_parameter_error(
+        assert_validation_error(
             error,
             "rate",
             "invalid parameter `rate`: expected > 0.0, got 0.0",
@@ -267,24 +267,24 @@ mod tests {
     #[test]
     fn comparison_checks_render_each_supported_operator() {
         let count = 3;
-        assert_parameter_error(
+        assert_validation_error(
             validate!(count < 3).unwrap_err(),
             "count",
             "invalid parameter `count`: expected < 3, got 3",
         );
-        assert_parameter_error(
+        assert_validation_error(
             validate!(count <= 2).unwrap_err(),
             "count",
             "invalid parameter `count`: expected <= 2, got 3",
         );
 
         let count = 0;
-        assert_parameter_error(
+        assert_validation_error(
             validate!(count > 0).unwrap_err(),
             "count",
             "invalid parameter `count`: expected > 0, got 0",
         );
-        assert_parameter_error(
+        assert_validation_error(
             validate!(count >= 1).unwrap_err(),
             "count",
             "invalid parameter `count`: expected >= 1, got 0",
@@ -296,7 +296,7 @@ mod tests {
         let probability = 1.2;
         let error = validate!(0.0 <= probability <= 1.0).unwrap_err();
 
-        assert_parameter_error(
+        assert_validation_error(
             error,
             "probability",
             "invalid parameter `probability`: expected in [0.0, 1.0], got 1.2",
@@ -309,24 +309,24 @@ mod tests {
     #[test]
     fn range_checks_render_open_and_half_open_intervals() {
         let probability = 0.0;
-        assert_parameter_error(
+        assert_validation_error(
             validate!(0.0 < probability < 1.0).unwrap_err(),
             "probability",
             "invalid parameter `probability`: expected in (0.0, 1.0), got 0.0",
         );
-        assert_parameter_error(
+        assert_validation_error(
             validate!(0.0 < probability <= 1.0).unwrap_err(),
             "probability",
             "invalid parameter `probability`: expected in (0.0, 1.0], got 0.0",
         );
 
         let probability = 1.0;
-        assert_parameter_error(
+        assert_validation_error(
             validate!(0.0 <= probability < 1.0).unwrap_err(),
             "probability",
             "invalid parameter `probability`: expected in [0.0, 1.0), got 1.0",
         );
-        assert_parameter_error(
+        assert_validation_error(
             validate!(0.0 <= probability <= 0.5).unwrap_err(),
             "probability",
             "invalid parameter `probability`: expected in [0.0, 0.5], got 1.0",
@@ -342,7 +342,7 @@ mod tests {
         let config = Config { score: -1.0 };
         let error = validate!(-1.0 < config.score <= 1.0).unwrap_err();
 
-        assert_parameter_error(
+        assert_validation_error(
             error,
             "score",
             "invalid parameter `score`: expected in (-1.0, 1.0], got -1.0",
@@ -356,7 +356,7 @@ mod tests {
         let score = 1.5;
         let error = validate!((lower) < score < (upper)).unwrap_err();
 
-        assert_parameter_error(
+        assert_validation_error(
             error,
             "score",
             "invalid parameter `score`: expected in (lower, upper), got 1.5",
@@ -368,7 +368,7 @@ mod tests {
         let sigma = f64::NAN;
         let error = validate!(sigma, sigma.is_finite(), "finite").unwrap_err();
 
-        assert_parameter_error(
+        assert_validation_error(
             error,
             "sigma",
             "invalid parameter `sigma`: expected finite, got NaN",
@@ -386,7 +386,7 @@ mod tests {
         )
         .unwrap_err();
 
-        assert_parameter_error(
+        assert_validation_error(
             error,
             "sigma",
             "invalid parameter `sigma`: expected finite, got Some(NaN)",

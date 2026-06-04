@@ -5,9 +5,9 @@
 ## Quick Start
 
 ```rust
-use validate::{ParameterError, validate};
+use validate::{ValidationError, validate};
 
-fn configure(rate: f64, probability: f64) -> Result<(), ParameterError> {
+fn configure(rate: f64, probability: f64) -> Result<(), ValidationError> {
     validate!(rate > 0.0)?;
     validate!(0.0 <= probability <= 1.0)?;
     validate!(rate, rate.is_finite(), "finite")?;
@@ -15,10 +15,10 @@ fn configure(rate: f64, probability: f64) -> Result<(), ParameterError> {
 }
 ```
 
-Failures display the parameter name, the actual value formatted with `Debug`, and a short expected condition. The parameter name is also available through `ParameterError::name()`.
+Failures display the parameter name, the actual value formatted with `Debug`, and a short expected condition. The parameter name is also available through `ValidationError::name()`.
 
 ```rust
-use validate::{ParameterError, validate};
+use validate::{ValidationError, validate};
 
 let steps = 0;
 let error = validate!(steps >= 1).unwrap_err();
@@ -27,7 +27,7 @@ assert_eq!(
     error.to_string(),
     "invalid parameter `steps`: expected >= 1, got 0"
 );
-# let _: ParameterError = error;
+# let _: ValidationError = error;
 ```
 
 ## Supported Forms
