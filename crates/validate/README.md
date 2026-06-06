@@ -8,9 +8,9 @@
 use validate::{ValidationError, validate};
 
 fn configure(rate: f64, probability: f64) -> Result<(), ValidationError> {
-    validate!(rate > 0.0)?;
-    validate!(0.0 <= probability <= 1.0)?;
-    validate!(rate, rate.is_finite(), "finite")?;
+    validate!(rate: > 0.0)?;
+    validate!(probability: >= 0.0, <= 1.0)?;
+    validate!(rate: rate.is_finite(); "finite")?;
     Ok(())
 }
 ```
@@ -21,7 +21,7 @@ Failures display the parameter name, the actual value formatted with `Debug`, an
 use validate::{ValidationError, validate};
 
 let steps = 0;
-let error = validate!(steps >= 1).unwrap_err();
+let error = validate!(steps: >= 1).unwrap_err();
 assert_eq!(error.name(), "steps");
 assert_eq!(
     error.to_string(),
@@ -32,35 +32,40 @@ assert_eq!(
 
 ## Supported Forms
 
-Comparison checks infer the parameter name from an identifier or one field access.
+Comparison checks put the validated identifier or field path before `:`. Field paths may use named or tuple fields. Bounds are full Rust expressions.
 
 ```rust
 # use validate::validate;
 # let rate = -0.1;
-let _ = validate!(rate > 0.0);
-let _ = validate!(rate >= 0.0);
-let _ = validate!(rate < 1.0);
-let _ = validate!(rate <= 1.0);
+let _ = validate!(rate: > 0.0);
+let _ = validate!(rate: >= 0.0);
+let _ = validate!(rate: < 1.0);
+let _ = validate!(rate: <= 1.0);
+# struct Config { rate: f64 }
+# let config = Config { rate: -0.1 };
+let _ = validate!(config.rate: > 0.0);
+# let config = (0,);
+let _ = validate!(config.0: >= 1);
 ```
 
-Range checks use mathematical notation and render the corresponding interval.
+Range checks use two comma-separated clauses and render the corresponding interval. Bounds are full Rust expressions.
 
 ```rust
 # use validate::validate;
 # let probability = 1.2;
 # let min = 0.0;
 # let max = 1.0;
-let _ = validate!(0.0 <= probability <= 1.0);
-let _ = validate!(0.0 < probability < 1.0);
-let _ = validate!(0.0 <= probability < 1.0);
-let _ = validate!(0.0 < probability <= 1.0);
-let _ = validate!((min) <= probability <= (max));
+let _ = validate!(probability: >= 0.0, <= 1.0);
+let _ = validate!(probability: > 0.0, < 1.0);
+let _ = validate!(probability: >= 0.0, < 1.0);
+let _ = validate!(probability: > 0.0, <= 1.0);
+let _ = validate!(probability: >= min, <= max);
 ```
 
-Custom checks accept the value to report, a boolean condition, and a static expected description.
+Custom checks use `;` to separate an arbitrary boolean expression from its static expected description.
 
 ```rust
 # use validate::validate;
 # let sigma = f64::NAN;
-let _ = validate!(sigma, sigma.is_finite(), "finite");
+let _ = validate!(sigma: sigma.is_finite(); "finite");
 ```
