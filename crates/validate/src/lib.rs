@@ -263,6 +263,19 @@ mod tests {
     }
 
     #[test]
+    fn comparison_accepts_expression_bounds() {
+        let min_count = 1;
+        let count = 1;
+        let error = validate!(count: > min_count + 1).unwrap_err();
+
+        assert_validation_error(
+            error,
+            "count",
+            "invalid parameter `count`: expected > min_count + 1, got 1",
+        );
+    }
+
+    #[test]
     fn inclusive_range_checks_identifier_parameters() {
         let probability = 1.2;
         let error = validate!(probability: >= 0.0, <= 1.0).unwrap_err();
@@ -321,6 +334,18 @@ mod tests {
     }
 
     #[test]
+    fn range_checks_tuple_field_paths() {
+        let config = (1.5,);
+        let error = validate!(config.0: >= 0.0, <= 1.0).unwrap_err();
+
+        assert_validation_error(
+            error,
+            "config.0",
+            "invalid parameter `config.0`: expected in [0.0, 1.0], got 1.5",
+        );
+    }
+
+    #[test]
     fn range_accepts_expression_bounds() {
         let lower = -2.0;
         let upper = 2.0;
@@ -335,6 +360,26 @@ mod tests {
     }
 
     #[test]
+    fn range_evaluates_expression_bounds_once() {
+        fn next(calls: &std::cell::Cell<usize>) -> f64 {
+            let current = calls.get();
+            calls.set(current + 1);
+            current as f64
+        }
+
+        let calls = std::cell::Cell::new(0);
+        let score = 2.0;
+        let error = validate!(score: > next(&calls), < next(&calls)).unwrap_err();
+
+        assert_eq!(calls.get(), 2);
+        assert_validation_error(
+            error,
+            "score",
+            "invalid parameter `score`: expected in (next(&calls), next(&calls)), got 2.0",
+        );
+    }
+
+    #[test]
     fn custom_checks_use_inferred_value_name() {
         let sigma = f64::NAN;
         let error = validate!(sigma: sigma.is_finite(); "finite").unwrap_err();
@@ -343,6 +388,29 @@ mod tests {
             error,
             "sigma",
             "invalid parameter `sigma`: expected finite, got NaN",
+        );
+    }
+
+    #[test]
+    fn custom_checks_report_field_path_value() {
+        struct Inner {
+            sigma: f64,
+        }
+
+        struct Config {
+            inner: Inner,
+        }
+
+        let config = Config {
+            inner: Inner { sigma: f64::NAN },
+        };
+        let error =
+            validate!(config.inner.sigma: config.inner.sigma.is_finite(); "finite").unwrap_err();
+
+        assert_validation_error(
+            error,
+            "config.inner.sigma",
+            "invalid parameter `config.inner.sigma`: expected finite, got NaN",
         );
     }
 }
