@@ -101,4 +101,5 @@ jobs:
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: codecov.json
+          use_pypi: true
           fail_ci_if_error: true
