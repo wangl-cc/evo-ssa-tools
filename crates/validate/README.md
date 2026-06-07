@@ -18,7 +18,7 @@ fn configure(rate: f64, probability: f64) -> Result<(), ValidationError> {
 Failures display the parameter name, the actual value formatted with `Debug`, and a short expected condition. The parameter name is also available through `ValidationError::name()`.
 
 ```rust
-use validate::{ValidationError, validate};
+use validate::validate;
 
 let steps = 0;
 let error = validate!(steps: >= 1).unwrap_err();
@@ -27,7 +27,6 @@ assert_eq!(
     error.to_string(),
     "invalid parameter `steps`: expected >= 1, got 0"
 );
-# let _: ValidationError = error;
 ```
 
 ## Supported Forms
