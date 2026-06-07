@@ -49,7 +49,7 @@ Field reorder, field add/remove, field type changes, enum variant reorder, and e
 
 The runtime crate provides schemas for primitive numeric types, `bool`, `char`, `()`, tuples up to arity 12, arrays, `String`, `str`, slices, `Vec<T>`, `Option<T>`, `Result<T, E>`, `Box<T>`, references, `Cow<'_, T>`, `PhantomData<T>`, common map/set collections, and numeric wrappers in `std::num`.
 
-Borrow and ownership wrappers are transparent: `&T`, `&mut T`, `Box<T>`, and `Cow<'_, T>` use `T`'s schema. `String` and `str` share one text schema, and `Vec<T>` and `[T]` share one sequence schema.
+Borrow and ownership wrappers are transparent: `&T`, `&mut T`, `Box<T>`, and `Cow<'_, T>` use `T`'s schema. `String` and `str` share the `String` text schema, and `Vec<T>`, `[T]`, and `Box<[T]>` share the `Sequence` schema.
 
 `HashMap<K, V>` and `BTreeMap<K, V>` share the same logical map schema. `HashSet<T>` and `BTreeSet<T>` share the same logical set schema. This schema only describes the cache value shape; deterministic value encoding still needs to handle map/set iteration order at the serialization layer.
 

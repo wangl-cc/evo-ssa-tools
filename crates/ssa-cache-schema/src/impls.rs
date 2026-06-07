@@ -62,7 +62,7 @@ impl<T: CacheSchema> CacheSchema for Vec<T> {
 
 impl<T: CacheSchema> CacheSchema for [T] {
     fn write_schema(w: &mut SchemaWriter) {
-        w.seq_begin("Vec");
+        w.seq_begin("Sequence");
         T::write_schema(w);
         w.seq_end();
     }
@@ -349,6 +349,10 @@ mod tests {
         );
         assert_eq!(
             schema_fingerprint::<Cow<'static, [u32]>>(),
+            schema_fingerprint::<Vec<u32>>()
+        );
+        assert_eq!(
+            schema_fingerprint::<Box<[u32]>>(),
             schema_fingerprint::<Vec<u32>>()
         );
     }
