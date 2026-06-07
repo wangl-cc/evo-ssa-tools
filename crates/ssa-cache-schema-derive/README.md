@@ -8,6 +8,8 @@ The derive macro supports named structs, tuple structs, unit structs, and enums.
 
 Generic implementations add `CacheSchema` bounds for the field types that are actually written. This allows marker-only parameters such as `PhantomData<T>` without requiring `T: CacheSchema`.
 
+Recursive types are not expanded automatically in this first version. Deriving `CacheSchema` for a recursive type can recurse indefinitely when its fingerprint is computed; use a manual implementation or wait for an explicit definition/reference scheme before using recursive schemas.
+
 ## Attributes
 
 The macro accepts `#[cache_schema(rename = "...")]` on fields, variants, and types to keep schema names stable across Rust renames. Rust module paths are not included, so module moves are schema-transparent. Types also support `#[cache_schema(version = "...")]` for explicit schema salt and `#[cache_schema(crate = path)]` when the runtime crate is imported through a non-default path.

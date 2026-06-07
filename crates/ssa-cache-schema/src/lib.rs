@@ -1,5 +1,11 @@
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
-#![cfg_attr(coverage_nightly, allow(unused_features))]
+#![cfg_attr(
+    coverage_nightly,
+    allow(
+        unused_features,
+        reason = "coverage_nightly enables coverage_attribute for coverage(off) test annotations"
+    )
+)]
 
 //! Stable schema fingerprints for cache wire formats.
 //!

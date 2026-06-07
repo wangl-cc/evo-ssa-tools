@@ -1,4 +1,7 @@
-#![allow(dead_code)]
+#![allow(
+    dead_code,
+    reason = "derive fixtures are fingerprinted by type and intentionally never constructed"
+)]
 
 use std::marker::PhantomData;
 

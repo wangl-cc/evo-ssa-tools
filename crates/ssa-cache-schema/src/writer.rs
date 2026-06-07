@@ -4,15 +4,16 @@ const DOMAIN_VERSION: &[u8] = b"ssa-cache-schema:v1";
 
 /// Canonical writer used by [`crate::CacheSchema`] implementations.
 ///
-/// Every token is encoded as a one-byte tag followed by fixed-width integers or length-prefixed
-/// byte strings. This keeps different schema trees from colliding through ambiguous concatenation.
+/// New writers are seeded with the fixed `ssa-cache-schema:v1` domain/version header. Every token
+/// is encoded as a one-byte tag followed by fixed-width integers or length-prefixed byte strings.
+/// This keeps different schema trees from colliding through ambiguous concatenation.
 #[derive(Clone)]
 pub struct SchemaWriter {
     hasher: blake3::Hasher,
 }
 
 impl SchemaWriter {
-    /// Create an empty schema writer.
+    /// Create a schema writer seeded with the schema domain/version header.
     pub fn new() -> Self {
         let mut hasher = blake3::Hasher::new();
         hasher.update(DOMAIN_VERSION);
@@ -20,12 +21,12 @@ impl SchemaWriter {
     }
 
     /// Write a primitive type name.
-    pub fn primitive(&mut self, name: &'static str) {
+    pub fn primitive(&mut self, name: &str) {
         self.tagged_str(Tag::Primitive, name);
     }
 
     /// Begin a struct schema.
-    pub fn struct_begin(&mut self, name: &'static str) {
+    pub fn struct_begin(&mut self, name: &str) {
         self.tag(Tag::StructBegin);
         self.str(name);
     }
@@ -36,7 +37,7 @@ impl SchemaWriter {
     }
 
     /// Begin an enum schema.
-    pub fn enum_begin(&mut self, name: &'static str) {
+    pub fn enum_begin(&mut self, name: &str) {
         self.tag(Tag::EnumBegin);
         self.str(name);
     }
@@ -47,12 +48,12 @@ impl SchemaWriter {
     }
 
     /// Write an explicit type schema version salt.
-    pub fn type_version(&mut self, version: &'static str) {
+    pub fn type_version(&mut self, version: &str) {
         self.tagged_str(Tag::TypeVersion, version);
     }
 
     /// Begin a field schema.
-    pub fn field_begin(&mut self, index: usize, name: Option<&'static str>) {
+    pub fn field_begin(&mut self, index: usize, name: Option<&str>) {
         self.tag(Tag::FieldBegin);
         self.usize(index);
         self.option_str(name);
@@ -64,7 +65,7 @@ impl SchemaWriter {
     }
 
     /// Begin an enum variant schema.
-    pub fn variant_begin(&mut self, index: usize, name: &'static str) {
+    pub fn variant_begin(&mut self, index: usize, name: &str) {
         self.tag(Tag::VariantBegin);
         self.usize(index);
         self.str(name);
@@ -86,7 +87,7 @@ impl SchemaWriter {
     }
 
     /// Begin a sequence-like schema.
-    pub fn seq_begin(&mut self, name: &'static str) {
+    pub fn seq_begin(&mut self, name: &str) {
         self.tagged_str(Tag::SeqBegin, name);
     }
 
@@ -107,7 +108,7 @@ impl SchemaWriter {
     }
 
     /// Begin a map-like schema.
-    pub fn map_begin(&mut self, name: &'static str) {
+    pub fn map_begin(&mut self, name: &str) {
         self.tagged_str(Tag::MapBegin, name);
     }
 
@@ -123,12 +124,12 @@ impl SchemaWriter {
             .expect("BLAKE3 hash is at least 16 bytes")
     }
 
-    fn tagged_str(&mut self, tag: Tag, value: &'static str) {
+    fn tagged_str(&mut self, tag: Tag, value: &str) {
         self.tag(tag);
         self.str(value);
     }
 
-    fn option_str(&mut self, value: Option<&'static str>) {
+    fn option_str(&mut self, value: Option<&str>) {
         match value {
             Some(value) => {
                 self.tag(Tag::Some);
