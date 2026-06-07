@@ -35,37 +35,40 @@ assert_eq!(
 Comparison checks put the validated identifier or field path before `:`. Field paths may use named or tuple fields. Bounds are full Rust expressions.
 
 ```rust
-# use validate::validate;
-# let rate = -0.1;
-let _ = validate!(rate: > 0.0);
-let _ = validate!(rate: >= 0.0);
-let _ = validate!(rate: < 1.0);
-let _ = validate!(rate: <= 1.0);
+# use validate::{ValidationError, validate};
+# let rate = 0.5;
+validate!(rate: > 0.0)?;
+validate!(rate: >= 0.0)?;
+validate!(rate: < 1.0)?;
+validate!(rate: <= 1.0)?;
 # struct Config { rate: f64 }
-# let config = Config { rate: -0.1 };
-let _ = validate!(config.rate: > 0.0);
-# let config = (0,);
-let _ = validate!(config.0: >= 1);
+# let config = Config { rate: 0.5 };
+validate!(config.rate: > 0.0)?;
+# let config = (1,);
+validate!(config.0: >= 1)?;
+# Ok::<(), ValidationError>(())
 ```
 
 Range checks use two comma-separated clauses and render the corresponding interval. Bounds are full Rust expressions.
 
 ```rust
-# use validate::validate;
-# let probability = 1.2;
+# use validate::{ValidationError, validate};
+# let probability = 0.5;
 # let min = 0.0;
 # let max = 1.0;
-let _ = validate!(probability: >= 0.0, <= 1.0);
-let _ = validate!(probability: > 0.0, < 1.0);
-let _ = validate!(probability: >= 0.0, < 1.0);
-let _ = validate!(probability: > 0.0, <= 1.0);
-let _ = validate!(probability: >= min, <= max);
+validate!(probability: >= 0.0, <= 1.0)?;
+validate!(probability: > 0.0, < 1.0)?;
+validate!(probability: >= 0.0, < 1.0)?;
+validate!(probability: > 0.0, <= 1.0)?;
+validate!(probability: >= min, <= max)?;
+# Ok::<(), ValidationError>(())
 ```
 
 Custom checks use `;` to separate an arbitrary boolean expression from its static expected description.
 
 ```rust
-# use validate::validate;
-# let sigma = f64::NAN;
-let _ = validate!(sigma: sigma.is_finite(); "finite");
+# use validate::{ValidationError, validate};
+# let sigma = 1.0_f64;
+validate!(sigma: sigma.is_finite(); "finite")?;
+# Ok::<(), ValidationError>(())
 ```
