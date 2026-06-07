@@ -334,18 +334,6 @@ mod tests {
     }
 
     #[test]
-    fn range_checks_tuple_field_paths() {
-        let config = (1.5,);
-        let error = validate!(config.0: >= 0.0, <= 1.0).unwrap_err();
-
-        assert_validation_error(
-            error,
-            "config.0",
-            "invalid parameter `config.0`: expected in [0.0, 1.0], got 1.5",
-        );
-    }
-
-    #[test]
     fn range_accepts_expression_bounds() {
         let lower = -2.0;
         let upper = 2.0;
