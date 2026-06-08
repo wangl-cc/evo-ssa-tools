@@ -1,30 +1,42 @@
 use crate::{CacheSchema, SchemaWriter};
 
 macro_rules! impl_atomic_schema {
-    ($(#[$cfg:meta] $ty:ty => $name:literal),+ $(,)?) => {
+    ($($width:tt: $($ty:ident),+;)+) => {
         $(
-            #[$cfg]
-            impl CacheSchema for $ty {
-                fn write_schema(w: &mut SchemaWriter) {
-                    w.primitive($name);
-                }
-            }
+            impl_atomic_schema!(@group $width; $($ty),+);
         )+
+    };
+    (@group 8; $($ty:ident),+) => {
+        $(impl_atomic_schema!(@impl "8"; $ty);)+
+    };
+    (@group 16; $($ty:ident),+) => {
+        $(impl_atomic_schema!(@impl "16"; $ty);)+
+    };
+    (@group 32; $($ty:ident),+) => {
+        $(impl_atomic_schema!(@impl "32"; $ty);)+
+    };
+    (@group 64; $($ty:ident),+) => {
+        $(impl_atomic_schema!(@impl "64"; $ty);)+
+    };
+    (@group ptr; $($ty:ident),+) => {
+        $(impl_atomic_schema!(@impl "ptr"; $ty);)+
+    };
+    (@impl $width:literal; $ty:ident) => {
+        #[cfg(target_has_atomic = $width)]
+        impl CacheSchema for std::sync::atomic::$ty {
+            fn write_schema(w: &mut SchemaWriter) {
+                w.primitive(stringify!($ty));
+            }
+        }
     };
 }
 
 impl_atomic_schema!(
-    #[cfg(target_has_atomic = "8")] std::sync::atomic::AtomicBool => "AtomicBool",
-    #[cfg(target_has_atomic = "8")] std::sync::atomic::AtomicU8 => "AtomicU8",
-    #[cfg(target_has_atomic = "16")] std::sync::atomic::AtomicU16 => "AtomicU16",
-    #[cfg(target_has_atomic = "32")] std::sync::atomic::AtomicU32 => "AtomicU32",
-    #[cfg(target_has_atomic = "64")] std::sync::atomic::AtomicU64 => "AtomicU64",
-    #[cfg(target_has_atomic = "ptr")] std::sync::atomic::AtomicUsize => "AtomicUsize",
-    #[cfg(target_has_atomic = "8")] std::sync::atomic::AtomicI8 => "AtomicI8",
-    #[cfg(target_has_atomic = "16")] std::sync::atomic::AtomicI16 => "AtomicI16",
-    #[cfg(target_has_atomic = "32")] std::sync::atomic::AtomicI32 => "AtomicI32",
-    #[cfg(target_has_atomic = "64")] std::sync::atomic::AtomicI64 => "AtomicI64",
-    #[cfg(target_has_atomic = "ptr")] std::sync::atomic::AtomicIsize => "AtomicIsize",
+    8: AtomicBool, AtomicU8, AtomicI8;
+    16: AtomicU16, AtomicI16;
+    32: AtomicU32, AtomicI32;
+    64: AtomicU64, AtomicI64;
+    ptr: AtomicUsize, AtomicIsize;
 );
 
 #[cfg(test)]
