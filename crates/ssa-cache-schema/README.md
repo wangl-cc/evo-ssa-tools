@@ -47,13 +47,13 @@ Field reorder, field add/remove, field type changes, enum variant reorder, and e
 
 ## Provided Standard Schemas
 
-The runtime crate provides schemas for primitive numeric types, `bool`, `char`, `()`, tuples up to arity 12, arrays, `String`, `str`, slices, `Vec<T>`, `Option<T>`, `Result<T, E>`, `Box<T>`, references, `Cow<'_, T>`, `PhantomData<T>`, common map/set collections, and numeric wrappers in `std::num`.
+The runtime crate provides schemas for scalar numeric types, `bool`, `char`, `()`, tuples up to arity 12, arrays, `String`, `str`, slices, `Vec<T>`, `Option<T>`, `Result<T, E>`, `Box<T>`, references, `Cow<'_, T>`, `PhantomData<T>`, common map/set collections, numeric wrappers in `std::num`, and value-carrying atomic types in `std::sync::atomic`.
 
 Borrow and ownership wrappers are transparent: `&T`, `&mut T`, `Box<T>`, and `Cow<'_, T>` use `T`'s schema. `String` and `str` share the `String` text schema, and `Vec<T>`, `[T]`, and `Box<[T]>` share the `Sequence` schema.
 
 `HashMap<K, V>` and `BTreeMap<K, V>` share the same logical map schema. `HashSet<T>` and `BTreeSet<T>` share the same logical set schema. This schema only describes the cache value shape; deterministic value encoding still needs to handle map/set iteration order at the serialization layer.
 
-`Wrapping<T>` and `Saturating<T>` use the same schema as their inner numeric representation. `NonZero*` integer wrappers use distinct schemas because they reject zero values; changing between `u32` and `NonZeroU32` is treated as a cache-incompatible schema change.
+`Wrapping<T>` and `Saturating<T>` use the same schema as their inner numeric representation. `NonZero*` integer wrappers use distinct schemas because they reject zero values; changing between `u32` and `NonZeroU32` is treated as a cache-incompatible schema change. Atomic integer and bool types also use distinct schemas, so `AtomicU32` is not cache-compatible with `u32`; `AtomicPtr<T>` is not implemented because pointer addresses are not stable cache data.
 
 ## Writer Contract
 
