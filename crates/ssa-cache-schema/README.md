@@ -53,7 +53,7 @@ Borrow and ownership wrappers are transparent: `&T`, `&mut T`, `Box<T>`, and `Co
 
 `HashMap<K, V>` and `BTreeMap<K, V>` share the same logical map schema. `HashSet<T>` and `BTreeSet<T>` share the same logical set schema. This schema only describes the cache value shape; deterministic value encoding still needs to handle map/set iteration order at the serialization layer.
 
-`Wrapping<T>` and `Saturating<T>` use the same schema as their inner numeric representation. `NonZero*` integer wrappers use distinct schemas because they reject zero values; changing between `u32` and `NonZeroU32` is treated as a cache-incompatible schema change. Atomic integer and bool types also use distinct schemas, so `AtomicU32` is not cache-compatible with `u32`; `AtomicPtr<T>` is not implemented because pointer addresses are not stable cache data.
+`Wrapping<T>` and `Saturating<T>` use the same schema as their inner numeric representation. `NonZero*` integer wrappers use distinct schemas because they reject zero values; changing between `u32` and `NonZeroU32` is treated as a cache-incompatible schema change. Pointer-sized scalar, `NonZero`, and atomic schemas include the target pointer width, so `usize` on a 32-bit target is not cache-compatible with `usize` on a 64-bit target. Atomic integer and bool types also use distinct schemas, so `AtomicU32` is not cache-compatible with `u32`; `AtomicPtr<T>` is not implemented because pointer addresses are not stable cache data.
 
 ## Writer Contract
 

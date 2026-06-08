@@ -13,8 +13,22 @@ macro_rules! impl_scalar_schema {
 }
 
 impl_scalar_schema!(
-    bool, char, u8, u16, u32, u64, u128, usize, i8, i16, i32, i64, i128, isize, f32, f64,
+    bool, char, u8, u16, u32, u64, u128, i8, i16, i32, i64, i128, f32, f64,
 );
+
+macro_rules! impl_pointer_width_scalar_schema {
+    ($($name:ident),+ $(,)?) => {
+        $(
+            impl CacheSchema for $name {
+                fn write_schema(w: &mut SchemaWriter) {
+                    write_pointer_width_schema(w, stringify!($name));
+                }
+            }
+        )+
+    };
+}
+
+impl_pointer_width_scalar_schema!(usize, isize);
 
 macro_rules! impl_nonzero_schema {
     ($($name:ident),+ $(,)?) => {
@@ -34,14 +48,26 @@ impl_nonzero_schema!(
     NonZeroU32,
     NonZeroU64,
     NonZeroU128,
-    NonZeroUsize,
     NonZeroI8,
     NonZeroI16,
     NonZeroI32,
     NonZeroI64,
     NonZeroI128,
-    NonZeroIsize,
 );
+
+macro_rules! impl_pointer_width_nonzero_schema {
+    ($($name:ident),+ $(,)?) => {
+        $(
+            impl CacheSchema for std::num::$name {
+                fn write_schema(w: &mut SchemaWriter) {
+                    write_pointer_width_schema(w, stringify!($name));
+                }
+            }
+        )+
+    };
+}
+
+impl_pointer_width_nonzero_schema!(NonZeroUsize, NonZeroIsize);
 
 macro_rules! impl_atomic_schema {
     ($($width:literal: $($name:ident),+;)+) => {
@@ -63,9 +89,41 @@ impl_atomic_schema!(
     "16": AtomicU16, AtomicI16;
     "32": AtomicU32, AtomicI32;
     "64": AtomicU64, AtomicI64;
-    // AtomicUsize and AtomicIsize require pointer-width atomic support.
-    "ptr": AtomicUsize, AtomicIsize;
 );
+
+macro_rules! impl_pointer_width_atomic_schema {
+    ($($name:ident),+ $(,)?) => {
+        $(
+            #[cfg(target_has_atomic = "ptr")]
+            impl CacheSchema for std::sync::atomic::$name {
+                fn write_schema(w: &mut SchemaWriter) {
+                    write_pointer_width_schema(w, stringify!($name));
+                }
+            }
+        )+
+    };
+}
+
+impl_pointer_width_atomic_schema!(AtomicUsize, AtomicIsize);
+
+fn write_pointer_width_schema(w: &mut SchemaWriter, name: &str) {
+    w.primitive(name);
+    w.type_version(POINTER_WIDTH_SCHEMA);
+}
+
+#[cfg(target_pointer_width = "16")]
+const POINTER_WIDTH_SCHEMA: &str = "target_pointer_width=16";
+#[cfg(target_pointer_width = "32")]
+const POINTER_WIDTH_SCHEMA: &str = "target_pointer_width=32";
+#[cfg(target_pointer_width = "64")]
+const POINTER_WIDTH_SCHEMA: &str = "target_pointer_width=64";
+
+#[cfg(not(any(
+    target_pointer_width = "16",
+    target_pointer_width = "32",
+    target_pointer_width = "64"
+)))]
+compile_error!("unsupported target pointer width for ssa-cache-schema pointer-sized schemas");
 
 impl<T: CacheSchema> CacheSchema for std::num::Wrapping<T> {
     fn write_schema(w: &mut SchemaWriter) {
@@ -84,7 +142,7 @@ impl<T: CacheSchema> CacheSchema for std::num::Saturating<T> {
 mod tests {
     use std::num::{NonZeroU32, Saturating, Wrapping};
 
-    use crate::schema_fingerprint;
+    use crate::{CacheSchema, SchemaWriter, schema_fingerprint};
 
     #[test]
     fn type_alias_uses_aliased_type_schema() {
@@ -102,6 +160,68 @@ mod tests {
         assert_ne!(
             schema_fingerprint::<NonZeroU32>(),
             schema_fingerprint::<u32>()
+        );
+    }
+
+    #[test]
+    fn pointer_width_integer_schemas_include_target_width() {
+        struct BareUsize;
+
+        impl CacheSchema for BareUsize {
+            fn write_schema(w: &mut SchemaWriter) {
+                w.primitive("usize");
+            }
+        }
+
+        struct ExpectedUsize;
+
+        impl CacheSchema for ExpectedUsize {
+            fn write_schema(w: &mut SchemaWriter) {
+                w.primitive("usize");
+                w.type_version(super::POINTER_WIDTH_SCHEMA);
+            }
+        }
+
+        assert_eq!(
+            schema_fingerprint::<usize>(),
+            schema_fingerprint::<ExpectedUsize>()
+        );
+        assert_ne!(
+            schema_fingerprint::<usize>(),
+            schema_fingerprint::<BareUsize>()
+        );
+    }
+
+    #[test]
+    fn pointer_width_nonzero_schemas_include_target_width() {
+        struct BareNonZeroUsize;
+
+        impl CacheSchema for BareNonZeroUsize {
+            fn write_schema(w: &mut SchemaWriter) {
+                w.primitive("NonZeroUsize");
+            }
+        }
+
+        assert_ne!(
+            schema_fingerprint::<std::num::NonZeroUsize>(),
+            schema_fingerprint::<BareNonZeroUsize>()
+        );
+    }
+
+    #[cfg(target_has_atomic = "ptr")]
+    #[test]
+    fn pointer_width_atomic_schemas_include_target_width() {
+        struct BareAtomicUsize;
+
+        impl CacheSchema for BareAtomicUsize {
+            fn write_schema(w: &mut SchemaWriter) {
+                w.primitive("AtomicUsize");
+            }
+        }
+
+        assert_ne!(
+            schema_fingerprint::<std::sync::atomic::AtomicUsize>(),
+            schema_fingerprint::<BareAtomicUsize>()
         );
     }
 
