@@ -6,6 +6,8 @@
 
 The derive macro supports named structs, tuple structs, unit structs, and enums. Field types are emitted as `<FieldTy as CacheSchema>::write_schema(w)`, so Rust type resolution determines the schema dependency rather than hashing source tokens.
 
+Derived enum schemas use variant order, schema names, and fields. Explicit Rust discriminants and `repr` attributes are ignored; use `#[cache_schema(version = "...")]` or a manual implementation when discriminants are part of the cache wire format.
+
 Generic implementations add `CacheSchema` bounds for the field types that are actually written. This allows marker-only parameters such as `PhantomData<T>` without requiring `T: CacheSchema`.
 
 Recursive types are not expanded automatically in this first version. Deriving `CacheSchema` for a recursive type can recurse indefinitely when its fingerprint is computed; use a manual implementation or wait for an explicit definition/reference scheme before using recursive schemas.

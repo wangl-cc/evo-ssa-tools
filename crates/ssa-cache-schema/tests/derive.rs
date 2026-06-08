@@ -262,6 +262,28 @@ fn variant_reorder_changes_fingerprint() {
 }
 
 #[test]
+fn explicit_enum_discriminants_do_not_affect_derived_schema() {
+    #[derive(CacheSchema)]
+    #[cache_schema(rename = "Event")]
+    enum First {
+        Created = 1,
+        Deleted = 2,
+    }
+
+    #[derive(CacheSchema)]
+    #[cache_schema(rename = "Event")]
+    enum Second {
+        Created = 10,
+        Deleted = 20,
+    }
+
+    assert_eq!(
+        schema_fingerprint::<First>(),
+        schema_fingerprint::<Second>()
+    );
+}
+
+#[test]
 fn variant_add_remove_changes_fingerprint() {
     #[derive(CacheSchema)]
     #[cache_schema(rename = "Event")]

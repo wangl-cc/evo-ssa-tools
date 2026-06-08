@@ -43,7 +43,7 @@ Rust module paths are not included, so moving a type between modules does not ch
 
 Serde attributes are ignored by `CacheSchema`. For example, `#[serde(skip)]` does not remove a field from the cache schema and `#[serde(rename = "...")]` does not rename it for fingerprinting. Use `cache_schema` attributes or a manual implementation when serde behavior should affect cache compatibility.
 
-Field reorder, field add/remove, field type changes, enum variant reorder, and enum variant add/remove change the fingerprint by default.
+Field reorder, field add/remove, field type changes, enum variant reorder, and enum variant add/remove change the fingerprint by default. Derived enum schemas are based on variant order, schema names, and fields; explicit Rust discriminants and `repr` attributes are ignored. Use `#[cache_schema(version = "...")]` or a manual implementation when discriminants are part of the cache wire format.
 
 ## Provided Standard Schemas
 
