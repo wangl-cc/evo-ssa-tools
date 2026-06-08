@@ -78,6 +78,8 @@ jobs:
     name: Coverage
     needs: [build]
     runs-on: ${{ matrix.os }}
+    env:
+      CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
     strategy:
       fail-fast: false
       matrix:
@@ -97,9 +99,10 @@ jobs:
             --codecov --output-path codecov.json \
             -- --include-ignored
       - name: Upload to Codecov
+        if: ${{ env.CODECOV_TOKEN != '' }}
         uses: codecov/codecov-action@v7
         with:
-          token: ${{ secrets.CODECOV_TOKEN }}
+          token: ${{ env.CODECOV_TOKEN }}
           files: codecov.json
           use_pypi: true
           fail_ci_if_error: true
