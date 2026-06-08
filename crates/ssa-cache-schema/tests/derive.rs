@@ -77,6 +77,44 @@ fn type_rust_rename_can_keep_schema_name() {
 }
 
 #[test]
+#[allow(non_camel_case_types, reason = "raw identifier fixture uses a keyword")]
+fn raw_identifiers_use_unescaped_default_schema_names() {
+    #[derive(CacheSchema)]
+    struct r#type {
+        r#gen: u32,
+    }
+
+    #[derive(CacheSchema)]
+    #[cache_schema(rename = "type")]
+    struct ExplicitTypeAndField {
+        #[cache_schema(rename = "gen")]
+        value: u32,
+    }
+
+    #[derive(CacheSchema)]
+    #[cache_schema(rename = "RawVariant")]
+    enum RawVariant {
+        r#gen,
+    }
+
+    #[derive(CacheSchema)]
+    #[cache_schema(rename = "RawVariant")]
+    enum ExplicitVariant {
+        #[cache_schema(rename = "gen")]
+        Other,
+    }
+
+    assert_eq!(
+        schema_fingerprint::<r#type>(),
+        schema_fingerprint::<ExplicitTypeAndField>()
+    );
+    assert_eq!(
+        schema_fingerprint::<RawVariant>(),
+        schema_fingerprint::<ExplicitVariant>()
+    );
+}
+
+#[test]
 fn field_rust_rename_without_schema_rename_changes_fingerprint() {
     #[derive(CacheSchema)]
     #[cache_schema(rename = "Shape")]

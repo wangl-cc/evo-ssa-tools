@@ -64,7 +64,7 @@ where
     }
 }
 
-impl<T> CacheSchema for PhantomData<T> {
+impl<T: ?Sized> CacheSchema for PhantomData<T> {
     fn write_schema(w: &mut SchemaWriter) {
         w.primitive("PhantomData");
     }
@@ -162,6 +162,14 @@ mod tests {
         assert_eq!(
             schema_fingerprint::<PhantomData<u32>>(),
             schema_fingerprint::<PhantomData<u64>>()
+        );
+    }
+
+    #[test]
+    fn phantom_data_accepts_unsized_type_parameter() {
+        assert_eq!(
+            schema_fingerprint::<PhantomData<str>>(),
+            schema_fingerprint::<PhantomData<u32>>()
         );
     }
 }

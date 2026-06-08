@@ -31,7 +31,7 @@ impl TypeAttrs {
             })?;
         }
         if parsed.rename.is_none() {
-            parsed.rename = Some(LitStr::new(&ident.to_string(), ident.span()));
+            parsed.rename = Some(default_ident_name(ident));
         }
         Ok(parsed)
     }
@@ -80,7 +80,7 @@ impl VariantAttrs {
             })?;
         }
         if parsed.rename.is_none() {
-            parsed.rename = Some(LitStr::new(&ident.to_string(), ident.span()));
+            parsed.rename = Some(default_ident_name(ident));
         }
         Ok(parsed)
     }
@@ -117,7 +117,7 @@ impl FieldAttrs {
         if parsed.rename.is_none()
             && let Some(ident) = &field.ident
         {
-            parsed.rename = Some(LitStr::new(&ident.to_string(), ident.span()));
+            parsed.rename = Some(default_ident_name(ident));
         }
         Ok(parsed)
     }
@@ -164,4 +164,10 @@ fn is_crate_attr(path: &Path) -> bool {
             .segments
             .first()
             .is_some_and(|segment| segment.ident == "crate")
+}
+
+fn default_ident_name(ident: &Ident) -> LitStr {
+    let name = ident.to_string();
+    let name = name.strip_prefix("r#").unwrap_or(&name);
+    LitStr::new(name, ident.span())
 }
