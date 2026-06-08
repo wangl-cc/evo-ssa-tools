@@ -12,6 +12,7 @@ pub struct SchemaWriter {
     hasher: blake3::Hasher,
 }
 
+// Construction.
 impl SchemaWriter {
     /// Create a schema writer seeded with the schema domain/version header.
     pub fn new() -> Self {
@@ -19,12 +20,23 @@ impl SchemaWriter {
         hasher.update(DOMAIN_VERSION);
         Self { hasher }
     }
+}
 
+// Type identity tokens.
+impl SchemaWriter {
     /// Write a primitive type name.
     pub fn primitive(&mut self, name: &str) {
         self.tagged_str(Tag::Primitive, name);
     }
 
+    /// Write an explicit type schema version salt.
+    pub fn type_version(&mut self, version: &str) {
+        self.tagged_str(Tag::TypeVersion, version);
+    }
+}
+
+// Product type tokens.
+impl SchemaWriter {
     /// Begin a struct schema.
     pub fn struct_begin(&mut self, name: &str) {
         self.tag(Tag::StructBegin);
@@ -34,22 +46,6 @@ impl SchemaWriter {
     /// End a struct schema.
     pub fn struct_end(&mut self) {
         self.tag(Tag::StructEnd);
-    }
-
-    /// Begin an enum schema.
-    pub fn enum_begin(&mut self, name: &str) {
-        self.tag(Tag::EnumBegin);
-        self.str(name);
-    }
-
-    /// End an enum schema.
-    pub fn enum_end(&mut self) {
-        self.tag(Tag::EnumEnd);
-    }
-
-    /// Write an explicit type schema version salt.
-    pub fn type_version(&mut self, version: &str) {
-        self.tagged_str(Tag::TypeVersion, version);
     }
 
     /// Begin a field schema.
@@ -63,6 +59,20 @@ impl SchemaWriter {
     pub fn field_end(&mut self) {
         self.tag(Tag::FieldEnd);
     }
+}
+
+// Sum type tokens.
+impl SchemaWriter {
+    /// Begin an enum schema.
+    pub fn enum_begin(&mut self, name: &str) {
+        self.tag(Tag::EnumBegin);
+        self.str(name);
+    }
+
+    /// End an enum schema.
+    pub fn enum_end(&mut self) {
+        self.tag(Tag::EnumEnd);
+    }
 
     /// Begin an enum variant schema.
     pub fn variant_begin(&mut self, index: usize, name: &str) {
@@ -75,7 +85,10 @@ impl SchemaWriter {
     pub fn variant_end(&mut self) {
         self.tag(Tag::VariantEnd);
     }
+}
 
+// Tuple type tokens.
+impl SchemaWriter {
     /// Begin a tuple schema.
     pub fn tuple_begin(&mut self) {
         self.tag(Tag::TupleBegin);
@@ -85,7 +98,10 @@ impl SchemaWriter {
     pub fn tuple_end(&mut self) {
         self.tag(Tag::TupleEnd);
     }
+}
 
+// Collection type tokens.
+impl SchemaWriter {
     /// Begin a sequence-like schema.
     pub fn seq_begin(&mut self, name: &str) {
         self.tagged_str(Tag::SeqBegin, name);
@@ -116,14 +132,20 @@ impl SchemaWriter {
     pub fn map_end(&mut self) {
         self.tag(Tag::MapEnd);
     }
+}
 
+// Crate-private finalization.
+impl SchemaWriter {
     pub(crate) fn finish_fingerprint(self) -> SchemaFingerprint {
         let full = self.hasher.finalize();
         full.as_bytes()[..16]
             .try_into()
             .expect("BLAKE3 hash is at least 16 bytes")
     }
+}
 
+// Low-level canonical encoding.
+impl SchemaWriter {
     fn tagged_str(&mut self, tag: Tag, value: &str) {
         self.tag(tag);
         self.str(value);
