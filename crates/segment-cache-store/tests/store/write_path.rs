@@ -3,7 +3,7 @@ use crate::common::*;
 #[test]
 fn round_trip_batch_commit_then_fetch() -> Result<()> {
     let tempdir = tempfile::tempdir()?;
-    let store = Store::open(options(&tempdir))?;
+    let store = create_store(&tempdir)?;
     let entries = vec![
         (make_key(1, 1, 0), make_value(1, 8)),
         (make_key(1, 2, 0), make_value(2, 128)),
@@ -22,8 +22,8 @@ fn round_trip_batch_commit_then_fetch() -> Result<()> {
 fn sorted_and_unsorted_batches_publish_same_results() -> Result<()> {
     let tempdir_a = tempfile::tempdir()?;
     let tempdir_b = tempfile::tempdir()?;
-    let store_a = Store::open(options(&tempdir_a))?;
-    let store_b = Store::open(options(&tempdir_b))?;
+    let store_a = create_store(&tempdir_a)?;
+    let store_b = create_store(&tempdir_b)?;
     let sorted = vec![
         (make_key(1, 0, 0), make_value(1, 8)),
         (make_key(1, 0, 1), make_value(2, 8)),
@@ -45,7 +45,7 @@ fn sorted_and_unsorted_batches_publish_same_results() -> Result<()> {
 #[test]
 fn owned_batch_entries_round_trip() -> Result<()> {
     let tempdir = tempfile::tempdir()?;
-    let store = Store::open(options(&tempdir))?;
+    let store = create_store(&tempdir)?;
     let entries = vec![
         (make_key(1, 0, 0), make_value(1, 8)),
         (make_key(1, 0, 1), make_value(2, 16)),
@@ -64,7 +64,7 @@ fn owned_batch_entries_round_trip() -> Result<()> {
 #[test]
 fn empty_batch_flush_and_batch_len_are_noops() -> Result<()> {
     let tempdir = tempfile::tempdir()?;
-    let store = Store::open(options(&tempdir))?;
+    let store = create_store(&tempdir)?;
     let mut batch = store.begin_batch();
     assert_eq!(batch.len(), 0);
     batch.push(&make_key(1, 0, 0), &make_value(1, 8))?;

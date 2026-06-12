@@ -3,7 +3,7 @@ use crate::common::*;
 #[test]
 fn range_iteration_returns_globally_sorted_records() -> Result<()> {
     let tempdir = tempfile::tempdir()?;
-    let store = Store::open(options(&tempdir))?;
+    let store = create_store(&tempdir)?;
     let entries = vec![
         (make_key(1, 0, 0), make_value(1, 8)),
         (make_key(1, 0, 1), make_value(2, 8)),
@@ -24,7 +24,7 @@ fn range_iteration_returns_globally_sorted_records() -> Result<()> {
 #[test]
 fn visit_range_matches_owned_range() -> Result<()> {
     let tempdir = tempfile::tempdir()?;
-    let store = Store::open(options(&tempdir))?;
+    let store = create_store(&tempdir)?;
     let entries: Vec<_> = (0..8u64)
         .map(|rep| (make_key(1, 0, rep), make_value(rep as u8, 8)))
         .collect();
@@ -44,7 +44,7 @@ fn visit_range_matches_owned_range() -> Result<()> {
 #[test]
 fn range_outside_all_segments_returns_empty() -> Result<()> {
     let tempdir = tempfile::tempdir()?;
-    let store = Store::open(options(&tempdir))?;
+    let store = create_store(&tempdir)?;
     commit_entries(
         &store,
         &[
@@ -66,26 +66,9 @@ fn range_outside_all_segments_returns_empty() -> Result<()> {
 }
 
 #[test]
-fn overlapping_shard_ranges_iterate_with_k_way_merge() -> Result<()> {
-    let tempdir = tempfile::tempdir()?;
-    let store = Store::open(options(&tempdir).with_shard_key_offset(4))?;
-    let entries = vec![
-        (make_key(1, 0, 0), make_value(1, 8)),
-        (make_key(1, u32::MAX, 0), make_value(2, 8)),
-        (make_key(2, 0, 0), make_value(3, 8)),
-        (make_key(2, u32::MAX, 0), make_value(4, 8)),
-    ];
-    commit_entries(&store, &entries, true)?;
-
-    let iterated = store.iter_all()?.collect::<Result<Vec<_>>>()?;
-    assert_eq!(iterated, entries);
-    Ok(())
-}
-
-#[test]
 fn iter_all_returns_all_records_exactly_once() -> Result<()> {
     let tempdir = tempfile::tempdir()?;
-    let store = Store::open(options(&tempdir))?;
+    let store = create_store(&tempdir)?;
     let entries: Vec<_> = (0..32u64)
         .map(|rep| (make_key(1, (rep % 4) as u32, rep), make_value(rep as u8, 8)))
         .collect();
@@ -100,7 +83,7 @@ fn iter_all_returns_all_records_exactly_once() -> Result<()> {
 #[test]
 fn visit_all_matches_iter_all_order() -> Result<()> {
     let tempdir = tempfile::tempdir()?;
-    let store = Store::open(options(&tempdir))?;
+    let store = create_store(&tempdir)?;
     let entries: Vec<_> = (0..32u64)
         .map(|rep| (make_key(1, (rep % 4) as u32, rep), make_value(rep as u8, 8)))
         .collect();
@@ -117,7 +100,7 @@ fn visit_all_matches_iter_all_order() -> Result<()> {
 #[test]
 fn visit_many_ordered_slice_matches_fetch_many() -> Result<()> {
     let tempdir = tempfile::tempdir()?;
-    let store = Store::open(options(&tempdir))?;
+    let store = create_store(&tempdir)?;
     let entries: Vec<_> = (0..16u64)
         .map(|rep| (make_key(1, 0, rep), make_value(rep as u8, 8)))
         .collect();
@@ -145,7 +128,7 @@ fn visit_many_ordered_slice_matches_fetch_many() -> Result<()> {
 #[test]
 fn visit_many_ordered_slice_callback_can_commit_on_miss() -> Result<()> {
     let tempdir = tempfile::tempdir()?;
-    let store = Store::open(options(&tempdir))?;
+    let store = create_store(&tempdir)?;
     let existing = vec![
         (make_key(1, 0, 10), make_value(1, 16)),
         (make_key(1, 0, 11), make_value(2, 16)),
@@ -168,11 +151,10 @@ fn visit_many_ordered_slice_callback_can_commit_on_miss() -> Result<()> {
         visited.push(value.map(ToOwned::to_owned));
     })?;
 
-    assert_eq!(visited, vec![
-        Some(make_value(1, 16)),
-        Some(make_value(2, 16)),
-        None
-    ]);
+    assert_eq!(
+        visited,
+        vec![Some(make_value(1, 16)), Some(make_value(2, 16)), None]
+    );
     assert_eq!(store.fetch_one(&inserted.0)?, Some(inserted.1));
     Ok(())
 }

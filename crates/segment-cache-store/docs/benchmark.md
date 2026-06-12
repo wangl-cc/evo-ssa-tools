@@ -62,6 +62,7 @@ The synthetic key layout is structured so that:
 - nearby keys share long prefixes
 - repetition-like variation appears late in the key
 - the overall key stream remains globally ordered
+- the sparse ordered subset takes one key from every 16-key repetition group
 
 This is more realistic for computation-cache workloads than random short keys.
 
@@ -78,7 +79,7 @@ This matches the intended storage assumption that one namespace usually contains
 
 The benchmark intentionally does not use a mixed cross-namespace value distribution inside one profile.
 
-`small_fixed` additionally exercises `StoreOptions::with_fixed_value_len`, which removes per-record value lengths and value offsets from segment blocks. It is only appropriate when the whole store has a stable fixed value length.
+`small_fixed` additionally exercises `CreateOptions::with_fixed_value_len`, which removes per-record value lengths and value offsets from segment blocks. It is only appropriate when the whole store has a stable fixed value length.
 
 The current `fjall3` benchmark adapter maps these profiles onto two no-compression tuning classes:
 
@@ -95,14 +96,14 @@ This is large enough to produce multiple blocks and multiple segments while rema
 
 ## Workloads
 
-### `ordered_probe`
+### `ordered_contains`
 
 Checks a fully ordered stream of known keys and counts hits.
 
 This represents:
 
 - ordered membership checks
-- cache preflight probes
+- cache preflight hit checks
 - workloads that want hit/miss structure without needing payload bytes
 
 Why it matters:
@@ -143,6 +144,23 @@ The segment variants are intended to isolate costs in the same store-level order
 - block-size and fixed-layout variants attribute physical layout costs
 
 A separate reused-session benchmark is intentionally not registered here. The store-level batch API already creates and uses an `OrderedLookup` for the duration of each full ordered stream, so benchmarking one reused session over the same full stream mostly measures the same traversal and can be misleading unless the workload is specifically windowed across multiple adjacent calls.
+
+### `sparse_ordered_fetch`
+
+Fetches an ordered 1/16 subset of known keys by taking one key from each repetition group.
+
+This represents:
+
+- selecting one replicate or subcase from many cached parameter groups
+- ordered but sparse reuse
+- the read-amplification tradeoff of larger segment blocks
+
+The benchmark includes `segment_block_{16,32,64,256}k`, `fjall3`, and `redb`. It intentionally does not register no-CRC variants, because this workload is primarily about block size and sparse read amplification rather than isolating checksum cost.
+
+Why it matters:
+
+- full ordered fetch can make larger blocks look better than they are for sparse subsets
+- sparse ordered fetch helps choose a safe default block size for mixed dense/sparse read patterns
 
 ### `append_commit`
 

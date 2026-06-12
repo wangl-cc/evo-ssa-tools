@@ -1,3 +1,5 @@
+use std::num::NonZeroU32;
+
 pub(crate) const KEY_LEN: usize = 128;
 
 #[derive(Clone, Copy)]
@@ -40,9 +42,12 @@ impl ValueProfile {
         matches!(self, Self::Large)
     }
 
-    pub(crate) fn fixed_value_len(self) -> Option<usize> {
+    pub(crate) fn fixed_value_len(self) -> Option<NonZeroU32> {
         match self {
-            Self::SmallFixed => Some(self.base_len()),
+            Self::SmallFixed => Some(
+                NonZeroU32::new(u32::try_from(self.base_len()).expect("profile value len fits"))
+                    .expect("profile value len is non-zero"),
+            ),
             Self::Small | Self::Medium | Self::Large => None,
         }
     }

@@ -6,6 +6,7 @@ use crate::profile::{KEY_LEN, ValueProfile};
 pub(crate) struct Dataset {
     pub(crate) entries: Vec<(Vec<u8>, Vec<u8>)>,
     pub(crate) ordered_keys: Vec<Vec<u8>>,
+    pub(crate) sparse_ordered_keys: Vec<Vec<u8>>,
 }
 
 #[derive(Clone)]
@@ -93,9 +94,16 @@ pub(crate) fn build_dataset(n: usize, profile: ValueProfile) -> Dataset {
         .iter()
         .map(|(key, _)| key.clone())
         .collect::<Vec<_>>();
+    let sparse_ordered_keys = entries
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| index % 16 == 0)
+        .map(|(_, (key, _))| key.clone())
+        .collect::<Vec<_>>();
     Dataset {
         entries,
         ordered_keys,
+        sparse_ordered_keys,
     }
 }
 

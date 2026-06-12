@@ -1,69 +1,70 @@
-use std::path::Path;
+use std::{num::NonZeroU32, path::Path};
 
 use fjall3::{
     KeyspaceCreateOptions, KvSeparationOptions,
     config::{BlockSizePolicy, HashRatioPolicy},
 };
 use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
-use segment_cache_store::{Store, StoreOptions};
+use segment_cache_store::{CommitOptions, CreateOptions, OpenOptions, Store, StoreMetadata};
 
 use crate::profile::{KEY_LEN, ValueProfile};
 
 const REDB_TABLE: TableDefinition<&[u8], &[u8]> = TableDefinition::new("bench");
-const BENCH_SHARD_KEY_OFFSET: usize = 48;
 
-pub(crate) fn store_options(root: &Path, key_len: usize) -> StoreOptions {
-    StoreOptions::new(root, key_len)
-        .with_shard_count(8)
-        .with_shard_key_offset(BENCH_SHARD_KEY_OFFSET)
-        .with_target_block_size(16 * 1024)
+pub(crate) fn store_metadata() -> StoreMetadata {
+    StoreMetadata::from_text("segment-cache-store-bench")
 }
 
-pub(crate) fn store_options_with_block_size(
-    root: &Path,
-    key_len: usize,
-    block_size: usize,
-) -> StoreOptions {
-    store_options(root, key_len).with_target_block_size(block_size)
+pub(crate) fn store_create_options(key_len: usize) -> CreateOptions {
+    CreateOptions::new(key_len, store_metadata())
 }
 
-pub(crate) fn fixed_store_options(root: &Path, key_len: usize, value_len: usize) -> StoreOptions {
-    store_options(root, key_len).with_fixed_value_len(value_len)
+pub(crate) fn commit_options_with_block_size(block_size: usize) -> CommitOptions {
+    CommitOptions::default().with_target_block_size(block_size)
 }
 
-pub(crate) fn unchecked_store_options(root: &Path, key_len: usize) -> StoreOptions {
-    store_options(root, key_len).with_block_checksum_verification(false)
+pub(crate) fn fixed_store_create_options(key_len: usize, value_len: NonZeroU32) -> CreateOptions {
+    store_create_options(key_len).with_fixed_value_len(value_len)
 }
 
-pub(crate) fn unchecked_store_options_with_block_size(
-    root: &Path,
-    key_len: usize,
-    block_size: usize,
-) -> StoreOptions {
-    store_options_with_block_size(root, key_len, block_size).with_block_checksum_verification(false)
+pub(crate) fn open_options(verify_crc: bool) -> OpenOptions {
+    OpenOptions::new(store_metadata()).with_block_checksum_verification(verify_crc)
 }
 
-pub(crate) fn unchecked_fixed_store_options(
-    root: &Path,
-    key_len: usize,
-    value_len: usize,
-) -> StoreOptions {
-    fixed_store_options(root, key_len, value_len).with_block_checksum_verification(false)
+pub(crate) fn create_segment_store(root: &Path, profile: ValueProfile, verify_crc: bool) -> Store {
+    let create_options = profile_store_create_options(profile);
+    let store = Store::create(root, create_options).expect("segment store should create");
+    if verify_crc {
+        store
+    } else {
+        drop(store);
+        Store::open(root, open_options(false)).expect("segment store should reopen")
+    }
 }
 
-pub(crate) fn profile_store_options(root: &Path, profile: ValueProfile) -> StoreOptions {
+pub(crate) fn profile_store_create_options(profile: ValueProfile) -> CreateOptions {
     match profile.fixed_value_len() {
-        Some(value_len) => fixed_store_options(root, KEY_LEN, value_len),
-        None => store_options(root, KEY_LEN),
+        Some(value_len) => fixed_store_create_options(KEY_LEN, value_len),
+        None => store_create_options(KEY_LEN),
     }
 }
 
 pub(crate) fn fill_segment_store(store: &Store, entries: &[(Vec<u8>, Vec<u8>)]) {
+    fill_segment_store_with_options(store, entries, &commit_options_with_block_size(16 * 1024));
+}
+
+pub(crate) fn fill_segment_store_with_options(
+    store: &Store,
+    entries: &[(Vec<u8>, Vec<u8>)],
+    options: &CommitOptions,
+) {
     let mut batch = store.begin_batch().mark_sorted();
     for (key, value) in entries {
         batch.push(key, value).expect("push should succeed");
     }
-    store.commit_batch(batch).expect("commit should succeed");
+    store
+        .commit_batch_with_options(batch, options)
+        .expect("commit should succeed");
 }
 
 pub(crate) fn rebuild_segment_store_into(
@@ -72,8 +73,7 @@ pub(crate) fn rebuild_segment_store_into(
     profile: ValueProfile,
     new_entries: &[(Vec<u8>, Vec<u8>)],
 ) -> (Store, usize) {
-    let new_store =
-        Store::open(profile_store_options(new_root, profile)).expect("new store should open");
+    let new_store = create_segment_store(new_root, profile, true);
     let mut batch = new_store.begin_batch().mark_sorted();
     let mut old_records = old_store
         .iter_all()

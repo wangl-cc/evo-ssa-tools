@@ -1,48 +1,77 @@
+use std::num::NonZeroU32;
+
 use crate::common::*;
 
 #[test]
 fn wrong_length_keys_are_rejected() -> Result<()> {
     let tempdir = tempfile::tempdir()?;
-    let store = Store::open(options(&tempdir))?;
+    let store = create_store(&tempdir)?;
     let mut batch = store.begin_batch();
     batch.push(b"short", b"value")?;
     let error = match store.commit_batch(batch) {
         Ok(_) => panic!("wrong-length key should be rejected"),
         Err(error) => error,
     };
-    assert!(matches!(error, Error::WrongKeyLength { .. }));
+    assert!(matches!(
+        error,
+        Error::Input(InputError::WrongKeyLength { .. })
+    ));
     Ok(())
 }
 
 #[test]
 fn invalid_store_options_are_rejected() -> Result<()> {
     let tempdir = tempfile::tempdir()?;
-    let mut invalid_options = vec![
-        StoreOptions::new(tempdir.path(), 16).with_shard_count(0),
-        StoreOptions::new(tempdir.path(), 16).with_shard_count(usize::MAX),
-        StoreOptions::new(tempdir.path(), 0),
-        StoreOptions::new(tempdir.path(), usize::MAX),
-        StoreOptions::new(tempdir.path(), 16).with_fixed_value_len(0),
-        StoreOptions::new(tempdir.path(), 16).with_fixed_value_len(usize::MAX),
-        StoreOptions::new(tempdir.path(), 16).with_shard_key_offset(17),
-        StoreOptions::new(tempdir.path(), 16).with_flush_threshold_records(0),
-        StoreOptions::new(tempdir.path(), 16).with_flush_threshold_bytes(0),
+    let invalid_options = vec![
+        CreateOptions::new(0, metadata()),
+        CreateOptions::new(usize::MAX, metadata()),
     ];
+    for invalid in invalid_options {
+        let error = match Store::create(tempdir.path(), invalid) {
+            Ok(_) => panic!("invalid store options should be rejected"),
+            Err(error) => error,
+        };
+        assert!(matches!(
+            error,
+            Error::Input(InputError::InvalidOptions(
+                OptionsError::KeyLenZero | OptionsError::KeyLenTooLarge
+            ))
+        ));
+    }
+
+    for invalid in [
+        CommitOptions::default().with_flush_threshold_records(0),
+        CommitOptions::default().with_flush_threshold_bytes(0),
+    ] {
+        let store = create_store(&tempfile::tempdir()?)?;
+        let error = store
+            .commit_batch_with_options(store.begin_batch(), &invalid)
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            Error::Input(InputError::InvalidOptions(
+                OptionsError::FlushThresholdRecordsZero | OptionsError::FlushThresholdBytesZero
+            ))
+        ));
+    }
+
     if let Some(oversized_target_block_size) = usize::try_from(u32::MAX)
         .ok()
         .and_then(|max| max.checked_add(1))
     {
-        invalid_options.push(
-            StoreOptions::new(tempdir.path(), 16)
-                .with_target_block_size(oversized_target_block_size),
-        );
-    }
-    for invalid in invalid_options {
-        let error = match Store::open(invalid) {
-            Ok(_) => panic!("invalid store options should be rejected"),
-            Err(error) => error,
-        };
-        assert!(matches!(error, Error::InvalidOptions { .. }));
+        let store = create_store(&tempfile::tempdir()?)?;
+        let error = store
+            .commit_batch_with_options(
+                store.begin_batch(),
+                &CommitOptions::default().with_target_block_size(oversized_target_block_size),
+            )
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            Error::Input(InputError::InvalidOptions(
+                OptionsError::TargetBlockSizeTooLarge
+            ))
+        ));
     }
     Ok(())
 }
@@ -50,7 +79,7 @@ fn invalid_store_options_are_rejected() -> Result<()> {
 #[test]
 fn default_options_support_short_keys() -> Result<()> {
     let tempdir = tempfile::tempdir()?;
-    let store = Store::open(StoreOptions::new(tempdir.path(), 8).with_shard_count(1))?;
+    let store = create_store_with(&tempdir, CreateOptions::new(8, metadata()))?;
     let key = 7u64.to_be_bytes().to_vec();
     let value = make_value(7, 8);
     commit_entries(&store, &[(key.clone(), value.clone())], true)?;
@@ -62,8 +91,10 @@ fn default_options_support_short_keys() -> Result<()> {
 #[test]
 fn fixed_value_layout_round_trips_all_read_paths() -> Result<()> {
     let tempdir = tempfile::tempdir()?;
-    let options = options(&tempdir).with_value_layout(ValueLayout::Fixed { value_len: 32 });
-    let store = Store::open(options.clone())?;
+    let store = create_store_with(
+        &tempdir,
+        create_options().with_value_layout(ValueLayout::fixed(non_zero_u32(32))),
+    )?;
     let entries = vec![
         (make_key(1, 0, 0), make_value(1, 32)),
         (make_key(1, 0, 1), make_value(2, 32)),
@@ -76,9 +107,10 @@ fn fixed_value_layout_round_trips_all_read_paths() -> Result<()> {
         .iter()
         .map(|(key, _)| key.as_slice())
         .collect::<Vec<_>>();
-    assert_eq!(store.probe_ordered(key_refs.iter().copied())?, vec![
-        true, true, true
-    ]);
+    assert_eq!(
+        store.contains_many_ordered(key_refs.iter().copied())?,
+        vec![true, true, true]
+    );
     assert_eq!(
         store.fetch_many_ordered(key_refs.iter().copied())?,
         entries
@@ -90,7 +122,7 @@ fn fixed_value_layout_round_trips_all_read_paths() -> Result<()> {
     assert_eq!(scanned?, entries);
     drop(store);
 
-    let reopened = Store::open(options)?;
+    let reopened = reopen_store(&tempdir)?;
     assert_eq!(reopened.iter_all()?.collect::<Result<Vec<_>>>()?, entries);
     Ok(())
 }
@@ -98,7 +130,10 @@ fn fixed_value_layout_round_trips_all_read_paths() -> Result<()> {
 #[test]
 fn fixed_value_layout_rejects_wrong_value_length() -> Result<()> {
     let tempdir = tempfile::tempdir()?;
-    let store = Store::open(options(&tempdir).with_fixed_value_len(32))?;
+    let store = create_store_with(
+        &tempdir,
+        create_options().with_fixed_value_len(non_zero_u32(32)),
+    )?;
     let error = commit_entries(
         &store,
         &[
@@ -108,31 +143,89 @@ fn fixed_value_layout_rejects_wrong_value_length() -> Result<()> {
         true,
     )
     .unwrap_err();
-    assert!(matches!(error, Error::WrongValueLength { .. }));
+    assert!(matches!(
+        error,
+        Error::Input(InputError::WrongValueLength { .. })
+    ));
     assert_eq!(store.iter_all()?.count(), 0);
     Ok(())
+}
+
+fn non_zero_u32(value: u32) -> NonZeroU32 {
+    NonZeroU32::new(value).expect("test value length is non-zero")
 }
 
 #[test]
 fn duplicate_keys_inside_batch_are_rejected() -> Result<()> {
     let tempdir = tempfile::tempdir()?;
-    let store = Store::open(options(&tempdir))?;
+    let store = create_store(&tempdir)?;
     let key = make_key(1, 1, 1);
     let entries = vec![(key.clone(), make_value(1, 8)), (key, make_value(2, 8))];
     let error = commit_entries(&store, &entries, true).unwrap_err();
-    assert!(matches!(error, Error::DuplicateKeyInBatch));
+    assert!(matches!(
+        error,
+        Error::Input(InputError::DuplicateKeyInBatch)
+    ));
     Ok(())
 }
 
 #[test]
-fn shard_local_out_of_order_append_is_rejected() -> Result<()> {
+fn non_overlapping_gap_insert_is_allowed() -> Result<()> {
     let tempdir = tempfile::tempdir()?;
-    let store = Store::open(options(&tempdir).with_shard_count(1))?;
-    let first = make_key(1, 1, 10);
-    let second = make_key(1, 1, 1);
+    let store = create_store(&tempdir)?;
 
-    commit_entries(&store, &[(first, make_value(1, 8))], true)?;
-    let error = commit_entries(&store, &[(second, make_value(2, 8))], true).unwrap_err();
-    assert!(matches!(error, Error::OutOfOrderAppend { .. }));
+    let early = vec![
+        (make_key(1, 0, 0), make_value(1, 8)),
+        (make_key(1, 0, 1), make_value(2, 8)),
+    ];
+    let late = vec![
+        (make_key(1, 0, 4), make_value(4, 8)),
+        (make_key(1, 0, 5), make_value(5, 8)),
+    ];
+    let middle = vec![
+        (make_key(1, 0, 2), make_value(6, 8)),
+        (make_key(1, 0, 3), make_value(7, 8)),
+    ];
+
+    commit_entries(&store, &early, true)?;
+    commit_entries(&store, &late, true)?;
+    commit_entries(&store, &middle, true)?;
+
+    let mut expected = early;
+    expected.extend(middle);
+    expected.extend(late);
+    assert_eq!(store.iter_all()?.collect::<Result<Vec<_>>>()?, expected);
+    Ok(())
+}
+
+#[test]
+fn interleaving_commit_rebuilds_the_intersecting_region() -> Result<()> {
+    let tempdir = tempfile::tempdir()?;
+    let store = create_store(&tempdir)?;
+    let first = vec![
+        (make_key(1, 1, 0), make_value(1, 8)),
+        (make_key(1, 1, 10), make_value(2, 8)),
+    ];
+    // A key landing inside the published [0, 10] range no longer rejects; the
+    // commit rebuilds that region by merging the batch with the segment.
+    let interleaving = vec![(make_key(1, 1, 5), make_value(3, 8))];
+
+    commit_entries(&store, &first, true)?;
+    commit_entries(&store, &interleaving, true)?;
+
+    assert_eq!(store.fetch_one(&make_key(1, 1, 0))?, Some(make_value(1, 8)));
+    assert_eq!(store.fetch_one(&make_key(1, 1, 5))?, Some(make_value(3, 8)));
+    assert_eq!(
+        store.fetch_one(&make_key(1, 1, 10))?,
+        Some(make_value(2, 8))
+    );
+    assert_eq!(
+        store.iter_all()?.collect::<Result<Vec<_>>>()?,
+        vec![
+            (make_key(1, 1, 0), make_value(1, 8)),
+            (make_key(1, 1, 5), make_value(3, 8)),
+            (make_key(1, 1, 10), make_value(2, 8)),
+        ]
+    );
     Ok(())
 }

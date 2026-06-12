@@ -11,6 +11,25 @@ It is optimized for:
 
 This crate is intentionally narrower than a general-purpose database. It does not provide transactions, deletes, compaction, or WAL recovery.
 
+## Basic Use
+
+```rust,no_run
+use segment_cache_store::{CreateOptions, OpenOptions, Store, StoreMetadata};
+
+let metadata = StoreMetadata::from_text("my-cache-schema-v1");
+let store = Store::create("cache-root", CreateOptions::new(16, metadata.clone()))?;
+
+let mut batch = store.begin_batch();
+batch.push(&[0; 16], b"serialized value")?;
+store.commit_batch(batch.mark_sorted())?;
+
+let reopened = Store::open("cache-root", OpenOptions::new(metadata))?;
+let value = reopened.fetch_one(&[0; 16])?;
+# Ok::<_, segment_cache_store::Error>(())
+```
+
+One store root has one fixed key length, one value layout, and one caller-defined metadata namespace. Published segments are immutable and globally non-overlapping. New commits may append at the tail or insert into gaps, but they may not overlap an existing visible segment range.
+
 Internal design and evaluation notes live in:
 
 - [docs/design.md](docs/design.md)

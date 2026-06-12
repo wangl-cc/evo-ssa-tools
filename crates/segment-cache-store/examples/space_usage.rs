@@ -1,4 +1,4 @@
-use std::{fs, path::Path};
+use std::{fs, num::NonZeroU32, path::Path};
 
 use fjall3::{
     KeyspaceCreateOptions, KvSeparationOptions,
@@ -6,7 +6,7 @@ use fjall3::{
 };
 use rand::{RngExt, SeedableRng, rngs::StdRng};
 use redb::{Database, TableDefinition};
-use segment_cache_store::{Store, StoreOptions};
+use segment_cache_store::{CommitOptions, CreateOptions, Store, StoreMetadata};
 
 const KEY_LEN: usize = 128;
 const REDB_TABLE: TableDefinition<&[u8], &[u8]> = TableDefinition::new("bench");
@@ -51,9 +51,14 @@ impl ValueProfile {
         matches!(self, Self::Large)
     }
 
-    fn fixed_value_len(self) -> Option<usize> {
+    fn fixed_value_len(self) -> Option<NonZeroU32> {
         match self {
-            Self::SmallFixed => Some(self.base_len()),
+            Self::SmallFixed => Some(
+                NonZeroU32::new(
+                    u32::try_from(self.base_len()).expect("profile value len should fit"),
+                )
+                .expect("profile value len is non-zero"),
+            ),
             Self::Small | Self::Medium | Self::Large => None,
         }
     }
@@ -142,22 +147,25 @@ fn dir_size(path: &Path) -> u64 {
 }
 
 fn write_segment_store(root: &Path, entries: &[(Vec<u8>, Vec<u8>)]) -> u64 {
-    let store = Store::open(segment_options(root, None)).expect("segment store should open");
-    write_entries_to_segment_store(&store, entries);
-    dir_size(root)
-}
-
-fn write_fixed_segment_store(root: &Path, entries: &[(Vec<u8>, Vec<u8>)], value_len: usize) -> u64 {
     let store =
-        Store::open(segment_options(root, Some(value_len))).expect("segment store should open");
+        Store::create(root, segment_create_options(None)).expect("segment store should create");
     write_entries_to_segment_store(&store, entries);
     dir_size(root)
 }
 
-fn segment_options(root: &Path, fixed_value_len: Option<usize>) -> StoreOptions {
-    let options = StoreOptions::new(root, KEY_LEN)
-        .with_shard_count(8)
-        .with_target_block_size(16 * 1024);
+fn write_fixed_segment_store(
+    root: &Path,
+    entries: &[(Vec<u8>, Vec<u8>)],
+    value_len: NonZeroU32,
+) -> u64 {
+    let store = Store::create(root, segment_create_options(Some(value_len)))
+        .expect("segment store should create");
+    write_entries_to_segment_store(&store, entries);
+    dir_size(root)
+}
+
+fn segment_create_options(fixed_value_len: Option<NonZeroU32>) -> CreateOptions {
+    let options = CreateOptions::new(KEY_LEN, StoreMetadata::from_text("space-usage"));
     if let Some(value_len) = fixed_value_len {
         options.with_fixed_value_len(value_len)
     } else {
@@ -170,7 +178,12 @@ fn write_entries_to_segment_store(store: &Store, entries: &[(Vec<u8>, Vec<u8>)])
     for (key, value) in entries {
         batch.push(key, value).expect("push should succeed");
     }
-    store.commit_batch(batch).expect("commit should succeed");
+    store
+        .commit_batch_with_options(
+            batch,
+            &CommitOptions::default().with_target_block_size(16 * 1024),
+        )
+        .expect("commit should succeed");
 }
 
 fn fjall3_small_value_options() -> KeyspaceCreateOptions {
