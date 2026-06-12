@@ -228,6 +228,71 @@ fn named_and_tuple_fields_are_distinct() {
 }
 
 #[test]
+fn empty_product_shapes_are_distinct() {
+    #[derive(CacheSchema)]
+    #[cache_schema(rename = "Empty")]
+    struct Unit;
+
+    #[derive(CacheSchema)]
+    #[cache_schema(rename = "Empty")]
+    struct Tuple();
+
+    #[derive(CacheSchema)]
+    #[cache_schema(rename = "Empty")]
+    struct Named {}
+
+    assert_ne!(schema_fingerprint::<Unit>(), schema_fingerprint::<Tuple>());
+    assert_ne!(schema_fingerprint::<Unit>(), schema_fingerprint::<Named>());
+    assert_ne!(schema_fingerprint::<Tuple>(), schema_fingerprint::<Named>());
+
+    #[derive(CacheSchema)]
+    #[cache_schema(rename = "Event")]
+    enum UnitVariant {
+        Empty,
+    }
+
+    #[derive(CacheSchema)]
+    #[cache_schema(rename = "Event")]
+    enum TupleVariant {
+        Empty(),
+    }
+
+    #[derive(CacheSchema)]
+    #[cache_schema(rename = "Event")]
+    enum NamedVariant {
+        Empty {},
+    }
+
+    assert_ne!(
+        schema_fingerprint::<UnitVariant>(),
+        schema_fingerprint::<TupleVariant>()
+    );
+    assert_ne!(
+        schema_fingerprint::<UnitVariant>(),
+        schema_fingerprint::<NamedVariant>()
+    );
+    assert_ne!(
+        schema_fingerprint::<TupleVariant>(),
+        schema_fingerprint::<NamedVariant>()
+    );
+}
+
+#[test]
+fn standard_option_matches_derive_equivalent_schema() {
+    #[derive(CacheSchema)]
+    #[cache_schema(rename = "Option")]
+    enum DerivedOption<T> {
+        None,
+        Some(T),
+    }
+
+    assert_eq!(
+        schema_fingerprint::<Option<u32>>(),
+        schema_fingerprint::<DerivedOption<u32>>()
+    );
+}
+
+#[test]
 fn tuple_field_rename_can_name_wire_field() {
     #[derive(CacheSchema)]
     #[cache_schema(rename = "Shape")]
@@ -355,6 +420,12 @@ fn variant_field_shape_changes_fingerprint() {
 
     #[derive(CacheSchema)]
     #[cache_schema(rename = "Event")]
+    enum RenamedTupleVariant {
+        Created(#[cache_schema(rename = "id")] u64),
+    }
+
+    #[derive(CacheSchema)]
+    #[cache_schema(rename = "Event")]
     enum TypeChanged {
         Created { id: u32 },
     }
@@ -362,6 +433,10 @@ fn variant_field_shape_changes_fingerprint() {
     assert_ne!(
         schema_fingerprint::<StructVariant>(),
         schema_fingerprint::<TupleVariant>()
+    );
+    assert_eq!(
+        schema_fingerprint::<StructVariant>(),
+        schema_fingerprint::<RenamedTupleVariant>()
     );
     assert_ne!(
         schema_fingerprint::<StructVariant>(),
@@ -416,6 +491,93 @@ fn type_version_changes_fingerprint() {
     }
 
     assert_ne!(schema_fingerprint::<V1>(), schema_fingerprint::<V2>());
+}
+
+#[test]
+fn schema_fingerprints_match_golden_vectors() {
+    #[derive(CacheSchema)]
+    #[cache_schema(rename = "GoldenStruct")]
+    struct GoldenStruct {
+        width: u32,
+        heights: Vec<u16>,
+    }
+
+    #[derive(CacheSchema)]
+    #[cache_schema(rename = "GoldenEnum")]
+    enum GoldenEnum {
+        Empty,
+        Value { id: u64 },
+    }
+
+    #[derive(CacheSchema)]
+    #[cache_schema(rename = "GoldenVersioned", version = "v1")]
+    struct GoldenVersioned {
+        value: u8,
+    }
+
+    #[derive(CacheSchema)]
+    #[cache_schema(rename = "GoldenEmpty")]
+    struct GoldenUnit;
+
+    assert_eq!(schema_fingerprint::<u32>(), [
+        176, 250, 45, 168, 40, 240, 228, 73, 44, 176, 60, 161, 26, 120, 162, 78
+    ]);
+    assert_eq!(schema_fingerprint::<Vec<u32>>(), [
+        22, 240, 44, 117, 234, 56, 150, 21, 192, 237, 101, 197, 132, 69, 134, 41
+    ]);
+    assert_eq!(schema_fingerprint::<GoldenStruct>(), [
+        122, 179, 166, 139, 48, 98, 88, 125, 104, 38, 59, 116, 5, 10, 227, 57
+    ]);
+    assert_eq!(schema_fingerprint::<GoldenEnum>(), [
+        113, 194, 83, 155, 51, 236, 0, 224, 175, 218, 48, 145, 183, 219, 23, 33
+    ]);
+    assert_eq!(schema_fingerprint::<GoldenVersioned>(), [
+        211, 152, 5, 168, 201, 103, 34, 197, 12, 214, 218, 61, 66, 107, 107, 80
+    ]);
+    assert_eq!(schema_fingerprint::<GoldenUnit>(), [
+        1, 103, 239, 86, 59, 158, 61, 140, 198, 139, 114, 163, 78, 184, 107, 114
+    ]);
+}
+
+#[test]
+fn serde_attrs_do_not_affect_fingerprint() {
+    #[derive(CacheSchema)]
+    #[cache_schema(rename = "SerdeIgnored")]
+    struct WithSerdeAttrs {
+        #[serde(rename = "wire_width", skip)]
+        width: u32,
+    }
+
+    #[derive(CacheSchema)]
+    #[cache_schema(rename = "SerdeIgnored")]
+    struct Plain {
+        width: u32,
+    }
+
+    #[derive(CacheSchema)]
+    #[cache_schema(rename = "SerdeIgnoredEvent")]
+    enum WithSerdeVariantAttrs {
+        #[serde(rename = "wire_created")]
+        Created {
+            #[serde(rename = "wire_id", skip)]
+            id: u64,
+        },
+    }
+
+    #[derive(CacheSchema)]
+    #[cache_schema(rename = "SerdeIgnoredEvent")]
+    enum PlainVariant {
+        Created { id: u64 },
+    }
+
+    assert_eq!(
+        schema_fingerprint::<WithSerdeAttrs>(),
+        schema_fingerprint::<Plain>()
+    );
+    assert_eq!(
+        schema_fingerprint::<WithSerdeVariantAttrs>(),
+        schema_fingerprint::<PlainVariant>()
+    );
 }
 
 #[test]

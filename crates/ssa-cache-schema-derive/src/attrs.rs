@@ -1,4 +1,4 @@
-use proc_macro2::{Span, TokenStream as TokenStream2};
+use proc_macro2::{Ident as ProcIdent, Span, TokenStream as TokenStream2};
 use quote::quote;
 use syn::{
     Attribute, Error, Field, Ident, LitStr, Path, Result, meta::ParseNestedMeta, spanned::Spanned,
@@ -51,9 +51,9 @@ impl TypeAttrs {
         quote! { #rename }
     }
 
-    pub(crate) fn version_tokens(&self) -> TokenStream2 {
+    pub(crate) fn version_tokens(&self, writer: &ProcIdent) -> TokenStream2 {
         match &self.version {
-            Some(version) => quote! { w.type_version(#version); },
+            Some(version) => quote! { #writer.type_version(#version); },
             None => TokenStream2::new(),
         }
     }

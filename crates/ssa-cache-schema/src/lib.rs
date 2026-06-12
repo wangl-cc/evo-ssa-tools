@@ -63,7 +63,7 @@ mod writer;
 
 #[cfg(feature = "derive")]
 pub use ssa_cache_schema_derive::CacheSchema;
-pub use writer::SchemaWriter;
+pub use writer::{ProductStyle, SchemaWriter};
 
 /// A 128-bit schema fingerprint.
 pub type SchemaFingerprint = [u8; 16];

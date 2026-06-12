@@ -1,3 +1,8 @@
+#![allow(
+    non_upper_case_globals,
+    reason = "lowercase const generic exercises derive writer identifier hygiene"
+)]
+
 use std::marker::PhantomData;
 
 use ssa_cache_schema::{CacheSchema, schema_fingerprint};
@@ -12,6 +17,11 @@ where
     #[cache_schema(rename = "items")]
     values: [T; N],
     marker: PhantomData<&'a T>,
+}
+
+#[derive(CacheSchema)]
+struct LowercaseConst<const w: usize> {
+    value: [u8; w],
 }
 
 #[derive(CacheSchema)]
@@ -70,6 +80,7 @@ struct CrateAlias {
 
 fn main() {
     let _ = schema_fingerprint::<Stable<'static, u32, 4>>();
+    let _ = schema_fingerprint::<LowercaseConst<4>>();
     let _ = schema_fingerprint::<Event<u32>>();
     let _ = schema_fingerprint::<SerdeAttrsAreIgnored>();
     let _ = schema_fingerprint::<SerdeVariantAttrsAreIgnored>();

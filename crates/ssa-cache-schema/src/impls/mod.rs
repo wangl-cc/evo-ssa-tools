@@ -4,12 +4,13 @@ mod tuples;
 
 use std::marker::PhantomData;
 
-use crate::{CacheSchema, SchemaWriter};
+use crate::{CacheSchema, ProductStyle, SchemaWriter};
 
 impl<T: CacheSchema> CacheSchema for Option<T> {
     fn write_schema(w: &mut SchemaWriter) {
         w.enum_begin("Option");
         w.variant_begin(0, "None");
+        w.product_style(ProductStyle::Unit);
         w.variant_end();
         w.variant_begin(1, "Some");
         w.field_begin(0, None);

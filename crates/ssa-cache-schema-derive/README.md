@@ -4,7 +4,7 @@
 
 ## Supported Items
 
-The derive macro supports named structs, tuple structs, unit structs, and enums. Field types are emitted as `<FieldTy as CacheSchema>::write_schema(w)`, so Rust type resolution determines the schema dependency rather than hashing source tokens.
+The derive macro supports named structs, tuple structs, unit structs, and enums. Field types are emitted as `<FieldTy as CacheSchema>::write_schema(w)`, so Rust type resolution determines the schema dependency rather than hashing source tokens. Zero-field unit, tuple, and named product forms are fingerprinted distinctly.
 
 Derived enum schemas use variant order, schema names, and fields. Explicit Rust discriminants and `repr` attributes are ignored; use `#[cache_schema(version = "...")]` or a manual implementation when discriminants are part of the cache wire format.
 

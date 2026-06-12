@@ -11,6 +11,17 @@ const DOMAIN_VERSION: &[u8] = b"ssa-cache-schema:v1";
 pub struct SchemaWriter {
     hasher: blake3::Hasher,
 }
+/// Field style for product schemas whose wire shape distinguishes empty product forms.
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum ProductStyle {
+    /// Unit form, such as `struct Name;` or `Variant`.
+    Unit = 1,
+    /// Tuple form, such as `struct Name();` or `Variant()`.
+    Tuple = 2,
+    /// Named-field form, such as `struct Name {}` or `Variant {}`.
+    Named = 3,
+}
 
 // Construction.
 impl SchemaWriter {
@@ -41,6 +52,12 @@ impl SchemaWriter {
     pub fn struct_begin(&mut self, name: &str) {
         self.tag(Tag::StructBegin);
         self.str(name);
+    }
+
+    /// Write a product field style token.
+    pub fn product_style(&mut self, style: ProductStyle) {
+        self.tag(Tag::ProductStyle);
+        self.write(&[style as u8]);
     }
 
     /// End a struct schema.
@@ -214,6 +231,7 @@ enum Tag {
     None = 18,
     ArrayBegin = 19,
     ArrayEnd = 20,
+    ProductStyle = 21,
 }
 
 #[cfg(test)]
@@ -273,6 +291,30 @@ mod tests {
         let second = second.finish_fingerprint();
 
         assert_ne!(first, second);
+    }
+
+    #[test]
+    fn product_style_token_is_part_of_fingerprint() {
+        fn fingerprint(style: ProductStyle) -> SchemaFingerprint {
+            let mut writer = SchemaWriter::new();
+            writer.struct_begin("Empty");
+            writer.product_style(style);
+            writer.struct_end();
+            writer.finish_fingerprint()
+        }
+
+        assert_ne!(
+            fingerprint(ProductStyle::Unit),
+            fingerprint(ProductStyle::Tuple)
+        );
+        assert_ne!(
+            fingerprint(ProductStyle::Unit),
+            fingerprint(ProductStyle::Named)
+        );
+        assert_ne!(
+            fingerprint(ProductStyle::Tuple),
+            fingerprint(ProductStyle::Named)
+        );
     }
 
     #[test]
