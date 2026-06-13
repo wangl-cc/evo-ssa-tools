@@ -14,6 +14,12 @@ fn second_writer_open_fails_fast_while_writer_is_alive() -> Result<()> {
     };
     assert!(matches!(error, Error::Input(InputError::WriterLocked)));
 
+    let error = match Store::create(tempdir.path(), create_options()) {
+        Ok(_) => panic!("create should also respect the live writer lock"),
+        Err(error) => error,
+    };
+    assert!(matches!(error, Error::Input(InputError::WriterLocked)));
+
     // A read-only handle coexists with the live writer.
     let reader = reopen_store_read_only(&tempdir)?;
     assert_eq!(reader.iter_all()?.count(), 0);
@@ -23,6 +29,16 @@ fn second_writer_open_fails_fast_while_writer_is_alive() -> Result<()> {
     // Once the writer drops, the lock is released for the next writer.
     let reopened = reopen_store(&tempdir)?;
     commit_entries(&reopened, &[(make_key(1, 0, 0), make_value(1, 8))], true)?;
+    drop(reopened);
+
+    let error = match Store::create(tempdir.path(), create_options()) {
+        Ok(_) => panic!("create over an existing store should be rejected"),
+        Err(error) => error,
+    };
+    assert!(matches!(
+        error,
+        Error::Input(InputError::StoreAlreadyExists)
+    ));
     Ok(())
 }
 
@@ -69,18 +85,15 @@ fn interleaving_commit_spans_two_segments_and_a_tail() -> Result<()> {
         .into_iter()
         .map(|(key, _)| key)
         .collect();
-    assert_eq!(
-        keys,
-        vec![
-            make_key(1, 0, 0),
-            make_key(1, 0, 1),
-            make_key(1, 0, 2),
-            make_key(2, 0, 0),
-            make_key(2, 0, 1),
-            make_key(2, 0, 2),
-            make_key(3, 0, 0),
-        ]
-    );
+    assert_eq!(keys, vec![
+        make_key(1, 0, 0),
+        make_key(1, 0, 1),
+        make_key(1, 0, 2),
+        make_key(2, 0, 0),
+        make_key(2, 0, 1),
+        make_key(2, 0, 2),
+        make_key(3, 0, 0),
+    ]);
     Ok(())
 }
 
@@ -107,10 +120,9 @@ fn lookup_session_sees_data_committed_after_first_use() -> Result<()> {
     commit_entries(&store, &[(make_key(2, 0, 0), make_value(2, 8))], true)?;
 
     let mut session = store.lookup_session();
-    assert_eq!(
-        session.fetch_many([make_key(2, 0, 0).as_slice()])?,
-        vec![Some(make_value(2, 8))]
-    );
+    assert_eq!(session.fetch_many([make_key(2, 0, 0).as_slice()])?, vec![
+        Some(make_value(2, 8))
+    ]);
 
     // Insert a segment *before* the cached one, shifting segment indices. A
     // session that cached stale indices/blocks would now miss.

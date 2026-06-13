@@ -1,7 +1,7 @@
 //! Block encoder: sorted entries in, on-disk block bytes out.
 
 use super::layout::{BLOCK_FOOTER_LEN, BlockFooter, BlockValueRegion};
-use crate::format::{FormatError, ValueLayout, common_prefix_len, entry::EntrySource};
+use crate::format::{FormatError, ValueLayout, common_prefix_len, record::EntrySource};
 
 /// Encodes one sorted run of key/value entries into the on-disk block layout.
 pub(crate) struct BlockBuilder<'a, S: EntrySource + ?Sized> {

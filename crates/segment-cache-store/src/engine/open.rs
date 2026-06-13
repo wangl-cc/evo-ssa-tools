@@ -6,14 +6,13 @@ use parking_lot::{Mutex, RwLock};
 
 use crate::{
     engine::{
-        catalog,
         gc::garbage_collect_unreferenced,
         io::WriterLock,
-        paths::StorePaths,
+        paths::{self, StorePaths},
         runtime::{SegmentState, StoreGeometry, StoreInner, StoreState},
         segment_file::{OpenedSegment, SegmentOpenOptions},
     },
-    error::Result,
+    error::{OptionsError, Result},
     format::{
         CatalogMismatch, StoreMetadata, manifest::StoreManifest, store_file::StoreDescriptor,
     },
@@ -49,6 +48,10 @@ impl OpenOptions {
     }
 
     /// Enables or disables block checksum verification on reads.
+    ///
+    /// Disabling verification is only accepted for read-only opens; writable
+    /// handles must keep verification enabled so corrupt bytes cannot be merged
+    /// into freshly checksummed replacement segments.
     pub fn with_block_checksum_verification(mut self, verify: bool) -> Self {
         self.verify_block_checksums = verify;
         self
@@ -63,48 +66,65 @@ impl OpenOptions {
         self.read_only = read_only;
         self
     }
+
+    pub(crate) fn validate(&self) -> Result<()> {
+        if !self.read_only && !self.verify_block_checksums {
+            return Err(OptionsError::WritableStoreRequiresBlockChecksumVerification.into());
+        }
+        Ok(())
+    }
 }
 
 impl Store {
     /// Opens an existing store rooted at `root`.
     pub fn open(root: impl Into<PathBuf>, options: OpenOptions) -> Result<Self> {
-        let root = root.into();
-        let paths = StorePaths::new(&root);
-        let descriptor = catalog::load_descriptor(&paths)?.ok_or(CatalogMismatch::MissingStore)?;
-        descriptor.validate_structure()?;
-        if descriptor.metadata != options.expected_metadata {
-            return Err(CatalogMismatch::Metadata.into());
-        }
-
-        // A writer takes the advisory lock before reading the manifest so that
-        // garbage collection and any later commit run under the same lock without
-        // a gap a second writer could slip into.
-        let writer_lock = if options.read_only {
-            None
-        } else {
-            Some(WriterLock::acquire(paths.store_file())?)
-        };
-
-        let manifest = catalog::load_manifest(&paths)?.ok_or(CatalogMismatch::MissingManifest)?;
-        manifest.validate_structure(descriptor.key_len)?;
-
-        // Only a writer mutates the filesystem on open. A read-only open must
-        // work on a read-only mount; a missing `segments/` directory just means
-        // every manifest entry is dead.
-        if writer_lock.is_some() {
-            paths.ensure_dirs()?;
-            paths.remove_stale_catalog_temps();
-            garbage_collect_unreferenced(&paths, &manifest);
-        }
-
-        build_store(
-            paths,
-            descriptor,
-            manifest,
-            options.verify_block_checksums,
-            writer_lock,
-        )
+        open_existing(root.into(), options, None)
     }
+}
+
+pub(super) fn open_existing(
+    root: PathBuf,
+    options: OpenOptions,
+    pre_acquired_writer_lock: Option<WriterLock>,
+) -> Result<Store> {
+    options.validate()?;
+    let paths = StorePaths::new(&root);
+    let descriptor = paths::load_descriptor(&paths)?.ok_or(CatalogMismatch::MissingStore)?;
+    descriptor.validate_structure()?;
+    if descriptor.metadata != options.expected_metadata {
+        return Err(CatalogMismatch::Metadata.into());
+    }
+
+    // A writer takes the advisory lock before reading the manifest so that
+    // garbage collection and any later commit run under the same lock without
+    // a gap a second writer could slip into.
+    let writer_lock = if options.read_only {
+        None
+    } else if let Some(writer_lock) = pre_acquired_writer_lock {
+        Some(writer_lock)
+    } else {
+        Some(WriterLock::acquire(paths.lock_file())?)
+    };
+
+    let manifest = paths::load_manifest(&paths)?.ok_or(CatalogMismatch::MissingManifest)?;
+    manifest.validate_structure(descriptor.key_len)?;
+
+    // Only a writer mutates the filesystem on open. A read-only open must
+    // work on a read-only mount; a missing `segments/` directory just means
+    // every manifest entry is dead.
+    if writer_lock.is_some() {
+        paths.ensure_dirs()?;
+        paths.remove_stale_catalog_temps();
+        garbage_collect_unreferenced(&paths, &manifest);
+    }
+
+    build_store(
+        paths,
+        descriptor,
+        manifest,
+        options.verify_block_checksums,
+        writer_lock,
+    )
 }
 
 /// Builds the shared runtime state from validated catalog data, opening every
@@ -124,13 +144,10 @@ fn build_store(
     let mut segment_states = Vec::new();
     for entry in &manifest.segments {
         let path = paths.final_segment(entry.segment_id);
-        let segment = match OpenedSegment::open(
-            path,
-            SegmentOpenOptions {
-                expected_key_len: geometry.key_len,
-                expected_value_layout: geometry.value_layout,
-            },
-        )? {
+        let segment = match OpenedSegment::open(path, SegmentOpenOptions {
+            expected_key_len: geometry.key_len,
+            expected_value_layout: geometry.value_layout,
+        })? {
             Some(segment) if entry.matches_segment_footer(&segment.min_key, &segment.max_key) => {
                 segment
             }

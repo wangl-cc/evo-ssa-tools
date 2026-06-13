@@ -1,20 +1,22 @@
 //! Public store facade.
 //!
 //! `Store` is a cheaply cloneable shared handle over the engine's runtime
-//! state. This module holds the read-side API surface; the lifecycle
-//! operations are implemented next to their mechanics in [`crate::engine`]
-//! (`create`, `open`, `commit_batch`).
+//! state ([`StoreInner`]). This file is the single place that shows the whole
+//! operational API — point and range reads, and batched writes — as thin
+//! delegators. The heavy algorithms live in their own layers: ordered lookups
+//! and range cursors in [`crate::read`], the replacing-manifest commit in
+//! [`crate::write`]. Construction (`create`/`open`) lives in [`crate::engine`].
 
 use std::sync::Arc;
 
 use crate::{
-    batch::WriteBatch,
     engine::runtime::StoreInner,
     error::{InputError, Result},
     read::{
         cursor::{RangeCursor, SegmentRangeCursor},
         lookup::{LookupReadOptions, OrderedLookup, SegmentSetReader},
     },
+    write::{CommitOptions, CommitStats, WriteBatch},
 };
 
 /// Persistent append-only cache store.
@@ -24,11 +26,53 @@ pub struct Store {
 }
 
 impl Store {
+    // ─── Write path ─────────────────────────────────────────────────────────
+
     /// Starts a buffered write batch.
     #[must_use]
     pub fn begin_batch(&self) -> WriteBatch {
         WriteBatch::default()
     }
+
+    /// Publishes a write batch with default segment write options.
+    pub fn commit_batch(&self, batch: WriteBatch) -> Result<CommitStats> {
+        self.commit_with_options(batch, &CommitOptions::default())
+    }
+
+    /// Publishes a write batch using explicit segment write options.
+    ///
+    /// A batch that interleaves with already-visible segments is not rejected:
+    /// the commit rebuilds the intersecting region by merging the batch with the
+    /// existing records and publishing replacement segments. The publication also
+    /// drops dead manifest entries (segments that no longer open).
+    ///
+    /// # Cost of interleaving batches
+    ///
+    /// The rebuilt region is the contiguous run of segments the batch's key
+    /// range touches, so the rewrite cost is driven by the batch's **key
+    /// spread**, not its size: a two-record batch spanning the whole keyspace
+    /// rewrites every visible segment and materializes the merged region in
+    /// memory. Until the patch tier lands, callers should keep batches
+    /// key-local; [`CommitStats::merged_records`] reports the amplification
+    /// actually paid.
+    ///
+    /// Returns [`InputError::ReadOnlyStore`] on a read-only handle.
+    pub fn commit_batch_with_options(
+        &self,
+        batch: WriteBatch,
+        options: &CommitOptions,
+    ) -> Result<CommitStats> {
+        self.commit_with_options(batch, options)
+    }
+
+    /// Flushes pending writes.
+    ///
+    /// v1 only publishes through `commit_batch`, so this is currently a no-op.
+    pub fn flush(&self) -> Result<()> {
+        Ok(())
+    }
+
+    // ─── Read path ──────────────────────────────────────────────────────────
 
     /// Checks an ordered key stream and returns a cache-safe hit bitmap.
     ///
@@ -87,14 +131,6 @@ impl Store {
         SegmentSetReader::new(state.segments.as_ref(), self.lookup_read_options()).fetch_one(key)
     }
 
-    pub(crate) fn lookup_read_options(&self) -> LookupReadOptions {
-        LookupReadOptions {
-            key_len: self.inner.geometry.key_len,
-            value_layout: self.inner.geometry.value_layout,
-            verify_block_checksums: self.inner.verify_block_checksums,
-        }
-    }
-
     /// Returns an owned iterator over the half-open range `[start, end)`.
     pub fn range(&self, start: &[u8], end: &[u8]) -> Result<RangeCursor> {
         self.validate_key_len(start)?;
@@ -124,6 +160,16 @@ impl Store {
         F: FnMut(&[u8], &[u8]),
     {
         self.range_cursor(None, None)?.visit_all(visitor)
+    }
+
+    // ─── Shared read helpers ────────────────────────────────────────────────
+
+    pub(crate) fn lookup_read_options(&self) -> LookupReadOptions {
+        LookupReadOptions {
+            key_len: self.inner.geometry.key_len,
+            value_layout: self.inner.geometry.value_layout,
+            verify_block_checksums: self.inner.verify_block_checksums,
+        }
     }
 
     fn range_cursor(&self, start: Option<&[u8]>, end: Option<&[u8]>) -> Result<RangeCursor> {
@@ -156,14 +202,7 @@ impl Store {
         Ok(RangeCursor::new(cursors))
     }
 
-    /// Flushes pending writes.
-    ///
-    /// v1 only publishes through `commit_batch`, so this is currently a no-op.
-    pub fn flush(&self) -> Result<()> {
-        Ok(())
-    }
-
-    pub(crate) fn validate_key_len(&self, key: &[u8]) -> Result<()> {
+    fn validate_key_len(&self, key: &[u8]) -> Result<()> {
         if key.len() != self.inner.geometry.key_len {
             return Err(InputError::WrongKeyLength {
                 expected: self.inner.geometry.key_len,

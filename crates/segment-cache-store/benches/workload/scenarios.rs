@@ -6,11 +6,15 @@ use segment_cache_store::Store;
 
 use crate::{
     backends::{
-        Fjall3Backend, RedbBackend, commit_options_with_block_size, create_segment_store,
-        fill_segment_store, fill_segment_store_with_options, profile_store_create_options,
-        rebuild_segment_store_into, sum_segment_fetches, sum_segment_iter,
+        Fjall3Backend, RedbBackend, commit_options_with_block_size, create_filled_segment_store,
+        create_segment_store, fill_segment_store, profile_store_create_options,
+        rebuild_segment_store_into, run_segment_axis_changes, sum_segment_fetches,
+        sum_segment_iter,
     },
-    data::{Dataset, MiddleInsertDataset, build_dataset, build_middle_insert_dataset},
+    data::{
+        AxisChangeDataset, Dataset, MiddleInsertDataset, build_axis_change_dataset, build_dataset,
+        build_middle_insert_dataset,
+    },
     profile::{PROFILES, ValueProfile},
 };
 
@@ -26,6 +30,10 @@ pub(crate) fn workload(c: &mut Criterion) {
         bench_iter_all(c, profile, &dataset);
         let middle_insert_dataset = build_middle_insert_dataset(profile);
         bench_middle_insert_then_read(c, profile, &middle_insert_dataset);
+        if matches!(profile, ValueProfile::Small) {
+            let axis_change_dataset = build_axis_change_dataset(profile);
+            bench_axis_change_rounds(c, profile, &axis_change_dataset);
+        }
     }
 }
 
@@ -34,36 +42,48 @@ fn bench_ordered_fetch(c: &mut Criterion, profile: ValueProfile, dataset: &Datas
     group.throughput(Throughput::Elements(dataset.ordered_keys.len() as u64));
 
     let tempdir = tempfile::tempdir().expect("tempdir should work");
-    let store = create_segment_store(tempdir.path(), profile, true);
-    fill_segment_store(&store, &dataset.entries);
+    let store = create_filled_segment_store(
+        tempdir.path(),
+        profile,
+        &dataset.entries,
+        &commit_options_with_block_size(16 * 1024),
+        true,
+    );
     group.bench_function("segment", |b| {
         b.iter(|| black_box(sum_segment_fetches(&store, &dataset.ordered_keys)))
     });
     let tempdir = tempfile::tempdir().expect("tempdir should work");
-    let store = create_segment_store(tempdir.path(), profile, false);
-    fill_segment_store(&store, &dataset.entries);
+    let store = create_filled_segment_store(
+        tempdir.path(),
+        profile,
+        &dataset.entries,
+        &commit_options_with_block_size(16 * 1024),
+        false,
+    );
     group.bench_function("segment_no_crc", |b| {
         b.iter(|| black_box(sum_segment_fetches(&store, &dataset.ordered_keys)))
     });
     if profile.uses_large_value_tuning() {
         for &block_size in LARGE_BLOCK_SIZE_VARIANTS {
             let tempdir = tempfile::tempdir().expect("tempdir should work");
-            let store = create_segment_store(tempdir.path(), profile, true);
-            fill_segment_store_with_options(
-                &store,
+            let store = create_filled_segment_store(
+                tempdir.path(),
+                profile,
                 &dataset.entries,
                 &commit_options_with_block_size(block_size),
+                true,
             );
             group.bench_function(format!("segment_block_{}k", block_size / 1024), |b| {
                 b.iter(|| black_box(sum_segment_fetches(&store, &dataset.ordered_keys)))
             });
 
             let tempdir = tempfile::tempdir().expect("tempdir should work");
-            let store = create_segment_store(tempdir.path(), profile, false);
-            fill_segment_store_with_options(
-                &store,
+            let store = create_filled_segment_store(
+                tempdir.path(),
+                profile,
                 &dataset.entries,
                 &commit_options_with_block_size(block_size),
+                false,
             );
             group.bench_function(
                 format!("segment_block_{}k_no_crc", block_size / 1024),
@@ -73,14 +93,24 @@ fn bench_ordered_fetch(c: &mut Criterion, profile: ValueProfile, dataset: &Datas
     }
     if profile.fixed_value_len().is_some() {
         let tempdir = tempfile::tempdir().expect("tempdir should work");
-        let store = create_segment_store(tempdir.path(), profile, true);
-        fill_segment_store(&store, &dataset.entries);
+        let store = create_filled_segment_store(
+            tempdir.path(),
+            profile,
+            &dataset.entries,
+            &commit_options_with_block_size(16 * 1024),
+            true,
+        );
         group.bench_function("segment_fixed_layout", |b| {
             b.iter(|| black_box(sum_segment_fetches(&store, &dataset.ordered_keys)))
         });
         let tempdir = tempfile::tempdir().expect("tempdir should work");
-        let store = create_segment_store(tempdir.path(), profile, false);
-        fill_segment_store(&store, &dataset.entries);
+        let store = create_filled_segment_store(
+            tempdir.path(),
+            profile,
+            &dataset.entries,
+            &commit_options_with_block_size(16 * 1024),
+            false,
+        );
         group.bench_function("segment_fixed_layout_no_crc", |b| {
             b.iter(|| black_box(sum_segment_fetches(&store, &dataset.ordered_keys)))
         });
@@ -110,11 +140,12 @@ fn bench_sparse_ordered_fetch(c: &mut Criterion, profile: ValueProfile, dataset:
 
     for &block_size in SPARSE_BLOCK_SIZE_VARIANTS {
         let tempdir = tempfile::tempdir().expect("tempdir should work");
-        let store = create_segment_store(tempdir.path(), profile, true);
-        fill_segment_store_with_options(
-            &store,
+        let store = create_filled_segment_store(
+            tempdir.path(),
+            profile,
             &dataset.entries,
             &commit_options_with_block_size(block_size),
+            true,
         );
         group.bench_function(format!("segment_block_{}k", block_size / 1024), |b| {
             b.iter(|| black_box(sum_segment_fetches(&store, &dataset.sparse_ordered_keys)))
@@ -145,7 +176,7 @@ fn bench_write_batch(c: &mut Criterion, profile: ValueProfile, dataset: &Dataset
         b.iter_batched(
             || tempfile::tempdir().expect("tempdir should work"),
             |tempdir| {
-                let store = create_segment_store(tempdir.path(), profile, true);
+                let store = create_segment_store(tempdir.path(), profile);
                 fill_segment_store(&store, &dataset.entries);
             },
             BatchSize::LargeInput,
@@ -159,7 +190,7 @@ fn bench_write_batch(c: &mut Criterion, profile: ValueProfile, dataset: &Dataset
         b.iter_batched(
             || tempfile::tempdir().expect("tempdir should work"),
             |tempdir| {
-                let store = create_segment_store(tempdir.path(), profile, true);
+                let store = create_segment_store(tempdir.path(), profile);
                 let mut batch = store.begin_batch();
                 for (key, value) in &shuffled {
                     batch.push(key, value).expect("push should succeed");
@@ -214,36 +245,48 @@ fn bench_iter_all(c: &mut Criterion, profile: ValueProfile, dataset: &Dataset) {
     group.throughput(Throughput::Elements(dataset.entries.len() as u64));
 
     let tempdir = tempfile::tempdir().expect("tempdir should work");
-    let store = create_segment_store(tempdir.path(), profile, true);
-    fill_segment_store(&store, &dataset.entries);
+    let store = create_filled_segment_store(
+        tempdir.path(),
+        profile,
+        &dataset.entries,
+        &commit_options_with_block_size(16 * 1024),
+        true,
+    );
     group.bench_function("segment", |b| {
         b.iter(|| black_box(sum_segment_iter(&store)))
     });
     let tempdir = tempfile::tempdir().expect("tempdir should work");
-    let store = create_segment_store(tempdir.path(), profile, false);
-    fill_segment_store(&store, &dataset.entries);
+    let store = create_filled_segment_store(
+        tempdir.path(),
+        profile,
+        &dataset.entries,
+        &commit_options_with_block_size(16 * 1024),
+        false,
+    );
     group.bench_function("segment_no_crc", |b| {
         b.iter(|| black_box(sum_segment_iter(&store)))
     });
     if profile.uses_large_value_tuning() {
         for &block_size in LARGE_BLOCK_SIZE_VARIANTS {
             let tempdir = tempfile::tempdir().expect("tempdir should work");
-            let store = create_segment_store(tempdir.path(), profile, true);
-            fill_segment_store_with_options(
-                &store,
+            let store = create_filled_segment_store(
+                tempdir.path(),
+                profile,
                 &dataset.entries,
                 &commit_options_with_block_size(block_size),
+                true,
             );
             group.bench_function(format!("segment_block_{}k", block_size / 1024), |b| {
                 b.iter(|| black_box(sum_segment_iter(&store)))
             });
 
             let tempdir = tempfile::tempdir().expect("tempdir should work");
-            let store = create_segment_store(tempdir.path(), profile, false);
-            fill_segment_store_with_options(
-                &store,
+            let store = create_filled_segment_store(
+                tempdir.path(),
+                profile,
                 &dataset.entries,
                 &commit_options_with_block_size(block_size),
+                false,
             );
             group.bench_function(
                 format!("segment_block_{}k_no_crc", block_size / 1024),
@@ -253,14 +296,24 @@ fn bench_iter_all(c: &mut Criterion, profile: ValueProfile, dataset: &Dataset) {
     }
     if profile.fixed_value_len().is_some() {
         let tempdir = tempfile::tempdir().expect("tempdir should work");
-        let store = create_segment_store(tempdir.path(), profile, true);
-        fill_segment_store(&store, &dataset.entries);
+        let store = create_filled_segment_store(
+            tempdir.path(),
+            profile,
+            &dataset.entries,
+            &commit_options_with_block_size(16 * 1024),
+            true,
+        );
         group.bench_function("segment_fixed_layout", |b| {
             b.iter(|| black_box(sum_segment_iter(&store)))
         });
         let tempdir = tempfile::tempdir().expect("tempdir should work");
-        let store = create_segment_store(tempdir.path(), profile, false);
-        fill_segment_store(&store, &dataset.entries);
+        let store = create_filled_segment_store(
+            tempdir.path(),
+            profile,
+            &dataset.entries,
+            &commit_options_with_block_size(16 * 1024),
+            false,
+        );
         group.bench_function("segment_fixed_layout_no_crc", |b| {
             b.iter(|| black_box(sum_segment_iter(&store)))
         });
@@ -290,7 +343,7 @@ fn bench_middle_insert_then_read(
         b.iter_batched(
             || {
                 let old_tempdir = tempfile::tempdir().expect("tempdir should work");
-                let old_store = create_segment_store(old_tempdir.path(), profile, true);
+                let old_store = create_segment_store(old_tempdir.path(), profile);
                 fill_segment_store(&old_store, &dataset.old_entries);
                 let new_tempdir = tempfile::tempdir().expect("tempdir should work");
                 (old_tempdir, old_store, new_tempdir)
@@ -361,4 +414,82 @@ fn bench_middle_insert_then_read(
     });
 
     group.finish();
+}
+
+fn bench_axis_change_rounds(c: &mut Criterion, profile: ValueProfile, dataset: &AxisChangeDataset) {
+    validate_axis_change_rounds(profile, dataset);
+
+    let mut group = c.benchmark_group(format!("{}/axis_change_rounds", profile.name()));
+    group.throughput(Throughput::Elements(dataset.total_queries as u64));
+
+    group.bench_function("segment_lookup_commit", |b| {
+        b.iter_batched(
+            || tempfile::tempdir().expect("tempdir should work"),
+            |tempdir| {
+                black_box(run_segment_axis_changes(tempdir.path(), profile, dataset).score());
+            },
+            BatchSize::LargeInput,
+        )
+    });
+
+    group.bench_function("fjall3_lookup_insert", |b| {
+        b.iter_batched(
+            || tempfile::tempdir().expect("tempdir should work"),
+            |tempdir| {
+                let fjall = Fjall3Backend::open(tempdir.path(), profile);
+                black_box(fjall.run_axis_changes(dataset).score());
+            },
+            BatchSize::LargeInput,
+        )
+    });
+
+    group.bench_function("redb_lookup_insert", |b| {
+        b.iter_batched(
+            || tempfile::tempdir().expect("tempdir should work"),
+            |tempdir| {
+                let redb = RedbBackend::open(tempdir.path());
+                black_box(redb.run_axis_changes(dataset).score());
+            },
+            BatchSize::LargeInput,
+        )
+    });
+
+    group.finish();
+}
+
+fn validate_axis_change_rounds(profile: ValueProfile, dataset: &AxisChangeDataset) {
+    let tempdir = tempfile::tempdir().expect("tempdir should work");
+    let segment = run_segment_axis_changes(tempdir.path(), profile, dataset);
+
+    let tempdir = tempfile::tempdir().expect("tempdir should work");
+    let fjall = Fjall3Backend::open(tempdir.path(), profile);
+    let fjall = fjall.run_axis_changes(dataset);
+
+    let tempdir = tempfile::tempdir().expect("tempdir should work");
+    let redb = RedbBackend::open(tempdir.path());
+    let redb = redb.run_axis_changes(dataset);
+
+    assert_eq!(segment.queries, fjall.queries);
+    assert_eq!(segment.queries, redb.queries);
+    assert_eq!(segment.hits, fjall.hits);
+    assert_eq!(segment.hits, redb.hits);
+    assert_eq!(segment.misses, fjall.misses);
+    assert_eq!(segment.misses, redb.misses);
+    assert_eq!(segment.inserted, fjall.inserted);
+    assert_eq!(segment.inserted, redb.inserted);
+    assert_eq!(segment.checksum, fjall.checksum);
+    assert_eq!(segment.checksum, redb.checksum);
+
+    eprintln!(
+        "{}/axis_change_rounds dry-run: queries={} hits={} misses={} inserted={} merged_records={} rewrite_amp={:.2} retired={} published={}",
+        profile.name(),
+        segment.queries,
+        segment.hits,
+        segment.misses,
+        segment.inserted,
+        segment.merged_records,
+        segment.rewrite_amplification(),
+        segment.segments_retired,
+        segment.segments_published
+    );
 }

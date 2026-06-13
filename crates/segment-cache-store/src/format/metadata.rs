@@ -1,6 +1,14 @@
 //! Opaque caller-defined store metadata and its `STORE` hex encoding.
 
-use crate::format::CatalogError;
+/// Malformed `metadata=<hex>` value in `STORE`.
+#[derive(thiserror::Error, Debug, Eq, PartialEq)]
+pub enum MetadataParseError {
+    #[error("metadata hex value has odd length")]
+    OddLengthHex,
+
+    #[error("metadata hex value contains an invalid digit")]
+    InvalidHexDigit,
+}
 
 /// Opaque caller-defined compatibility metadata for one store root.
 ///
@@ -31,11 +39,11 @@ impl StoreMetadata {
         &self.bytes
     }
 
-    pub(crate) fn encode_store_value(&self) -> String {
+    pub(super) fn encode_store_value(&self) -> String {
         HexBytes::encode(&self.bytes)
     }
 
-    pub(crate) fn parse_store_value(value: &str) -> std::result::Result<Self, CatalogError> {
+    pub(super) fn parse_store_value(value: &str) -> std::result::Result<Self, MetadataParseError> {
         Ok(Self::from_bytes(HexBytes::decode(value)?))
     }
 }
@@ -53,11 +61,9 @@ impl HexBytes {
         out
     }
 
-    fn decode(value: &str) -> std::result::Result<Vec<u8>, CatalogError> {
+    fn decode(value: &str) -> std::result::Result<Vec<u8>, MetadataParseError> {
         if !value.len().is_multiple_of(2) {
-            return Err(CatalogError::malformed_store(
-                "metadata hex value has odd length",
-            ));
+            return Err(MetadataParseError::OddLengthHex);
         }
         let mut bytes = Vec::with_capacity(value.len() / 2);
         for pair in value.as_bytes().chunks_exact(2) {
@@ -66,14 +72,12 @@ impl HexBytes {
         Ok(bytes)
     }
 
-    fn decode_nibble(value: u8) -> std::result::Result<u8, CatalogError> {
+    fn decode_nibble(value: u8) -> std::result::Result<u8, MetadataParseError> {
         match value {
             b'0'..=b'9' => Ok(value - b'0'),
             b'a'..=b'f' => Ok(value - b'a' + 10),
             b'A'..=b'F' => Ok(value - b'A' + 10),
-            _ => Err(CatalogError::malformed_store(
-                "metadata hex value contains an invalid digit",
-            )),
+            _ => Err(MetadataParseError::InvalidHexDigit),
         }
     }
 }

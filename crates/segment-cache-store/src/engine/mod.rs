@@ -1,30 +1,32 @@
-//! Filesystem engine: every byte that reaches or leaves disk goes through
-//! this tree.
+//! Open-store substrate: the filesystem mechanics, the in-memory runtime
+//! state, and store lifecycle that the read and write paths sit on.
 //!
-//! The engine owns paths, atomic publication, the advisory writer lock,
-//! runtime state, segment file access, store lifecycle (create/open/commit),
-//! and garbage collection. It composes the pure encoders and decoders from
-//! [`crate::format`]; it never re-implements byte layouts.
+//! Three sub-concerns, bottom to top: the filesystem primitives (paths, atomic
+//! publication, the advisory writer lock, segment file access) through which
+//! every byte to or from disk passes; the in-memory runtime state behind the
+//! public `Store` handle; and the lifecycle operations (create, open, GC) that
+//! build and maintain it. It composes the pure encoders and decoders from
+//! [`crate::format`] and never re-implements byte layouts. The commit path
+//! lives in [`crate::write`], not here.
 //!
 //! Review topology:
 //!
 //! - [`io`]: atomic publish protocol, writer lock, positioned reads
-//! - [`paths`] and [`catalog`]: where files live and how catalog files are
-//!   loaded and published
+//! - [`paths`]: where files live; catalog file loading and publication
 //! - [`segment_file`]: opening and validating one segment file, block reads
 //! - [`runtime`]: in-memory shared state behind the public `Store` handle
-//! - [`create`], [`open`], [`commit`], [`gc`]: store lifecycle operations
+//! - [`create`], [`open`], [`gc`]: store lifecycle operations
+//!
+//! The two data paths sit on top of this substrate as their own layers:
+//! reads in [`crate::read`], batched writes in [`crate::write`].
 
-pub(crate) mod catalog;
-mod commit;
 mod create;
-mod gc;
+pub(crate) mod gc;
 pub(crate) mod io;
 mod open;
 pub(crate) mod paths;
 pub(crate) mod runtime;
 pub(crate) mod segment_file;
 
-pub use commit::{CommitOptions, CommitStats};
 pub use create::CreateOptions;
 pub use open::OpenOptions;

@@ -3,9 +3,14 @@
 //! These types are owned by the format layer: every constructor lives in
 //! `format` (plus a few engine sites that enforce the same catalog
 //! invariants). They say precisely how each codec can fail — decoding fails as
-//! corruption, encoding fails on format limits, catalog parsing fails as a
-//! malformed file. Aggregation into the public [`crate::Error`] happens in
-//! `crate::error`, the API boundary.
+//! corruption, encoding fails on format limits, and catalog parse/encode errors
+//! are owned by the catalog file modules themselves. Aggregation into the public
+//! [`crate::Error`] happens in `crate::error`, the API boundary.
+
+use crate::format::{
+    manifest::{ManifestEncodeError, ManifestParseError},
+    store_file::StoreFileParseError,
+};
 
 /// Persistent `STORE`/`MANIFEST` catalog error.
 ///
@@ -14,16 +19,16 @@
 #[derive(thiserror::Error, Debug, Eq, PartialEq)]
 pub enum CatalogError {
     /// `STORE` bytes are malformed.
-    #[error("malformed STORE file: {reason}")]
-    MalformedStore { reason: String },
+    #[error(transparent)]
+    StoreParse(#[from] StoreFileParseError),
 
     /// `MANIFEST` bytes are malformed or corrupt.
-    #[error("malformed MANIFEST file: {reason}")]
-    MalformedManifest { reason: String },
+    #[error(transparent)]
+    ManifestParse(#[from] ManifestParseError),
 
     /// Encoding would exceed the v1 binary `MANIFEST` capacity.
-    #[error("MANIFEST exceeds v1 format limits: {reason}")]
-    ManifestEncode { reason: &'static str },
+    #[error(transparent)]
+    ManifestEncode(#[from] ManifestEncodeError),
 
     /// Parsed catalog content does not match store invariants or caller metadata.
     #[error(transparent)]
@@ -32,20 +37,6 @@ pub enum CatalogError {
     /// A catalog file declares an unsupported format version.
     #[error("unsupported {file} version {version}")]
     UnsupportedVersion { file: &'static str, version: u32 },
-}
-
-impl CatalogError {
-    pub(crate) fn malformed_store(reason: impl Into<String>) -> Self {
-        Self::MalformedStore {
-            reason: reason.into(),
-        }
-    }
-
-    pub(crate) fn malformed_manifest(reason: impl Into<String>) -> Self {
-        Self::MalformedManifest {
-            reason: reason.into(),
-        }
-    }
 }
 
 /// Parsed catalog content does not match store invariants or caller metadata.

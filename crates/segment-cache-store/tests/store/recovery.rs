@@ -34,10 +34,10 @@ fn missing_manifest_segment_allows_non_overlapping_future_appends() -> Result<()
 
     assert_eq!(reopened.fetch_one(&old_key)?, None);
     assert_eq!(reopened.fetch_one(&new_key)?, Some(make_value(2, 8)));
-    assert_eq!(
-        reopened.iter_all()?.collect::<Result<Vec<_>>>()?,
-        vec![(new_key, make_value(2, 8))]
-    );
+    assert_eq!(reopened.iter_all()?.collect::<Result<Vec<_>>>()?, vec![(
+        new_key,
+        make_value(2, 8)
+    )]);
     Ok(())
 }
 

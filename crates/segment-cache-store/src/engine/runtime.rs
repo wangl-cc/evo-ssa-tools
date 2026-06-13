@@ -77,7 +77,7 @@ impl StoreState {
 
 impl SegmentState {
     /// Converts a verified on-disk segment into the in-memory state used by readers.
-    pub(crate) fn from_opened(segment_id: u32, opened: OpenedSegment) -> Self {
+    pub(super) fn from_opened(segment_id: u32, opened: OpenedSegment) -> Self {
         Self {
             segment_id,
             file: opened.file,

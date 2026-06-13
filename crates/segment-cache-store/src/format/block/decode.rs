@@ -245,7 +245,7 @@ mod tests {
     use super::*;
     use crate::format::{
         block::BlockBuilder,
-        entry::{EntryRef, EntrySource},
+        record::{EntryRef, EntrySource},
     };
 
     struct Entries<'a> {

@@ -186,10 +186,10 @@ fn corrupted_middle_block_only_loses_that_block() -> Result<()> {
         reopened.fetch_many_ordered(key_refs.iter().copied())?,
         vec![Some(entries[0].1.clone()), None, Some(entries[2].1.clone())]
     );
-    assert_eq!(
-        reopened.iter_all()?.collect::<Result<Vec<_>>>()?,
-        vec![entries[0].clone(), entries[2].clone()]
-    );
+    assert_eq!(reopened.iter_all()?.collect::<Result<Vec<_>>>()?, vec![
+        entries[0].clone(),
+        entries[2].clone()
+    ]);
     Ok(())
 }
 
@@ -241,10 +241,9 @@ fn malformed_footer_block_index_metadata_hides_whole_segment() -> Result<()> {
 
     let reopened = reopen_store_read_only(&tempdir)?;
     assert_eq!(reopened.fetch_one(&key)?, None);
-    assert_eq!(
-        reopened.contains_many_ordered([key.as_slice()])?,
-        vec![false]
-    );
+    assert_eq!(reopened.contains_many_ordered([key.as_slice()])?, vec![
+        false
+    ]);
     assert_eq!(reopened.iter_all()?.count(), 0);
     Ok(())
 }

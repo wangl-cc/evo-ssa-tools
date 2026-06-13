@@ -4,7 +4,11 @@ use std::{num::NonZeroU32, path::PathBuf};
 
 use super::OpenOptions;
 use crate::{
-    engine::{catalog, paths::StorePaths},
+    engine::{
+        io::WriterLock,
+        open::open_existing,
+        paths::{self, StorePaths},
+    },
     error::{InputError, OptionsError, Result},
     format::{StoreMetadata, ValueLayout, manifest::StoreManifest, store_file::StoreDescriptor},
     store::Store,
@@ -65,16 +69,17 @@ impl Store {
     /// Creation fails if persistent store state already exists. Use
     /// `Store::open` for an existing store.
     ///
-    /// Two processes racing to create the same root is not fully serialized:
-    /// the writer lock only exists once `STORE` does. The race converges — at
-    /// most one caller acquires the lock in the final `open`, and the loser
-    /// fails with `WriterLocked` (or a metadata mismatch if the options
-    /// differed) — but callers should not rely on `create` as a cross-process
-    /// rendezvous.
+    /// Creation takes the same stable writer lock used by ordinary writer opens,
+    /// so two cooperating creators cannot publish different `STORE` files for
+    /// one root. A creator racing an existing writer fails with `WriterLocked`;
+    /// once the writer is gone, creating over an existing root fails with
+    /// `StoreAlreadyExists`.
     pub fn create(root: impl Into<PathBuf>, options: CreateOptions) -> Result<Self> {
         options.validate()?;
         let root = root.into();
         let paths = StorePaths::new(&root);
+        paths.ensure_root()?;
+        let writer_lock = WriterLock::acquire(paths.lock_file())?;
         // `STORE` is the creation completion marker, so its presence alone means
         // the root exists. A leftover `MANIFEST` from an aborted creation is
         // overwritten below.
@@ -91,8 +96,8 @@ impl Store {
         // a root with no `STORE`, which `create` can safely re-create and `open`
         // rejects as missing.
         let manifest = StoreManifest::new(options.key_len);
-        catalog::publish_manifest(&paths, &manifest)?;
-        catalog::publish_descriptor(&paths, &descriptor)?;
-        Self::open(root, OpenOptions::new(options.metadata))
+        paths::publish_manifest(&paths, &manifest)?;
+        paths::publish_descriptor(&paths, &descriptor)?;
+        open_existing(root, OpenOptions::new(options.metadata), Some(writer_lock))
     }
 }

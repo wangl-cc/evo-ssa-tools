@@ -21,18 +21,18 @@ use crate::{
 };
 
 #[derive(Clone, Copy)]
-pub(crate) struct SegmentOpenOptions {
-    pub(crate) expected_key_len: usize,
-    pub(crate) expected_value_layout: ValueLayout,
+pub(super) struct SegmentOpenOptions {
+    pub(super) expected_key_len: usize,
+    pub(super) expected_value_layout: ValueLayout,
 }
 
 /// Open segment handle with its sparse block index loaded into memory.
 #[derive(Debug)]
-pub(crate) struct OpenedSegment {
-    pub(crate) file: File,
-    pub(crate) min_key: Vec<u8>,
-    pub(crate) max_key: Vec<u8>,
-    pub(crate) block_index: Vec<BlockIndexEntry>,
+pub(super) struct OpenedSegment {
+    pub(super) file: File,
+    pub(super) min_key: Vec<u8>,
+    pub(super) max_key: Vec<u8>,
+    pub(super) block_index: Vec<BlockIndexEntry>,
 }
 
 impl OpenedSegment {
@@ -41,7 +41,7 @@ impl OpenedSegment {
     /// Returns `Ok(None)` when the file is missing, malformed, corrupt, or
     /// does not match the expected store geometry: a referenced segment that
     /// fails to open is miss space, not an error.
-    pub(crate) fn open(path: PathBuf, options: SegmentOpenOptions) -> Result<Option<Self>> {
+    pub(super) fn open(path: PathBuf, options: SegmentOpenOptions) -> Result<Option<Self>> {
         let file = match File::open(&path) {
             Ok(file) => file,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -49,14 +49,16 @@ impl OpenedSegment {
         };
         let header = match read_header(&file) {
             Ok(header) => header,
-            Err(_) => return Ok(None),
+            Err(error) if error.is_cache_miss_corruption() => return Ok(None),
+            Err(error) => return Err(error),
         };
         if !header.matches_geometry(options.expected_key_len, options.expected_value_layout) {
             return Ok(None);
         }
         let footer = match read_footer(&file, options.expected_key_len) {
             Ok(footer) => footer,
-            Err(_) => return Ok(None),
+            Err(error) if error.is_cache_miss_corruption() => return Ok(None),
+            Err(error) => return Err(error),
         };
         Ok(Some(Self {
             file,
@@ -100,7 +102,7 @@ fn read_footer(file: &File, key_len: usize) -> Result<SegmentFooter> {
 }
 
 /// Reads and decodes one block, allocating a fresh buffer.
-pub(crate) fn read_block(
+pub(super) fn read_block(
     file: &File,
     entry: &BlockIndexEntry,
     key_len: usize,
@@ -118,7 +120,7 @@ pub(crate) fn read_block(
 }
 
 /// Reads and decodes one block while reusing a caller-owned backing buffer.
-pub(crate) fn read_block_reusing(
+pub(super) fn read_block_reusing(
     file: &File,
     entry: &BlockIndexEntry,
     key_len: usize,

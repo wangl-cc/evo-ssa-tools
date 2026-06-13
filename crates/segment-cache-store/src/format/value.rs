@@ -26,7 +26,7 @@ impl ValueLayout {
         }
     }
 
-    pub(crate) fn is_variable(self) -> bool {
+    pub(super) fn is_variable(self) -> bool {
         self.fixed_len.is_none()
     }
 
@@ -35,29 +35,29 @@ impl ValueLayout {
     }
 
     /// Encodes this layout into the persisted `value_len` integer.
-    pub(crate) fn to_u32(self) -> u32 {
+    pub(super) fn to_u32(self) -> u32 {
         self.fixed_len.map_or(0, NonZeroU32::get)
     }
 
     /// Decodes the persisted `value_len` integer.
-    pub(crate) fn from_u32(value_len: u32) -> Self {
+    pub(super) fn from_u32(value_len: u32) -> Self {
         Self {
             fixed_len: NonZeroU32::new(value_len),
         }
     }
 
-    pub(crate) fn fixed_width(self) -> Option<usize> {
+    pub(super) fn fixed_width(self) -> Option<usize> {
         self.fixed_len.map(|len| len.get() as usize)
     }
 
-    pub(crate) fn offset_count(self, record_count: usize) -> Option<usize> {
+    pub(super) fn offset_count(self, record_count: usize) -> Option<usize> {
         if self.is_variable() {
             return record_count.checked_add(1);
         }
         Some(0)
     }
 
-    pub(crate) fn value_payload_offset(
+    pub(super) fn value_payload_offset(
         self,
         record_count: usize,
         value_region_offset: usize,

@@ -193,10 +193,11 @@ fn visit_many_ordered_callback_can_commit_on_miss() -> Result<()> {
         visited.push(value.map(ToOwned::to_owned));
     })?;
 
-    assert_eq!(
-        visited,
-        vec![Some(make_value(1, 16)), Some(make_value(2, 16)), None]
-    );
+    assert_eq!(visited, vec![
+        Some(make_value(1, 16)),
+        Some(make_value(2, 16)),
+        None
+    ]);
     assert_eq!(store.fetch_one(&inserted.0)?, Some(inserted.1));
     Ok(())
 }

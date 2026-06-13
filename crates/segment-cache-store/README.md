@@ -28,7 +28,7 @@ let value = reopened.fetch_one(&[0; 16])?;
 # Ok::<_, segment_cache_store::Error>(())
 ```
 
-One store root has one fixed key length, one value layout, and one caller-defined metadata namespace. Published segments are immutable and globally non-overlapping. New commits may append at the tail or insert into gaps, but they may not overlap an existing visible segment range.
+One store root has one fixed key length, one value layout, and one caller-defined metadata namespace. Published segment files are immutable, and the visible segment set remains globally non-overlapping. New commits may append at the tail, insert into gaps, or interleave with an existing range; interleaving commits rebuild only the intersecting visible segments and atomically publish a replacement `MANIFEST`.
 
 Internal design and evaluation notes live in:
 

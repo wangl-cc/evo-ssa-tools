@@ -11,11 +11,55 @@ use crc32c::crc32c;
 
 use crate::format::{CatalogError, CatalogMismatch, binary::BinaryCursor};
 
-pub(crate) const MANIFEST_VERSION: u32 = 1;
+const MANIFEST_VERSION: u32 = 1;
 
 const MANIFEST_MAGIC: &[u8; 4] = b"SCSM";
 const MANIFEST_HEADER_LEN: usize = 20;
 const MANIFEST_TRAILER_LEN: usize = 4;
+
+/// Encoding would exceed the v1 binary `MANIFEST` envelope.
+#[derive(thiserror::Error, Debug, Eq, PartialEq)]
+pub enum ManifestEncodeError {
+    #[error("MANIFEST exceeds v1 format limits: entry length overflow")]
+    EntryLength,
+
+    #[error("MANIFEST exceeds v1 format limits: length overflow")]
+    Length,
+
+    #[error("MANIFEST exceeds v1 format limits: key length exceeds u32")]
+    KeyLength,
+
+    #[error("MANIFEST exceeds v1 format limits: segment count exceeds u32")]
+    SegmentCount,
+}
+
+/// Malformed or corrupt binary `MANIFEST` bytes.
+#[derive(thiserror::Error, Debug, Eq, PartialEq)]
+pub enum ManifestParseError {
+    #[error("malformed MANIFEST file: too short")]
+    TooShort,
+
+    #[error("malformed MANIFEST file: checksum mismatch")]
+    ChecksumMismatch,
+
+    #[error("malformed MANIFEST file: unsupported magic")]
+    UnsupportedMagic,
+
+    #[error("malformed MANIFEST file: entry length overflow")]
+    EntryLengthOverflow,
+
+    #[error("malformed MANIFEST file: length overflow")]
+    LengthOverflow,
+
+    #[error("malformed MANIFEST file: length mismatch")]
+    LengthMismatch,
+
+    #[error("malformed MANIFEST file: parser did not consume all entries")]
+    ParserDidNotConsumeEntries,
+
+    #[error("malformed MANIFEST file: truncated field {field}")]
+    TruncatedField { field: &'static str },
+}
 
 /// One visible segment range in `MANIFEST`.
 #[derive(Clone, Debug)]
@@ -50,36 +94,29 @@ impl StoreManifest {
         }
     }
 
-    pub(crate) fn encode(&self) -> std::result::Result<Vec<u8>, CatalogError> {
-        let entry_len = manifest_entry_len(self.key_len).ok_or(CatalogError::ManifestEncode {
-            reason: "entry length overflow",
-        })?;
+    pub(crate) fn encode(&self) -> std::result::Result<Vec<u8>, ManifestEncodeError> {
+        let entry_len = manifest_entry_len(self.key_len).ok_or(ManifestEncodeError::EntryLength)?;
         let capacity = MANIFEST_HEADER_LEN
-            .checked_add(self.segments.len().checked_mul(entry_len).ok_or(
-                CatalogError::ManifestEncode {
-                    reason: "length overflow",
-                },
-            )?)
+            .checked_add(
+                self.segments
+                    .len()
+                    .checked_mul(entry_len)
+                    .ok_or(ManifestEncodeError::Length)?,
+            )
             .and_then(|len| len.checked_add(MANIFEST_TRAILER_LEN))
-            .ok_or(CatalogError::ManifestEncode {
-                reason: "length overflow",
-            })?;
+            .ok_or(ManifestEncodeError::Length)?;
         let mut out = Vec::with_capacity(capacity);
         out.extend_from_slice(MANIFEST_MAGIC);
         out.extend_from_slice(&self.version.to_le_bytes());
         out.extend_from_slice(
             &u32::try_from(self.key_len)
-                .map_err(|_| CatalogError::ManifestEncode {
-                    reason: "key length exceeds u32",
-                })?
+                .map_err(|_| ManifestEncodeError::KeyLength)?
                 .to_le_bytes(),
         );
         out.extend_from_slice(&self.next_segment_id.to_le_bytes());
         out.extend_from_slice(
             &u32::try_from(self.segments.len())
-                .map_err(|_| CatalogError::ManifestEncode {
-                    reason: "segment count exceeds u32",
-                })?
+                .map_err(|_| ManifestEncodeError::SegmentCount)?
                 .to_le_bytes(),
         );
         for entry in &self.segments {
@@ -92,7 +129,7 @@ impl StoreManifest {
         Ok(out)
     }
 
-    pub(crate) fn parse(input: &[u8]) -> std::result::Result<Self, CatalogError> {
+    pub(crate) fn parse(input: &[u8]) -> std::result::Result<Self, ManifestParseError> {
         ManifestParser::new(input).parse()
     }
 
@@ -169,39 +206,39 @@ impl<'a> ManifestParser<'a> {
         }
     }
 
-    fn parse(mut self) -> std::result::Result<StoreManifest, CatalogError> {
+    fn parse(mut self) -> std::result::Result<StoreManifest, ManifestParseError> {
         if self.input.len() < MANIFEST_HEADER_LEN + MANIFEST_TRAILER_LEN {
-            return Err(CatalogError::malformed_manifest("too short"));
+            return Err(ManifestParseError::TooShort);
         }
         let checksum_offset = self.input.len() - MANIFEST_TRAILER_LEN;
         self.cursor.seek(checksum_offset);
         let expected_checksum = self.read_u32("checksum")?;
         let actual_checksum = crc32c(&self.input[..checksum_offset]);
         if actual_checksum != expected_checksum {
-            return Err(CatalogError::malformed_manifest("checksum mismatch"));
+            return Err(ManifestParseError::ChecksumMismatch);
         }
 
         self.cursor.seek(0);
         let magic = self.read_vec("magic", MANIFEST_MAGIC.len())?;
         if magic.as_slice() != MANIFEST_MAGIC {
-            return Err(CatalogError::malformed_manifest("unsupported magic"));
+            return Err(ManifestParseError::UnsupportedMagic);
         }
         let version = self.read_u32("version")?;
         let key_len = self.read_u32("key_len")? as usize;
         let next_segment_id = self.read_u32("next_segment_id")?;
         let segment_count = self.read_u32("segment_count")? as usize;
-        let entry_len = manifest_entry_len(key_len)
-            .ok_or_else(|| CatalogError::malformed_manifest("entry length overflow"))?;
+        let entry_len =
+            manifest_entry_len(key_len).ok_or(ManifestParseError::EntryLengthOverflow)?;
         let expected_len = MANIFEST_HEADER_LEN
             .checked_add(
                 segment_count
                     .checked_mul(entry_len)
-                    .ok_or_else(|| CatalogError::malformed_manifest("length overflow"))?,
+                    .ok_or(ManifestParseError::LengthOverflow)?,
             )
             .and_then(|len| len.checked_add(MANIFEST_TRAILER_LEN))
-            .ok_or_else(|| CatalogError::malformed_manifest("length overflow"))?;
+            .ok_or(ManifestParseError::LengthOverflow)?;
         if self.input.len() != expected_len {
-            return Err(CatalogError::malformed_manifest("length mismatch"));
+            return Err(ManifestParseError::LengthMismatch);
         }
 
         let mut segments = Vec::with_capacity(segment_count);
@@ -216,9 +253,7 @@ impl<'a> ManifestParser<'a> {
             });
         }
         if self.cursor.position() != checksum_offset {
-            return Err(CatalogError::malformed_manifest(
-                "parser did not consume all entries",
-            ));
+            return Err(ManifestParseError::ParserDidNotConsumeEntries);
         }
         Ok(StoreManifest {
             version,
@@ -228,20 +263,20 @@ impl<'a> ManifestParser<'a> {
         })
     }
 
-    fn read_u32(&mut self, field: &'static str) -> std::result::Result<u32, CatalogError> {
+    fn read_u32(&mut self, field: &'static str) -> std::result::Result<u32, ManifestParseError> {
         self.cursor
             .read::<u32>()
-            .ok_or_else(|| CatalogError::malformed_manifest(format!("truncated field {field}")))
+            .ok_or(ManifestParseError::TruncatedField { field })
     }
 
     fn read_vec(
         &mut self,
         field: &'static str,
         len: usize,
-    ) -> std::result::Result<Vec<u8>, CatalogError> {
+    ) -> std::result::Result<Vec<u8>, ManifestParseError> {
         self.cursor
             .read_vec(len)
-            .ok_or_else(|| CatalogError::malformed_manifest(format!("truncated field {field}")))
+            .ok_or(ManifestParseError::TruncatedField { field })
     }
 }
 
@@ -299,7 +334,7 @@ mod tests {
             bytes[0] = b'X';
             assert_eq!(
                 StoreManifest::parse(&bytes).unwrap_err(),
-                CatalogError::malformed_manifest("checksum mismatch")
+                ManifestParseError::ChecksumMismatch
             );
 
             let mut bytes = manifest.encode().expect("manifest should encode");
@@ -307,12 +342,12 @@ mod tests {
             bytes[last] ^= 0xff;
             assert_eq!(
                 StoreManifest::parse(&bytes).unwrap_err(),
-                CatalogError::malformed_manifest("checksum mismatch")
+                ManifestParseError::ChecksumMismatch
             );
 
             assert_eq!(
                 StoreManifest::parse(&[]).unwrap_err(),
-                CatalogError::malformed_manifest("too short")
+                ManifestParseError::TooShort
             );
         }
     }

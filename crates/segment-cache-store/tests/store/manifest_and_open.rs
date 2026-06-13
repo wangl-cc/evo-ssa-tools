@@ -94,10 +94,7 @@ fn malformed_store_file_is_rejected() -> Result<()> {
         Err(error) => error,
     };
 
-    assert!(matches!(
-        error,
-        Error::Catalog(CatalogError::MalformedStore { .. })
-    ));
+    assert!(matches!(error, Error::Catalog(CatalogError::StoreParse(_))));
     Ok(())
 }
 
@@ -119,7 +116,7 @@ fn malformed_manifest_is_rejected() -> Result<()> {
 
     assert!(matches!(
         error,
-        Error::Catalog(CatalogError::MalformedManifest { .. })
+        Error::Catalog(CatalogError::ManifestParse(_))
     ));
     Ok(())
 }

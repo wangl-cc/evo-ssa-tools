@@ -7,7 +7,10 @@ use fjall3::{
 use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
 use segment_cache_store::{CommitOptions, CreateOptions, OpenOptions, Store, StoreMetadata};
 
-use crate::profile::{KEY_LEN, ValueProfile};
+use crate::{
+    data::AxisChangeDataset,
+    profile::{KEY_LEN, ValueProfile},
+};
 
 const REDB_TABLE: TableDefinition<&[u8], &[u8]> = TableDefinition::new("bench");
 
@@ -28,17 +31,34 @@ pub(crate) fn fixed_store_create_options(key_len: usize, value_len: NonZeroU32) 
 }
 
 pub(crate) fn open_options(verify_crc: bool) -> OpenOptions {
-    OpenOptions::new(store_metadata()).with_block_checksum_verification(verify_crc)
+    OpenOptions::new(store_metadata())
+        .with_block_checksum_verification(verify_crc)
+        .with_read_only(!verify_crc)
 }
 
-pub(crate) fn create_segment_store(root: &Path, profile: ValueProfile, verify_crc: bool) -> Store {
+pub(crate) fn create_segment_store(root: &Path, profile: ValueProfile) -> Store {
     let create_options = profile_store_create_options(profile);
-    let store = Store::create(root, create_options).expect("segment store should create");
+    Store::create(root, create_options).expect("segment store should create")
+}
+
+pub(crate) fn open_segment_store(root: &Path, verify_crc: bool) -> Store {
+    Store::open(root, open_options(verify_crc)).expect("segment store should reopen")
+}
+
+pub(crate) fn create_filled_segment_store(
+    root: &Path,
+    profile: ValueProfile,
+    entries: &[(Vec<u8>, Vec<u8>)],
+    options: &CommitOptions,
+    verify_crc: bool,
+) -> Store {
+    let store = create_segment_store(root, profile);
+    fill_segment_store_with_options(&store, entries, options);
     if verify_crc {
         store
     } else {
         drop(store);
-        Store::open(root, open_options(false)).expect("segment store should reopen")
+        open_segment_store(root, false)
     }
 }
 
@@ -73,7 +93,7 @@ pub(crate) fn rebuild_segment_store_into(
     profile: ValueProfile,
     new_entries: &[(Vec<u8>, Vec<u8>)],
 ) -> (Store, usize) {
-    let new_store = create_segment_store(new_root, profile, true);
+    let new_store = create_segment_store(new_root, profile);
     let mut batch = new_store.begin_batch().mark_sorted();
     let mut old_records = old_store
         .iter_all()
@@ -133,6 +153,81 @@ pub(crate) fn sum_segment_iter(store: &Store) -> usize {
         })
         .expect("iter should succeed");
     total
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct AxisChangeReport {
+    pub(crate) queries: usize,
+    pub(crate) hits: usize,
+    pub(crate) misses: usize,
+    pub(crate) inserted: usize,
+    pub(crate) merged_records: usize,
+    pub(crate) segments_published: usize,
+    pub(crate) segments_retired: usize,
+    pub(crate) checksum: usize,
+}
+
+impl AxisChangeReport {
+    pub(crate) fn score(self) -> usize {
+        self.checksum
+            .wrapping_add(self.queries)
+            .wrapping_add(self.hits)
+            .wrapping_add(self.misses)
+            .wrapping_add(self.inserted)
+            .wrapping_add(self.merged_records)
+            .wrapping_add(self.segments_published)
+            .wrapping_add(self.segments_retired)
+    }
+
+    pub(crate) fn rewrite_amplification(self) -> f64 {
+        if self.inserted == 0 {
+            0.0
+        } else {
+            self.merged_records as f64 / self.inserted as f64
+        }
+    }
+}
+
+pub(crate) fn run_segment_axis_changes(
+    root: &Path,
+    profile: ValueProfile,
+    dataset: &AxisChangeDataset,
+) -> AxisChangeReport {
+    let store = create_segment_store(root, profile);
+    let mut report = AxisChangeReport::default();
+
+    for round in &dataset.rounds {
+        report.queries += round.entries.len();
+        let mut missing_indices = Vec::new();
+        store
+            .visit_many_ordered_slice(&round.keys, |index, value| {
+                if let Some(value) = value {
+                    report.hits += 1;
+                    report.checksum = report.checksum.wrapping_add(touch_bytes(value));
+                } else {
+                    report.misses += 1;
+                    missing_indices.push(index);
+                }
+            })
+            .expect("axis-change lookup should succeed");
+
+        if missing_indices.is_empty() {
+            continue;
+        }
+        let mut batch = store.begin_batch().mark_sorted();
+        for index in missing_indices {
+            let (key, value) = &round.entries[index];
+            report.checksum = report.checksum.wrapping_add(touch_bytes(value));
+            batch.push(key, value).expect("push should succeed");
+        }
+        let stats = store.commit_batch(batch).expect("commit should succeed");
+        report.inserted += stats.records;
+        report.merged_records += stats.merged_records;
+        report.segments_published += stats.segments_published;
+        report.segments_retired += stats.segments_retired;
+    }
+
+    report
 }
 
 pub(crate) fn touch_bytes(bytes: &[u8]) -> usize {
@@ -198,6 +293,34 @@ impl Fjall3Backend {
             .persist(fjall3::PersistMode::SyncAll)
             .expect("fjall3 persist after compaction should succeed");
     }
+
+    pub(crate) fn run_axis_changes(&self, dataset: &AxisChangeDataset) -> AxisChangeReport {
+        let mut report = AxisChangeReport::default();
+        for round in &dataset.rounds {
+            report.queries += round.entries.len();
+            let mut wrote = false;
+            for (key, value) in &round.entries {
+                if let Some(existing) = self.keyspace.get(key).expect("get should succeed") {
+                    report.hits += 1;
+                    report.checksum = report.checksum.wrapping_add(touch_bytes(existing.as_ref()));
+                } else {
+                    report.misses += 1;
+                    report.inserted += 1;
+                    report.checksum = report.checksum.wrapping_add(touch_bytes(value));
+                    self.keyspace
+                        .insert(key, value)
+                        .expect("insert should work");
+                    wrote = true;
+                }
+            }
+            if wrote {
+                self.db
+                    .persist(fjall3::PersistMode::SyncAll)
+                    .expect("persist should succeed");
+            }
+        }
+        report
+    }
 }
 
 pub(crate) struct RedbBackend {
@@ -249,6 +372,60 @@ impl RedbBackend {
                 touch_bytes(value.value())
             })
             .sum()
+    }
+
+    pub(crate) fn run_axis_changes(&self, dataset: &AxisChangeDataset) -> AxisChangeReport {
+        self.create_table();
+        let mut report = AxisChangeReport::default();
+        for round in &dataset.rounds {
+            report.queries += round.entries.len();
+            let mut missing_indices = Vec::new();
+            {
+                let read_txn = self.db.begin_read().expect("redb read txn should open");
+                let table = read_txn
+                    .open_table(REDB_TABLE)
+                    .expect("redb table should open");
+                for (index, (key, _)) in round.entries.iter().enumerate() {
+                    if let Some(value) = table.get(key.as_slice()).expect("redb get should succeed")
+                    {
+                        report.hits += 1;
+                        report.checksum = report.checksum.wrapping_add(touch_bytes(value.value()));
+                    } else {
+                        report.misses += 1;
+                        missing_indices.push(index);
+                    }
+                }
+            }
+            if missing_indices.is_empty() {
+                continue;
+            }
+            let write_txn = self.db.begin_write().expect("redb write txn should open");
+            {
+                let mut table = write_txn
+                    .open_table(REDB_TABLE)
+                    .expect("redb table should open");
+                for index in missing_indices {
+                    let (key, value) = &round.entries[index];
+                    report.inserted += 1;
+                    report.checksum = report.checksum.wrapping_add(touch_bytes(value));
+                    table
+                        .insert(key.as_slice(), value.as_slice())
+                        .expect("redb insert should succeed");
+                }
+            }
+            write_txn.commit().expect("redb commit should succeed");
+        }
+        report
+    }
+
+    fn create_table(&self) {
+        let write_txn = self.db.begin_write().expect("redb write txn should open");
+        {
+            write_txn
+                .open_table(REDB_TABLE)
+                .expect("redb table should open");
+        }
+        write_txn.commit().expect("redb commit should succeed");
     }
 }
 

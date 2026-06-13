@@ -5,11 +5,44 @@
 //! length, value layout). Reading and atomically publishing the file are
 //! engine concerns.
 
-use crate::format::{CatalogError, CatalogMismatch, StoreMetadata, ValueLayout};
+use crate::format::{
+    CatalogError, CatalogMismatch, StoreMetadata, ValueLayout, metadata::MetadataParseError,
+};
 
-pub(crate) const STORE_VERSION: u32 = 1;
+const STORE_VERSION: u32 = 1;
 
 const STORE_MAGIC: &str = "segment-cache-store store v1";
+
+/// Malformed `STORE` descriptor bytes.
+#[derive(thiserror::Error, Debug, Eq, PartialEq)]
+pub enum StoreFileParseError {
+    #[error("malformed STORE file: empty file")]
+    Empty,
+
+    #[error("malformed STORE file: unsupported magic")]
+    UnsupportedMagic,
+
+    #[error("malformed STORE file: missing required field {field}")]
+    MissingField { field: &'static str },
+
+    #[error("malformed STORE file: malformed field {field}")]
+    MalformedField { field: &'static str },
+
+    #[error("malformed STORE file: expected field {expected}, got {actual}")]
+    UnexpectedFieldOrder {
+        expected: &'static str,
+        actual: String,
+    },
+
+    #[error("malformed STORE file: invalid value for field {field}")]
+    InvalidFieldValue { field: &'static str },
+
+    #[error("malformed STORE file: unexpected trailing fields")]
+    UnexpectedTrailingFields,
+
+    #[error(transparent)]
+    Metadata(#[from] MetadataParseError),
+}
 
 /// Persistent store identity stored in `STORE`.
 #[derive(Clone, Debug)]
@@ -46,7 +79,7 @@ impl StoreDescriptor {
         out
     }
 
-    pub(crate) fn parse(input: &str) -> std::result::Result<Self, CatalogError> {
+    pub(crate) fn parse(input: &str) -> std::result::Result<Self, StoreFileParseError> {
         StoreParser::new(input).parse()
     }
 
@@ -78,14 +111,14 @@ impl<'a> StoreParser<'a> {
         }
     }
 
-    fn parse(mut self) -> std::result::Result<StoreDescriptor, CatalogError> {
+    fn parse(mut self) -> std::result::Result<StoreDescriptor, StoreFileParseError> {
         self.expect_magic()?;
         let version = self.required_value::<u32>("version")?;
         let metadata = StoreMetadata::parse_store_value(self.required_str("metadata")?)?;
         let key_len = self.required_value::<usize>("key_len")?;
         let value_len = self.required_value::<u32>("value_len")?;
         if self.lines.any(|line| !line.is_empty()) {
-            return Err(CatalogError::malformed_store("unexpected trailing fields"));
+            return Err(StoreFileParseError::UnexpectedTrailingFields);
         }
         Ok(StoreDescriptor {
             version,
@@ -95,42 +128,45 @@ impl<'a> StoreParser<'a> {
         })
     }
 
-    fn expect_magic(&mut self) -> std::result::Result<(), CatalogError> {
+    fn expect_magic(&mut self) -> std::result::Result<(), StoreFileParseError> {
         let Some(magic) = self.lines.next() else {
-            return Err(CatalogError::malformed_store("empty file"));
+            return Err(StoreFileParseError::Empty);
         };
         if magic != STORE_MAGIC {
-            return Err(CatalogError::malformed_store("unsupported magic"));
+            return Err(StoreFileParseError::UnsupportedMagic);
         }
         Ok(())
     }
 
-    fn required_str(&mut self, key: &'static str) -> std::result::Result<&'a str, CatalogError> {
+    fn required_str(
+        &mut self,
+        key: &'static str,
+    ) -> std::result::Result<&'a str, StoreFileParseError> {
         let Some(line) = self.lines.next() else {
-            return Err(CatalogError::malformed_store(format!(
-                "missing required field {key}"
-            )));
+            return Err(StoreFileParseError::MissingField { field: key });
         };
         let Some((actual_key, value)) = line.split_once('=') else {
-            return Err(CatalogError::malformed_store(format!(
-                "malformed field {key}"
-            )));
+            return Err(StoreFileParseError::MalformedField { field: key });
         };
         if actual_key != key {
-            return Err(CatalogError::malformed_store(format!(
-                "expected field {key}, got {actual_key}"
-            )));
+            return Err(StoreFileParseError::UnexpectedFieldOrder {
+                expected: key,
+                actual: actual_key.to_owned(),
+            });
         }
         Ok(value)
     }
 
-    fn required_value<T>(&mut self, key: &'static str) -> std::result::Result<T, CatalogError>
+    fn required_value<T>(
+        &mut self,
+        key: &'static str,
+    ) -> std::result::Result<T, StoreFileParseError>
     where
         T: std::str::FromStr,
     {
         self.required_str(key)?
             .parse()
-            .map_err(|_| CatalogError::malformed_store(format!("invalid value for field {key}")))
+            .map_err(|_| StoreFileParseError::InvalidFieldValue { field: key })
     }
 }
 
@@ -166,7 +202,7 @@ mod tests {
         fn rejects_malformed_store_file() {
             assert!(matches!(
                 StoreDescriptor::parse("bad\n"),
-                Err(CatalogError::MalformedStore { .. })
+                Err(StoreFileParseError::UnsupportedMagic)
             ));
         }
     }

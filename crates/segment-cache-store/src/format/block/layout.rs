@@ -5,7 +5,8 @@ use std::ops::Range;
 use crc32c::crc32c_append;
 
 use crate::format::{
-    CorruptionError, FormatError, ValueLayout, binary::BinaryCursor, entry::EntrySource, format_u32,
+    CorruptionError, FormatError, ValueLayout, binary::BinaryCursor, format_u32,
+    record::EntrySource,
 };
 
 pub(crate) const BLOCK_FOOTER_LEN: usize = 16;
@@ -282,7 +283,7 @@ pub(super) fn block_crc(bytes: &[u8]) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::format::entry::EntryRef;
+    use crate::format::record::EntryRef;
 
     struct Entries<'a> {
         entries: &'a [(&'a [u8], &'a [u8])],

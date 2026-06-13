@@ -124,13 +124,14 @@ root/
   STORE.tmp
   MANIFEST
   MANIFEST.tmp
+  LOCK
   segments/
     segment-00000000000000000000.seg
     segment-00000000000000000001.seg
     segment-00000000000000000002.seg.tmp
 ```
 
-`STORE` is the stable namespace descriptor. It changes only when the store is created. `MANIFEST` is the atomic visible segment set. Segment files that are not referenced by `MANIFEST` are ignored. Temporary files are sibling files created by adding a `.tmp` extension to their final target, and are implementation details of atomic publication; open/read paths do not scan directories to discover visible data.
+`STORE` is the stable namespace descriptor. It changes only when the store is created. `MANIFEST` is the atomic visible segment set. `LOCK` is the stable advisory-writer lock file and is never atomically replaced. Segment files that are not referenced by `MANIFEST` are ignored. Temporary files are sibling files created by adding a `.tmp` extension to their final target, and are implementation details of atomic publication; open/read paths do not scan directories to discover visible data.
 
 **Creation order.** Store creation writes `MANIFEST` first and `STORE` last; `STORE` is the creation completion marker. `Store::create` succeeds whenever `STORE` is absent, overwriting any leftover `MANIFEST` from an aborted creation; `Store::open` requires both files. A creation that crashes between the two writes leaves a root with no `STORE`, which `create` safely re-creates.
 
@@ -241,7 +242,7 @@ block_crc32c: u32     // crc32c over all previous bytes in this block
 
 `prefix_len` is the block-local common key prefix length. `payload_offset` and `payload_len` describe the packed value payload inside the block. Padding appears before the footer so the footer remains at `block_len - 16`.
 
-`OpenOptions::with_block_checksum_verification(false)` disables data-block checksum verification for benchmarking against engines that do not validate user value bytes on read. This is not the default cache-safe mode: with verification disabled, corrupted value bytes may be returned as hits.
+`OpenOptions::with_block_checksum_verification(false)` disables data-block checksum verification for read-only benchmarking against engines that do not validate user value bytes on read. Writable opens reject this option so corrupted bytes cannot be merged into freshly checksummed replacement segments. This is not the default cache-safe mode: with verification disabled, corrupted value bytes may be returned as hits.
 
 Each block strips the common prefix shared by its first and last key. Because keys are sorted, this prefix is shared by every key in the block. The suffix table remains fixed-width, so the reader can still binary-search by record index.
 
@@ -376,9 +377,9 @@ Across processes:
 
 - Concurrent read-only opens of one root are safe: segments are immutable and the manifest swap is atomic. On Unix, an open file descriptor remains readable after the file is unlinked by GC.
 - A reader's view is the manifest snapshot read at open time; reopen to observe later publications.
-- Concurrent writers are not supported and are currently undefined behavior (silent loss of visibility, orphaned files).
+- Concurrent writable opens are rejected by the advisory writer lock. The lock is cooperative; external tools that mutate the root without taking it can still corrupt visibility.
 
-A writer takes an advisory lock on `STORE` (`std::fs::File::try_lock`, which is `flock` on Unix) and holds it for the lifetime of the `Store` handle, covering commits and GC. A second writer fails fast (`InputError::WriterLocked`) instead of corrupting visibility. Read-only opens (`OpenOptions::with_read_only`) do not take the lock, run no GC, and never mutate the filesystem; commits on a read-only handle are rejected with `InputError::ReadOnlyStore`. Sync agents will count as writers.
+A writer takes an advisory lock on `LOCK` (`std::fs::File::try_lock`, which is `flock` on Unix) and holds it for the lifetime of the `Store` handle, covering creation, open-time GC, commits, and post-commit GC. The lock file is stable and is never replaced by atomic publication, so two writers cannot accidentally lock different inodes. A second writer fails fast (`InputError::WriterLocked`) instead of corrupting visibility. Read-only opens (`OpenOptions::with_read_only`) do not take the lock, run no GC, and never mutate the filesystem; commits on a read-only handle are rejected with `InputError::ReadOnlyStore`. Sync agents will count as writers.
 
 ## Steady-State Write Design
 

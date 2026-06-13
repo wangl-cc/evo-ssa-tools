@@ -10,7 +10,7 @@ use crate::{
     error::{InputError, Result},
     format::{
         FormatError, ValueLayout,
-        entry::{EntryRef, EntrySource, EntryView},
+        record::{EntryRef, EntrySource, EntryView},
     },
 };
 
@@ -266,10 +266,11 @@ mod tests {
             batch.push(b"key-3", b"ccc").expect("push should work");
 
             assert_eq!(batch.flush_ranges(5, 2, usize::MAX), vec![0..2, 2..3]);
-            assert_eq!(
-                batch.flush_ranges(5, usize::MAX, 10),
-                vec![0..1, 1..2, 2..3]
-            );
+            assert_eq!(batch.flush_ranges(5, usize::MAX, 10), vec![
+                0..1,
+                1..2,
+                2..3
+            ]);
         }
     }
 }

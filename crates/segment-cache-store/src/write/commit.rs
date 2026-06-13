@@ -9,17 +9,17 @@ use std::{
 };
 
 use crate::{
-    batch::WriteBatch,
-    engine::{catalog, gc::garbage_collect_unreferenced, runtime::SegmentState},
+    engine::{gc::garbage_collect_unreferenced, paths, runtime::SegmentState},
     error::{InputError, OptionsError, Result},
     format::{
         CatalogMismatch,
-        entry::EntrySource,
         manifest::{SegmentManifestEntry, StoreManifest, validate_segment_entry_shape},
+        record::EntrySource,
         segment::SegmentWriter,
     },
     read::cursor::{RangeCursor, SegmentRangeCursor},
     store::Store,
+    write::batch::WriteBatch,
 };
 
 /// Options consumed by one batch commit.
@@ -103,31 +103,115 @@ struct WrittenSegment {
     runtime: Arc<SegmentState>,
 }
 
-impl Store {
-    /// Publishes a write batch with default segment write options.
-    pub fn commit_batch(&self, batch: WriteBatch) -> Result<CommitStats> {
-        self.commit_batch_with_options(batch, &CommitOptions::default())
+/// Immutable decision made from one manifest/runtime snapshot before any file is written.
+///
+/// `CommitPlan` owns the manifest snapshot, the live runtime segments from that
+/// snapshot, and the replacement set. The write path then has a simple phase
+/// order: build plan, materialize merged entries, write files, convert the plan
+/// into the next visible snapshot, publish it.
+struct CommitPlan {
+    manifest: StoreManifest,
+    live_segments: Vec<Arc<SegmentState>>,
+    affected: Range<usize>,
+    removed_ids: BTreeSet<u32>,
+    next_segment_id: u32,
+}
+
+struct CommitPublication {
+    manifest: StoreManifest,
+    runtime: Vec<Arc<SegmentState>>,
+    segments_published: usize,
+    segments_retired: usize,
+}
+
+impl CommitPlan {
+    fn from_snapshot(
+        manifest: StoreManifest,
+        live_segments: Vec<Arc<SegmentState>>,
+        batch_min: &[u8],
+        batch_max: &[u8],
+    ) -> Self {
+        let affected = affected_range(&manifest, batch_min, batch_max);
+        let live_ids: HashSet<u32> = live_segments
+            .iter()
+            .map(|segment| segment.segment_id)
+            .collect();
+        let mut removed_ids: BTreeSet<u32> = manifest.segments[affected.clone()]
+            .iter()
+            .map(|entry| entry.segment_id)
+            .collect();
+        for entry in &manifest.segments {
+            if !live_ids.contains(&entry.segment_id) {
+                removed_ids.insert(entry.segment_id);
+            }
+        }
+        let next_segment_id = manifest.next_segment_id;
+        Self {
+            manifest,
+            live_segments,
+            affected,
+            removed_ids,
+            next_segment_id,
+        }
     }
 
-    /// Publishes a write batch using explicit segment write options.
-    ///
-    /// A batch that interleaves with already-visible segments is not rejected:
-    /// the commit rebuilds the intersecting region by merging the batch with the
-    /// existing records and publishing replacement segments. The publication also
-    /// drops dead manifest entries (segments that no longer open).
-    ///
-    /// # Cost of interleaving batches
-    ///
-    /// The rebuilt region is the contiguous run of segments the batch's key
-    /// range touches, so the rewrite cost is driven by the batch's **key
-    /// spread**, not its size: a two-record batch spanning the whole keyspace
-    /// rewrites every visible segment and materializes the merged region in
-    /// memory. Until the patch tier lands, callers should keep batches
-    /// key-local; [`CommitStats::merged_records`] reports the amplification
-    /// actually paid.
-    ///
-    /// Returns [`InputError::ReadOnlyStore`] on a read-only handle.
-    pub fn commit_batch_with_options(
+    fn affected_live_segments(&self) -> Vec<Arc<SegmentState>> {
+        self.manifest.segments[self.affected.clone()]
+            .iter()
+            .filter_map(|entry| find_live_segment(&self.live_segments, entry.segment_id))
+            .collect()
+    }
+
+    fn allocate_segment_id(&mut self) -> Result<u32> {
+        let segment_id = self.next_segment_id;
+        self.next_segment_id = self
+            .next_segment_id
+            .checked_add(1)
+            .ok_or(CatalogMismatch::SegmentIdExhausted)?;
+        Ok(segment_id)
+    }
+
+    fn into_publication(
+        self,
+        written: Vec<WrittenSegment>,
+        key_len: usize,
+    ) -> Result<CommitPublication> {
+        let segments_published = written.len();
+        let segments_retired = self.removed_ids.len();
+        let mut manifest = self.manifest;
+        manifest
+            .segments
+            .retain(|entry| !self.removed_ids.contains(&entry.segment_id));
+        for segment in &written {
+            insert_non_overlapping(&mut manifest, segment.entry.clone(), key_len)?;
+        }
+        manifest.next_segment_id = self.next_segment_id;
+
+        let mut runtime: Vec<Arc<SegmentState>> = self
+            .live_segments
+            .into_iter()
+            .filter(|segment| !self.removed_ids.contains(&segment.segment_id))
+            .collect();
+        for segment in &written {
+            let index =
+                runtime.partition_point(|existing| existing.min_key < segment.runtime.min_key);
+            runtime.insert(index, Arc::clone(&segment.runtime));
+        }
+
+        Ok(CommitPublication {
+            manifest,
+            runtime,
+            segments_published,
+            segments_retired,
+        })
+    }
+}
+
+impl Store {
+    /// Runs one batch commit. The public entry points `Store::commit_batch` and
+    /// `Store::commit_batch_with_options` live on the store facade and delegate
+    /// here; this is the whole replacing-manifest publication algorithm.
+    pub(crate) fn commit_with_options(
         &self,
         batch: WriteBatch,
         options: &CommitOptions,
@@ -158,40 +242,18 @@ impl Store {
             (state.manifest.clone(), state.segments_as_vec())
         };
 
-        // Determine the contiguous run of existing segments whose ranges the
-        // batch intersects. Those segments are rebuilt; everything else is kept.
         let batch_min = batch.key_at(0).to_vec();
         let batch_max = batch.key_at(input_records - 1).to_vec();
-        let affected = affected_range(&manifest, &batch_min, &batch_max);
+        let mut plan = CommitPlan::from_snapshot(manifest, live_segments, &batch_min, &batch_max);
 
-        let merged = if affected.is_empty() {
+        let merged = if plan.affected.is_empty() {
             batch
         } else {
-            let affected_live: Vec<Arc<SegmentState>> = manifest.segments[affected.clone()]
-                .iter()
-                .filter_map(|entry| find_live_segment(&live_segments, entry.segment_id))
-                .collect();
+            let affected_live = plan.affected_live_segments();
             self.merge_region(&batch, &affected_live)?
         };
 
-        // Removed = the rebuilt run plus every dead entry (an entry with no live
-        // segment loaded). Dead entries are dropped at every publication.
-        let live_ids: HashSet<u32> = live_segments
-            .iter()
-            .map(|segment| segment.segment_id)
-            .collect();
-        let mut removed_ids: BTreeSet<u32> = manifest.segments[affected]
-            .iter()
-            .map(|entry| entry.segment_id)
-            .collect();
-        for entry in &manifest.segments {
-            if !live_ids.contains(&entry.segment_id) {
-                removed_ids.insert(entry.segment_id);
-            }
-        }
-
         // Write the merged region into fresh segments.
-        let mut next_segment_id = manifest.next_segment_id;
         let ranges = merged.flush_ranges(
             key_len,
             options.flush_threshold_records,
@@ -199,50 +261,32 @@ impl Store {
         );
         let mut written = Vec::with_capacity(ranges.len());
         for range in ranges {
-            let segment_id = allocate_segment_id(&mut next_segment_id)?;
+            let segment_id = plan.allocate_segment_id()?;
             written.push(self.write_segment(&merged, range, segment_id, options)?);
         }
 
-        // Build the replacement manifest: keep non-removed entries, insert the
-        // new ones (which fit the gap left by the removed run).
-        let mut new_manifest = manifest.clone();
-        new_manifest
-            .segments
-            .retain(|entry| !removed_ids.contains(&entry.segment_id));
-        for segment in &written {
-            insert_non_overlapping(&mut new_manifest, segment.entry.clone(), key_len)?;
-        }
-        new_manifest.next_segment_id = next_segment_id;
-        catalog::publish_manifest(&self.inner.paths, &new_manifest)?;
+        let publication = plan.into_publication(written, key_len)?;
+        paths::publish_manifest(&self.inner.paths, &publication.manifest)?;
 
         // Reclaim everything the new manifest no longer references: the run
         // this publication retired, dead entries' files, and any orphans left
         // by earlier failed publications. Best-effort: open readers may still
         // hold descriptors, and a failed unlink is retried by the next pass.
-        garbage_collect_unreferenced(&self.inner.paths, &new_manifest);
-
-        // Build the replacement runtime segment set in key order.
-        let mut new_runtime: Vec<Arc<SegmentState>> = live_segments
-            .into_iter()
-            .filter(|segment| !removed_ids.contains(&segment.segment_id))
-            .collect();
-        for segment in &written {
-            let index =
-                new_runtime.partition_point(|existing| existing.min_key < segment.runtime.min_key);
-            new_runtime.insert(index, Arc::clone(&segment.runtime));
-        }
+        garbage_collect_unreferenced(&self.inner.paths, &publication.manifest);
+        let segments_published = publication.segments_published;
+        let segments_retired = publication.segments_retired;
 
         {
             let mut state = self.inner.state.write();
-            state.replace_segments(new_runtime);
-            state.manifest = new_manifest;
+            state.replace_segments(publication.runtime);
+            state.manifest = publication.manifest;
         }
 
         Ok(CommitStats {
             records: input_records,
             bytes: input_bytes,
-            segments_published: written.len(),
-            segments_retired: removed_ids.len(),
+            segments_published,
+            segments_retired,
             merged_records: merged.len(),
         })
     }
@@ -414,12 +458,4 @@ fn find_live_segment(
 
 fn next_existing(cursor: &mut RangeCursor) -> Result<Option<(Vec<u8>, Vec<u8>)>> {
     cursor.next().transpose()
-}
-
-fn allocate_segment_id(next_segment_id: &mut u32) -> Result<u32> {
-    let segment_id = *next_segment_id;
-    *next_segment_id = next_segment_id
-        .checked_add(1)
-        .ok_or(CatalogMismatch::SegmentIdExhausted)?;
-    Ok(segment_id)
 }

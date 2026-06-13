@@ -7,8 +7,8 @@
 //!
 //! The module splits along the data flow:
 //!
-//! - [`layout`]: the byte-layout math shared by both directions (block
-//!   footer, value region, value index)
+//! - [`layout`]: the byte-layout math shared by both directions (block footer, value region, value
+//!   index)
 //! - [`encode`]: sorted entries in, block bytes out
 //! - [`decode`]: block bytes in, zero-copy records out
 
@@ -17,5 +17,5 @@ mod encode;
 mod layout;
 
 pub(crate) use decode::{DecodedBlock, ParsedRecord};
-pub(crate) use encode::BlockBuilder;
-pub(crate) use layout::BLOCK_FOOTER_LEN;
+pub(super) use encode::BlockBuilder;
+pub(super) use layout::BLOCK_FOOTER_LEN;

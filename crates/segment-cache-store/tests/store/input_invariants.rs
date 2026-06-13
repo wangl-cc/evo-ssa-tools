@@ -77,6 +77,36 @@ fn invalid_store_options_are_rejected() -> Result<()> {
 }
 
 #[test]
+fn writable_open_requires_block_checksum_verification() -> Result<()> {
+    let tempdir = tempfile::tempdir()?;
+    let store = create_store(&tempdir)?;
+    drop(store);
+
+    let error = match Store::open(
+        tempdir.path(),
+        open_options().with_block_checksum_verification(false),
+    ) {
+        Ok(_) => panic!("writable no-crc open should be rejected"),
+        Err(error) => error,
+    };
+    assert!(matches!(
+        error,
+        Error::Input(InputError::InvalidOptions(
+            OptionsError::WritableStoreRequiresBlockChecksumVerification
+        ))
+    ));
+
+    let reader = Store::open(
+        tempdir.path(),
+        open_options()
+            .with_block_checksum_verification(false)
+            .with_read_only(true),
+    )?;
+    assert_eq!(reader.iter_all()?.count(), 0);
+    Ok(())
+}
+
+#[test]
 fn default_options_support_short_keys() -> Result<()> {
     let tempdir = tempfile::tempdir()?;
     let store = create_store_with(&tempdir, CreateOptions::new(8, metadata()))?;
@@ -219,13 +249,10 @@ fn interleaving_commit_rebuilds_the_intersecting_region() -> Result<()> {
         store.fetch_one(&make_key(1, 1, 10))?,
         Some(make_value(2, 8))
     );
-    assert_eq!(
-        store.iter_all()?.collect::<Result<Vec<_>>>()?,
-        vec![
-            (make_key(1, 1, 0), make_value(1, 8)),
-            (make_key(1, 1, 5), make_value(3, 8)),
-            (make_key(1, 1, 10), make_value(2, 8)),
-        ]
-    );
+    assert_eq!(store.iter_all()?.collect::<Result<Vec<_>>>()?, vec![
+        (make_key(1, 1, 0), make_value(1, 8)),
+        (make_key(1, 1, 5), make_value(3, 8)),
+        (make_key(1, 1, 10), make_value(2, 8)),
+    ]);
     Ok(())
 }

@@ -17,6 +17,18 @@ pub(crate) struct MiddleInsertDataset {
     pub(crate) inserted_entries: Vec<(Vec<u8>, Vec<u8>)>,
 }
 
+#[derive(Clone)]
+pub(crate) struct AxisChangeDataset {
+    pub(crate) rounds: Vec<AxisChangeRound>,
+    pub(crate) total_queries: usize,
+}
+
+#[derive(Clone)]
+pub(crate) struct AxisChangeRound {
+    pub(crate) entries: Vec<(Vec<u8>, Vec<u8>)>,
+    pub(crate) keys: Vec<Vec<u8>>,
+}
+
 fn make_key(axis_0: u64, axis_1: u64, axis_2: u64, axis_3: u64, axis_4: u64, rep: u64) -> Vec<u8> {
     // Wide, ordered keys with a mostly fixed prefix are a closer fit for
     // canonical-encoded parameter sweeps than short random keys. The first
@@ -161,4 +173,45 @@ pub(crate) fn build_middle_insert_dataset(profile: ValueProfile) -> MiddleInsert
         new_keys,
         inserted_entries,
     }
+}
+
+pub(crate) fn build_axis_change_dataset(profile: ValueProfile) -> AxisChangeDataset {
+    let rounds = vec![
+        build_axis_change_round(profile, 32..160, &[0, 2]),
+        build_axis_change_round(profile, 32..192, &[0, 1, 2]),
+        build_axis_change_round(profile, 0..176, &[1, 2]),
+        build_axis_change_round(profile, 16..208, &[1, 3]),
+        build_axis_change_round(profile, 64..224, &[0, 1, 3]),
+    ];
+    let total_queries = rounds.iter().map(|round| round.entries.len()).sum();
+    AxisChangeDataset {
+        rounds,
+        total_queries,
+    }
+}
+
+fn build_axis_change_round(
+    profile: ValueProfile,
+    x_range: std::ops::Range<u32>,
+    y_values: &[u32],
+) -> AxisChangeRound {
+    const REP_COUNT: u64 = 8;
+
+    let mut entries = Vec::new();
+    for x in x_range {
+        for &y in y_values {
+            for rep in 0..REP_COUNT {
+                entries.push((
+                    make_grid_key(x, y, rep),
+                    make_grid_value(profile, x, y, rep),
+                ));
+            }
+        }
+    }
+    entries.sort_by(|left, right| left.0.cmp(&right.0));
+    let keys = entries
+        .iter()
+        .map(|(key, _)| key.clone())
+        .collect::<Vec<_>>();
+    AxisChangeRound { entries, keys }
 }

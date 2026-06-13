@@ -136,10 +136,7 @@ impl OrderedLookup {
     }
 }
 
-pub(crate) fn collect_and_validate_lookup_keys<'a, I>(
-    keys: I,
-    key_len: usize,
-) -> Result<Vec<&'a [u8]>>
+fn collect_and_validate_lookup_keys<'a, I>(keys: I, key_len: usize) -> Result<Vec<&'a [u8]>>
 where
     I: IntoIterator<Item = &'a [u8]>,
 {
@@ -148,7 +145,7 @@ where
     Ok(keys)
 }
 
-pub(crate) fn validate_lookup_key_slice<K>(keys: &[K], key_len: usize) -> Result<()>
+fn validate_lookup_key_slice<K>(keys: &[K], key_len: usize) -> Result<()>
 where
     K: AsRef<[u8]>,
 {

@@ -27,7 +27,7 @@ impl<'a> AtomicFilePublish<'a> {
     ///
     /// The temporary file is created in the same parent directory by adding a
     /// `.tmp` extension to `final_path`.
-    pub(crate) fn new(final_path: &'a Path) -> Option<Self> {
+    pub(super) fn new(final_path: &'a Path) -> Option<Self> {
         let final_parent = final_path.parent()?;
         let temp_path = temp_path_for(final_path);
 
@@ -39,7 +39,7 @@ impl<'a> AtomicFilePublish<'a> {
     }
 
     /// Writes bytes to the temporary file and publishes it atomically.
-    pub(crate) fn write_bytes(&self, bytes: &[u8]) -> Result<()> {
+    pub(super) fn write_bytes(&self, bytes: &[u8]) -> Result<()> {
         self.write_with(|file| {
             file.write_all(bytes)?;
             Ok(())
@@ -59,7 +59,7 @@ impl<'a> AtomicFilePublish<'a> {
 }
 
 /// Returns the temporary path used while publishing `final_path`.
-pub(crate) fn temp_path_for(final_path: &Path) -> PathBuf {
+pub(super) fn temp_path_for(final_path: &Path) -> PathBuf {
     final_path.with_added_extension("tmp")
 }
 
@@ -88,9 +88,15 @@ impl WriterLock {
     /// Acquires an exclusive non-blocking advisory lock on `path`.
     ///
     /// Returns [`InputError::WriterLocked`] when another writer already holds
-    /// the lock. `path` must already exist (the store descriptor file is used).
-    pub(crate) fn acquire(path: &Path) -> Result<Self> {
-        let file = File::options().read(true).write(true).open(path)?;
+    /// the lock. The lock file itself is stable and is never atomically
+    /// replaced; this matters because advisory locks attach to the opened file.
+    pub(super) fn acquire(path: &Path) -> Result<Self> {
+        let file = File::options()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(path)?;
         match file.try_lock() {
             Ok(()) => Ok(Self { file }),
             Err(TryLockError::WouldBlock) => Err(InputError::WriterLocked.into()),
@@ -102,7 +108,7 @@ impl WriterLock {
 /// Reads exactly `buffer.len()` bytes at `offset` without moving any shared
 /// file cursor.
 #[cfg(unix)]
-pub(crate) fn read_exact_at(
+pub(super) fn read_exact_at(
     file: &File,
     mut offset: u64,
     mut buffer: &mut [u8],
@@ -124,7 +130,7 @@ pub(crate) fn read_exact_at(
 /// Reads exactly `buffer.len()` bytes at `offset` without moving any shared
 /// file cursor.
 #[cfg(not(unix))]
-pub(crate) fn read_exact_at(file: &File, offset: u64, buffer: &mut [u8]) -> std::io::Result<()> {
+pub(super) fn read_exact_at(file: &File, offset: u64, buffer: &mut [u8]) -> std::io::Result<()> {
     use std::io::{Read, Seek, SeekFrom};
 
     // Unix is the only supported platform; this fallback only keeps other

@@ -11,7 +11,8 @@
 //! [`CorruptionError`]: crate::CorruptionError
 
 use crate::format::{
-    CatalogError, CatalogMismatch, CorruptionError, FormatError, SegmentWriteError,
+    CatalogError, CatalogMismatch, CorruptionError, FormatError, ManifestEncodeError,
+    ManifestParseError, SegmentWriteError, StoreFileParseError,
 };
 
 /// Top-level error returned by the segment cache store.
@@ -42,6 +43,24 @@ impl From<OptionsError> for Error {
 impl From<CatalogMismatch> for Error {
     fn from(error: CatalogMismatch) -> Self {
         Self::Catalog(CatalogError::Mismatch(error))
+    }
+}
+
+impl From<StoreFileParseError> for Error {
+    fn from(error: StoreFileParseError) -> Self {
+        Self::Catalog(CatalogError::StoreParse(error))
+    }
+}
+
+impl From<ManifestParseError> for Error {
+    fn from(error: ManifestParseError) -> Self {
+        Self::Catalog(CatalogError::ManifestParse(error))
+    }
+}
+
+impl From<ManifestEncodeError> for Error {
+    fn from(error: ManifestEncodeError) -> Self {
+        Self::Catalog(CatalogError::ManifestEncode(error))
     }
 }
 
@@ -115,6 +134,9 @@ pub enum OptionsError {
 
     #[error("flush_threshold_bytes must be greater than zero")]
     FlushThresholdBytesZero,
+
+    #[error("writable stores must keep block checksum verification enabled")]
+    WritableStoreRequiresBlockChecksumVerification,
 }
 
 #[cfg(test)]

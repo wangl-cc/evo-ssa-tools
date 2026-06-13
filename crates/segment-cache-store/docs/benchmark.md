@@ -182,6 +182,24 @@ Why it matters:
 
 - immutable segment publish is expected to be a strong path for this design
 
+### `axis_change_rounds`
+
+Runs several cache-shaped rounds where the active Cartesian-product parameter set changes over time. Each round does ordered lookup over the current active keys, touches hit values, and commits only misses. The synthetic sequence changes multiple axes: `x` expands and contracts across rounds, while `y` adds values, removes values, and later reintroduces values.
+
+This is currently registered only for the `small` profile so that the full benchmark matrix does not explode. It compares:
+
+- `segment_lookup_commit`
+- `fjall3_lookup_insert`
+- `redb_lookup_insert`
+
+The segment dry-run prints `merged_records / inserted` as rewrite amplification. A high value means the current main-tier replacement strategy is repeatedly rebuilding old key ranges and is a concrete signal that the pending L0 patch tier may be worthwhile.
+
+Why it matters:
+
+- real cache use may involve repeated parameter-space revisions rather than one monotonic append
+- adding one axis value can be local or globally interleaved depending on key order
+- removing an axis value does not delete old cache entries, but it changes the next round's lookup and miss shape
+
 ### `iter_all`
 
 Scans every record in order.

@@ -1,4 +1,8 @@
 //! Path layout of one store root.
+//!
+//! Also owns catalog file IO: loading and atomically publishing `STORE` and
+//! `MANIFEST`. Byte layouts and structural validation live in
+//! [`crate::format`]; these functions only move those bytes to and from disk.
 
 use std::{
     fs,
@@ -8,27 +12,37 @@ use std::{
 use crate::{
     Result,
     engine::io::{AtomicFilePublish, temp_path_for},
+    format::{manifest::StoreManifest, store_file::StoreDescriptor},
 };
 
 const STORE_FILE_NAME: &str = "STORE";
 const MANIFEST_FILE_NAME: &str = "MANIFEST";
+const LOCK_FILE_NAME: &str = "LOCK";
 
 /// Owned path bundle for all stable files and directories in one store root.
 pub(crate) struct StorePaths {
+    root: PathBuf,
     store_file: PathBuf,
     manifest: PathBuf,
     segment_dir: PathBuf,
+    lock_file: PathBuf,
 }
 
 impl StorePaths {
     pub(crate) fn new(root: impl AsRef<Path>) -> Self {
-        let root = root.as_ref();
+        let root = root.as_ref().to_path_buf();
         let segment_dir = root.join("segments");
         Self {
             store_file: root.join(STORE_FILE_NAME),
             manifest: root.join(MANIFEST_FILE_NAME),
             segment_dir,
+            lock_file: root.join(LOCK_FILE_NAME),
+            root,
         }
+    }
+
+    pub(crate) fn lock_file(&self) -> &Path {
+        &self.lock_file
     }
 
     pub(crate) fn store_file(&self) -> &Path {
@@ -43,7 +57,13 @@ impl StorePaths {
         &self.segment_dir
     }
 
+    pub(crate) fn ensure_root(&self) -> Result<()> {
+        fs::create_dir_all(&self.root)?;
+        Ok(())
+    }
+
     pub(crate) fn ensure_dirs(&self) -> Result<()> {
+        self.ensure_root()?;
         fs::create_dir_all(&self.segment_dir)?;
         Ok(())
     }
@@ -61,11 +81,11 @@ impl StorePaths {
         let _ = fs::remove_file(temp_path_for(&self.manifest));
     }
 
-    pub(crate) fn store_file_publish(&self) -> AtomicFilePublish<'_> {
+    pub(super) fn store_file_publish(&self) -> AtomicFilePublish<'_> {
         publish_for(&self.store_file)
     }
 
-    pub(crate) fn manifest_publish(&self) -> AtomicFilePublish<'_> {
+    pub(super) fn manifest_publish(&self) -> AtomicFilePublish<'_> {
         publish_for(&self.manifest)
     }
 
@@ -77,7 +97,7 @@ impl StorePaths {
 }
 
 /// File name for one segment id; file names are opaque identities.
-pub(crate) fn segment_file_name(segment_id: u32) -> String {
+pub(super) fn segment_file_name(segment_id: u32) -> String {
     // 10 digits cover the full u32 id range.
     format!("segment-{segment_id:010}.seg")
 }
@@ -101,4 +121,32 @@ fn publish_for(path: &Path) -> AtomicFilePublish<'_> {
         unreachable!("store paths are named files under the store root");
     };
     publish
+}
+
+// ─── Catalog IO ───────────────────────────────────────────────────────────────
+
+pub(super) fn load_descriptor(paths: &StorePaths) -> Result<Option<StoreDescriptor>> {
+    let path = paths.store_file();
+    if !path.exists() {
+        return Ok(None);
+    }
+    Ok(Some(StoreDescriptor::parse(&fs::read_to_string(path)?)?))
+}
+
+pub(super) fn publish_descriptor(paths: &StorePaths, descriptor: &StoreDescriptor) -> Result<()> {
+    paths
+        .store_file_publish()
+        .write_bytes(descriptor.encode().as_bytes())
+}
+
+pub(super) fn load_manifest(paths: &StorePaths) -> Result<Option<StoreManifest>> {
+    let path = paths.manifest();
+    if !path.exists() {
+        return Ok(None);
+    }
+    Ok(Some(StoreManifest::parse(&fs::read(path)?)?))
+}
+
+pub(crate) fn publish_manifest(paths: &StorePaths, manifest: &StoreManifest) -> Result<()> {
+    paths.manifest_publish().write_bytes(&manifest.encode()?)
 }
