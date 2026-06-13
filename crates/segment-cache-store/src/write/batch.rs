@@ -139,14 +139,19 @@ impl WriteBatch {
         Ok(())
     }
 
-    pub(crate) fn sort_if_needed(&mut self) {
-        if self.sorted && self.is_sorted_by_key() {
-            return;
+    pub(crate) fn sort_and_check_duplicate_keys(&mut self) -> bool {
+        if self.sorted {
+            match self.sorted_key_status() {
+                SortedKeyStatus::Unique => return false,
+                SortedKeyStatus::Duplicate => return true,
+                SortedKeyStatus::Unsorted => {}
+            }
         }
         let key_bytes = &self.key_bytes;
         self.entries
             .sort_by(|left, right| left.key.get(key_bytes).cmp(right.key.get(key_bytes)));
         self.sorted = true;
+        self.has_duplicate_keys()
     }
 
     pub(crate) fn has_duplicate_keys(&self) -> bool {
@@ -191,10 +196,16 @@ impl WriteBatch {
         self.key_for(self.entries[index])
     }
 
-    fn is_sorted_by_key(&self) -> bool {
-        self.entries
-            .windows(2)
-            .all(|window| self.key_for(window[0]) <= self.key_for(window[1]))
+    fn sorted_key_status(&self) -> SortedKeyStatus {
+        let mut status = SortedKeyStatus::Unique;
+        for window in self.entries.windows(2) {
+            match self.key_for(window[0]).cmp(self.key_for(window[1])) {
+                std::cmp::Ordering::Less => {}
+                std::cmp::Ordering::Equal => status = SortedKeyStatus::Duplicate,
+                std::cmp::Ordering::Greater => return SortedKeyStatus::Unsorted,
+            }
+        }
+        status
     }
 
     fn key_for(&self, entry: BufferedEntry) -> &[u8] {
@@ -204,6 +215,13 @@ impl WriteBatch {
     fn value_for(&self, entry: BufferedEntry) -> &[u8] {
         entry.value.get(&self.value_bytes)
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SortedKeyStatus {
+    Unique,
+    Duplicate,
+    Unsorted,
 }
 
 impl EntrySource for WriteBatch {
@@ -233,7 +251,7 @@ mod tests {
             batch
                 .validate_lengths(5, ValueLayout::VARIABLE)
                 .expect("lengths should match");
-            batch.sort_if_needed();
+            assert!(!batch.sort_and_check_duplicate_keys());
 
             assert_eq!(batch.entry(0).key(), b"key-1");
             assert_eq!(batch.entry(0).value(), b"value-1");
@@ -249,9 +267,7 @@ mod tests {
             batch.push(b"key-1", b"value-b").expect("push should work");
             batch.push(b"key-2", b"value-c").expect("push should work");
 
-            batch.sort_if_needed();
-
-            assert!(batch.has_duplicate_keys());
+            assert!(batch.sort_and_check_duplicate_keys());
         }
     }
 

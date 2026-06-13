@@ -283,8 +283,7 @@ impl Store {
         let key_len = geometry.key_len;
         let mut batch = batch;
         batch.validate_lengths(key_len, geometry.value_layout)?;
-        batch.sort_if_needed();
-        if batch.has_duplicate_keys() {
+        if batch.sort_and_check_duplicate_keys() {
             return Err(InputError::DuplicateKeyInBatch.into());
         }
 
@@ -474,7 +473,7 @@ impl Store {
         let geometry = self.inner.geometry;
         let segment_entries = batch.view(range);
         let segment_paths = self.inner.paths.segment_publish_path(segment_id);
-        let (footer, block_index) = segment_paths.publish().write_with(|file| {
+        let footer = segment_paths.publish().write_with(|file| {
             Ok(SegmentWriter::new(
                 geometry.key_len,
                 geometry.value_layout,
@@ -482,15 +481,18 @@ impl Store {
             )
             .write(file, &segment_entries)?)
         })?;
+        let min_key = footer.min_key;
+        let max_key = footer.max_key;
+        let block_index = footer.block_index;
         let file = fs::File::open(segment_paths.final_path())?;
         let runtime = Arc::new(SegmentState::from_written(
             segment_id,
             file,
-            footer.min_key.clone(),
-            footer.max_key.clone(),
+            min_key.clone(),
+            max_key.clone(),
             block_index,
         ));
-        let entry = SegmentManifestEntry::new(segment_id, tier, footer.min_key, footer.max_key);
+        let entry = SegmentManifestEntry::new(segment_id, tier, min_key, max_key);
         Ok(WrittenSegment { entry, runtime })
     }
 }

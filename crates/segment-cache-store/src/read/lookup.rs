@@ -89,9 +89,7 @@ impl OrderedLookup {
         I: IntoIterator<Item = &'a [u8]>,
     {
         let keys = collect_and_validate_lookup_keys(keys, self.store.inner.geometry.key_len)?;
-        let mut results = Vec::with_capacity(keys.len());
-        self.process_many_slice(&keys, |_, value| results.push(value.is_some()))?;
-        Ok(results)
+        self.process_contains_slice(&keys)
     }
 
     /// Visits ordered keys with borrowed value slices.
@@ -138,6 +136,59 @@ impl OrderedLookup {
         } else {
             self.process_many_with_patches(keys, &main_segments, &patch_segments, options, visitor)
         }
+    }
+
+    fn process_contains_slice<K>(&mut self, keys: &[K]) -> Result<Vec<bool>>
+    where
+        K: AsRef<[u8]>,
+    {
+        let options = self.store.lookup_read_options();
+        let (main_segments, patch_segments) = {
+            let state = self.store.inner.state.read();
+            (state.main_segments.clone(), state.patch_segments.clone())
+        };
+        let mut results = vec![false; keys.len()];
+        self.state.bind_snapshot(&main_segments);
+        {
+            let mut collect_hit = |index: usize, value: Option<&[u8]>| {
+                if value.is_some() {
+                    results[index] = true;
+                }
+            };
+            OrderedSegmentSweep::new(
+                main_segments.as_ref(),
+                &mut self.state,
+                keys,
+                0,
+                options,
+                &mut collect_hit,
+            )
+            .run()?;
+        }
+
+        for segment in patch_segments.iter() {
+            let key_range = key_range_for_segment(keys, segment);
+            if key_range.is_empty() {
+                continue;
+            }
+            let mut patch_state = LookupState::default();
+            let mut collect_hit = |index: usize, value: Option<&[u8]>| {
+                if value.is_some() {
+                    results[index] = true;
+                }
+            };
+            OrderedSegmentSweep::new(
+                std::slice::from_ref(segment),
+                &mut patch_state,
+                &keys[key_range.clone()],
+                key_range.start,
+                options,
+                &mut collect_hit,
+            )
+            .run()?;
+        }
+
+        Ok(results)
     }
 
     fn process_many_with_patches<K, F>(

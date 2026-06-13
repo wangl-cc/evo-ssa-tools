@@ -73,6 +73,9 @@ impl DecodedBlock {
     pub(crate) fn last_key(&self) -> &[u8] {
         let start = self.last_key_offset;
         if self.full_keys.is_empty() {
+            if self.record_count == 1 {
+                return &self.bytes[..self.key_len];
+            }
             let raw_start = self.key_prefix_len + (self.record_count - 1) * self.suffix_len;
             return &self.bytes[raw_start..raw_start + self.key_len];
         }
@@ -218,7 +221,7 @@ impl BlockLayout {
     }
 
     fn reconstruct_full_keys(&self, bytes: &[u8]) -> Result<Vec<u8>, CorruptionError> {
-        if self.key_prefix_len == 0 {
+        if self.key_prefix_len == 0 || self.record_count == 1 {
             return Ok(Vec::new());
         }
         if self.key_region_len > bytes.len() {
@@ -290,6 +293,30 @@ mod tests {
             assert_eq!(decoded.first_key(), b"aa01");
             assert_eq!(decoded.last_key(), b"aa02");
             assert_eq!(decoded.find_value(b"aa02"), Some(b"second".to_vec()));
+        }
+
+        #[test]
+        fn single_record_block_borrows_raw_key_region() {
+            let entries = Entries {
+                entries: &[(b"aa01", b"only")],
+            };
+            let block = BlockBuilder::new(&entries, 4, ValueLayout::VARIABLE, 0)
+                .encode()
+                .expect("block should encode");
+            let entry = BlockIndexEntry {
+                first_key: b"aa01".to_vec(),
+                block_offset: 0,
+                block_len: u32::try_from(block.len()).expect("block len"),
+                record_count: 1,
+            };
+
+            let decoded = DecodedBlock::decode(block, &entry, 4, ValueLayout::VARIABLE, true)
+                .expect("block should decode");
+
+            assert!(decoded.full_keys.is_empty());
+            assert_eq!(decoded.first_key(), b"aa01");
+            assert_eq!(decoded.last_key(), b"aa01");
+            assert_eq!(decoded.find_value(b"aa01"), Some(b"only".to_vec()));
         }
     }
 }

@@ -104,11 +104,7 @@ pub(crate) struct SegmentFooter {
 }
 
 impl SegmentFooter {
-    pub(crate) fn into_bytes(
-        self,
-        key_len: usize,
-        buffer: &mut Vec<u8>,
-    ) -> Result<(), FormatError> {
+    pub(crate) fn write_to(&self, key_len: usize, buffer: &mut Vec<u8>) -> Result<(), FormatError> {
         let footer_body_start = buffer.len();
         buffer.extend_from_slice(&self.record_count.to_le_bytes());
         buffer.extend_from_slice(&self.min_key);
@@ -313,7 +309,7 @@ impl SegmentWriter {
         &self,
         out: &mut W,
         entries: &S,
-    ) -> Result<(SegmentFooter, Vec<BlockIndexEntry>), SegmentWriteError> {
+    ) -> Result<SegmentFooter, SegmentWriteError> {
         let mut header = Vec::with_capacity(SEGMENT_HEADER_LEN);
         SegmentHeader::new(self.key_len, self.value_layout)?.into_bytes(&mut header);
         debug_assert_eq!(header.len(), SEGMENT_HEADER_LEN);
@@ -335,9 +331,9 @@ impl SegmentWriter {
             block_index,
         };
         let mut footer_bytes = Vec::new();
-        footer.clone().into_bytes(self.key_len, &mut footer_bytes)?;
+        footer.write_to(self.key_len, &mut footer_bytes)?;
         out.write_all(&footer_bytes)?;
-        Ok((footer.clone(), footer.block_index))
+        Ok(footer)
     }
 
     fn write_blocks<W: Write, S: EntrySource + ?Sized>(
@@ -382,8 +378,9 @@ impl SegmentWriter {
         let mut payload_len = 0usize;
         let first_key = entries.entry(start).key();
         while end < entries.len() {
+            let entry = entries.entry(end);
             let prospective_count = end - start + 1;
-            let prefix_len = common_prefix_len(first_key, entries.entry(end).key());
+            let prefix_len = common_prefix_len(first_key, entry.key());
             let suffix_len = self.key_len - prefix_len;
             let key_region_len = prefix_len + prospective_count * suffix_len;
             let value_index_len = if self.value_layout.is_variable() {
@@ -394,12 +391,12 @@ impl SegmentWriter {
             let prospective_len = key_region_len
                 + value_index_len
                 + payload_len
-                + entries.entry(end).value().len()
+                + entry.value().len()
                 + BLOCK_FOOTER_LEN;
             if end > start && prospective_len > self.target_block_size {
                 break;
             }
-            payload_len += entries.entry(end).value().len();
+            payload_len += entry.value().len();
             end += 1;
         }
         end
