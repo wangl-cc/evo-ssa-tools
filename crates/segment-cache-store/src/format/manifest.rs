@@ -45,6 +45,9 @@ pub enum ManifestParseError {
     #[error("malformed MANIFEST file: unsupported magic")]
     UnsupportedMagic,
 
+    #[error("malformed MANIFEST file: unsupported segment tier")]
+    UnsupportedSegmentTier,
+
     #[error("malformed MANIFEST file: entry length overflow")]
     EntryLengthOverflow,
 
@@ -65,13 +68,55 @@ pub enum ManifestParseError {
 #[derive(Clone, Debug)]
 pub(crate) struct SegmentManifestEntry {
     pub(crate) segment_id: u32,
+    pub(crate) tier: SegmentTier,
     pub(crate) min_key: Vec<u8>,
     pub(crate) max_key: Vec<u8>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum SegmentTier {
+    Main,
+    Patch,
+}
+
 impl SegmentManifestEntry {
+    pub(crate) fn new(
+        segment_id: u32,
+        tier: SegmentTier,
+        min_key: Vec<u8>,
+        max_key: Vec<u8>,
+    ) -> Self {
+        Self {
+            segment_id,
+            tier,
+            min_key,
+            max_key,
+        }
+    }
+
     pub(crate) fn matches_segment_footer(&self, min_key: &[u8], max_key: &[u8]) -> bool {
         self.min_key == min_key && self.max_key == max_key
+    }
+
+    pub(crate) fn is_main(&self) -> bool {
+        self.tier == SegmentTier::Main
+    }
+}
+
+impl SegmentTier {
+    fn to_u8(self) -> u8 {
+        match self {
+            Self::Main => 0,
+            Self::Patch => 1,
+        }
+    }
+
+    fn from_u8(value: u8) -> Option<Self> {
+        match value {
+            0 => Some(Self::Main),
+            1 => Some(Self::Patch),
+            _ => None,
+        }
     }
 }
 
@@ -121,6 +166,7 @@ impl StoreManifest {
         );
         for entry in &self.segments {
             out.extend_from_slice(&entry.segment_id.to_le_bytes());
+            out.push(entry.tier.to_u8());
             out.extend_from_slice(&entry.min_key);
             out.extend_from_slice(&entry.max_key);
         }
@@ -149,19 +195,27 @@ impl StoreManifest {
         let mut seen_ids = BTreeSet::new();
         let mut max_segment_id: Option<u32> = None;
         let mut previous_max: Option<&[u8]> = None;
+        let mut seen_patch = false;
         for entry in &self.segments {
             validate_segment_entry_shape(entry, key_len)?;
-            if let Some(previous_max) = previous_max
-                && entry.min_key.as_slice() <= previous_max
-            {
-                return Err(CatalogMismatch::SegmentOverlap.into());
+            if entry.is_main() {
+                if seen_patch {
+                    return Err(CatalogMismatch::SegmentTierOrder.into());
+                }
+                if let Some(previous_max) = previous_max
+                    && entry.min_key.as_slice() <= previous_max
+                {
+                    return Err(CatalogMismatch::SegmentOverlap.into());
+                }
+                previous_max = Some(&entry.max_key);
+            } else {
+                seen_patch = true;
             }
             if !seen_ids.insert(entry.segment_id) {
                 return Err(CatalogMismatch::DuplicateSegmentId.into());
             }
             max_segment_id =
                 Some(max_segment_id.map_or(entry.segment_id, |max| max.max(entry.segment_id)));
-            previous_max = Some(&entry.max_key);
         }
         if let Some(max_segment_id) = max_segment_id
             && self.next_segment_id <= max_segment_id
@@ -190,7 +244,7 @@ pub(crate) fn validate_segment_entry_shape(
 }
 
 fn manifest_entry_len(key_len: usize) -> Option<usize> {
-    4usize.checked_add(key_len.checked_mul(2)?)
+    5usize.checked_add(key_len.checked_mul(2)?)
 }
 
 struct ManifestParser<'a> {
@@ -244,13 +298,13 @@ impl<'a> ManifestParser<'a> {
         let mut segments = Vec::with_capacity(segment_count);
         for _ in 0..segment_count {
             let segment_id = self.read_u32("segment_id")?;
+            let tier = SegmentTier::from_u8(self.read_u8("tier")?)
+                .ok_or(ManifestParseError::UnsupportedSegmentTier)?;
             let min_key = self.read_vec("min_key", key_len)?;
             let max_key = self.read_vec("max_key", key_len)?;
-            segments.push(SegmentManifestEntry {
-                segment_id,
-                min_key,
-                max_key,
-            });
+            segments.push(SegmentManifestEntry::new(
+                segment_id, tier, min_key, max_key,
+            ));
         }
         if self.cursor.position() != checksum_offset {
             return Err(ManifestParseError::ParserDidNotConsumeEntries);
@@ -266,6 +320,13 @@ impl<'a> ManifestParser<'a> {
     fn read_u32(&mut self, field: &'static str) -> std::result::Result<u32, ManifestParseError> {
         self.cursor
             .read::<u32>()
+            .ok_or(ManifestParseError::TruncatedField { field })
+    }
+
+    fn read_u8(&mut self, field: &'static str) -> std::result::Result<u8, ManifestParseError> {
+        self.cursor
+            .read_slice(1)
+            .and_then(|bytes| bytes.first().copied())
             .ok_or(ManifestParseError::TruncatedField { field })
     }
 
@@ -302,11 +363,11 @@ mod tests {
     }
 
     fn entry(segment_id: u32, min: u8, max: u8) -> SegmentManifestEntry {
-        SegmentManifestEntry {
-            segment_id,
-            min_key: key(min),
-            max_key: key(max),
-        }
+        SegmentManifestEntry::new(segment_id, SegmentTier::Main, key(min), key(max))
+    }
+
+    fn patch_entry(segment_id: u32, min: u8, max: u8) -> SegmentManifestEntry {
+        SegmentManifestEntry::new(segment_id, SegmentTier::Patch, key(min), key(max))
     }
 
     mod manifest_format {
@@ -382,6 +443,25 @@ mod tests {
             assert!(matches!(
                 unsorted.validate_structure(16),
                 Err(CatalogError::Mismatch(CatalogMismatch::SegmentOverlap))
+            ));
+        }
+
+        #[test]
+        fn patch_entries_may_overlap_main_after_main_prefix() {
+            let manifest = manifest_with_segments(vec![entry(0, 0, 10), patch_entry(1, 3, 4)]);
+
+            manifest
+                .validate_structure(16)
+                .expect("patch entries are allowed to overlay main ranges");
+        }
+
+        #[test]
+        fn patch_entries_must_follow_main_entries() {
+            let manifest = manifest_with_segments(vec![patch_entry(1, 3, 4), entry(0, 0, 10)]);
+
+            assert!(matches!(
+                manifest.validate_structure(16),
+                Err(CatalogError::Mismatch(CatalogMismatch::SegmentTierOrder))
             ));
         }
 

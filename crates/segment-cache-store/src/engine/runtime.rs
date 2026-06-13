@@ -35,7 +35,8 @@ pub(crate) struct StoreGeometry {
 
 pub(crate) struct StoreState {
     pub(crate) manifest: StoreManifest,
-    pub(crate) segments: SegmentSnapshot,
+    pub(crate) main_segments: SegmentSnapshot,
+    pub(crate) patch_segments: SegmentSnapshot,
 }
 
 pub(crate) type SegmentSnapshot = Arc<[Arc<SegmentState>]>;
@@ -59,19 +60,33 @@ impl StoreGeometry {
 }
 
 impl StoreState {
-    pub(crate) fn new(manifest: StoreManifest, segments: Vec<Arc<SegmentState>>) -> Self {
+    pub(crate) fn new(
+        manifest: StoreManifest,
+        main_segments: Vec<Arc<SegmentState>>,
+        patch_segments: Vec<Arc<SegmentState>>,
+    ) -> Self {
         Self {
             manifest,
-            segments: segments.into(),
+            main_segments: main_segments.into(),
+            patch_segments: patch_segments.into(),
         }
     }
 
-    pub(crate) fn segments_as_vec(&self) -> Vec<Arc<SegmentState>> {
-        self.segments.iter().cloned().collect()
+    pub(crate) fn main_segments_as_vec(&self) -> Vec<Arc<SegmentState>> {
+        self.main_segments.iter().cloned().collect()
     }
 
-    pub(crate) fn replace_segments(&mut self, segments: Vec<Arc<SegmentState>>) {
-        self.segments = segments.into();
+    pub(crate) fn patch_segments_as_vec(&self) -> Vec<Arc<SegmentState>> {
+        self.patch_segments.iter().cloned().collect()
+    }
+
+    pub(crate) fn replace_segments(
+        &mut self,
+        main_segments: Vec<Arc<SegmentState>>,
+        patch_segments: Vec<Arc<SegmentState>>,
+    ) {
+        self.main_segments = main_segments.into();
+        self.patch_segments = patch_segments.into();
     }
 }
 

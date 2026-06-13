@@ -50,7 +50,8 @@ impl LookupState {
 
 #[derive(Clone, Copy)]
 pub(crate) struct SegmentSetReader<'a> {
-    segments: &'a [Arc<SegmentState>],
+    main_segments: &'a [Arc<SegmentState>],
+    patch_segments: &'a [Arc<SegmentState>],
     options: LookupReadOptions,
 }
 
@@ -119,20 +120,84 @@ impl OrderedLookup {
         F: FnMut(usize, Option<&[u8]>),
     {
         let options = self.store.lookup_read_options();
-        let segments = {
+        let (main_segments, patch_segments) = {
             let state = self.store.inner.state.read();
-            state.segments.clone()
+            (state.main_segments.clone(), state.patch_segments.clone())
         };
-        self.state.bind_snapshot(&segments);
-        OrderedSegmentSweep::new(
-            segments.as_ref(),
-            &mut self.state,
-            keys,
-            0,
-            options,
-            &mut visitor,
-        )
-        .run()
+        if patch_segments.is_empty() {
+            self.state.bind_snapshot(&main_segments);
+            OrderedSegmentSweep::new(
+                main_segments.as_ref(),
+                &mut self.state,
+                keys,
+                0,
+                options,
+                &mut visitor,
+            )
+            .run()
+        } else {
+            self.process_many_with_patches(keys, &main_segments, &patch_segments, options, visitor)
+        }
+    }
+
+    fn process_many_with_patches<K, F>(
+        &mut self,
+        keys: &[K],
+        main_segments: &SegmentSnapshot,
+        patch_segments: &SegmentSnapshot,
+        options: LookupReadOptions,
+        mut visitor: F,
+    ) -> Result<()>
+    where
+        K: AsRef<[u8]>,
+        F: FnMut(usize, Option<&[u8]>),
+    {
+        let mut winners = vec![None; keys.len()];
+
+        self.state.bind_snapshot(main_segments);
+        {
+            let mut collect_hit = |index: usize, value: Option<&[u8]>| {
+                if let Some(value) = value {
+                    keep_winner(&mut winners[index], value);
+                }
+            };
+            OrderedSegmentSweep::new(
+                main_segments.as_ref(),
+                &mut self.state,
+                keys,
+                0,
+                options,
+                &mut collect_hit,
+            )
+            .run()?;
+        }
+
+        for segment in patch_segments.iter() {
+            let key_range = key_range_for_segment(keys, segment);
+            if key_range.is_empty() {
+                continue;
+            }
+            let mut patch_state = LookupState::default();
+            let mut collect_hit = |index: usize, value: Option<&[u8]>| {
+                if let Some(value) = value {
+                    keep_winner(&mut winners[index], value);
+                }
+            };
+            OrderedSegmentSweep::new(
+                std::slice::from_ref(segment),
+                &mut patch_state,
+                &keys[key_range.clone()],
+                key_range.start,
+                options,
+                &mut collect_hit,
+            )
+            .run()?;
+        }
+
+        for (index, value) in winners.iter().enumerate() {
+            visitor(index, value.as_deref());
+        }
+        Ok(())
     }
 }
 
@@ -168,23 +233,70 @@ where
     Ok(())
 }
 
+fn keep_winner(slot: &mut Option<Vec<u8>>, value: &[u8]) {
+    if slot.as_ref().is_none_or(|winner| value < winner.as_slice()) {
+        *slot = Some(value.to_vec());
+    }
+}
+
+fn key_range_for_segment<K>(keys: &[K], segment: &SegmentState) -> std::ops::Range<usize>
+where
+    K: AsRef<[u8]>,
+{
+    let start = keys.partition_point(|key| key.as_ref() < segment.min_key.as_slice());
+    let end = keys.partition_point(|key| key.as_ref() <= segment.max_key.as_slice());
+    start..end
+}
+
 impl<'a> SegmentSetReader<'a> {
-    pub(crate) fn new(segments: &'a [Arc<SegmentState>], options: LookupReadOptions) -> Self {
-        Self { segments, options }
+    pub(crate) fn new(
+        main_segments: &'a [Arc<SegmentState>],
+        patch_segments: &'a [Arc<SegmentState>],
+        options: LookupReadOptions,
+    ) -> Self {
+        Self {
+            main_segments,
+            patch_segments,
+            options,
+        }
     }
 
     pub(crate) fn fetch_one(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {
+        let mut winner = self.fetch_one_from_main(key)?;
+        for segment in self.patch_segments {
+            if segment.min_key.as_slice() <= key
+                && key <= segment.max_key.as_slice()
+                && let Some(value) = self.fetch_one_from_segment(segment, key)?
+                && winner
+                    .as_ref()
+                    .is_none_or(|winner| value.as_slice() < winner.as_slice())
+            {
+                winner = Some(value);
+            }
+        }
+        Ok(winner)
+    }
+
+    fn fetch_one_from_main(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {
         let segment_index = match self
-            .segments
+            .main_segments
             .partition_point(|segment| segment.min_key.as_slice() <= key)
         {
             0 => return Ok(None),
             idx => idx - 1,
         };
-        let segment = &self.segments[segment_index];
+        let segment = &self.main_segments[segment_index];
         if key > segment.max_key.as_slice() {
             return Ok(None);
         }
+        self.fetch_one_from_segment(segment, key)
+    }
+
+    fn fetch_one_from_segment(
+        &self,
+        segment: &SegmentState,
+        key: &[u8],
+    ) -> Result<Option<Vec<u8>>> {
         let block_index = segment.find_block_index(key);
         let block = match segment.load_block(
             block_index,
@@ -203,7 +315,7 @@ impl<'a> SegmentSetReader<'a> {
 struct OrderedSegmentSweep<'a, K, F>
 where
     K: AsRef<[u8]>,
-    F: for<'value> FnMut(usize, Option<&'value [u8]>),
+    F: FnMut(usize, Option<&[u8]>),
 {
     segments: &'a [Arc<SegmentState>],
     lookup_state: &'a mut LookupState,
@@ -218,7 +330,7 @@ where
 impl<'a, K, F> OrderedSegmentSweep<'a, K, F>
 where
     K: AsRef<[u8]>,
-    F: for<'value> FnMut(usize, Option<&'value [u8]>),
+    F: FnMut(usize, Option<&[u8]>),
 {
     fn new(
         segments: &'a [Arc<SegmentState>],

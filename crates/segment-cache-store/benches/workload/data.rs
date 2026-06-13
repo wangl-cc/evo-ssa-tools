@@ -1,3 +1,8 @@
+#![allow(
+    dead_code,
+    reason = "Criterion targets reuse benchmark datasets selectively"
+)]
+
 use rand::{RngExt, SeedableRng, rngs::StdRng};
 
 use crate::profile::{KEY_LEN, ValueProfile};

@@ -28,7 +28,7 @@ let value = reopened.fetch_one(&[0; 16])?;
 # Ok::<_, segment_cache_store::Error>(())
 ```
 
-One store root has one fixed key length, one value layout, and one caller-defined metadata namespace. Published segment files are immutable, and the visible segment set remains globally non-overlapping. New commits may append at the tail, insert into gaps, or interleave with an existing range; interleaving commits rebuild only the intersecting visible segments and atomically publish a replacement `MANIFEST`.
+One store root has one fixed key length, one value layout, and one caller-defined metadata namespace. Published segment files are immutable. The main tier remains globally non-overlapping; a bounded patch tier can temporarily overlap main segments so small interleaving commits avoid immediate rebuild. When the patch tier reaches its bound, the store normalizes the touched range and atomically publishes a replacement `MANIFEST`.
 
 Internal design and evaluation notes live in:
 
@@ -38,6 +38,9 @@ Internal design and evaluation notes live in:
 Useful commands:
 
 ```bash
-cargo bench -p segment-cache-store --bench workload
+cargo bench -p segment-cache-store --bench comparison
+cargo bench -p segment-cache-store --bench ordered_lookup
+cargo bench -p segment-cache-store --bench append_publish
+cargo bench -p segment-cache-store --bench parameter_evolution
 cargo run -p segment-cache-store --example space_usage --offline
 ```

@@ -2,263 +2,120 @@
 
 ## Purpose
 
-The benchmark suite is designed to evaluate `segment-cache-store` as a storage backend, not as a domain-specific scientific workload.
+The benchmark suite evaluates `segment-cache-store` as a storage backend for computation caches. It models storage-level behavior rather than scientific model semantics: fixed-width ordered keys, narrow per-namespace value-size profiles, ordered batch reads, append-style publish, parameter-space evolution, and full export scans.
 
-That means the benchmark models:
+One benchmark target is used for horizontal comparison against other embedded stores. The remaining targets are segment-only diagnostics, so internal design questions do not multiply every scenario by every baseline backend.
 
-- key width
-- value size distribution
-- ordered access locality
-- hit and miss shape
-- append-only publish behavior
+## Benchmark Targets
 
-It does not model the scientific meaning of a value. Once the value is serialized, the storage layer only cares about the physical byte behavior.
+- `comparison`: cross-backend summary benchmark. It compares `segment-cache-store`, tuned `fjall3`, and `redb` on ordered fetch, sparse ordered fetch, full iteration, append publish, and the small-profile parameter-evolution workload.
+- `ordered_lookup`: segment-only read-path benchmark with checksum verification enabled. It measures dense ordered lookup, sparse ordered lookup, large-value block-size sensitivity, and L0 overlay read amplification.
+- `append_publish`: segment-only write-path benchmark with checksum verification enabled. It measures sorted and unsorted batch publish into fresh stores.
+- `parameter_evolution`: segment-only cache-evolution benchmark with checksum verification enabled. It measures rebuild-vs-L0 behavior for middle inserts and repeated axis changes.
 
-This is intentional. For this crate, the relevant distinction is not whether a namespace contains "final state", "dynamics", or "tree" objects. The relevant distinction is whether one namespace behaves like:
-
-- small, narrow-distribution values
-- small, truly fixed-length values
-- medium, narrow-distribution values
-- large, narrow-distribution values
-
-The benchmark therefore uses storage-shaped profiles rather than application-level type names.
-
-## What the Benchmark Tries to Approximate
-
-The target workload has these storage-level characteristics:
-
-- wide fixed-width keys
-- one namespace tends to have a narrow value-size distribution
-- reads are usually ordered batch reads
-- writes are append-only publishes
-- downstream analysis often replays previously materialized ordered key streams
-
-The benchmark therefore groups scenarios by storage shape rather than by application-level result type.
-
-For `fjall3`, the benchmark does not use a pure out-of-the-box default configuration anymore. It now uses a workload-shaped, no-compression configuration derived from `/Users/loong/Repos/Projects/pheno-geno/pybinding/src/db.rs`:
-
-- database cache size
-- cached file limit
-- point-read-hit expectation
-- profile-sensitive block size and hash-ratio tuning
-- `KvSeparation` for the large-value profile
-
-The compression-related options from the production configuration are intentionally omitted. The benchmark values are synthetic byte payloads, and compression would mix codec/compression behavior into a storage-layout benchmark.
-
-`redb` is included as a second general-purpose baseline. It represents a mature embedded copy-on-write B-tree with transactional semantics and a single-file physical layout. The benchmark uses raw byte keys and values in one table and does not add any domain-specific adapter layer around it.
+`segment_no_crc` appears only in `comparison`. It opens the segment store read-only with block checksum verification disabled, so it is an explicit upper-bound variant for comparing against engines that do not validate user value bytes on read. All segment-only diagnostics keep checksum verification enabled because they are meant to measure the cache-safe implementation.
 
 ## Dataset Shape
 
-The benchmark lives in [benches/workload.rs](../benches/workload.rs).
+The benchmark uses `128B` fixed-width keys. The synthetic key layout has long stable prefixes, ordered parameter axes, and a repetition-like suffix, which is closer to canonical-encoded parameter sweeps than random short keys.
 
-### Keys
-
-The benchmark uses `128B` fixed-width keys.
-
-That is intentionally wider than a toy key and is meant to be closer to real canonical-encoded parameter keys, where many fields are fixed or slow-moving and only later fields change between nearby entries.
-
-The synthetic key layout is structured so that:
-
-- nearby keys share long prefixes
-- repetition-like variation appears late in the key
-- the overall key stream remains globally ordered
-- the sparse ordered subset takes one key from every 16-key repetition group
-
-This is more realistic for computation-cache workloads than random short keys.
-
-### Values
-
-There are four value-size profiles:
+Value profiles are narrow within one namespace:
 
 - `small = 64B ± 8B`
 - `small_fixed = 64B`
 - `medium = 1KB ± 128B`
 - `large = 16KB ± 2KB`
 
-This matches the intended storage assumption that one namespace usually contains values of roughly similar size.
+`small_fixed` uses `CreateOptions::with_fixed_value_len`, so the segment backend exercises the fixed-value block layout automatically for that profile. The benchmark intentionally does not mix small, medium, and large values inside one namespace profile.
 
-The benchmark intentionally does not use a mixed cross-namespace value distribution inside one profile.
+Each profile currently uses `16,384` records for the standard dataset. The parameter-evolution datasets are separate structured grids that repeatedly change active `x` and `y` axes.
 
-`small_fixed` additionally exercises `CreateOptions::with_fixed_value_len`, which removes per-record value lengths and value offsets from segment blocks. It is only appropriate when the whole store has a stable fixed value length.
+## Baselines
 
-The current `fjall3` benchmark adapter maps these profiles onto two no-compression tuning classes:
+`fjall3` uses a workload-shaped, no-compression configuration derived from the surrounding project: large cache, higher cached-file limit, point-read-hit expectation, profile-sensitive data block tuning, and key-value separation for large values. Compression is omitted because benchmark values are synthetic bytes and the goal is to measure storage layout rather than compression ratio.
 
-- `small`, `small_fixed`, and `medium` use the small-value `fjall3` tuning
-- `large` uses the large-value `fjall3` tuning
-
-That matches the current reference implementation more closely than a one-size-fits-all keyspace configuration.
-
-### Record Count
-
-Each benchmark profile currently uses `16,384` records.
-
-This is large enough to produce multiple blocks and multiple segments while remaining light enough for quick local iteration.
+`redb` is included as a mature embedded copy-on-write B-tree baseline. It uses one raw byte table and no domain-specific adapter layer.
 
 ## Workloads
 
-### `ordered_contains`
+### `comparison_ordered_fetch`
 
-Checks a fully ordered stream of known keys and counts hits.
+Fetches the full ordered stream of known keys and touches every returned value. This is the primary hot-path comparison. Variants: `segment`, `segment_no_crc`, `fjall3`, and `redb`.
 
-This represents:
+### `comparison_sparse_ordered_fetch`
 
-- ordered membership checks
-- cache preflight hit checks
-- workloads that want hit/miss structure without needing payload bytes
+Fetches an ordered 1/16 subset of known keys. This tests ordered but sparse reuse, where larger physical blocks can increase read amplification. Variants: `segment`, `segment_no_crc`, `fjall3`, and `redb`.
 
-Why it matters:
+### `comparison_iter_all`
 
-- it isolates ordered key traversal overhead
-- it shows whether the backend preserves locality well
+Scans every visible record in order and touches every value. This represents export, migration, and full ordered readback. Variants: `segment`, `segment_no_crc`, `fjall3`, and `redb`.
+
+### `comparison_append_publish`
+
+Publishes one sorted batch into a fresh store. This is the cleanest cross-backend write comparison for append-style cache materialization. Variants: `segment`, `fjall3`, and `redb`.
+
+### `comparison_axis_change_rounds`
+
+Runs several cache-shaped rounds where the active Cartesian-product parameter set changes over time. Each round does ordered lookup, touches hit values, and commits only misses. This target is registered only for the `small` profile to keep the cross-backend matrix bounded.
 
 ### `ordered_fetch`
 
-Fetches a fully ordered stream of known keys and aggregates payload lengths.
-
-This is the main hot-path workload.
-
-It represents:
-
-- replaying a cached parameter sweep
-- warm-cache downstream analysis
-- repeated ordered reads through one namespace
-
-The benchmark includes:
-
-- `segment`: fresh ordered read through `Store`
-- `segment_no_crc`: ordered read with block checksum verification disabled, isolating the CRC cost
-- `segment_block_{64,256,512,1024}k` and matching `..._no_crc` variants on the `large` profile, sweeping the segment block size
-- `segment_fixed_layout` and `segment_fixed_layout_no_crc` on the `small_fixed` profile, exercising the fixed-value-length layout
-- `fjall3`
-- `redb`
-
-Why it matters:
-
-- ordered batch fetch is the primary design target for this backend
-- this is the most important direct comparison against general KV engines
-
-The segment variants are intended to isolate costs in the same store-level ordered batch path:
-
-- `segment` uses the store-level ordered batch API directly
-- `segment_no_crc` disables block checksum verification
-- block-size and fixed-layout variants attribute physical layout costs
-
-A separate reused-session benchmark is intentionally not registered here. The store-level batch API already creates and uses an `OrderedLookup` for the duration of each full ordered stream, so benchmarking one reused session over the same full stream mostly measures the same traversal and can be misleading unless the workload is specifically windowed across multiple adjacent calls.
+Segment-only dense ordered lookup with checksum verification enabled. This is a stable internal regression target for the default read path.
 
 ### `sparse_ordered_fetch`
 
-Fetches an ordered 1/16 subset of known keys by taking one key from each repetition group.
+Segment-only sparse ordered lookup with checksum verification enabled. It sweeps block sizes `16K`, `32K`, `64K`, and `256K` to expose the sparse-read amplification tradeoff.
 
-This represents:
+### `large_value_block_size`
 
-- selecting one replicate or subcase from many cached parameter groups
-- ordered but sparse reuse
-- the read-amplification tradeoff of larger segment blocks
+Segment-only dense ordered lookup for the `large` profile with block sizes `16K`, `64K`, `256K`, and `512K`. This answers whether large-value performance is blocked by block sizing or by value movement and checksum cost.
 
-The benchmark includes `segment_block_{16,32,64,256}k`, `fjall3`, and `redb`. It intentionally does not register no-CRC variants, because this workload is primarily about block size and sparse read amplification rather than isolating checksum cost.
+### `overlay_ordered_fetch`
 
-Why it matters:
+Segment-only L0 overlay read benchmark. `main_only` stores every record in the main tier; `patch_1`, `patch_2`, `patch_4`, and `patch_8` store one eighth of the records in patch segments and verify that all stores expose the same logical records.
 
-- full ordered fetch can make larger blocks look better than they are for sparse subsets
-- sparse ordered fetch helps choose a safe default block size for mixed dense/sparse read patterns
+### `append_publish`
 
-### `append_commit`
+Segment-only publish benchmark for `sorted_batch` and `unsorted_batch`. The sorted variant models callers that already emit canonical key order; the unsorted variant includes backend sorting cost.
 
-Publishes one full batch into a fresh store.
+### `middle_insert_then_read`
 
-It represents:
-
-- miss-then-compute-then-publish
-- one namespace flushing a completed batch of new cache entries
-
-The benchmark includes:
-
-- `segment_sorted`: caller already knows keys are sorted
-- `segment_unsorted`: backend sorts before publish
-- `fjall3`
-- `redb`
-
-Why it matters:
-
-- immutable segment publish is expected to be a strong path for this design
+Segment-only parameter-space insertion benchmark. `rebuild_new_store_then_read` rebuilds a new normalized store, while `l0_chunked_insert_then_read` publishes the inserted middle range in chunks and then reads the expanded key set through the L0 overlay.
 
 ### `axis_change_rounds`
 
-Runs several cache-shaped rounds where the active Cartesian-product parameter set changes over time. Each round does ordered lookup over the current active keys, touches hit values, and commits only misses. The synthetic sequence changes multiple axes: `x` expands and contracts across rounds, while `y` adds values, removes values, and later reintroduces values.
-
-This is currently registered only for the `small` profile so that the full benchmark matrix does not explode. It compares:
-
-- `segment_lookup_commit`
-- `fjall3_lookup_insert`
-- `redb_lookup_insert`
-
-The segment dry-run prints `merged_records / inserted` as rewrite amplification. A high value means the current main-tier replacement strategy is repeatedly rebuilding old key ranges and is a concrete signal that the pending L0 patch tier may be worthwhile.
-
-Why it matters:
-
-- real cache use may involve repeated parameter-space revisions rather than one monotonic append
-- adding one axis value can be local or globally interleaved depending on key order
-- removing an axis value does not delete old cache entries, but it changes the next round's lookup and miss shape
-
-### `iter_all`
-
-Scans every record in order.
-
-It represents:
-
-- export
-- migration
-- full ordered readback
-
-Why it matters:
-
-- iteration is a real requirement, but not the primary optimization target
-
-### `two_pass_cache_shape`
-
-Loads the store once, then runs one ordered read stream with both hits and misses.
-
-It represents:
-
-- a cache-shaped replay pass after data has already been published
-- ordered downstream analysis with partial reuse
-
-Why it matters:
-
-- this is the scenario where append-only publish plus ordered replay should show the strongest overall advantage
-
-## Additional Space Metric
-
-Space amplification is treated as a first-class metric.
-
-The measurement script lives in [examples/space_usage.rs](../examples/space_usage.rs).
-
-Run it with:
-
-```bash
-cargo run -p segment-cache-store --example space_usage --offline
-```
-
-This prints, for each namespace profile:
-
-- logical bytes
-- actual segment-cache-store directory size
-- actual `fjall3` directory size
-- actual `redb` directory size
-- amplification factor for each backend
+Segment-only repeated parameter-evolution benchmark. It prints the dry-run rewrite amplification (`merged_records / inserted`) so L0 normalization behavior can be tracked without comparing against unrelated database internals.
 
 ## Commands
 
-Run the full Criterion suite:
+Run the horizontal comparison suite:
 
 ```bash
-cargo bench -p segment-cache-store --bench workload
+cargo bench -p segment-cache-store --bench comparison
+```
+
+Run segment-only read-path diagnostics:
+
+```bash
+cargo bench -p segment-cache-store --bench ordered_lookup
+```
+
+Run segment-only publish diagnostics:
+
+```bash
+cargo bench -p segment-cache-store --bench append_publish
+```
+
+Run segment-only parameter-evolution diagnostics:
+
+```bash
+cargo bench -p segment-cache-store --bench parameter_evolution
 ```
 
 Run one Criterion subgroup:
 
 ```bash
-cargo bench -p segment-cache-store --bench workload -- ordered_fetch
+cargo bench -p segment-cache-store --bench comparison -- comparison_ordered_fetch
 ```
 
 Measure space amplification:
@@ -267,82 +124,33 @@ Measure space amplification:
 cargo run -p segment-cache-store --example space_usage --offline
 ```
 
-## Latest Snapshot
+## Space Metric
 
-The numbers below are local smoke-run results, not publication-grade measurements. They are still useful for relative shape and regression tracking.
+Space amplification is treated as a first-class metric. The measurement script lives in [examples/space_usage.rs](../examples/space_usage.rs) and reports logical bytes, directory size, and amplification factor for `segment-cache-store`, `fjall3`, and `redb`.
 
-Benchmark command:
+## Historical Snapshot
 
-```bash
-cargo bench -p segment-cache-store --bench workload --offline
-```
-
-Space command:
-
-```bash
-cargo run -p segment-cache-store --example space_usage --offline
-```
+The numbers below are local historical smoke-run results from the prototype benchmark suite before the target rename. They are useful for rough shape and regression awareness, not as publication-grade measurements.
 
 ### Ordered fetch
 
-Representative recent snapshot:
+| namespace | segment | fjall3 | redb |
+| --- | ---: | ---: | ---: |
+| small | 1.24-1.27 ms | 6.25-6.31 ms | 3.89-4.27 ms |
+| small_fixed | 1.04-1.05 ms | 6.22-6.46 ms | 3.47-3.48 ms |
+| medium | 4.87-5.11 ms | 6.54-6.58 ms | 5.14-5.18 ms |
+| large | 61.89-63.39 ms | 26.65-27.14 ms | 22.64-25.75 ms |
 
-| namespace | segment | segment reused lookup | fjall3 | redb |
-| --- | ---: | ---: | ---: | ---: |
-| small | 1.24-1.27 ms | 1.25-1.27 ms | 6.25-6.31 ms | 3.89-4.27 ms |
-| small_fixed | 1.04-1.05 ms | 1.04-1.08 ms | 6.22-6.46 ms | 3.47-3.48 ms |
-| small_fixed fixed layout | 0.99-1.02 ms | 0.99-1.01 ms | n/a | n/a |
-| medium | 4.87-5.11 ms | 4.83-4.98 ms | 6.54-6.58 ms | 5.14-5.18 ms |
-| large | 61.89-63.39 ms | 60.79-67.02 ms | 26.65-27.14 ms | 22.64-25.75 ms |
-
-Interpretation:
-
-- the backend is firmly in the same order of magnitude as tuned `fjall3` and `redb`
-- small-value ordered fetch remains materially faster than both general-purpose baselines
-- medium-value ordered fetch is close to `redb` and faster than tuned `fjall3`
-- large-value ordered fetch is behind both `redb` and no-compression `fjall3`
-- fixed layout gives the best result for the fixed-small profile, but the regular layout is already close
-
-### Append commit
-
-Representative recent snapshot:
+### Append publish
 
 | namespace | segment sorted | fjall3 | redb |
 | --- | ---: | ---: | ---: |
 | small | 64.29-66.92 ms | 119.88-124.82 ms | 73.79-75.89 ms |
 | small_fixed | 64.63-67.93 ms | 120.10-125.13 ms | 75.41-79.90 ms |
-| small_fixed fixed layout | 60.97-64.65 ms | n/a | n/a |
 | medium | 89.38-91.70 ms | 136.55-142.92 ms | 117.88-123.65 ms |
 | large | 819.94-909.09 ms | 1.18-1.29 s | 752.32-816.80 ms |
 
-Interpretation:
-
-- immutable append publish is one of the strongest paths for this backend
-- segment publish consistently beats `fjall3` for small and medium profiles
-- `redb` is a stronger write baseline than `fjall3` in this run, especially for large values
-- large append is now close to `redb` and faster than no-compression `fjall3`, but it is much less dominant than the small-value cases
-
-### Two-pass cache-shaped workload
-
-Representative recent snapshot:
-
-| namespace | segment | fjall3 | redb |
-| --- | ---: | ---: | ---: |
-| small | 60.17-62.66 ms | 121.99-125.59 ms | 76.70-78.99 ms |
-| small_fixed | 69.67-72.02 ms | 123.93-127.32 ms | 75.48-77.09 ms |
-| small_fixed fixed layout | 70.90-73.05 ms | n/a | n/a |
-| medium | 88.94-90.81 ms | 144.20-150.63 ms | 123.46-132.35 ms |
-| large | 865.76-926.69 ms | 1.34-1.52 s | 670.45-715.97 ms |
-
-Interpretation:
-
-- the backend does best on the workload shape it was designed for
-- small and medium two-pass workloads remain strong for the segment store
-- large two-pass is a weak spot for the current segment implementation; `redb` is faster in this run
-
 ### Space amplification
-
-Recent `space_usage` snapshot:
 
 | namespace | logical bytes | segment | fixed layout | fjall3 | redb |
 | --- | ---: | ---: | ---: | ---: | ---: |
@@ -351,25 +159,6 @@ Recent `space_usage` snapshot:
 | medium | 18,870,633 | 1.052x | n/a | 3.556x | 1.785x |
 | large | 270,504,438 | 1.037x | n/a | 1.253x | 1.992x |
 
-Interpretation:
+## Reading Results
 
-- for narrow-distribution namespaces, the segment layout is very space-efficient
-- the oversized-block padding change was especially important for large-value namespaces
-- `redb` has much lower amplification than `fjall3` for small and medium values, but higher amplification than both segment and `fjall3` for the current large-value profile
-
-## How to Read the Results
-
-The most important takeaways are:
-
-- if the workload is dominated by small or medium ordered replay, `segment-cache-store` is competitive and often stronger in end-to-end cache-shaped scenarios
-- if the workload is dominated by large-value ordered fetch, both `redb` and tuned no-compression `fjall3` currently beat the segment backend
-- append-only publish is a clear strength for small and medium profiles; large-value append is competitive but not dominant against `redb`
-- space amplification is much lower than the compared general-purpose backends for small and medium namespaces, and still best for the current large profile
-
-The benchmark should therefore be read as a shape test:
-
-- does the backend stay within the right performance class?
-- does it win on the workload it is designed for?
-- does it preserve its space-efficiency advantage?
-
-Those questions matter more here than winning every microbenchmark.
+The benchmark should be read as a shape test: whether the backend stays in the right performance class, whether it wins on the workload it is designed for, and whether it preserves its space-efficiency advantage. Winning every microbenchmark is less important than keeping ordered cache replay, append publish, corruption-safe reads, and file-level stability coherent in one backend.

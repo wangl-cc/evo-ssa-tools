@@ -141,7 +141,8 @@ fn build_store(
     writer_lock: Option<WriterLock>,
 ) -> Result<Store> {
     let geometry = StoreGeometry::from_descriptor(&descriptor);
-    let mut segment_states = Vec::new();
+    let mut main_segment_states = Vec::new();
+    let mut patch_segment_states = Vec::new();
     for entry in &manifest.segments {
         let path = paths.final_segment(entry.segment_id);
         let segment = match OpenedSegment::open(path, SegmentOpenOptions {
@@ -153,10 +154,12 @@ fn build_store(
             }
             _ => continue,
         };
-        segment_states.push(Arc::new(SegmentState::from_opened(
-            entry.segment_id,
-            segment,
-        )));
+        let segment_state = Arc::new(SegmentState::from_opened(entry.segment_id, segment));
+        if entry.is_main() {
+            main_segment_states.push(segment_state);
+        } else {
+            patch_segment_states.push(segment_state);
+        }
     }
 
     Ok(Store {
@@ -165,7 +168,11 @@ fn build_store(
             geometry,
             verify_block_checksums,
             commit_lock: Mutex::new(()),
-            state: RwLock::new(StoreState::new(manifest, segment_states)),
+            state: RwLock::new(StoreState::new(
+                manifest,
+                main_segment_states,
+                patch_segment_states,
+            )),
             writer_lock,
         }),
     })

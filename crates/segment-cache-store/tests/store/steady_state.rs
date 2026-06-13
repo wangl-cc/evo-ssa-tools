@@ -43,7 +43,7 @@ fn second_writer_open_fails_fast_while_writer_is_alive() -> Result<()> {
 }
 
 #[test]
-fn interleaving_commit_spans_two_segments_and_a_tail() -> Result<()> {
+fn interleaving_commit_spans_two_segments_and_a_tail_as_patch() -> Result<()> {
     let tempdir = tempfile::tempdir()?;
     let store = create_store(&tempdir)?;
     commit_entries(
@@ -62,7 +62,9 @@ fn interleaving_commit_spans_two_segments_and_a_tail() -> Result<()> {
         ],
         true,
     )?;
-    // This batch interleaves both published segments and extends past the last.
+    // This batch interleaves both published main segments and extends past the
+    // last. L0 publishes it as a patch first instead of immediately rebuilding
+    // both main segments.
     let stats = commit_entries(
         &store,
         &[
@@ -72,11 +74,9 @@ fn interleaving_commit_spans_two_segments_and_a_tail() -> Result<()> {
         ],
         true,
     )?;
-    // Stats expose the rewrite amplification: 3 input records forced both
-    // 2-record segments to be rebuilt into one 7-record replacement.
     assert_eq!(stats.records, 3);
-    assert_eq!(stats.merged_records, 7);
-    assert_eq!(stats.segments_retired, 2);
+    assert_eq!(stats.merged_records, 3);
+    assert_eq!(stats.segments_retired, 0);
     assert_eq!(stats.segments_published, 1);
 
     let keys: Vec<_> = store
@@ -94,6 +94,47 @@ fn interleaving_commit_spans_two_segments_and_a_tail() -> Result<()> {
         make_key(2, 0, 2),
         make_key(3, 0, 0),
     ]);
+    Ok(())
+}
+
+#[test]
+fn patch_segments_normalize_after_limit() -> Result<()> {
+    let tempdir = tempfile::tempdir()?;
+    let store = create_store(&tempdir)?;
+    commit_entries(
+        &store,
+        &[
+            (make_key(1, 0, 0), make_value(0, 8)),
+            (make_key(1, 0, 20), make_value(20, 8)),
+        ],
+        true,
+    )?;
+
+    for rep in 1..=8 {
+        let stats = commit_entries(
+            &store,
+            &[(make_key(1, 0, rep), make_value(rep as u8, 8))],
+            true,
+        )?;
+        assert_eq!(stats.merged_records, 1);
+        assert_eq!(stats.segments_retired, 0);
+    }
+
+    let stats = commit_entries(&store, &[(make_key(1, 0, 9), make_value(9, 8))], true)?;
+    assert_eq!(stats.records, 1);
+    assert_eq!(stats.merged_records, 11);
+    assert_eq!(stats.segments_retired, 9);
+    assert_eq!(stats.segments_published, 1);
+
+    let keys: Vec<_> = store
+        .iter_all()?
+        .collect::<Result<Vec<_>>>()?
+        .into_iter()
+        .map(|(key, _)| key)
+        .collect();
+    let mut expected = (0..=9).map(|rep| make_key(1, 0, rep)).collect::<Vec<_>>();
+    expected.push(make_key(1, 0, 20));
+    assert_eq!(keys, expected);
     Ok(())
 }
 

@@ -7,7 +7,19 @@ license.workspace = true
 
 [[bench]]
 harness = false
-name = "workload"
+name = "comparison"
+
+[[bench]]
+harness = false
+name = "ordered_lookup"
+
+[[bench]]
+harness = false
+name = "append_publish"
+
+[[bench]]
+harness = false
+name = "parameter_evolution"
 
 [dependencies]
 crc32c = { workspace = true }

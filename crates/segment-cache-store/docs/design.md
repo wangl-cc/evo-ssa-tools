@@ -32,8 +32,8 @@ Sections and paragraphs marked **Decided** record accepted design. Everything un
 
 Implementation status (see [Implementation Sequencing](#implementation-sequencing) for the full plan):
 
-- **Implemented**: replacing-manifest commits with local rebuild and the winner rule, dead-entry dropping, the advisory writer lock, open-time garbage collection, and the `STORE`-last creation order.
-- **Pending**: the patch tier, content-addressed segment identity, generations, and the cross-device sync protocol (the catalog revision that carries them). Paragraphs describing only these still carry a **Decided** marker.
+- **Implemented**: replacing-manifest commits, bounded L0 patch segments with normalization, the winner rule, dead-entry dropping, the advisory writer lock, open-time garbage collection, and the `STORE`-last creation order.
+- **Pending**: content-addressed segment identity, generations, and the cross-device sync protocol (the catalog revision that carries them). Paragraphs describing only these still carry a **Decided** marker.
 
 ## Core Invariants
 
@@ -44,16 +44,13 @@ Permanent invariants:
 - a root's `MANIFEST` is the sole source of visibility for that root
 - missing or corrupted data is treated as absent, never as valid output
 - main-tier segment ranges are sorted and globally non-overlapping
+- patch-tier segment ranges are bounded and may overlap main-tier or other patch-tier ranges
 - segments whose ranges receive no new writes are never rewritten
 - all stored copies of one key are semantically interchangeable (see [Caller Contract](#caller-contract))
 
-Current restrictions, lifted by the decided design below:
-
-- all visible segments are main-tier: no overlap exists anywhere, and a key appears at most once (lifted by the **Decided** patch tier, which is not implemented)
-
 The following former restrictions are now lifted in the implementation:
 
-- commits are no longer insert-only: a batch whose range intersects a visible segment triggers a local rebuild of that region (see [Steady-State Write Design](#steady-state-write-design))
+- commits are no longer insert-only: a batch whose range intersects main-tier data can publish to the patch tier or trigger normalization (see [Steady-State Write Design](#steady-state-write-design))
 - manifest entries whose segment files are missing no longer reserve their ranges forever: they are dropped at the next manifest publication
 
 ## Caller Contract
@@ -80,8 +77,8 @@ The storage design uses the following terms consistently. Code names should foll
 
 ### Tiers
 
-- `Main tier (L1)`: the sorted, globally non-overlapping segment set. All v1 segments are main-tier.
-- `Patch tier (L0)`: a small bounded segment set that may overlap the main tier and each other. **Decided**, not implemented.
+- `Main tier (L1)`: the sorted, globally non-overlapping segment set.
+- `Patch tier (L0)`: a small bounded segment set that may overlap the main tier and each other.
 - `Normalization`: a replacing commit that merges patch-tier segments and the intersecting main-tier segments into new main-tier segments.
 
 ### Store Catalog
@@ -165,11 +162,12 @@ Each manifest entry is:
 
 ```text
 segment_id:u32
+tier:u8                 # 0 = main, 1 = patch
 min_key[key_len]
 max_key[key_len]
 ```
 
-`segment_id` derives the file name `segments/segment-<segment_id>.seg`; file names are opaque identities and do not define key order. On open, the store rejects malformed `STORE` or `MANIFEST` files, duplicate segment ids, unsorted segment entries, overlapping segment ranges, and `next_segment_id` values that could reuse an existing segment id.
+`segment_id` derives the file name `segments/segment-<segment_id>.seg`; file names are opaque identities and do not define key order. Manifest entries are ordered as all main-tier entries sorted by `min_key`, followed by patch-tier entries sorted by `(min_key, segment_id)`. On open, the store rejects malformed `STORE` or `MANIFEST` files, duplicate segment ids, unsorted or overlapping main-tier ranges, patch entries that precede main entries, and `next_segment_id` values that could reuse an existing segment id.
 
 Missing manifest-referenced segment files are tolerated as miss space; their entries are dead entries, dropped at the next manifest publication (see [Steady-State Write Design](#steady-state-write-design)).
 
@@ -302,7 +300,7 @@ These limits are far above the intended workload shape (16 KiB-class blocks, MiB
 
 ## Read Path
 
-`fetch_one` binary-searches the global segment list by `min_key`, checks that the candidate segment also satisfies `key <= max_key`, then binary-searches that segment's block index and key table.
+`fetch_one` binary-searches the main tier by `min_key`, checks that the candidate segment also satisfies `key <= max_key`, then probes any patch segments whose ranges contain the key. If multiple copies exist, the lexicographically smallest value bytes win.
 
 Ordered lookup is the main hot path. The low-level APIs are:
 
@@ -316,11 +314,9 @@ Ordered lookup is the main hot path. The low-level APIs are:
 
 `visit_many` is the lowest-level ordered-read API. It lets callers consume borrowed value slices instead of forcing a `Vec<u8>` allocation for every hit.
 
-Ordered lookup sweeps sorted keys against the sorted global segment list. Within a segment it keeps the current block loaded and consumes all keys that fall inside that block range before advancing. This reduces repeated block loads and makes large ordered hit streams much cheaper than independent lookups.
+Ordered lookup sweeps sorted keys against the main tier and, when patches exist, sweeps each patch segment with block reuse before applying the same winner rule. Within a segment it keeps the current block loaded and consumes all keys that fall inside that block range before advancing. This reduces repeated block loads and makes large ordered hit streams much cheaper than independent lookups.
 
-`iter_all()` returns all visible records in order. `range(start, end)` returns the half-open range `[start, end)`. Since visible segment ranges are globally non-overlapping, scan cursors concatenate segment cursors in manifest order. They stream at block granularity and do not materialize the full scan result before returning.
-
-**Decided.** With the patch tier, point lookup additionally probes the patch segments whose ranges contain the key, and ordered reads interleave the main-tier stream with the patch streams. No shadowing or version resolution is needed: copies are interchangeable, so the first copy found is returned. Read amplification is bounded by the patch-tier size in steady state.
+`iter_all()` returns all visible records in order. `range(start, end)` returns the half-open range `[start, end)`. If no patch segments are visible, scan cursors concatenate main-tier segment cursors in manifest order. If patches exist, scan uses a k-way merge across main and patch cursors and deduplicates copies with the winner rule. They stream at block granularity and do not materialize the full scan result before returning.
 
 ## Write Path
 
@@ -337,14 +333,16 @@ The public write path is:
 2. validates fixed value lengths when fixed layout is enabled
 3. sorts the batch if needed
 4. rejects duplicate keys inside the batch
-5. finds the contiguous run of visible segments whose ranges the batch intersects
-6. if that run is non-empty, merges the batch with those segments' records into one sorted, deduplicated batch (winner rule for duplicate keys)
-7. splits the merged batch by the configured flush thresholds and writes immutable temp segments
-8. renames completed segments into `segments/`
-9. atomically publishes a replacing `MANIFEST` that removes the rebuilt run and every dead entry and inserts the new segments
-10. deletes the retired segment files best-effort
+5. finds the contiguous run of main-tier segments whose ranges the batch intersects
+6. if no main-tier range is touched, writes the batch directly as main-tier segments
+7. if a small touched batch fits the patch-tier bound, writes the batch as patch-tier segments without rewriting old data
+8. otherwise normalizes by merging the batch, all live patch segments, and the intersecting main-tier segments into one sorted, deduplicated batch (winner rule for duplicate keys)
+9. splits the direct, patch, or normalized batch by the configured flush thresholds and writes immutable temp segments
+10. renames completed segments into `segments/`
+11. atomically publishes a replacing `MANIFEST` that removes normalized or dead entries and inserts the new segments
+12. deletes the retired segment files best-effort
 
-Tail appends, gap inserts, and interleaving batches are all allowed: an interleaving batch rebuilds the region it overlaps instead of being rejected. See [Steady-State Write Design](#steady-state-write-design).
+Tail appends, gap inserts, and interleaving batches are all allowed: an interleaving batch first enters the patch tier when it fits, then normalization rebuilds the touched region when the patch tier reaches its bound. See [Steady-State Write Design](#steady-state-write-design).
 
 There is no WAL. Only fully published segments are durable. In-progress temp segments may be lost on crash. A crash after segment rename but before manifest publication leaves an orphan final segment, which is invisible and is collected by GC.
 
@@ -383,7 +381,7 @@ A writer takes an advisory lock on `LOCK` (`std::fs::File::try_lock`, which is `
 
 ## Steady-State Write Design
 
-This section addresses why insert-only commits cannot sustain the intended workload: demand-driven cache filling produces batches that interleave with published ranges, and segment count grows without bound. The Replacing Manifest Commit and Garbage Collection below are implemented; Commit Routing (the patch tier) is **Decided** but not implemented.
+This section addresses why insert-only commits cannot sustain the intended workload: demand-driven cache filling produces batches that interleave with published ranges, and segment count grows without bound. Replacing manifest commits, commit routing, normalization, and garbage collection are implemented.
 
 ### Replacing Manifest Commit
 
@@ -401,14 +399,15 @@ A replacing commit is demand-driven and local. There is no background compaction
 
 ### Commit Routing
 
-A commit chooses one of two routes per batch:
+A commit chooses one of three routes per batch:
 
-1. **Direct to main tier** when the batch does not overlap any main-tier segment and is at least a minimum direct size (a tunable fraction of the target segment size). This is the v1 path and remains the preferred route for bulk publishes.
-2. **Patch tier** otherwise: the batch is published as one patch segment, rewriting nothing.
+1. **Direct to main tier** when the batch does not overlap any main-tier segment. This is the preferred route for bulk publishes and gap inserts.
+2. **Patch tier** when the batch overlaps main-tier data but still fits the patch policy. The batch is published as one or more patch segments, rewriting nothing.
+3. **Normalization** when the patch policy would be exceeded. The batch, all live patch segments, and the intersecting main-tier segments are merged into replacement main-tier segments.
 
-The patch tier is bounded by a segment count `K` (default on the order of 8) and a byte budget. When a publication would exceed the bound, the commit instead performs normalization: merge all patch segments plus the intersecting main-tier segments into new main-tier segments, deduplicating by the winner rule, coalescing adjacent undersized main-tier segments in the touched range, and dropping dead entries.
+The current patch policy is intentionally simple: at most 8 live patch segments, and only batches with at most 4096 input records publish directly to patch. When a publication would exceed the bound, the commit performs normalization: merge all patch segments plus the intersecting main-tier segments into new main-tier segments, deduplicating by the winner rule and dropping dead entries.
 
-The bound is a normalization trigger, not a representational cap. Sync ingestion may temporarily exceed it; the read-amplification guarantee is therefore eventual (`<= K + 1` probe streams in steady state), not instantaneous.
+The bound is a normalization trigger. Read amplification is bounded by the live patch count plus the main stream in steady state.
 
 Write amplification is bounded at roughly one patch write plus one normalization merge per byte, comparable to a two-level LSM floor. Read amplification is bounded by `K` per root; deployments with many roots must budget `active roots x K` in aggregate.
 
@@ -424,7 +423,7 @@ GC's directory scan exists only to delete dead files. Discovery of visible data 
 
 ## Duplicate Keys and Convergence
 
-The winner rule below is implemented: a replacing commit that merges a key present in both the batch and an existing segment keeps the lexicographically smallest value. Simultaneous copies of one key across *visible* segments only arise with the **Decided** patch tier (not implemented); without it, every replacing commit leaves the main tier deduplicated.
+The winner rule below is implemented: a replacing commit that merges a key present in both the batch and an existing segment keeps the lexicographically smallest value. Simultaneous copies of one key across visible segments arise while patch-tier segments are live; normalization leaves the main tier deduplicated.
 
 The general invariant, which the patch tier relies on:
 
@@ -432,7 +431,7 @@ The general invariant, which the patch tier relies on:
 
 Byte differences between copies are expected, not exceptional: floating-point library results differ across platforms, and codec or compression versions differ across builds. The store never compares value bytes to detect errors and never treats copy disagreement as corruption.
 
-- **Reads** return whichever copy is found first.
+- **Reads** return the lexicographically smallest value bytes among visible copies.
 - **Normalization** deduplicates. The surviving copy is the **winner**: the copy with the lexicographically smallest value bytes. The winner is a function of the copies alone - not of arrival order, merge history, or wall-clock time - so deduplication is commutative and associative, and replicas converge to the same survivor regardless of the order in which they sync and normalize. (A "keep oldest" rule was considered and rejected: "oldest" is local history, and history-dependent winners prevent replicas from ever converging byte-for-byte.)
 
 Convergence property, which sync relies on: two roots that hold the same key set and use the same writer configuration converge to byte-identical segment sets once both are fully normalized. This follows from deterministic segment encoding, the deterministic winner rule, and deterministic merge split points.
@@ -533,5 +532,5 @@ Fixed-value namespaces can opt into `CreateOptions::with_fixed_value_len(value_l
 
 1. **Hygiene first** — *implemented*: creation-order fix, open-time GC, advisory writer lock. They remove both permanent-wedge failure modes (orphan segment id collision, half-created root).
 2. **Replacing manifest commit**, including dead-entry dropping — *implemented*. This fixes interleaved writes, segment-count growth, and reserved dead ranges.
-3. **Patch tier** — *pending*, only if observed commit granularity demands it; workloads that publish one large batch per run may never need it.
+3. **Patch tier and normalization routing** — *implemented*. This reduces rewrite amplification for repeated interleaving commits while keeping the main tier sorted and non-overlapping.
 4. **Content addressing, generations, and the sync protocol** — *pending*, last, together with the catalog revision. Format changes rebuild existing stores.

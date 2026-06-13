@@ -69,6 +69,9 @@ pub enum CatalogMismatch {
     #[error("MANIFEST segment ranges overlap")]
     SegmentOverlap,
 
+    #[error("MANIFEST patch entries must follow main entries")]
+    SegmentTierOrder,
+
     #[error("MANIFEST segment key length does not match STORE")]
     SegmentKeyLen,
 

@@ -1,3 +1,8 @@
+#![allow(
+    dead_code,
+    reason = "Criterion targets reuse benchmark fixtures selectively"
+)]
+
 use std::{num::NonZeroU32, path::Path};
 
 use fjall3::{

@@ -4,10 +4,10 @@ use criterion::{criterion_group, criterion_main};
 mod backends;
 #[path = "workload/data.rs"]
 mod data;
+#[path = "workload/parameter_evolution.rs"]
+mod parameter_evolution;
 #[path = "workload/profile.rs"]
 mod profile;
-#[path = "workload/scenarios.rs"]
-mod scenarios;
 
-criterion_group!(benches, scenarios::workload);
+criterion_group!(benches, parameter_evolution::workload);
 criterion_main!(benches);

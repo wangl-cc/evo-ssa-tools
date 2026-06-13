@@ -41,20 +41,19 @@ impl Store {
 
     /// Publishes a write batch using explicit segment write options.
     ///
-    /// A batch that interleaves with already-visible segments is not rejected:
-    /// the commit rebuilds the intersecting region by merging the batch with the
-    /// existing records and publishing replacement segments. The publication also
-    /// drops dead manifest entries (segments that no longer open).
+    /// A batch that interleaves with already-visible main segments is not
+    /// rejected. Small interleaving batches are published into a bounded patch
+    /// tier first; when the patch tier reaches its bound, the commit normalizes
+    /// by merging patch segments, intersecting main segments, and the caller's
+    /// batch into replacement main segments. The publication also drops dead
+    /// manifest entries (segments that no longer open).
     ///
     /// # Cost of interleaving batches
     ///
-    /// The rebuilt region is the contiguous run of segments the batch's key
-    /// range touches, so the rewrite cost is driven by the batch's **key
-    /// spread**, not its size: a two-record batch spanning the whole keyspace
-    /// rewrites every visible segment and materializes the merged region in
-    /// memory. Until the patch tier lands, callers should keep batches
-    /// key-local; [`CommitStats::merged_records`] reports the amplification
-    /// actually paid.
+    /// Direct main publishes and patch publishes write only the caller's batch.
+    /// Normalization rewrites the touched main range plus every live patch
+    /// segment, so its cost is driven by key spread and patch-tier occupancy;
+    /// [`CommitStats::merged_records`] reports the amplification actually paid.
     ///
     /// Returns [`InputError::ReadOnlyStore`] on a read-only handle.
     pub fn commit_batch_with_options(
@@ -128,7 +127,12 @@ impl Store {
     pub fn fetch_one(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {
         self.validate_key_len(key)?;
         let state = self.inner.state.read();
-        SegmentSetReader::new(state.segments.as_ref(), self.lookup_read_options()).fetch_one(key)
+        SegmentSetReader::new(
+            state.main_segments.as_ref(),
+            state.patch_segments.as_ref(),
+            self.lookup_read_options(),
+        )
+        .fetch_one(key)
     }
 
     /// Returns an owned iterator over the half-open range `[start, end)`.
@@ -175,10 +179,14 @@ impl Store {
     fn range_cursor(&self, start: Option<&[u8]>, end: Option<&[u8]>) -> Result<RangeCursor> {
         let visible = {
             let state = self.inner.state.read();
-            Arc::clone(&state.segments)
+            (
+                Arc::clone(&state.main_segments),
+                Arc::clone(&state.patch_segments),
+            )
         };
-        let mut cursors = Vec::with_capacity(visible.len());
-        for segment in visible.iter() {
+        let (main_segments, patch_segments) = visible;
+        let mut cursors = Vec::with_capacity(main_segments.len() + patch_segments.len());
+        for segment in main_segments.iter().chain(patch_segments.iter()) {
             if let Some(start) = start
                 && segment.max_key.as_slice() < start
             {
@@ -199,7 +207,11 @@ impl Store {
             )?);
         }
 
-        Ok(RangeCursor::new(cursors))
+        if patch_segments.is_empty() {
+            Ok(RangeCursor::new(cursors))
+        } else {
+            Ok(RangeCursor::merge(cursors))
+        }
     }
 
     fn validate_key_len(&self, key: &[u8]) -> Result<()> {
