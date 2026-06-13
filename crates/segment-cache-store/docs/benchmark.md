@@ -9,7 +9,7 @@ One benchmark target is used for horizontal comparison against other embedded st
 ## Benchmark Targets
 
 - `comparison`: cross-backend summary benchmark. It compares `segment-cache-store`, tuned `fjall3`, and `redb` on ordered fetch, sparse ordered fetch, full iteration, append publish, and the small-profile parameter-evolution workload.
-- `ordered_lookup`: segment-only read-path benchmark with checksum verification enabled. It measures dense ordered lookup, sparse ordered lookup, large-value block-size sensitivity, and L0 overlay read amplification.
+- `ordered_lookup`: segment-only read-path benchmark with checksum verification enabled. It measures dense ordered lookup, sparse ordered lookup, large-value block-size sensitivity, L0 overlay ordered lookup, and L0 overlay scan amplification.
 - `append_publish`: segment-only write-path benchmark with checksum verification enabled. It measures sorted and unsorted batch publish into fresh stores.
 - `parameter_evolution`: segment-only cache-evolution benchmark with checksum verification enabled. It measures rebuild-vs-L0 behavior for middle inserts and repeated axis changes.
 
@@ -73,6 +73,10 @@ Segment-only dense ordered lookup for the `large` profile with block sizes `16K`
 ### `overlay_ordered_fetch`
 
 Segment-only L0 overlay read benchmark. `main_only` stores every record in the main tier; `patch_1`, `patch_2`, `patch_4`, and `patch_8` store one eighth of the records in patch segments and verify that all stores expose the same logical records.
+
+### `overlay_iter_all`
+
+Segment-only L0 overlay scan benchmark. It uses the same logical layout as `overlay_ordered_fetch`, but scans every visible record through `visit_all`, exercising the merge cursor used when patch segments are present.
 
 ### `append_publish`
 

@@ -59,8 +59,19 @@ impl RangeCursor {
                 }
             }
             RangeCursorMode::Merge => {
-                while let Some(record) = self.next_merged_record()? {
-                    visitor(&record.key, &record.value);
+                let mut duplicate_indices = Vec::with_capacity(self.cursors.len());
+                while let Some(winner_index) =
+                    self.next_merged_indices_into(&mut duplicate_indices)?
+                {
+                    {
+                        let record = self.cursors[winner_index]
+                            .current_record()?
+                            .expect("winner cursor has a current record");
+                        visitor(record.key, record.value);
+                    }
+                    for index in duplicate_indices.drain(..) {
+                        self.cursors[index].advance()?;
+                    }
                 }
             }
         }
@@ -109,7 +120,8 @@ impl RangeCursor {
     }
 
     fn next_merged_record(&mut self) -> Result<Option<OwnedRecord>> {
-        let Some((winner_index, duplicate_indices)) = self.next_merged_indices()? else {
+        let mut duplicate_indices = Vec::with_capacity(self.cursors.len());
+        let Some(winner_index) = self.next_merged_indices_into(&mut duplicate_indices)? else {
             return Ok(None);
         };
         let record = {
@@ -127,9 +139,12 @@ impl RangeCursor {
         Ok(Some(record))
     }
 
-    fn next_merged_indices(&self) -> Result<Option<(usize, Vec<usize>)>> {
+    fn next_merged_indices_into(
+        &self,
+        duplicate_indices: &mut Vec<usize>,
+    ) -> Result<Option<usize>> {
+        duplicate_indices.clear();
         let mut winner_index = None;
-        let mut duplicate_indices = Vec::new();
         for index in 0..self.cursors.len() {
             let Some(record) = self.cursors[index].current_record()? else {
                 continue;
@@ -157,7 +172,7 @@ impl RangeCursor {
                 std::cmp::Ordering::Greater => {}
             }
         }
-        Ok(winner_index.map(|winner| (winner, duplicate_indices)))
+        Ok(winner_index)
     }
 }
 

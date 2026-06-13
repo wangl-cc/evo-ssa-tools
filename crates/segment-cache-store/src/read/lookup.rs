@@ -203,25 +203,7 @@ impl OrderedLookup {
         K: AsRef<[u8]>,
         F: FnMut(usize, Option<&[u8]>),
     {
-        let mut winners = vec![None; keys.len()];
-
-        self.state.bind_snapshot(main_segments);
-        {
-            let mut collect_hit = |index: usize, value: Option<&[u8]>| {
-                if let Some(value) = value {
-                    keep_winner(&mut winners[index], value);
-                }
-            };
-            OrderedSegmentSweep::new(
-                main_segments.as_ref(),
-                &mut self.state,
-                keys,
-                0,
-                options,
-                &mut collect_hit,
-            )
-            .run()?;
-        }
+        let mut patch_winners = vec![None; keys.len()];
 
         for segment in patch_segments.iter() {
             let key_range = key_range_for_segment(keys, segment);
@@ -231,7 +213,7 @@ impl OrderedLookup {
             let mut patch_state = LookupState::default();
             let mut collect_hit = |index: usize, value: Option<&[u8]>| {
                 if let Some(value) = value {
-                    keep_winner(&mut winners[index], value);
+                    keep_winner(&mut patch_winners[index], value);
                 }
             };
             OrderedSegmentSweep::new(
@@ -245,9 +227,27 @@ impl OrderedLookup {
             .run()?;
         }
 
-        for (index, value) in winners.iter().enumerate() {
-            visitor(index, value.as_deref());
-        }
+        self.state.bind_snapshot(main_segments);
+        let mut emit_winner = |index: usize, main_value: Option<&[u8]>| {
+            let patch_value = patch_winners[index].as_deref();
+            let winner = match (main_value, patch_value) {
+                (Some(main_value), Some(patch_value)) => Some(main_value.min(patch_value)),
+                (Some(main_value), None) => Some(main_value),
+                (None, Some(patch_value)) => Some(patch_value),
+                (None, None) => None,
+            };
+            visitor(index, winner);
+        };
+        OrderedSegmentSweep::new(
+            main_segments.as_ref(),
+            &mut self.state,
+            keys,
+            0,
+            options,
+            &mut emit_winner,
+        )
+        .run()?;
+
         Ok(())
     }
 }

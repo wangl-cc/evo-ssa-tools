@@ -6,7 +6,7 @@ use segment_cache_store::{CommitOptions, Store};
 use crate::{
     backends::{
         commit_options_with_block_size, create_segment_store, fill_segment_store_with_options,
-        sum_segment_fetches,
+        sum_segment_fetches, sum_segment_iter,
     },
     data::{Dataset, build_dataset},
     profile::{PROFILES, ValueProfile},
@@ -32,6 +32,7 @@ pub(crate) fn workload(c: &mut Criterion) {
     let profile = ValueProfile::Small;
     let dataset = build_dataset(OVERLAY_RECORD_COUNT, profile);
     bench_overlay_ordered_fetch(c, profile, &dataset);
+    bench_overlay_iter_all(c, profile, &dataset);
 }
 
 fn bench_ordered_fetch(c: &mut Criterion, profile: ValueProfile, dataset: &Dataset) {
@@ -128,6 +129,41 @@ fn bench_overlay_ordered_fetch(c: &mut Criterion, profile: ValueProfile, dataset
                     &overlay.ordered_keys,
                 ))
             })
+        });
+    }
+
+    group.finish();
+}
+
+fn bench_overlay_iter_all(c: &mut Criterion, profile: ValueProfile, dataset: &Dataset) {
+    let overlay = OverlayReadDataset::from_dataset(dataset);
+    let options = commit_options_with_block_size(16 * 1024);
+    let main_only = OverlayStore::main_only(profile, &overlay, &options);
+    let expected_checksum = sum_segment_iter(&main_only.store);
+
+    let overlays = OVERLAY_PATCH_COUNTS
+        .iter()
+        .copied()
+        .map(|patch_count| {
+            let store = OverlayStore::with_patch_count(profile, &overlay, &options, patch_count);
+            assert_eq!(
+                sum_segment_iter(&store.store),
+                expected_checksum,
+                "overlay store should scan the same logical records as main-only"
+            );
+            (patch_count, store)
+        })
+        .collect::<Vec<_>>();
+
+    let mut group = c.benchmark_group(format!("{}/overlay_iter_all", profile.name()));
+    group.throughput(Throughput::Elements(overlay.all_entries.len() as u64));
+
+    group.bench_function("main_only", |b| {
+        b.iter(|| black_box(sum_segment_iter(&main_only.store)))
+    });
+    for (patch_count, overlay_store) in &overlays {
+        group.bench_function(format!("patch_{patch_count}"), |b| {
+            b.iter(|| black_box(sum_segment_iter(&overlay_store.store)))
         });
     }
 
