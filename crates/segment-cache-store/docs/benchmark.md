@@ -9,7 +9,7 @@ One benchmark target is used for horizontal comparison against other embedded st
 ## Benchmark Targets
 
 - `comparison`: cross-backend summary benchmark. It compares `segment-cache-store`, tuned `fjall3`, and `redb` on ordered fetch, sparse ordered fetch, full iteration, append publish, and the small-profile parameter-evolution workload.
-- `ordered_lookup`: segment-only read-path benchmark with checksum verification enabled. It measures dense ordered lookup, sparse ordered lookup, large-value block-size sensitivity, L0 overlay ordered lookup, and L0 overlay scan amplification.
+- `ordered_lookup`: segment-only read-path benchmark with checksum verification enabled. It measures dense ordered lookup, sparse ordered lookup, large-value borrowed-vs-owned fetch APIs, large-value block-size sensitivity, L0 overlay ordered lookup, and L0 overlay scan amplification.
 - `append_publish`: segment-only write-path benchmark with checksum verification enabled. It measures sorted and unsorted batch publish into fresh stores.
 - `parameter_evolution`: segment-only cache-evolution benchmark with checksum verification enabled. It measures rebuild-vs-L0 behavior for middle inserts and repeated axis changes.
 
@@ -69,6 +69,10 @@ Segment-only sparse ordered lookup with checksum verification enabled. It sweeps
 ### `large_value_block_size`
 
 Segment-only dense ordered lookup for the `large` profile with block sizes `16K`, `64K`, `256K`, and `512K`. This answers whether large-value performance is blocked by block sizing or by value movement and checksum cost.
+
+### `large_value_fetch_api`
+
+Segment-only dense ordered lookup for the `large` profile comparing the borrowed visitor path with the owned `fetch_many_ordered` path at `16K` and `512K` block sizes. This isolates API-level value materialization cost from physical block-size effects.
 
 ### `overlay_ordered_fetch`
 

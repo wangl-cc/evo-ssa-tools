@@ -1,8 +1,10 @@
 //! Block decoder: on-disk block bytes in, zero-copy records out.
 //!
-//! Decoding validates the block footer, the value region, and full key
-//! ordering before any record is returned; a block that fails any check is
-//! reported as [`CorruptionError::Block`] and degrades to a cache miss.
+//! Decoding validates the block footer, the value region, and key ordering
+//! before any record is returned; a block that fails any check is reported as
+//! [`CorruptionError::Block`] and degrades to a cache miss.
+
+use std::{cell::OnceCell, cmp::Ordering};
 
 use super::layout::{BlockFooter, BlockValueRegion};
 use crate::format::{CorruptionError, ValueLayout, segment::BlockIndexEntry};
@@ -14,10 +16,14 @@ pub(crate) struct DecodedBlock {
     key_len: usize,
     key_prefix_len: usize,
     suffix_len: usize,
-    last_key_offset: usize,
     key_region_len: usize,
     value_region: BlockValueRegion,
-    full_keys: Vec<u8>,
+    /// Materialized only when the block strips a shared key prefix and the last
+    /// key is therefore not contiguous in the on-disk key region.
+    last_key: Option<Vec<u8>>,
+    /// Materialized lazily for scan-style APIs that must return borrowed full
+    /// keys. Ordered lookup compares prefix/suffix bytes directly.
+    full_keys: OnceCell<Vec<u8>>,
     bytes: Vec<u8>,
 }
 
@@ -41,16 +47,17 @@ impl DecodedBlock {
             return Err(CorruptionError::Block);
         }
         let layout = BlockLayout::new(record_count, key_len, value_layout, footer)?;
-        let full_keys = layout.reconstruct_full_keys(&bytes)?;
+        layout.validate_key_region(&bytes)?;
+        let last_key = layout.materialize_last_key_if_needed(&bytes, key_len)?;
         let block = Self {
             record_count,
             key_len,
             key_prefix_len: layout.key_prefix_len,
             suffix_len: layout.suffix_len,
-            last_key_offset: (record_count - 1) * key_len,
             key_region_len: layout.key_region_len,
             value_region: layout.value_region,
-            full_keys,
+            last_key,
+            full_keys: OnceCell::new(),
             bytes,
         };
         block.value_region.validate(&block.bytes)?;
@@ -64,39 +71,20 @@ impl DecodedBlock {
 
     pub(crate) fn first_key(&self) -> &[u8] {
         debug_assert!(self.record_count > 0);
-        if !self.full_keys.is_empty() {
-            return &self.full_keys[..self.key_len];
-        }
         &self.bytes[..self.key_len]
     }
 
     pub(crate) fn last_key(&self) -> &[u8] {
-        let start = self.last_key_offset;
-        if self.full_keys.is_empty() {
-            if self.record_count == 1 {
-                return &self.bytes[..self.key_len];
-            }
-            let raw_start = self.key_prefix_len + (self.record_count - 1) * self.suffix_len;
-            return &self.bytes[raw_start..raw_start + self.key_len];
+        if let Some(last_key) = &self.last_key {
+            return last_key;
         }
-        &self.full_keys[start..start + self.key_len]
+        let start = (self.record_count - 1) * self.key_len;
+        &self.bytes[start..start + self.key_len]
     }
 
     pub(crate) fn find_value(&self, key: &[u8]) -> Option<Vec<u8>> {
         let index = self.partition_point_by_key(key);
-        let record = self.record_at(index).ok()?;
-        if record.key == key {
-            Some(record.value.to_vec())
-        } else {
-            None
-        }
-    }
-
-    pub(crate) fn records_from(
-        &self,
-        start_index: usize,
-    ) -> impl Iterator<Item = ParsedRecord<'_>> {
-        (start_index..self.record_count).filter_map(|index| self.record_at(index).ok())
+        self.value_at_if_key(index, key).map(ToOwned::to_owned)
     }
 
     pub(crate) fn record_count(&self) -> usize {
@@ -118,13 +106,25 @@ impl DecodedBlock {
         self.partition_point_by_key(key)
     }
 
+    pub(crate) fn compare_key_at_index(&self, index: usize, key: &[u8]) -> Ordering {
+        self.compare_key(index, key).unwrap_or(Ordering::Greater)
+    }
+
+    pub(crate) fn value_at_if_key(&self, index: usize, key: &[u8]) -> Option<&[u8]> {
+        if self.compare_key(index, key).ok()? != Ordering::Equal {
+            return None;
+        }
+        let range = self.value_region.range(&self.bytes, index).ok()?;
+        Some(&self.bytes[range])
+    }
+
     fn partition_point_by_key(&self, key: &[u8]) -> usize {
         let mut left = 0usize;
         let mut right = self.record_count;
         while left < right {
             let mid = left + (right - left) / 2;
-            match self.key_at(mid) {
-                Ok(candidate) if candidate < key => left = mid + 1,
+            match self.compare_key(mid, key) {
+                Ok(Ordering::Less) => left = mid + 1,
                 _ => right = mid,
             }
         }
@@ -135,19 +135,72 @@ impl DecodedBlock {
         if index >= self.record_count {
             return Err(CorruptionError::Block);
         }
-        let start = index * self.key_len;
-        let end = start + self.key_len;
-        if !self.full_keys.is_empty() {
-            if end > self.full_keys.len() {
+        if !self.needs_full_key_buffer() {
+            let start = index * self.key_len;
+            let end = start + self.key_len;
+            if end > self.key_region_len {
                 return Err(CorruptionError::Block);
             }
-            return Ok(&self.full_keys[start..end]);
+            return Ok(&self.bytes[start..end]);
         }
 
+        let start = index * self.key_len;
+        let end = start + self.key_len;
+        let full_keys = self.full_keys.get_or_init(|| self.reconstruct_full_keys());
+        if end > full_keys.len() {
+            return Err(CorruptionError::Block);
+        }
+        Ok(&full_keys[start..end])
+    }
+
+    fn compare_key(&self, index: usize, key: &[u8]) -> Result<Ordering, CorruptionError> {
+        if index >= self.record_count || key.len() != self.key_len {
+            return Err(CorruptionError::Block);
+        }
+        let prefix = &self.bytes[..self.key_prefix_len];
+        let prefix_order = prefix.cmp(&key[..self.key_prefix_len]);
+        if prefix_order != Ordering::Equal {
+            return Ok(prefix_order);
+        }
+        self.key_suffix_at(index)
+            .map(|suffix| suffix.cmp(&key[self.key_prefix_len..]))
+    }
+
+    fn key_suffix_at(&self, index: usize) -> Result<&[u8], CorruptionError> {
+        if index >= self.record_count {
+            return Err(CorruptionError::Block);
+        }
+        let start = self
+            .key_prefix_len
+            .checked_add(
+                index
+                    .checked_mul(self.suffix_len)
+                    .ok_or(CorruptionError::Block)?,
+            )
+            .ok_or(CorruptionError::Block)?;
+        let end = start
+            .checked_add(self.suffix_len)
+            .ok_or(CorruptionError::Block)?;
         if end > self.key_region_len {
             return Err(CorruptionError::Block);
         }
         Ok(&self.bytes[start..end])
+    }
+
+    fn needs_full_key_buffer(&self) -> bool {
+        self.key_prefix_len > 0 && self.record_count > 1
+    }
+
+    fn reconstruct_full_keys(&self) -> Vec<u8> {
+        let prefix = &self.bytes[..self.key_prefix_len];
+        let mut full_keys = Vec::with_capacity(self.record_count * self.key_len);
+        for index in 0..self.record_count {
+            let suffix_start = self.key_prefix_len + index * self.suffix_len;
+            let suffix_end = suffix_start + self.suffix_len;
+            full_keys.extend_from_slice(prefix);
+            full_keys.extend_from_slice(&self.bytes[suffix_start..suffix_end]);
+        }
+        full_keys
     }
 
     fn record_at(&self, index: usize) -> Result<ParsedRecord<'_>, CorruptionError> {
@@ -160,13 +213,12 @@ impl DecodedBlock {
     }
 
     fn validate_key_ordering(&self, entry: &BlockIndexEntry) -> Result<(), CorruptionError> {
-        let first_key = self.key_at(0)?;
-        if first_key != entry.first_key.as_slice() {
+        if self.compare_key(0, entry.first_key.as_slice())? != Ordering::Equal {
             return Err(CorruptionError::Block);
         }
-        let mut previous = first_key;
+        let mut previous = self.key_suffix_at(0)?;
         for index in 1..self.record_count {
-            let current = self.key_at(index)?;
+            let current = self.key_suffix_at(index)?;
             if current <= previous {
                 return Err(CorruptionError::Block);
             }
@@ -220,26 +272,41 @@ impl BlockLayout {
         })
     }
 
-    fn reconstruct_full_keys(&self, bytes: &[u8]) -> Result<Vec<u8>, CorruptionError> {
-        if self.key_prefix_len == 0 || self.record_count == 1 {
-            return Ok(Vec::new());
-        }
+    fn validate_key_region(&self, bytes: &[u8]) -> Result<(), CorruptionError> {
         if self.key_region_len > bytes.len() {
             return Err(CorruptionError::Block);
         }
-        let prefix = &bytes[..self.key_prefix_len];
-        let mut full_keys =
-            Vec::with_capacity(self.record_count * (self.key_prefix_len + self.suffix_len));
-        for index in 0..self.record_count {
-            let suffix_start = self.key_prefix_len + index * self.suffix_len;
-            let suffix_end = suffix_start + self.suffix_len;
-            if suffix_end > self.key_region_len {
-                return Err(CorruptionError::Block);
-            }
-            full_keys.extend_from_slice(prefix);
-            full_keys.extend_from_slice(&bytes[suffix_start..suffix_end]);
+        Ok(())
+    }
+
+    fn materialize_last_key_if_needed(
+        &self,
+        bytes: &[u8],
+        key_len: usize,
+    ) -> Result<Option<Vec<u8>>, CorruptionError> {
+        if self.key_prefix_len == 0 || self.record_count == 1 {
+            return Ok(None);
         }
-        Ok(full_keys)
+        let index = self.record_count - 1;
+        let prefix = &bytes[..self.key_prefix_len];
+        let suffix_start = self
+            .key_prefix_len
+            .checked_add(
+                index
+                    .checked_mul(self.suffix_len)
+                    .ok_or(CorruptionError::Block)?,
+            )
+            .ok_or(CorruptionError::Block)?;
+        let suffix_end = suffix_start
+            .checked_add(self.suffix_len)
+            .ok_or(CorruptionError::Block)?;
+        if suffix_end > self.key_region_len {
+            return Err(CorruptionError::Block);
+        }
+        let mut key = Vec::with_capacity(key_len);
+        key.extend_from_slice(prefix);
+        key.extend_from_slice(&bytes[suffix_start..suffix_end]);
+        Ok(Some(key))
     }
 }
 
@@ -290,9 +357,28 @@ mod tests {
             let decoded = DecodedBlock::decode(block, &entry, 4, ValueLayout::VARIABLE, true)
                 .expect("block should decode");
 
+            assert!(
+                decoded.full_keys.get().is_none(),
+                "lookup methods should not materialize full key table"
+            );
             assert_eq!(decoded.first_key(), b"aa01");
             assert_eq!(decoded.last_key(), b"aa02");
             assert_eq!(decoded.find_value(b"aa02"), Some(b"second".to_vec()));
+            assert!(
+                decoded.full_keys.get().is_none(),
+                "find_value should compare prefix-stripped keys without materialization"
+            );
+            assert_eq!(
+                decoded
+                    .record_at_index(1)
+                    .expect("record should decode")
+                    .key,
+                b"aa02"
+            );
+            assert!(
+                decoded.full_keys.get().is_some(),
+                "scan-style record access materializes full keys lazily"
+            );
         }
 
         #[test]
@@ -313,7 +399,7 @@ mod tests {
             let decoded = DecodedBlock::decode(block, &entry, 4, ValueLayout::VARIABLE, true)
                 .expect("block should decode");
 
-            assert!(decoded.full_keys.is_empty());
+            assert!(decoded.full_keys.get().is_none());
             assert_eq!(decoded.first_key(), b"aa01");
             assert_eq!(decoded.last_key(), b"aa01");
             assert_eq!(decoded.find_value(b"aa01"), Some(b"only".to_vec()));

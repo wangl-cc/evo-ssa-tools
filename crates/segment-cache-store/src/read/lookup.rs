@@ -618,25 +618,21 @@ where
     K: AsRef<[u8]>,
     F: FnMut(usize, Option<&[u8]>),
 {
-    let start_index = keys
+    let mut record_index = keys
         .first()
         .map_or(0, |key| block.lower_bound_index(key.as_ref()));
-    let mut records = block.records_from(start_index).peekable();
 
     for (offset, key) in keys.iter().enumerate() {
         let key = key.as_ref();
-        while let Some(record) = records.peek() {
-            if record.key < key {
-                let _ = records.next();
-            } else {
-                break;
-            }
+        while record_index < block.record_count()
+            && block.compare_key_at_index(record_index, key) == std::cmp::Ordering::Less
+        {
+            record_index += 1;
         }
 
-        let value = records
-            .peek()
-            .filter(|record| record.key == key)
-            .map(|record| record.value);
-        visitor(base_index + offset, value);
+        visitor(
+            base_index + offset,
+            block.value_at_if_key(record_index, key),
+        );
     }
 }

@@ -6,7 +6,7 @@ use segment_cache_store::{CommitOptions, Store};
 use crate::{
     backends::{
         commit_options_with_block_size, create_segment_store, fill_segment_store_with_options,
-        sum_segment_fetches, sum_segment_iter,
+        sum_segment_fetches, sum_segment_iter, sum_segment_owned_fetches,
     },
     data::{Dataset, build_dataset},
     profile::{PROFILES, ValueProfile},
@@ -25,6 +25,7 @@ pub(crate) fn workload(c: &mut Criterion) {
         bench_sparse_ordered_fetch(c, profile, &dataset);
 
         if profile.uses_large_value_tuning() {
+            bench_large_fetch_api(c, profile, &dataset);
             bench_large_block_sweep(c, profile, &dataset);
         }
     }
@@ -89,6 +90,29 @@ fn bench_large_block_sweep(c: &mut Criterion, profile: ValueProfile, dataset: &D
         );
         group.bench_function(format!("block_{}k", block_size / 1024), |b| {
             b.iter(|| black_box(sum_segment_fetches(&store, &dataset.ordered_keys)))
+        });
+    }
+
+    group.finish();
+}
+
+fn bench_large_fetch_api(c: &mut Criterion, profile: ValueProfile, dataset: &Dataset) {
+    let mut group = c.benchmark_group(format!("{}/large_value_fetch_api", profile.name()));
+    group.throughput(Throughput::Elements(dataset.ordered_keys.len() as u64));
+
+    for &block_size in &[16 * 1024, 512 * 1024] {
+        let tempdir = tempfile::tempdir().expect("tempdir should work");
+        let store = create_filled_store(
+            tempdir.path(),
+            profile,
+            &dataset.entries,
+            &commit_options_with_block_size(block_size),
+        );
+        group.bench_function(format!("borrowed_block_{}k", block_size / 1024), |b| {
+            b.iter(|| black_box(sum_segment_fetches(&store, &dataset.ordered_keys)))
+        });
+        group.bench_function(format!("owned_block_{}k", block_size / 1024), |b| {
+            b.iter(|| black_box(sum_segment_owned_fetches(&store, &dataset.ordered_keys)))
         });
     }
 

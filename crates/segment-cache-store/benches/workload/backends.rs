@@ -150,6 +150,16 @@ pub(crate) fn sum_segment_fetches(store: &Store, keys: &[Vec<u8>]) -> usize {
     total
 }
 
+pub(crate) fn sum_segment_owned_fetches(store: &Store, keys: &[Vec<u8>]) -> usize {
+    store
+        .fetch_many_ordered(keys.iter().map(Vec::as_slice))
+        .expect("fetch should succeed")
+        .into_iter()
+        .flatten()
+        .map(|value| touch_bytes(&value))
+        .sum()
+}
+
 pub(crate) fn sum_segment_iter(store: &Store) -> usize {
     let mut total = 0usize;
     store
