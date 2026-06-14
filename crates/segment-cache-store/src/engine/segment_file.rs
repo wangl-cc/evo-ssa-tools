@@ -12,7 +12,7 @@ use crate::{
     error::Result,
     format::{
         ValueLayout,
-        block::{BLOCK_FOOTER_LEN, DecodedBlock},
+        block::{BlockLookupLayout, DecodedBlock, KEY_PREFIX_LEN_LEN},
         segment::{
             BlockIndexEntry, SEGMENT_FOOTER_TRAILER_LEN, SEGMENT_HEADER_LEN, SegmentFooter,
             SegmentHeader,
@@ -153,23 +153,36 @@ pub(super) fn read_block_metadata_reusing(
     verify_checksum: bool,
     mut metadata: Vec<u8>,
 ) -> Result<DecodedBlock> {
-    let footer = read_block_footer(file, entry)?;
-    let metadata_len = footer.payload_offset;
+    use crate::format::CorruptionError;
+
+    if entry.block_len < KEY_PREFIX_LEN_LEN as u32 {
+        return Err(CorruptionError::Block.into());
+    }
+    let mut prefix_len_bytes = [0u8; KEY_PREFIX_LEN_LEN];
+    read_exact_at(file, entry.block_offset, &mut prefix_len_bytes)?;
+    let prefix_len = u32::from_le_bytes(prefix_len_bytes) as usize;
+    let lookup_layout = BlockLookupLayout::new(
+        entry.record_count as usize,
+        key_len,
+        value_layout,
+        prefix_len,
+    )?;
+    let metadata_len = lookup_layout.metadata_with_crc_len()?;
+    if metadata_len > entry.block_len as usize {
+        return Err(CorruptionError::Block.into());
+    }
     if metadata.len() < metadata_len {
         metadata.resize(metadata_len, 0);
     } else {
         metadata.truncate(metadata_len);
     }
     read_exact_at(file, entry.block_offset, &mut metadata)?;
-    if verify_checksum {
-        footer.verify_metadata(&metadata)?;
-    }
     Ok(DecodedBlock::decode_metadata(
         metadata,
-        footer,
         entry,
         key_len,
         value_layout,
+        verify_checksum,
     )?)
 }
 
@@ -183,29 +196,11 @@ pub(super) fn read_block_payload(
     if block.has_payload() {
         return Ok(());
     }
-    let mut payload = vec![0u8; block.payload_len()];
+    let mut payload = vec![0u8; block.payload_read_len(verify_checksum)?];
     read_exact_at(
         file,
         entry.block_offset + block.payload_offset() as u64,
         &mut payload,
     )?;
     Ok(block.attach_payload(payload, verify_checksum)?)
-}
-
-fn read_block_footer(
-    file: &File,
-    entry: &BlockIndexEntry,
-) -> Result<crate::format::block::BlockFooter> {
-    use crate::format::CorruptionError;
-
-    let block_len = entry.block_len as usize;
-    if block_len < BLOCK_FOOTER_LEN {
-        return Err(CorruptionError::Block.into());
-    }
-    let footer_offset = entry.block_offset + (block_len - BLOCK_FOOTER_LEN) as u64;
-    let mut bytes = [0u8; BLOCK_FOOTER_LEN];
-    read_exact_at(file, footer_offset, &mut bytes)?;
-    Ok(crate::format::block::BlockFooter::from_footer_bytes(
-        &bytes, block_len,
-    )?)
 }

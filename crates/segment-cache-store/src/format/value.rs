@@ -56,18 +56,6 @@ impl ValueLayout {
         }
         Some(0)
     }
-
-    pub(super) fn value_payload_offset(
-        self,
-        record_count: usize,
-        value_region_offset: usize,
-    ) -> Option<usize> {
-        if self.is_variable() {
-            return value_region_offset
-                .checked_add(self.offset_count(record_count)?.checked_mul(4)?);
-        }
-        Some(value_region_offset)
-    }
 }
 
 impl Default for ValueLayout {
@@ -95,21 +83,19 @@ mod tests {
         }
     }
 
-    mod region_offsets {
+    mod value_index {
         use super::*;
 
         #[test]
-        fn variable_layout_offsets_past_sentinel_index() {
+        fn variable_layout_has_one_sentinel_offset() {
             assert_eq!(ValueLayout::VARIABLE.offset_count(2), Some(3));
-            assert_eq!(ValueLayout::VARIABLE.value_payload_offset(2, 16), Some(28));
         }
 
         #[test]
-        fn fixed_layout_payload_starts_at_value_region() {
+        fn fixed_layout_has_no_offsets() {
             let value_layout =
                 ValueLayout::fixed(NonZeroU32::new(4).expect("fixed len is non-zero"));
             assert_eq!(value_layout.offset_count(2), Some(0));
-            assert_eq!(value_layout.value_payload_offset(2, 16), Some(16));
         }
     }
 }

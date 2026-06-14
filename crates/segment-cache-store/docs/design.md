@@ -2,118 +2,153 @@
 
 ## Purpose
 
-`segment-cache-store` is a storage backend for computation-cache workloads, not a general-purpose database.
+`segment-cache-store` is a persistent backend for computation caches with fixed-width ordered keys and opaque serialized values. It is not a general-purpose database.
 
-The intended workload has these properties:
+The target workload is demand-driven cache filling: callers query a sorted batch of structured inputs, compute cache misses, and publish the newly computed results for later reuse. Values are allowed to be forgotten on crash or corruption because they are recomputable, but the store must never return silently corrupted data as a valid hit.
 
-- keys are fixed-width byte strings
-- key order is meaningful and query order follows key order
-- values are already serialized and opaque to the store
-- each store declares one value layout: variable-length values or fixed-length values
-- writes publish immutable sorted segments in batches
-- ordered batch lookup is the hot path
-- corruption should degrade to cache misses, not incorrect results
-- store roots are synchronized between devices by copying segment files
+The implementation is optimized for:
 
-This backend intentionally avoids functionality that is expensive but not useful for this workload:
+- fixed-width byte keys whose lexicographic order is the caller's desired query order
+- ordered batch lookup as the primary read path
+- full ordered iteration for export, migration, and analysis
+- immutable segment files as the file-level sync unit
+- batch publication instead of individual durable writes
+- corruption-as-miss semantics
 
-- no transactions
-- no deletes
-- no update-in-place
-- no background compaction: a segment is rewritten only when a commit interleaves with its range
-- no concurrent writers: one writer at a time, with no merging of concurrent writer state
-- no WAL-based recovery
+The implementation intentionally does not provide:
 
-## Status
+- transactions
+- deletes or tombstones
+- update-in-place
+- concurrent writers
+- WAL recovery
+- background compaction unrelated to new writes
+- query features beyond point lookup, ordered batch lookup, and ordered range iteration
 
-This crate is experimental. The on-disk format may change without migration support; when the format changes, existing stores are rebuilt from scratch. There is no v1-to-v2 compatibility requirement.
+## Status And Scope
 
-Sections and paragraphs marked **Decided** record accepted design. Everything unmarked describes the current implementation.
+This crate is experimental. The on-disk format may change without migration support; rebuilding the cache from recomputable source data is the migration strategy.
 
-Implementation status (see [Implementation Sequencing](#implementation-sequencing) for the full plan):
+This document describes the current implementation unless a section is explicitly marked as future work. Earlier prototype constraints such as "insert-only commits" and "globally non-overlapping segments only" are no longer current: the store now has a non-overlapping main tier plus a bounded overlapping patch tier.
 
-- **Implemented**: replacing-manifest commits, bounded L0 patch segments with normalization, the winner rule, dead-entry dropping, the advisory writer lock, open-time garbage collection, and the `STORE`-last creation order.
-- **Pending**: content-addressed segment identity, generations, and the cross-device sync protocol (the catalog revision that carries them). Paragraphs describing only these still carry a **Decided** marker.
+Currently implemented:
+
+- binary `MANIFEST` snapshots
+- text `STORE` descriptors
+- immutable segment files
+- main tier plus patch tier
+- replacing-manifest commits
+- automatic and explicit normalization of overlapped ranges
+- deterministic duplicate-key winner rule
+- dead manifest-entry dropping
+- advisory single-writer lock
+- open-time and post-commit garbage collection
+- split metadata/payload block checksums
+- process-local verified-block reuse
+
+Future work is isolated in [Future Sync Design](#future-sync-design). It is not part of the current disk format.
 
 ## Core Invariants
 
-Permanent invariants:
-
-- one store root has one fixed key length, one value layout, and one caller-defined metadata namespace
-- published segment files are immutable; a segment file's bytes never change after publication
-- a root's `MANIFEST` is the sole source of visibility for that root
-- missing or corrupted data is treated as absent, never as valid output
-- main-tier segment ranges are sorted and globally non-overlapping
-- patch-tier segment ranges are bounded and may overlap main-tier or other patch-tier ranges
-- segments whose ranges receive no new writes are never rewritten
-- all stored copies of one key are semantically interchangeable (see [Caller Contract](#caller-contract))
-
-The following former restrictions are now lifted in the implementation:
-
-- commits are no longer insert-only: a batch whose range intersects main-tier data can publish to the patch tier or trigger normalization (see [Steady-State Write Design](#steady-state-write-design))
-- manifest entries whose segment files are missing no longer reserve their ranges forever: they are dropped at the next manifest publication
+- One store root represents one cache namespace with one caller metadata value, one fixed key length, and one value layout.
+- `STORE` owns stable namespace identity and is written once during creation.
+- `MANIFEST` is the only source of visible data.
+- Segment files are immutable after publication.
+- Segment files not referenced by `MANIFEST` are invisible.
+- Main-tier segment ranges are sorted and globally non-overlapping.
+- Patch-tier segment ranges are bounded and may overlap main-tier ranges or other patch-tier ranges.
+- Missing, malformed, or corrupted data is treated as absent, never as valid output.
+- Copies of one key across visible segments are allowed only because the caller promises those values are semantically interchangeable.
+- Writes are serialized by one logical writer.
 
 ## Caller Contract
 
-The store enforces key width and value layout. The contracts below cannot be checked by the store and are the caller's responsibility.
+The store validates key length, fixed value length, manifest structure, segment structure, and block checksums. The store cannot validate the caller's logical encoding and cache semantics.
 
-- **Stable canonical key encoding.** Key encoding is external; the store only compares keys lexicographically. Any cross-device use additionally requires that the same logical input encodes to the same key bytes on every platform (`ssa-workflow` provides this via its canonical input encoding). An unstable key encoding fragments the cache - spurious misses and duplicate work - but does not corrupt it.
-- **Interchangeable values.** Every value ever committed for one key must be semantically interchangeable with every other. Byte equality is not required and is not assumed: floating-point library differences across platforms and codec or compression version differences legitimately produce different bytes for equivalent values. The store may return or retain any one copy.
-- **Single logical writer.** At most one process writes to a root at a time (see [Process Model](#process-model)).
+- **Stable key encoding.** The caller must encode each logical input into the same fixed-width key bytes wherever the cache is used. The store compares keys lexicographically and does not understand their internal structure.
+- **Interchangeable values for one key.** If the same key appears in multiple visible segments, any value copy may be retained or returned according to the deterministic winner rule. Byte equality is not required, but the copies must be semantically equivalent for the caller's cache contract.
+- **Single logical writer.** Only one writer may mutate a root at a time. The implementation enforces this for cooperating processes with an advisory lock.
+- **Immutable files while open.** Segment files must not be externally modified while a `Store` handle is open. The runtime may skip repeated checksum work for block parts that were already verified in the same process.
 
 ## Terminology
 
-The storage design uses the following terms consistently. Code names should follow these meanings unless a local type documents a narrower role.
-
 ### Logical Data
 
-- `Key`: the fixed-width byte string used for ordering and lookup. Key encoding is external to this crate; the store only compares keys lexicographically.
-- `Value`: the opaque serialized byte string associated with one key. Value serialization is external to this crate.
-- `Entry`: a logical key/value pair before it is encoded into a segment file. Write batches and segment writers consume entries.
-- `Record`: a key/value pair as decoded from visible stored data. Readers, lookup sessions, and scan cursors produce records. A record can be treated as missing if its containing block is corrupt.
-- `Copy`: one stored record for a key that may also be stored elsewhere. Copies of one key are semantically interchangeable by caller contract; their bytes may differ.
+- `Key`: fixed-width byte string used for ordering and lookup.
+- `Value`: opaque serialized byte string associated with one key.
+- `Entry`: caller-provided key/value pair before it is encoded into a segment.
+- `Record`: key/value pair decoded from visible storage and returned by reads or scans.
+- `Copy`: one stored record for a key that may also exist in another visible segment.
 
-`Entry` and `Record` are intentionally different words: an entry is caller input to the encoder, while a record is storage output from decoded bytes. Unqualified `Entry` should mean logical input data; other entry-like structures must be qualified, such as `Manifest entry` or `Block index entry`.
+`Entry` means write input. `Record` means read output. Other entry-like structures should be qualified, such as `Manifest entry` or `Block index entry`.
 
 ### Tiers
 
-- `Main tier (L1)`: the sorted, globally non-overlapping segment set.
-- `Patch tier (L0)`: a small bounded segment set that may overlap the main tier and each other.
-- `Normalization`: a replacing commit that merges patch-tier segments and the intersecting main-tier segments into new main-tier segments.
+- `Main tier (L1)`: sorted, globally non-overlapping segment set.
+- `Patch tier (L0)`: bounded segment set for small interleaving writes. Patch segments may overlap main segments and each other.
+- `Normalization`: replacing commit that merges patch segments plus intersecting main segments into new main-tier segments.
 
-### Store Catalog
+### Catalog
 
-- `Store root`: the directory containing one cache namespace.
-- `Metadata`: caller-defined compatibility bytes persisted in `STORE`. Metadata can describe namespace, schema, codec, or any other caller-level compatibility contract.
-- `STORE`: the stable store descriptor. It records persistent identity such as metadata, key length, and value layout. It is created once and is not the atomic publish point for data.
-- `MANIFEST`: the atomic visible-data snapshot. It lists the currently visible segments.
-- `Manifest entry`: one visible segment range in `MANIFEST`, identified by an opaque segment reference plus `min_key` and `max_key`.
-- `Generation`: a per-root monotone counter incremented by every manifest publication. Generations order snapshots of one root; they have no meaning across roots. **Decided**, not implemented.
+- `Store root`: directory containing one cache namespace.
+- `Metadata`: caller-defined compatibility bytes persisted in `STORE`.
+- `STORE`: stable descriptor for metadata, key length, and value layout.
+- `MANIFEST`: atomic visible-data snapshot.
+- `Manifest entry`: one visible segment reference plus tier and key range.
 
-### Physical Storage
+### Physical Layout
 
-- `Segment`: an immutable file containing a sorted key range. Segments are the file-level sync unit and the manifest visibility unit.
-- `Segment header`: fixed-size metadata at the start of a segment. It identifies segment format and store geometry needed before decoding the rest of the file.
-- `Segment footer`: variable-size metadata at the end of a segment. It is the completion marker and owns the sparse block index.
-- `Block`: the complete physical read unit inside a segment. A block contains key bytes, value-layout bytes, value payload bytes, padding, and a block footer.
-- `Block index`: sparse segment-footer metadata with one entry per block. It maps each block's first key to its absolute file offset, physical length, and record count.
-- `Block footer`: fixed-size block-local decoding metadata stored at the end of a block. It records the common key prefix length, value payload location, metadata checksum, and value payload checksum.
+- `Segment`: immutable file containing sorted records.
+- `Segment header`: fixed-size prefix that identifies segment format and store geometry.
+- `Segment footer`: variable-size suffix that is the segment completion marker and owns the sparse block index.
+- `Block`: physical read unit inside a segment.
+- `Block index`: segment-footer table with one entry per block.
+- `KeySection`: block-local key metadata. It starts with `prefix_len:u32`, then stores the common key prefix and the fixed-width suffix table.
+- `ValueIndexSection`: variable-value offset table with `record_count + 1` offsets. Fixed-value blocks do not have this section.
+- `ValuePayload`: packed user value bytes.
+- `LookupMetadata`: the bytes needed to prove key membership and locate values in a block. It is `KeySection` plus `ValueIndexSection` for variable-value blocks, and just `KeySection` for fixed-value blocks.
 
-### Block Internal Layout
+## Architecture
 
-- `Region`: a contiguous byte range inside a block owned by one layout. A region can contain payload bytes, auxiliary index data, or both.
-- `KeyRegion`: the region owned by key layout. It currently stores the common key prefix followed by fixed-width key suffixes.
-- `ValueRegion`: the region owned by value layout. Variable-value blocks store a `ValueIndex` followed by a `ValuePayload`; fixed-value blocks store only a `ValuePayload`.
-- `Index`: auxiliary bytes used to locate payload. Index bytes are not returned to callers.
-- `ValueIndex`: the variable-value offset table. It has `record_count + 1` offsets, where the final offset is the value payload length.
-- `Payload`: stored user-data bytes after layout metadata has been removed. Do not use `payload` for generic format bodies such as segment footers or manifests.
-- `ValuePayload`: the packed value bytes returned to callers. `payload_offset` and `payload_len` always refer to this payload, not to the whole `ValueRegion`.
+The current implementation separates persistent identity, visibility, immutable bytes, and runtime snapshots.
 
-These terms intentionally avoid names like `area` or `after_keys`. `Area` is too vague, and `after_keys` describes the current neighboring layout rather than the value layout's own responsibility.
+```mermaid
+flowchart TD
+  Root["Store root"] --> StoreFile["STORE<br/>metadata, key_len, value_len"]
+  Root --> Manifest["MANIFEST<br/>atomic visible snapshot"]
+  Root --> Lock["LOCK<br/>single writer"]
+  Root --> SegmentDir["segments/"]
+
+  Manifest --> MainTier["Main tier (L1)<br/>sorted, non-overlapping ranges"]
+  Manifest --> PatchTier["Patch tier (L0)<br/>bounded overlapping patches"]
+
+  MainTier --> RuntimeMain["runtime main SegmentState list"]
+  PatchTier --> RuntimePatch["runtime patch SegmentState list"]
+  SegmentDir --> SegmentFile["segment-N.seg<br/>immutable data file"]
+
+  SegmentFile --> Header["Segment header"]
+  SegmentFile --> Blocks["Data blocks"]
+  SegmentFile --> Footer["Segment footer<br/>min/max + sparse block index"]
+
+  Blocks --> Block["Block<br/>physical read unit"]
+  Block --> LookupMetadata["LookupMetadata<br/>KeySection + optional ValueIndexSection"]
+  LookupMetadata --> LookupCrc["lookup_crc32c"]
+  Block --> ValuePayload["ValuePayload<br/>packed value bytes"]
+  ValuePayload --> ValueCrc["value_crc32c"]
+  ValueCrc --> Padding["padding"]
+```
+
+The layering in code mirrors this structure:
+
+- `format`: byte layouts and structural validation; no filesystem access.
+- `engine`: filesystem paths, atomic publication, open/create, runtime state, segment file IO, and garbage collection.
+- `read`: ordered lookup and range cursors over runtime snapshots.
+- `write`: write batches and replacing-manifest commits.
+- `store`: public facade that delegates to read and write layers.
 
 ## Directory Layout
 
-Each store directory contains:
+Each store root contains:
 
 ```text
 root/
@@ -123,18 +158,30 @@ root/
   MANIFEST.tmp
   LOCK
   segments/
-    segment-00000000000000000000.seg
-    segment-00000000000000000001.seg
-    segment-00000000000000000002.seg.tmp
+    segment-0000000000.seg
+    segment-0000000001.seg
+    segment-0000000002.seg.tmp
 ```
 
-`STORE` is the stable namespace descriptor. It changes only when the store is created. `MANIFEST` is the atomic visible segment set. `LOCK` is the stable advisory-writer lock file and is never atomically replaced. Segment files that are not referenced by `MANIFEST` are ignored. Temporary files are sibling files created by adding a `.tmp` extension to their final target, and are implementation details of atomic publication; open/read paths do not scan directories to discover visible data.
+Temporary files are sibling files created by adding a `.tmp` extension to the final path. They are part of atomic publication only. Open and read paths never discover visible data by scanning directories.
 
-**Creation order.** Store creation writes `MANIFEST` first and `STORE` last; `STORE` is the creation completion marker. `Store::create` succeeds whenever `STORE` is absent, overwriting any leftover `MANIFEST` from an aborted creation; `Store::open` requires both files. A creation that crashes between the two writes leaves a root with no `STORE`, which `create` safely re-creates.
+`LOCK` is stable and is never atomically replaced, so cooperating writers lock the same inode. `segments/` may contain orphan files after a crash; they are ignored unless referenced by `MANIFEST` and are removed by best-effort garbage collection.
+
+## Store Creation
+
+Creation writes `MANIFEST` first and `STORE` last. `STORE` is the creation completion marker.
+
+This order gives simple crash semantics:
+
+- If creation crashes before `STORE` is written, `Store::open` rejects the root as missing and `Store::create` can safely recreate it.
+- If creation completes, both `STORE` and `MANIFEST` exist and ordinary open can proceed.
+- A leftover `MANIFEST` from aborted creation is overwritten by the next create attempt.
+
+## Catalog Format
+
+### STORE
 
 `STORE` is line-oriented text, not JSON. Binary metadata is encoded as lowercase hex.
-
-The `STORE` format is:
 
 ```text
 segment-cache-store store v1
@@ -144,9 +191,11 @@ key_len=<u32, decimal>
 value_len=<u32, decimal>
 ```
 
-`value_len=0` means variable-length values. Any non-zero value means fixed-length values of exactly that many bytes. `STORE` is authoritative for `key_len`; the copy in `MANIFEST` is a cross-check only.
+`value_len=0` means variable-length values. A non-zero value means fixed-length values of exactly that many bytes. `STORE` is authoritative for `key_len` and `value_len`.
 
-The `MANIFEST` format is a binary snapshot:
+### MANIFEST
+
+`MANIFEST` is a binary snapshot. Its final CRC32C covers all previous manifest bytes.
 
 ```text
 magic[4]              # b"SCSM"
@@ -155,159 +204,268 @@ key_len:u32
 next_segment_id:u32
 segment_count:u32
 manifest_entries[segment_count]
-crc32c:u32            # covers all previous manifest bytes
+crc32c:u32
 ```
 
 Each manifest entry is:
 
 ```text
 segment_id:u32
-tier:u8                 # 0 = main, 1 = patch
+tier:u8               # 0 = main, 1 = patch
 min_key[key_len]
 max_key[key_len]
 ```
 
-`segment_id` derives the file name `segments/segment-<segment_id>.seg`; file names are opaque identities and do not define key order. Manifest entries are ordered as all main-tier entries sorted by `min_key`, followed by patch-tier entries sorted by `(min_key, segment_id)`. On open, the store rejects malformed `STORE` or `MANIFEST` files, duplicate segment ids, unsorted or overlapping main-tier ranges, patch entries that precede main entries, and `next_segment_id` values that could reuse an existing segment id.
+`segment_id` derives the opaque file name `segments/segment-<id>.seg`. File names do not define key order.
 
-Missing manifest-referenced segment files are tolerated as miss space; their entries are dead entries, dropped at the next manifest publication (see [Steady-State Write Design](#steady-state-write-design)).
+Manifest entry order is canonical:
 
-The decided revision of this format is described in [Catalog Revision](#catalog-revision).
+- all main-tier entries first, sorted by `min_key`
+- all patch-tier entries after main entries, sorted by `(min_key, segment_id)`
 
-## Segment File Layout
+Open rejects malformed manifests, duplicate segment ids, invalid key ranges, overlapping main-tier ranges, patch entries before main entries, and `next_segment_id` values that could reuse an existing id.
+
+Referenced segments that are missing, malformed, or mismatched with their manifest range are dead entries. They are invisible at open time and dropped at the next manifest publication.
+
+## Open Path
+
+Opening a store reconstructs runtime state from the catalog and referenced immutable segments. Directory contents are not used as data discovery.
+
+```mermaid
+flowchart TD
+  Start["Store::open"] --> Descriptor["read and validate STORE"]
+  Descriptor --> Metadata["check caller metadata"]
+  Metadata --> LockChoice{"read-only?"}
+  LockChoice -->|no| WriterLock["acquire LOCK"]
+  LockChoice -->|yes| NoLock["skip writer lock"]
+  WriterLock --> Manifest["read and validate MANIFEST"]
+  NoLock --> Manifest
+  Manifest --> GC{"writer open?"}
+  GC -->|yes| Collect["ensure dirs, remove stale catalog temps, GC unreferenced segments"]
+  GC -->|no| Build["build runtime snapshots"]
+  Collect --> Build
+  Build --> OpenSegments["open manifest-referenced segments"]
+  OpenSegments --> Split["split live segments into main and patch snapshots"]
+  Split --> Store["return Store handle"]
+```
+
+Malformed `STORE` or `MANIFEST` files are hard open errors because they describe namespace identity and visibility. Manifest-referenced segment failures are not hard open errors: the failed segment is treated as dead miss space, omitted from runtime snapshots, and dropped on the next manifest publication by a writer.
+
+## Segment Format
 
 Each segment file contains:
 
 ```text
 SegmentHeaderV1
-Data Blocks
-SegmentFooterV1, including block index
+DataBlock*
+SegmentFooterV1
 ```
 
-All integer fields are little-endian.
-
-The fixed 24-byte segment header is:
-
-```text
-magic[4]             // b"SCSG"
-format_version: u32  // 1
-key_len: u32
-value_len: u32       // 0 = variable values, >0 = fixed value length
-reserved: u32        // must be 0
-header_crc32c: u32   // crc32c over the previous 20 bytes
+```mermaid
+flowchart LR
+  Header["SegmentHeaderV1<br/>24 bytes"] --> Block0["DataBlock 0"]
+  Block0 --> BlockN["DataBlock ..."]
+  BlockN --> Footer["SegmentFooterV1<br/>record_count, min/max, block index, CRC"]
 ```
 
-The segment footer body is variable-length because it includes the fixed-width min and max keys plus the sparse block index:
+All integer fields are little-endian. The first data block starts immediately after the 24-byte header.
+
+The fixed segment header is:
 
 ```text
-record_count: u64
+magic[4]             # b"SCSG"
+format_version:u32   # 1
+key_len:u32
+value_len:u32        # 0 = variable, >0 = fixed value length
+reserved:u32         # must be 0
+header_crc32c:u32    # crc32c over previous 20 bytes
+```
+
+The footer body is variable length because it contains `min_key`, `max_key`, and the sparse block index:
+
+```text
+record_count:u64
 min_key[key_len]
 max_key[key_len]
-block_count: u32
-block_index_entries...
-footer_len: u32        // footer body length
-footer_crc32c: u32    // crc32c over footer body | footer_len
+block_count:u32
+block_index_entries[block_count]
+footer_len:u32       # footer body length
+footer_crc32c:u32    # crc32c over footer body | footer_len
 ```
 
-Each block index entry stores:
+Each block index entry is:
 
 ```text
 first_key[key_len]
-block_offset: u64
-block_len: u32
-record_count: u32
+block_offset:u64     # absolute file offset
+block_len:u32
+record_count:u32
 ```
 
-Block offsets are absolute file offsets. The first data block starts at byte offset `24`.
+Opening a segment validates the header, reads the footer from the end of the file, validates the footer and block index, then loads the sparse block index into memory. If the header, footer, or block index is invalid, the whole segment is ignored.
 
-The reader opens a segment by validating the header, reading the footer from the end of the file, validating the footer and block index, then loading the sparse block index into memory. If the header, footer, or block index is invalid, the whole segment is ignored.
+Segment encoding is deterministic for the same sorted entries and writer options. This matters for future sync convergence and for stable review of format changes.
 
-Segment encoding is deterministic: the same sorted entries written with the same writer parameters produce byte-identical files. This property is load-bearing for content-addressed identity and sync convergence; writer changes must preserve it or be treated as format changes.
+## Block Format
 
-## Block Layout
+Blocks have no header or footer. Their length and record count come from the segment footer's block index. Block-local metadata is stored beside the section it describes: `prefix_len` is the first field in `KeySection`, variable-value offsets live in `ValueIndexSection`, and checksums immediately follow the bytes they protect.
 
-Blocks do not have a header. Block length and record count come from the segment footer's block index. Block-local decoding metadata is stored in a fixed-size footer at the end of each block.
+There is no stored `payload_offset` or `payload_len` descriptor. The decoder derives payload position and length from the store value layout:
 
-The block footer records the `ValuePayload` position because that is the part needed by both fixed and variable value layouts:
+- `payload_offset = lookup_metadata_len + sizeof(lookup_crc32c)`
+- variable values: `payload_len = value_offsets[record_count]`
+- fixed values: `payload_len = record_count * value_len`
 
-```text
-block body
-padding
-prefix_len: u32
-payload_offset: u32
-payload_len: u32
-metadata_crc32c: u32  // crc32c over metadata bytes | prefix_len | payload_offset | payload_len
-payload_crc32c: u32   // crc32c over ValuePayload bytes
-```
+`LookupMetadata` is intentionally not just key bytes. For variable values, the offset table is part of lookup correctness because a corrupted offset can make a valid key return the wrong value slice. Padding is after `value_crc32c` and is not checksummed.
 
-`prefix_len` is the block-local common key prefix length. `payload_offset` and `payload_len` describe the packed value payload inside the block. Metadata is everything before `payload_offset`: the key region plus any value-layout index bytes. Padding appears between the value payload and the footer and is not checksummed. The footer remains at `block_len - 20`.
+Each block strips the common prefix shared by the first and last key. Since records are sorted, that prefix is shared by every key in the block. The suffix table remains fixed-width, so lookup can binary-search by record index without variable-length key decoding.
 
-The split checksums let ordered lookup validate keys and variable-value offsets without reading value bytes. If a searched block contains no matching key, the lookup can return misses after metadata validation only. If a searched block contains a matching key, the reader must load and validate the value payload before returning a hit.
-
-`OpenOptions::with_block_checksum_verification(false)` disables data-block checksum verification for read-only benchmarking against engines that do not validate user value bytes on read. Writable opens reject this option so corrupted bytes cannot be merged into freshly checksummed replacement segments. This is not the default cache-safe mode: with verification disabled, corrupted value bytes may be returned as hits.
-
-Each block strips the common prefix shared by its first and last key. Because keys are sorted, this prefix is shared by every key in the block. The suffix table remains fixed-width, so the reader can still binary-search by record index.
-
-Variable-value blocks store the common prefix once, then a contiguous fixed-width key suffix table, then value offsets, then packed value bytes. The offset table has `record_count + 1` entries; the last entry is the value payload length, so value `i` is `value_offsets[i]..value_offsets[i + 1]` without a last-record branch.
+Variable-value block layout:
 
 ```text
-KeyRegion:
+KeySection:
+  prefix_len:u32
   key_prefix[prefix_len]
   key_suffixes[record_count * (key_len - prefix_len)]
-ValueRegion:
-  ValueIndex:
-    value_offsets[record_count + 1]: u32
-  ValuePayload:
-    values...
+ValueIndexSection:
+  value_offsets[record_count + 1]:u32
+lookup_crc32c        # crc32c over KeySection | ValueIndexSection
+ValuePayload:
+  values...
+value_crc32c         # crc32c over ValuePayload only
 padding...
-prefix_len: u32
-payload_offset: u32
-payload_len: u32
-metadata_crc32c: u32
-payload_crc32c: u32
 ```
 
-Fixed-value blocks omit the value index:
+Fixed-value block layout:
 
 ```text
-KeyRegion:
+KeySection:
+  prefix_len:u32
   key_prefix[prefix_len]
   key_suffixes[record_count * (key_len - prefix_len)]
-ValueRegion:
-  ValuePayload:
-    values[record_count * value_len]
+lookup_crc32c        # crc32c over KeySection
+ValuePayload:
+  values[record_count * value_len]
+value_crc32c         # crc32c over ValuePayload only
 padding...
-prefix_len: u32
-payload_offset: u32
-payload_len: u32
-metadata_crc32c: u32
-payload_crc32c: u32
 ```
 
-Lookup binary-searches the reconstructed fixed-width key table. Variable layout then uses the matching value offset pair. Fixed layout computes `value_start = payload_offset + index * value_len`.
+```mermaid
+flowchart LR
+  PrefixLen["prefix_len:u32"] --> Prefix["key_prefix"]
+  Prefix --> Suffixes["key_suffixes[]"]
+  Suffixes --> Metadata["LookupMetadata"]
+  Metadata --> Layout{"value layout"}
+  Layout -->|variable| Offsets["ValueIndexSection<br/>value_offsets[record_count + 1]"]
+  Layout -->|fixed| NoOffsets["no ValueIndexSection"]
+  Offsets --> LookupCrc["lookup_crc32c"]
+  NoOffsets --> LookupCrc
+  LookupCrc --> Payload["ValuePayload"]
+  Payload --> ValueCrc["value_crc32c"]
+  ValueCrc --> Padding["padding"]
+```
 
-Block sizing rules:
+For variable values, value `i` is `value_offsets[i]..value_offsets[i + 1]`; the last offset is the payload length, so the last value needs no special branch. For fixed values, value `i` starts at `i * value_len`.
 
-- blocks smaller than the target block size are padded up to the target size
-- oversized blocks are written at their natural size and are not padded further
+Block sizing is a writer policy:
 
-The target block size is a writer policy, not a read compatibility invariant. Existing segments store their physical block lengths in the block index, so a store can be reopened with a different target block size and future segments can use the new size.
+- blocks smaller than the target block size are padded up to the target
+- oversized blocks are written at their natural size and are not rounded up
+- existing segments remain readable if future commits use a different target block size because physical block lengths are stored in the block index
 
 ## Format Limits
 
-The format uses `u32` for most lengths and counts. The resulting envelope, enforced as write-time errors:
+The format uses `u32` for most sizes and counts to keep metadata compact. Write-time validation enforces:
 
-- `key_len`: 1 to `u32::MAX` bytes
-- one block: at most 4 GiB physical length; value offsets inside a block are `u32`, so one block's value payload is also capped at 4 GiB
-- one segment: at most `u32::MAX` blocks in the block index and `u32::MAX` records per block; total records per segment are counted as `u64`
-- one manifest: at most `u32::MAX` segment entries
+- `key_len` must be non-zero and fit in `u32`
+- one block's physical length must fit in `u32`
+- one block's value payload must fit in `u32`
+- one segment's block count must fit in `u32`
+- one manifest's segment count must fit in `u32`
+- total records per segment are counted as `u64`
 
-These limits are far above the intended workload shape (16 KiB-class blocks, MiB-class segments) and exist to keep the format compact, not to be approached.
+These limits are above the intended workload shape and should not be approached in normal use.
+
+## Write Path
+
+The public write path is batch-only:
+
+- `Store::begin_batch`
+- `WriteBatch::push`
+- optional `WriteBatch::mark_sorted`
+- `Store::commit_batch`
+- `Store::commit_batch_with_options`
+- `Store::normalize`
+- `Store::normalize_with_options`
+
+`CommitOptions` controls newly written segment policy: target block size, max records per segment chunk, approximate max key/value bytes per segment chunk, and the patch policy. These options are not persistent namespace identity; future commits or explicit normalizations may use different values.
+
+```mermaid
+flowchart TD
+  Batch["WriteBatch"] --> Validate["validate key/value lengths"]
+  Validate --> Sort["sort if needed"]
+  Sort --> Duplicates["reject duplicate keys in batch"]
+  Duplicates --> Snapshot["snapshot manifest + live segments"]
+  Snapshot --> Affected["find affected main-tier range"]
+  Affected --> Route{"commit route"}
+
+  Route -->|no main overlap| Direct["direct main publish"]
+  Route -->|small overlap fits L0| Patch["patch-tier publish"]
+  Route -->|patch bound exceeded| Normalize["normalize: merge batch + patches + affected main"]
+
+  Direct --> Split["split by flush thresholds"]
+  Patch --> Split
+  Normalize --> Dedup["deduplicate with winner rule"]
+  Dedup --> Split
+
+  Split --> WriteSeg["write immutable segment temp file"]
+  WriteSeg --> Rename["fsync file, rename, fsync parent dir"]
+  Rename --> Publish["atomically publish replacing MANIFEST"]
+  Publish --> Swap["swap runtime snapshot"]
+  Swap --> GC["best-effort GC unreferenced segments"]
+```
+
+A commit first validates the input batch, sorts it when needed, and rejects duplicate keys inside the batch. It then builds a plan from one manifest/runtime snapshot.
+
+The plan chooses one route:
+
+- **Direct main publish** when the batch does not overlap any main-tier segment.
+- **Patch publish** when the batch overlaps main-tier data but fits the patch policy.
+- **Normalization** when publishing another patch would exceed the patch policy.
+
+The default patch policy is intentionally simple: at most 8 live patch segments, and only batches with at most 4096 input records publish directly to patch. Callers may tune these values through `CommitOptions::with_patch_segment_limit` and `CommitOptions::with_patch_direct_record_limit`. Setting either limit to `0` disables direct patch publication for overlapping commits, so those commits normalize immediately.
+
+There is no WAL. Only data referenced by a published `MANIFEST` is durable. In-progress temp files may be lost. A crash after segment rename but before manifest publish leaves an orphan segment that is invisible and later collected.
+
+## Replacing Manifest Commit
+
+The core write primitive is a replacing manifest publication:
+
+> One atomic manifest snapshot removes zero or more old entries and inserts zero or more new entries.
+
+This primitive supports tail append, gap insert, interleaving writes via L0, local normalization, dead-entry dropping, and segment-count convergence. The replacement must leave the main tier sorted and non-overlapping. Patch entries may overlap but are bounded by policy.
+
+Normalization is foreground and demand-driven. A segment is rewritten only when a new commit intersects its range and the patch policy requires normalization, or when a caller explicitly invokes `Store::normalize` / `Store::normalize_with_options`. There is no background compaction pass that rewrites cold ranges.
+
+Explicit normalization folds every live patch segment into the main tier and drops dead manifest entries. It is useful after many small interleaving writes when the next workflow phase is read-heavy. If no patch segments or dead entries are visible, explicit normalization is a no-op.
+
+## Duplicate Keys And Winner Rule
+
+Patch segments can make multiple copies of one key visible at the same time. This is safe only because of the caller contract that copies for one key are semantically interchangeable.
+
+The deterministic winner is the lexicographically smallest value bytes:
+
+- Reads return the winning value among visible copies.
+- Normalization keeps the winning value and drops the other copies.
+- The rule depends only on the set of copies, not arrival order or local history.
+
+The winner rule is intentionally byte-based and history-independent so two replicas that eventually hold the same logical copies can converge after normalization.
 
 ## Read Path
 
-`fetch_one` binary-searches the main tier by `min_key`, checks that the candidate segment also satisfies `key <= max_key`, then probes any patch segments whose ranges contain the key. If multiple copies exist, the lexicographically smallest value bytes win.
+`fetch_one` exists for completeness. It binary-searches the main tier by range, then probes patch segments whose ranges contain the key. If multiple visible copies exist, it applies the same winner rule.
 
-Ordered lookup is the main hot path. The low-level APIs are:
+Ordered lookup is the hot path:
 
 - `Store::contains_many_ordered`
 - `Store::fetch_many_ordered`
@@ -317,232 +475,168 @@ Ordered lookup is the main hot path. The low-level APIs are:
 - `OrderedLookup::fetch_many`
 - `OrderedLookup::visit_many`
 
-`visit_many` is the lowest-level ordered-read API. It lets callers consume borrowed value slices instead of forcing a `Vec<u8>` allocation for every hit.
+`visit_many` is the lowest-level ordered lookup API. It lets callers consume borrowed value slices, avoiding one `Vec<u8>` allocation per hit. `fetch_many` is a convenience API that copies hits into owned vectors.
 
-Ordered lookup sweeps sorted keys against the main tier and, when patches exist, sweeps each patch segment with block reuse before applying the same winner rule. Within a segment it keeps the current block loaded and consumes all keys that fall inside that block range before advancing. This reduces repeated block loads and makes large ordered hit streams much cheaper than independent lookups.
+```mermaid
+flowchart TD
+  Keys["sorted lookup keys"] --> Validate["validate key_len and sorted order"]
+  Validate --> Snapshot["take runtime segment snapshot"]
+  Snapshot --> PatchCheck{"patch tier empty?"}
 
-Each open store also keeps process-local verification state per immutable segment block. After a block's lookup metadata or value payload has passed checksum verification once in the current process, later reads of the same part may skip recomputing that checksum. This cache does not persist, does not change the on-disk format, and is only valid under the store contract that segment files are not modified externally while a store handle is open. A fresh open starts with no verified blocks and must validate bytes again.
+  PatchCheck -->|yes| MainSweep["sweep main tier"]
+  PatchCheck -->|no| PatchSweep["sweep each patch segment<br/>collect lexicographic winners"]
+  PatchSweep --> MainSweep
 
-`iter_all()` returns all visible records in order. `range(start, end)` returns the half-open range `[start, end)`. If no patch segments are visible, scan cursors concatenate main-tier segment cursors in manifest order. If patches exist, scan uses a k-way merge across main and patch cursors and deduplicates copies with the winner rule. They stream at block granularity and do not materialize the full scan result before returning.
+  MainSweep --> SegmentSweep["advance through sorted segment ranges"]
+  SegmentSweep --> BlockRange["consume all query keys<br/>belonging to one block"]
+  BlockRange --> SparseChoice{"query_count < block_record_count?"}
 
-## Write Path
+  SparseChoice -->|yes| MetadataOnly["read footer + metadata<br/>verify metadata CRC"]
+  SparseChoice -->|no| FullBlock["read full block<br/>verify metadata + payload CRC"]
+  MetadataOnly --> HitCheck{"any matching key?"}
+  HitCheck -->|no| Misses["emit misses"]
+  HitCheck -->|yes| PayloadRead["read ValuePayload<br/>verify payload CRC"]
+  FullBlock --> Emit["visit borrowed value slices<br/>or copy for owned fetch"]
+  PayloadRead --> Emit
+  Emit --> Output["results in input order"]
+  Misses --> Output
+```
 
-The public write path is:
+When the patch tier is empty, ordered lookup sweeps the main tier directly. When patches exist, it first sweeps each patch segment over its overlapping key subrange and records patch winners, then sweeps the main tier and emits the final winner.
 
-- `Store::begin_batch`
-- `WriteBatch::push`
-- optional `WriteBatch::mark_sorted`
-- `Store::commit_batch`
+Within one segment, ordered lookup reuses cursor state and the last loaded block. It consumes all keys that fall before the next block's first key before loading another block.
 
-`commit_batch`:
+Sparse lookup can read only block metadata first. If none of the searched keys exist in that block, the reader emits misses without loading or verifying value payload bytes. If any searched key matches, the value payload must be loaded and verified before returning a hit.
 
-1. validates key lengths
-2. validates fixed value lengths when fixed layout is enabled
-3. sorts the batch if needed
-4. rejects duplicate keys inside the batch
-5. finds the contiguous run of main-tier segments whose ranges the batch intersects
-6. if no main-tier range is touched, writes the batch directly as main-tier segments
-7. if a small touched batch fits the patch-tier bound, writes the batch as patch-tier segments without rewriting old data
-8. otherwise normalizes by merging the batch, all live patch segments, and the intersecting main-tier segments into one sorted, deduplicated batch (winner rule for duplicate keys)
-9. splits the direct, patch, or normalized batch by the configured flush thresholds and writes immutable temp segments
-10. renames completed segments into `segments/`
-11. atomically publishes a replacing `MANIFEST` that removes normalized or dead entries and inserts the new segments
-12. deletes the retired segment files best-effort
+With default checksum verification, `contains_many_ordered` is cache-safe, not index-only. A key counts as present only if the value payload needed to prove that hit is successfully loaded and verified. If read-only checksum verification is explicitly disabled for benchmarking, this guarantee is intentionally weakened for that open handle.
 
-Tail appends, gap inserts, and interleaving batches are all allowed: an interleaving batch first enters the patch tier when it fits, then normalization rebuilds the touched region when the patch tier reaches its bound. See [Steady-State Write Design](#steady-state-write-design).
+## Range And Full Scan
 
-There is no WAL. Only fully published segments are durable. In-progress temp segments may be lost on crash. A crash after segment rename but before manifest publication leaves an orphan final segment, which is invisible and is collected by GC.
+`range(start, end)` and `visit_range(start, end)` scan the half-open range `[start, end)`. `iter_all()` and `visit_all()` scan all visible records.
 
-## Corruption Semantics
+If no patch segments are visible, scan concatenates main-tier segment cursors in manifest order. If patch segments are visible, scan uses a k-way merge across main and patch cursors and deduplicates by the winner rule.
 
-This store follows cache semantics:
+Scan cursors stream at block granularity. `visit_*` APIs return borrowed slices and do not materialize the full result set. The iterator APIs allocate owned `(Vec<u8>, Vec<u8>)` pairs for convenience.
 
-- corrupted header: whole segment ignored
-- corrupted footer or block index: whole segment ignored
-- block metadata checksum failure: that block behaves like missing data
-- block value payload checksum failure: matching keys in that block behave like missing data
-- malformed block: that block behaves like missing data
-- orphan temp file: ignored
-- orphan final segment not referenced by manifest: ignored
-- missing segment referenced by manifest: behaves like missing keyspace
-- referenced segment with mismatched header/footer metadata: ignored
+## Corruption And Recovery Semantics
 
-The store is allowed to forget data. It is not allowed to return wrong data.
+The store is allowed to forget cached data. It is not allowed to return wrong cached data.
 
-Manifest entries whose segment files fail to open are dead entries: invisible at open time and dropped at the next manifest publication, so lost ranges become writable miss space instead of staying reserved. Disagreement between two copies of one key is not corruption; it is expected under the caller contract and resolved by the winner rule in [Duplicate Keys and Convergence](#duplicate-keys-and-convergence).
+- Corrupted segment header: whole segment ignored.
+- Corrupted segment footer or block index: whole segment ignored.
+- Manifest entry pointing to a missing segment: entry is invisible and later dropped.
+- Manifest entry whose min/max range does not match the segment footer: segment ignored.
+- Corrupted block metadata checksum: that block behaves like missing data.
+- Corrupted block value payload checksum: matching keys in that block behave like missing data.
+- Malformed block layout: that block behaves like missing data.
+- Temp file after crash: ignored.
+- Final segment not referenced by manifest: ignored and later collected.
+
+Checksum verification can be disabled only for read-only opens. This is an explicit benchmarking mode, not the cache-safe default. Writable opens require checksum verification so normalization cannot merge corrupted bytes into newly checksummed output.
+
+## Atomicity And Filesystem Protocol
+
+Catalog files and segment files use the same publication protocol:
+
+1. write the final bytes to a sibling `.tmp` file
+2. `fsync` the temp file
+3. rename the temp file to the final path
+4. `fsync` the parent directory
+
+For data visibility, `MANIFEST` is the only atomic publish point. A segment file becomes visible only when a later manifest snapshot references it.
+
+Garbage collection scans `segments/` only to delete files not referenced by the current manifest. Directory contents are never used to discover visible data.
 
 ## Process Model
 
 Within one process:
 
-- `Store` is a cheaply cloneable shared handle.
-- Readers take an atomic snapshot of the visible segment set; commits serialize on an internal lock and never block readers on file I/O.
-- Lookup sessions and scan cursors hold immutable segment state, so they remain valid across commits; they observe the snapshot taken at the start of each call.
+- `Store` is cheaply cloneable.
+- Readers take immutable runtime snapshots of visible segments.
+- Commits serialize on an internal commit lock.
+- Commits do file IO without blocking existing readers of older snapshots.
+- Lookup sessions and scan cursors remain valid across commits because they hold segment state from their starting snapshot.
 
 Across processes:
 
-- Concurrent read-only opens of one root are safe: segments are immutable and the manifest swap is atomic. On Unix, an open file descriptor remains readable after the file is unlinked by GC.
-- A reader's view is the manifest snapshot read at open time; reopen to observe later publications.
-- Concurrent writable opens are rejected by the advisory writer lock. The lock is cooperative; external tools that mutate the root without taking it can still corrupt visibility.
+- Multiple read-only opens can coexist.
+- A writable open holds the advisory `LOCK` file for the lifetime of the store handle.
+- A second cooperating writer fails fast with `InputError::WriterLocked`.
+- Read-only opens do not take the writer lock, do not run garbage collection, and never mutate the filesystem.
+- External tools that mutate the root without the lock are outside the safety contract.
 
-A writer takes an advisory lock on `LOCK` (`std::fs::File::try_lock`, which is `flock` on Unix) and holds it for the lifetime of the `Store` handle, covering creation, open-time GC, commits, and post-commit GC. The lock file is stable and is never replaced by atomic publication, so two writers cannot accidentally lock different inodes. A second writer fails fast (`InputError::WriterLocked`) instead of corrupting visibility. Read-only opens (`OpenOptions::with_read_only`) do not take the lock, run no GC, and never mutate the filesystem; commits on a read-only handle are rejected with `InputError::ReadOnlyStore`. Sync agents will count as writers.
+## Runtime Optimizations
 
-## Steady-State Write Design
+The implementation optimizes ordered cache replay first, then reduces avoidable work for sparse reads, scans, large values, and repeated passes.
 
-This section addresses why insert-only commits cannot sustain the intended workload: demand-driven cache filling produces batches that interleave with published ranges, and segment count grows without bound. Replacing manifest commits, commit routing, normalization, and garbage collection are implemented.
+```mermaid
+flowchart TD
+  OrderedWorkload["ordered cache workload"] --> BlockSweep["batch block consumption"]
+  OrderedWorkload --> BorrowedVisit["borrowed visit APIs"]
+  OrderedWorkload --> PrefixStrip["block-local key prefix stripping"]
 
-### Replacing Manifest Commit
+  SparseReads["sparse ordered reads"] --> MetadataFirst["metadata-first block loading"]
+  MetadataFirst --> SplitCRC["split metadata/payload checksums"]
 
-The original commit path could only insert segments into gaps. The generalized primitive is:
-
-> One manifest publication atomically removes a set of existing segments and inserts a set of new segments.
-
-The `MANIFEST` snapshot mechanism already supports this; only the validation layer forbids it. A replacing commit must leave the main tier sorted and non-overlapping, and every key in a removed segment must either be re-published by an inserted segment or belong to a dropped dead entry.
-
-This primitive provides local rebuild (merge the intersecting segments with the batch and publish replacements), segment-count convergence (coalesce adjacent undersized segments while already rewriting a region), and dead-entry removal (drop entries whose files failed to open).
-
-Crash semantics are unchanged: new segments are invisible orphans until the manifest publication, which remains the single atomicity point.
-
-A replacing commit is demand-driven and local. There is no background compaction: a segment is rewritten only when a commit interleaves with its range, so regions that stop receiving writes become permanently stable files. This is a permanent invariant, load-bearing for sync, not an optimization.
-
-### Commit Routing
-
-A commit chooses one of three routes per batch:
-
-1. **Direct to main tier** when the batch does not overlap any main-tier segment. This is the preferred route for bulk publishes and gap inserts.
-2. **Patch tier** when the batch overlaps main-tier data but still fits the patch policy. The batch is published as one or more patch segments, rewriting nothing.
-3. **Normalization** when the patch policy would be exceeded. The batch, all live patch segments, and the intersecting main-tier segments are merged into replacement main-tier segments.
-
-The current patch policy is intentionally simple: at most 8 live patch segments, and only batches with at most 4096 input records publish directly to patch. When a publication would exceed the bound, the commit performs normalization: merge all patch segments plus the intersecting main-tier segments into new main-tier segments, deduplicating by the winner rule and dropping dead entries.
-
-The bound is a normalization trigger. Read amplification is bounded by the live patch count plus the main stream in steady state.
-
-Write amplification is bounded at roughly one patch write plus one normalization merge per byte, comparable to a two-level LSM floor. Read amplification is bounded by `K` per root; deployments with many roots must budget `active roots x K` in aggregate.
-
-### Garbage Collection
-
-- After every manifest publication, a full GC pass runs: every file in `segments/` that the just-published manifest does not reference is deleted best-effort. A long-running writer therefore reclaims retired segments and orphans from earlier failed publications without a reopen.
-- On open, under the writer lock: the same pass runs against the loaded manifest, plus stale catalog temp files (`STORE.tmp`, `MANIFEST.tmp`) in the root are removed. Unreferenced files are provably dead because the manifest is the sole source of visibility and commits never adopt pre-existing files.
-- GC, commits, and sync ingestion all run under the writer lock, so staged remote files cannot be collected mid-ingest: a sync agent places files and publishes the manifest that references them without releasing the lock in between.
-
-GC also removes the v1 failure mode where an orphan file left by a crash between segment rename and manifest publication permanently occupies its segment id and blocks all future commits.
-
-GC's directory scan exists only to delete dead files. Discovery of visible data still never depends on directory contents; `MANIFEST` remains the sole visibility source. File deletion is best-effort everywhere: on platforms where open files cannot be unlinked, failed deletions are simply retried by a later GC pass.
-
-## Duplicate Keys and Convergence
-
-The winner rule below is implemented: a replacing commit that merges a key present in both the batch and an existing segment keeps the lexicographically smallest value. Simultaneous copies of one key across visible segments arise while patch-tier segments are live; normalization leaves the main tier deduplicated.
-
-The general invariant, which the patch tier relies on:
-
-> Copies of one key may exist across visible segments. All copies are semantically interchangeable (caller contract); their bytes may differ.
-
-Byte differences between copies are expected, not exceptional: floating-point library results differ across platforms, and codec or compression versions differ across builds. The store never compares value bytes to detect errors and never treats copy disagreement as corruption.
-
-- **Reads** return the lexicographically smallest value bytes among visible copies.
-- **Normalization** deduplicates. The surviving copy is the **winner**: the copy with the lexicographically smallest value bytes. The winner is a function of the copies alone - not of arrival order, merge history, or wall-clock time - so deduplication is commutative and associative, and replicas converge to the same survivor regardless of the order in which they sync and normalize. (A "keep oldest" rule was considered and rejected: "oldest" is local history, and history-dependent winners prevent replicas from ever converging byte-for-byte.)
-
-Convergence property, which sync relies on: two roots that hold the same key set and use the same writer configuration converge to byte-identical segment sets once both are fully normalized. This follows from deterministic segment encoding, the deterministic winner rule, and deterministic merge split points.
-
-## Cross-Device Sync
-
-**Decided.** Immutable segments are the sync unit; cold segments never change, so file-level incremental sync stays effective indefinitely. Sync reuses the write-path primitives - a remote segment is ingested like a local publication, and normalization is an ordinary replacing commit - rather than adding a parallel mechanism.
-
-The transport is out of scope: the protocol assumes only a file-copy mechanism (rsync, object storage, manual copy) and read access to the remote `MANIFEST` snapshot.
-
-### Prerequisites
-
-- Both roots must have byte-identical `STORE` identity: metadata, `key_len`, `value_len`. `STORE` itself is never synced; sync between mismatched roots is refused.
-- A new replica is bootstrapped by creating an empty store with identical creation options (or by copying `STORE` before the first ingestion). After bootstrap, `STORE` is never written again.
-- Cross-device key stability is required (see [Caller Contract](#caller-contract)).
-- Sync agents are writers and hold the advisory writer lock during ingestion.
-
-### Content-Addressed Segment Identity
-
-Segment files are named by the BLAKE3-256 hash of their bytes, and manifest entries reference that hash. This replaces the `next_segment_id` counter, which is a single-writer construct: independent writers would allocate colliding ids for different content.
-
-Consequences:
-
-- file-name collisions between devices disappear; identical files are the same file
-- identical work performed on two devices deduplicates automatically - but only when entries and writer configuration match exactly, so dedup is an opportunistic optimization that correctness never depends on
-- sync verification upgrades from block-local metadata/payload CRC32C to an end-to-end content hash per file
-
-The hash is computed exactly once, streamed while the segment is written. It is verified only when a file crosses a trust boundary: sync ingestion re-hashes received files against their names. The read path never verifies whole-file hashes - runtime corruption detection remains block-local metadata/payload CRC32C - and open does not verify them either, since open reads only the header and footer.
-
-### One-Way Replication
-
-The simple mode, conceptually available already:
-
-1. Copy every segment file referenced by the source manifest into the replica's `segments/`.
-2. Atomically publish the source manifest snapshot as the replica's `MANIFEST`.
-3. Replica readers reopen to observe the new snapshot.
-
-The replica must either be read-only or perform step 2 as an ordinary ingestion under its own writer lock.
-
-### Bidirectional Sync
-
-Reconciliation is a set union, requiring no conflict resolution:
-
-1. Copy remote segment files that are not already present (content addressing makes presence checks trivial).
-2. Under the local writer lock, publish a manifest that adds the remote entries: remote segments that do not overlap the local main tier may enter the main tier directly; overlapping ones enter the patch tier.
-3. Later normalizations merge and deduplicate as usual. Duplicate copies introduced by both devices computing the same key are resolved by the winner rule.
-
-The worst case is two devices that computed fully interleaved key ranges: ingestion lands everything in the patch tier and the next normalization rewrites the whole overlapped range once. This is the bounded price of merging two divergent histories, not a recurring cost.
-
-### Generations and Races
-
-Every manifest publication increments a per-root `generation` counter. Generations totally order the snapshots of one root - useful for cheap change detection and incremental pull - and are meaningless across roots; no cross-device ordering exists or is needed.
-
-A puller that copied a manifest and then finds a referenced segment file already deleted (the source normalized in between) restarts from the source's current manifest. This wastes bandwidth, never correctness: every manifest snapshot is self-consistent, and activation happens only after all referenced files are present.
-
-## Catalog Revision
-
-**Decided.** The next manifest revision carries the fields required by the design above. Field list, not final byte layout; the byte layout is fixed when implemented, and existing stores are rebuilt (experimental status, no migration):
-
-- `magic`, `version`
-- `key_len` (cross-check against `STORE`)
-- `generation: u64`
-- `segment_count`
-- per entry: `segment_ref` (BLAKE3-256 hash), `tier` (main or patch), `min_key`, `max_key`
-- `crc32c` trailer
-
-Canonical entry order: main-tier entries sorted by `min_key`, then patch-tier entries sorted by `(min_key, segment_ref)`. `next_segment_id` is retired with content addressing.
-
-## Current Implementation Optimizations
+  RepeatedReads["repeated reads in one process"] --> VerifyCache["process-local verified-block state"]
+  LargeValues["large values"] --> OversizedBlocks["natural-size oversized blocks"]
+  FixedValues["fixed-size values"] --> FixedLayout["fixed-value payload arithmetic"]
+  Scans["range / iter_all"] --> StreamingCursor["streaming block cursor"]
+```
 
 ### Sparse In-Memory Block Index
 
-Each segment loads one sparse block index entry per block into memory. This keeps segment-open cost modest while making block selection cheap.
+Each segment loads one sparse block index entry per block into memory. This keeps open-time memory proportional to block count, not record count.
+
+### Ordered Block Consumption
+
+Ordered lookup processes all query keys that fall inside the current block before advancing. This avoids reloading or re-searching the same block for locality-heavy ordered streams.
 
 ### Borrowed Block Parsing
 
-Blocks are stored in memory as raw bytes plus layout metadata. The reader parses records by reference and only copies the value when it must return ownership.
+Blocks are decoded as raw bytes plus layout metadata. Lookup and scan APIs can borrow key/value slices from the decoded block. Values are copied only by APIs that return owned vectors.
 
-For fixed-value blocks, the reader does not need a value offset table; it computes the value slice from the record index and configured value length.
+### Metadata-First Sparse Lookup
 
-### Batch Block Consumption
+Sparse ordered lookup may read only `LookupMetadata` and `lookup_crc32c` first. The reader gets `prefix_len` from the first four block bytes, derives the lookup metadata length, then validates keys and value offsets before touching value bytes. Blocks with no matching key do not require value payload IO.
 
-Ordered lookup processes one block and consumes all keys that fall within that block range before advancing. This avoids reloading or re-searching the same block for every key in a locality-heavy ordered stream.
+### Split Block Checksums
 
-### Position-Independent Block Reads
-
-Segment files are read using offset-based reads rather than mutating a shared file cursor. Lookup sessions and scan cursors also reuse their previous block buffer, so steady-state ordered reads of same-sized blocks avoid an extra zero-fill before each disk read.
+Block checksum state is split into lookup metadata and value payload checksums. Metadata verification protects key lookup and, for variable values, the offset table used to locate value slices. Payload verification protects returned value bytes. For fixed-value blocks this is effectively a `KeySection` checksum plus a value-payload checksum; for variable-value blocks it is key-plus-offset metadata versus value payload.
 
 ### Process-Local Verification Reuse
 
-Segment blocks are immutable while a store is open. The runtime records whether each block's lookup metadata and value payload have already passed checksum verification. Repeated analysis or visualization passes over the same cache can therefore avoid hashing the same bytes again while still validating every block on first use in a fresh process.
+Immutable segment blocks keep process-local verification state. Once a block's metadata or payload has passed checksum verification in the current process, later reads of the same part can skip recomputing that checksum. This cache is not persisted and is reset on reopen.
+
+### Prefix-Stripped Keys
+
+A block stores the common key prefix once and then stores fixed-width suffixes. Ordered lookup compares prefix and suffix slices directly and does not need to materialize full keys. Scan-style record access materializes full keys lazily only when borrowed full-key slices are needed.
+
+### Fixed-Value Layout
+
+Stores with fixed-width values can use `CreateOptions::with_fixed_value_len`. Fixed blocks omit the value offset table and compute value ranges arithmetically.
 
 ### Oversized-Block Space Control
 
-Small blocks still align to the target block size. Large blocks are written at natural size instead of being rounded up. This greatly reduces space amplification for large values without changing the read contract.
+Blocks smaller than the target are padded to the target size. Blocks larger than the target are written at natural size. This avoids extreme padding overhead for large values.
 
-### Fixed-Value Block Layout
+### Positioned Reads And Buffer Reuse
 
-Fixed-value namespaces can opt into `CreateOptions::with_fixed_value_len(value_len: NonZeroU32)`. This keeps the same ordered lookup contract but removes two `u32` tables per record from the physical block. For small fixed-size values, this reduces block size and a small amount of lookup CPU. It is an explicit store-level choice rather than an automatic per-segment inference, so all visible data in one store has one stable value layout.
+Segment files are read with positioned reads, so shared file handles do not have a mutable seek cursor. Lookup sessions and scan cursors reuse their previous block buffer when loading the next block.
 
-## Implementation Sequencing
+## Future Sync Design
 
-1. **Hygiene first** — *implemented*: creation-order fix, open-time GC, advisory writer lock. They remove both permanent-wedge failure modes (orphan segment id collision, half-created root).
-2. **Replacing manifest commit**, including dead-entry dropping — *implemented*. This fixes interleaved writes, segment-count growth, and reserved dead ranges.
-3. **Patch tier and normalization routing** — *implemented*. This reduces rewrite amplification for repeated interleaving commits while keeping the main tier sorted and non-overlapping.
-4. **Content addressing, generations, and the sync protocol** — *pending*, last, together with the catalog revision. Format changes rebuild existing stores.
+The current implementation is already shaped around immutable segment files, but the cross-device sync protocol is not implemented. The current manifest still uses local monotone `segment_id` values.
+
+Planned sync work should be implemented as a catalog revision, not as ad-hoc behavior around the current manifest:
+
+- Replace local `segment_id` identity with content-addressed segment references, likely BLAKE3-256 over full segment bytes.
+- Add a per-root `generation:u64` to manifest publications for cheap local change detection.
+- Define sync ingestion as a writer operation under the existing advisory lock.
+- Keep transport out of scope: rsync, object storage, or manual file copy can move immutable segment files.
+- Refuse sync between roots whose `STORE` identity differs.
+- Verify content-addressed files when they cross a trust boundary; normal read paths still rely on block-local checksums.
+
+One-way replication can copy all referenced segments and then publish a manifest snapshot on the replica. Bidirectional sync should compute a set union of segment references, then use the same patch and normalization mechanisms already used by local commits. Duplicate key copies converge through the existing winner rule once both sides normalize.
+
+This future revision should rebuild existing experimental stores rather than migrate the current v1 catalog in place.

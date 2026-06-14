@@ -64,6 +64,25 @@ impl Store {
         self.commit_with_options(batch, options)
     }
 
+    /// Folds all live patch segments into the main tier with default options.
+    ///
+    /// This is a foreground operation. It is useful after several small
+    /// interleaving writes when the caller is about to run a long read-heavy
+    /// phase and wants to remove L0 overlay read amplification.
+    pub fn normalize(&self) -> Result<CommitStats> {
+        self.normalize_with_options(&CommitOptions::default())
+    }
+
+    /// Folds all live patch segments into the main tier using explicit segment
+    /// write options.
+    ///
+    /// If no patch segments or dead manifest entries are visible, this is a
+    /// no-op and returns default stats. Returns [`InputError::ReadOnlyStore`]
+    /// on a read-only handle.
+    pub fn normalize_with_options(&self, options: &CommitOptions) -> Result<CommitStats> {
+        self.normalize_patches_with_options(options)
+    }
+
     /// Flushes pending writes.
     ///
     /// v1 only publishes through `commit_batch`, so this is currently a no-op.

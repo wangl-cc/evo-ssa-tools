@@ -24,8 +24,8 @@ use crate::{
     write::batch::WriteBatch,
 };
 
-const PATCH_SEGMENT_LIMIT: usize = 8;
-const PATCH_DIRECT_RECORD_LIMIT: usize = 4_096;
+const DEFAULT_PATCH_SEGMENT_LIMIT: usize = 8;
+const DEFAULT_PATCH_DIRECT_RECORD_LIMIT: usize = 4_096;
 
 /// Options consumed by one batch commit.
 ///
@@ -39,6 +39,10 @@ pub struct CommitOptions {
     pub flush_threshold_records: usize,
     /// Maximum approximate key/value bytes per newly published segment chunk.
     pub flush_threshold_bytes: usize,
+    /// Maximum live patch segments allowed before the next overlapping commit normalizes.
+    pub patch_segment_limit: usize,
+    /// Maximum input records eligible for direct patch publication.
+    pub patch_direct_record_limit: usize,
 }
 
 impl Default for CommitOptions {
@@ -47,6 +51,8 @@ impl Default for CommitOptions {
             target_block_size: 16 * 1024,
             flush_threshold_records: 4_096,
             flush_threshold_bytes: 8 * 1024 * 1024,
+            patch_segment_limit: DEFAULT_PATCH_SEGMENT_LIMIT,
+            patch_direct_record_limit: DEFAULT_PATCH_DIRECT_RECORD_LIMIT,
         }
     }
 }
@@ -67,6 +73,24 @@ impl CommitOptions {
     /// Sets the approximate maximum key/value bytes written to one segment chunk.
     pub fn with_flush_threshold_bytes(mut self, flush_threshold_bytes: usize) -> Self {
         self.flush_threshold_bytes = flush_threshold_bytes;
+        self
+    }
+
+    /// Sets the maximum live patch segments before normalization is forced.
+    ///
+    /// A value of `0` disables direct patch publication for overlapping writes:
+    /// every overlapping commit normalizes immediately.
+    pub fn with_patch_segment_limit(mut self, patch_segment_limit: usize) -> Self {
+        self.patch_segment_limit = patch_segment_limit;
+        self
+    }
+
+    /// Sets the maximum input records eligible for direct patch publication.
+    ///
+    /// A value of `0` disables direct patch publication for overlapping writes:
+    /// every overlapping commit normalizes immediately.
+    pub fn with_patch_direct_record_limit(mut self, patch_direct_record_limit: usize) -> Self {
+        self.patch_direct_record_limit = patch_direct_record_limit;
         self
     }
 
@@ -130,6 +154,11 @@ struct CommitPublication {
     segments_retired: usize,
 }
 
+struct CommitPublicationStats {
+    segments_published: usize,
+    segments_retired: usize,
+}
+
 impl CommitPlan {
     fn from_snapshot(
         manifest: StoreManifest,
@@ -172,9 +201,15 @@ impl CommitPlan {
         self.patch_segments.iter().map(Arc::clone).collect()
     }
 
-    fn should_publish_patch(&self, input_records: usize, new_segment_count: usize) -> bool {
-        input_records <= PATCH_DIRECT_RECORD_LIMIT
-            && self.patch_segments.len() + new_segment_count <= PATCH_SEGMENT_LIMIT
+    fn should_publish_patch(
+        &self,
+        input_records: usize,
+        new_segment_count: usize,
+        options: &CommitOptions,
+    ) -> bool {
+        input_records <= options.patch_direct_record_limit
+            && self.patch_segments.len().saturating_add(new_segment_count)
+                <= options.patch_segment_limit
     }
 
     fn normalization_bounds(&self, batch_min: &[u8], batch_max: &[u8]) -> (Vec<u8>, Vec<u8>) {
@@ -191,9 +226,28 @@ impl CommitPlan {
         (min_key, max_key)
     }
 
+    fn patch_bounds(&self) -> Option<(Vec<u8>, Vec<u8>)> {
+        let first = self.patch_segments.first()?;
+        let mut min_key = first.min_key.clone();
+        let mut max_key = first.max_key.clone();
+        for segment in &self.patch_segments[1..] {
+            if segment.min_key < min_key {
+                min_key = segment.min_key.clone();
+            }
+            if segment.max_key > max_key {
+                max_key = segment.max_key.clone();
+            }
+        }
+        Some((min_key, max_key))
+    }
+
     fn retire_segments(&mut self, segments: &[Arc<SegmentState>]) {
         self.removed_ids
             .extend(segments.iter().map(|segment| segment.segment_id));
+    }
+
+    fn has_dead_entries(&self) -> bool {
+        !self.removed_ids.is_empty()
     }
 
     fn allocate_segment_id(&mut self) -> Result<u32> {
@@ -318,7 +372,7 @@ impl Store {
                 options,
             )?;
             (written, input_records)
-        } else if plan.should_publish_patch(input_records, direct_ranges.len()) {
+        } else if plan.should_publish_patch(input_records, direct_ranges.len(), options) {
             let written = self.write_batch_segments(
                 &batch,
                 direct_ranges,
@@ -328,22 +382,105 @@ impl Store {
             )?;
             (written, input_records)
         } else {
-            let (normalize_min, normalize_max) = plan.normalization_bounds(&batch_min, &batch_max);
+            let (written, merged_len) = self.write_normalized_segments(
+                &mut plan,
+                &batch,
+                Some((batch_min.as_slice(), batch_max.as_slice())),
+                options,
+            )?;
+            (written, merged_len)
+        };
+
+        let publication_stats = self.publish_plan(plan, written, key_len)?;
+
+        Ok(CommitStats {
+            records: input_records,
+            bytes: input_bytes,
+            segments_published: publication_stats.segments_published,
+            segments_retired: publication_stats.segments_retired,
+            merged_records,
+        })
+    }
+
+    /// Normalizes every live patch segment into the main tier.
+    pub(crate) fn normalize_patches_with_options(
+        &self,
+        options: &CommitOptions,
+    ) -> Result<CommitStats> {
+        if self.inner.writer_lock.is_none() {
+            return Err(InputError::ReadOnlyStore.into());
+        }
+        options.validate()?;
+        let _commit_guard = self.inner.commit_lock.lock();
+
+        let geometry = self.inner.geometry;
+        let key_len = geometry.key_len;
+        let (manifest, main_segments, patch_segments) = {
+            let state = self.inner.state.read();
+            (
+                state.manifest.clone(),
+                state.main_segments_as_vec(),
+                state.patch_segments_as_vec(),
+            )
+        };
+        let mut plan = CommitPlan::from_snapshot(manifest, main_segments, patch_segments);
+        if plan.patch_segments.is_empty() && !plan.has_dead_entries() {
+            return Ok(CommitStats::default());
+        }
+
+        let (written, merged_records) =
+            self.write_normalized_segments(&mut plan, &WriteBatch::default(), None, options)?;
+        let publication_stats = self.publish_plan(plan, written, key_len)?;
+        Ok(CommitStats {
+            records: 0,
+            bytes: 0,
+            segments_published: publication_stats.segments_published,
+            segments_retired: publication_stats.segments_retired,
+            merged_records,
+        })
+    }
+
+    fn write_normalized_segments(
+        &self,
+        plan: &mut CommitPlan,
+        batch: &WriteBatch,
+        batch_bounds: Option<(&[u8], &[u8])>,
+        options: &CommitOptions,
+    ) -> Result<(Vec<WrittenSegment>, usize)> {
+        let affected_live = if let Some((batch_min, batch_max)) = batch_bounds {
+            let (normalize_min, normalize_max) = plan.normalization_bounds(batch_min, batch_max);
             let affected_main = plan.affected_main_range(&normalize_min, &normalize_max);
             let mut affected_live = plan.affected_main_segments(affected_main);
             affected_live.extend(plan.patch_segments());
-            plan.retire_segments(&affected_live);
-            let merged = self.merge_region(&batch, &affected_live)?;
-            let ranges = merged.flush_ranges(
-                key_len,
-                options.flush_threshold_records,
-                options.flush_threshold_bytes,
-            );
-            let written =
-                self.write_batch_segments(&merged, ranges, SegmentTier::Main, &mut plan, options)?;
-            (written, merged.len())
+            affected_live
+        } else {
+            let Some((normalize_min, normalize_max)) = plan.patch_bounds() else {
+                return Ok((Vec::new(), 0));
+            };
+            let affected_main = plan.affected_main_range(&normalize_min, &normalize_max);
+            let mut affected_live = plan.affected_main_segments(affected_main);
+            affected_live.extend(plan.patch_segments());
+            affected_live
         };
 
+        plan.retire_segments(&affected_live);
+        let merged = self.merge_region(batch, &affected_live)?;
+        let ranges = merged.flush_ranges(
+            self.inner.geometry.key_len,
+            options.flush_threshold_records,
+            options.flush_threshold_bytes,
+        );
+        let written =
+            self.write_batch_segments(&merged, ranges, SegmentTier::Main, plan, options)?;
+        Ok((written, merged.len()))
+    }
+
+    fn publish_plan(
+        &self,
+        plan: CommitPlan,
+        written: Vec<WrittenSegment>,
+        key_len: usize,
+    ) -> Result<CommitPublicationStats> {
         let publication = plan.into_publication(written, key_len)?;
         paths::publish_manifest(&self.inner.paths, &publication.manifest)?;
 
@@ -352,8 +489,10 @@ impl Store {
         // by earlier failed publications. Best-effort: open readers may still
         // hold descriptors, and a failed unlink is retried by the next pass.
         garbage_collect_unreferenced(&self.inner.paths, &publication.manifest);
-        let segments_published = publication.segments_published;
-        let segments_retired = publication.segments_retired;
+        let stats = CommitPublicationStats {
+            segments_published: publication.segments_published,
+            segments_retired: publication.segments_retired,
+        };
 
         {
             let mut state = self.inner.state.write();
@@ -361,13 +500,7 @@ impl Store {
             state.manifest = publication.manifest;
         }
 
-        Ok(CommitStats {
-            records: input_records,
-            bytes: input_bytes,
-            segments_published,
-            segments_retired,
-            merged_records,
-        })
+        Ok(stats)
     }
 
     /// Merges `batch` with the records of the intersecting `affected` segments

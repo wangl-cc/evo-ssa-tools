@@ -139,6 +139,147 @@ fn patch_segments_normalize_after_limit() -> Result<()> {
 }
 
 #[test]
+fn patch_segment_limit_is_configurable() -> Result<()> {
+    let tempdir = tempfile::tempdir()?;
+    let store = create_store(&tempdir)?;
+    let options = commit_options().with_patch_segment_limit(1);
+    commit_entries_with_options(
+        &store,
+        &[
+            (make_key(1, 0, 0), make_value(0, 8)),
+            (make_key(1, 0, 20), make_value(20, 8)),
+        ],
+        true,
+        &options,
+    )?;
+
+    let stats = commit_entries_with_options(
+        &store,
+        &[(make_key(1, 0, 1), make_value(1, 8))],
+        true,
+        &options,
+    )?;
+    assert_eq!(stats.merged_records, 1);
+    assert_eq!(stats.segments_retired, 0);
+
+    let stats = commit_entries_with_options(
+        &store,
+        &[(make_key(1, 0, 2), make_value(2, 8))],
+        true,
+        &options,
+    )?;
+    assert_eq!(stats.records, 1);
+    assert_eq!(stats.merged_records, 4);
+    assert_eq!(stats.segments_retired, 2);
+    assert_eq!(stats.segments_published, 1);
+    Ok(())
+}
+
+#[test]
+fn patch_direct_record_limit_can_force_immediate_normalization() -> Result<()> {
+    let tempdir = tempfile::tempdir()?;
+    let store = create_store(&tempdir)?;
+    let options = commit_options().with_patch_direct_record_limit(0);
+    commit_entries_with_options(
+        &store,
+        &[
+            (make_key(1, 0, 0), make_value(0, 8)),
+            (make_key(1, 0, 20), make_value(20, 8)),
+        ],
+        true,
+        &options,
+    )?;
+
+    let stats = commit_entries_with_options(
+        &store,
+        &[(make_key(1, 0, 1), make_value(1, 8))],
+        true,
+        &options,
+    )?;
+    assert_eq!(stats.records, 1);
+    assert_eq!(stats.merged_records, 3);
+    assert_eq!(stats.segments_retired, 1);
+    assert_eq!(stats.segments_published, 1);
+    Ok(())
+}
+
+#[test]
+fn explicit_normalize_folds_patch_segments_into_main() -> Result<()> {
+    let tempdir = tempfile::tempdir()?;
+    let store = create_store(&tempdir)?;
+    commit_entries(
+        &store,
+        &[
+            (make_key(1, 0, 0), make_value(0, 8)),
+            (make_key(1, 0, 20), make_value(20, 8)),
+        ],
+        true,
+    )?;
+    commit_entries(&store, &[(make_key(1, 0, 1), make_value(1, 8))], true)?;
+    commit_entries(&store, &[(make_key(1, 0, 2), make_value(2, 8))], true)?;
+
+    let stats = store.normalize_with_options(&commit_options())?;
+    assert_eq!(stats.records, 0);
+    assert_eq!(stats.bytes, 0);
+    assert_eq!(stats.merged_records, 4);
+    assert_eq!(stats.segments_retired, 3);
+    assert_eq!(stats.segments_published, 1);
+
+    let keys: Vec<_> = store
+        .iter_all()?
+        .collect::<Result<Vec<_>>>()?
+        .into_iter()
+        .map(|(key, _)| key)
+        .collect();
+    assert_eq!(keys, vec![
+        make_key(1, 0, 0),
+        make_key(1, 0, 1),
+        make_key(1, 0, 2),
+        make_key(1, 0, 20),
+    ]);
+
+    let segments = fs::read_dir(tempdir.path().join("segments"))?
+        .filter_map(std::result::Result::ok)
+        .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "seg"))
+        .count();
+    assert_eq!(segments, 1);
+    Ok(())
+}
+
+#[test]
+fn explicit_normalize_is_noop_without_patches() -> Result<()> {
+    let tempdir = tempfile::tempdir()?;
+    let store = create_store(&tempdir)?;
+    commit_entries(&store, &[(make_key(1, 0, 0), make_value(1, 8))], true)?;
+
+    assert_eq!(store.normalize()?, CommitStats::default());
+    assert_eq!(store.fetch_one(&make_key(1, 0, 0))?, Some(make_value(1, 8)));
+    Ok(())
+}
+
+#[test]
+fn read_only_handle_rejects_explicit_normalize() -> Result<()> {
+    let tempdir = tempfile::tempdir()?;
+    let store = create_store(&tempdir)?;
+    commit_entries(
+        &store,
+        &[
+            (make_key(1, 0, 0), make_value(0, 8)),
+            (make_key(1, 0, 20), make_value(20, 8)),
+        ],
+        true,
+    )?;
+    commit_entries(&store, &[(make_key(1, 0, 1), make_value(1, 8))], true)?;
+
+    let reader = reopen_store_read_only(&tempdir)?;
+    let error = reader
+        .normalize()
+        .expect_err("read-only handles cannot normalize");
+    assert!(matches!(error, Error::Input(InputError::ReadOnlyStore)));
+    Ok(())
+}
+
+#[test]
 fn duplicate_key_commit_keeps_lexicographically_smallest_value() -> Result<()> {
     let tempdir = tempfile::tempdir()?;
     let store = create_store(&tempdir)?;

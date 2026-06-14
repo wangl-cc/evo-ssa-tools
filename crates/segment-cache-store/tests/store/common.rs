@@ -6,7 +6,7 @@ pub(crate) use std::{
     path::{Path, PathBuf},
 };
 
-use crc32c::{crc32c, crc32c_append};
+use crc32c::crc32c;
 pub(crate) use segment_cache_store::{
     CatalogError, CatalogMismatch, CommitOptions, CommitStats, CorruptionError, CreateOptions,
     Error, InputError, OpenOptions as StoreOpenOptions, OptionsError, Result, Store, StoreMetadata,
@@ -14,11 +14,9 @@ pub(crate) use segment_cache_store::{
 };
 
 pub(crate) const FOOTER_TRAILER_LEN: u64 = 8;
-const BLOCK_FOOTER_LEN: usize = 20;
-const BLOCK_FOOTER_DESCRIPTOR_LEN: usize = 12;
-const BLOCK_FOOTER_PAYLOAD_OFFSET_AT: usize = 4;
-const BLOCK_FOOTER_PAYLOAD_LEN_AT: usize = 8;
-const BLOCK_FOOTER_METADATA_CRC_AT: usize = 12;
+const KEY_PREFIX_LEN_LEN: usize = 4;
+const CHECKSUM_LEN: usize = 4;
+const SEGMENT_VALUE_LEN_OFFSET: u64 = 12;
 
 pub(crate) fn metadata() -> StoreMetadata {
     StoreMetadata::from_text("segment-cache-store-test")
@@ -147,27 +145,18 @@ pub(crate) fn mutate_block_metadata(
     block_index: usize,
     mutate: impl FnOnce(&mut [u8]),
 ) -> Result<()> {
-    let (block_offset, block_len, _) = block_index_entry(path, block_index)?;
+    let (block_offset, block_len, record_count) = block_index_entry(path, block_index)?;
     let mut file = FsOpenOptions::new().read(true).write(true).open(path)?;
+    let key_len = read_key_len(&mut file)?;
+    let value_len = read_value_len(&mut file)?;
     let mut block = vec![0u8; usize::try_from(block_len).expect("block len")];
     file.seek(SeekFrom::Start(block_offset))?;
     file.read_exact(&mut block)?;
 
-    let footer_start = block_footer_start(&block)?;
-    let payload_offset =
-        read_block_footer_u32(&block, footer_start, BLOCK_FOOTER_PAYLOAD_OFFSET_AT)? as usize;
-    if payload_offset > footer_start {
-        return Err(CorruptionError::Block.into());
-    }
-
-    mutate(&mut block[..payload_offset]);
-    let crc = block_metadata_crc(
-        &block[..payload_offset],
-        &block[footer_start..footer_start + BLOCK_FOOTER_DESCRIPTOR_LEN],
-    );
-    block[footer_start + BLOCK_FOOTER_METADATA_CRC_AT
-        ..footer_start + BLOCK_FOOTER_METADATA_CRC_AT + 4]
-        .copy_from_slice(&crc.to_le_bytes());
+    let metadata_len = block_lookup_metadata_len(&block, record_count, key_len, value_len)?;
+    mutate(&mut block[..metadata_len]);
+    let crc = crc32c(&block[..metadata_len]);
+    block[metadata_len..metadata_len + CHECKSUM_LEN].copy_from_slice(&crc.to_le_bytes());
     file.seek(SeekFrom::Start(block_offset))?;
     file.write_all(&block)?;
     file.sync_all()?;
@@ -175,12 +164,14 @@ pub(crate) fn mutate_block_metadata(
 }
 
 pub(crate) fn corrupt_block_value_payload(path: &Path, block_index: usize) -> Result<()> {
-    let (block_offset, block_len, _) = block_index_entry(path, block_index)?;
+    let (block_offset, block_len, record_count) = block_index_entry(path, block_index)?;
     let mut file = FsOpenOptions::new().read(true).write(true).open(path)?;
+    let key_len = read_key_len(&mut file)?;
+    let value_len = read_value_len(&mut file)?;
     let mut block = vec![0u8; usize::try_from(block_len).expect("block len")];
     file.seek(SeekFrom::Start(block_offset))?;
     file.read_exact(&mut block)?;
-    let payload_range = block_value_payload_range(&block)?;
+    let payload_range = block_value_payload_range(&block, record_count, key_len, value_len)?;
     let first_payload_byte = payload_range.start;
     block[first_payload_byte] ^= 0xFF;
     file.seek(SeekFrom::Start(block_offset))?;
@@ -230,6 +221,10 @@ fn read_key_len(file: &mut fs::File) -> Result<usize> {
     Ok(usize::try_from(read_u32_at(file, 8)?).expect("key len"))
 }
 
+fn read_value_len(file: &mut fs::File) -> Result<u32> {
+    read_u32_at(file, SEGMENT_VALUE_LEN_OFFSET)
+}
+
 fn read_u32_at(file: &mut fs::File, offset: u64) -> Result<u32> {
     file.seek(SeekFrom::Start(offset))?;
     let mut bytes = [0u8; 4];
@@ -255,39 +250,98 @@ fn read_u32(bytes: &[u8], cursor: &mut usize) -> Result<u32> {
     Ok(value)
 }
 
-fn block_footer_start(block: &[u8]) -> Result<usize> {
-    block
-        .len()
-        .checked_sub(BLOCK_FOOTER_LEN)
-        .ok_or_else(|| CorruptionError::Block.into())
-}
-
-fn block_value_payload_range(block: &[u8]) -> Result<Range<usize>> {
-    let footer_start = block_footer_start(block)?;
-    let payload_offset =
-        read_block_footer_u32(block, footer_start, BLOCK_FOOTER_PAYLOAD_OFFSET_AT)? as usize;
-    let payload_len =
-        read_block_footer_u32(block, footer_start, BLOCK_FOOTER_PAYLOAD_LEN_AT)? as usize;
+fn block_value_payload_range(
+    block: &[u8],
+    record_count: u32,
+    key_len: usize,
+    value_len: u32,
+) -> Result<Range<usize>> {
+    let metadata_len = block_lookup_metadata_len(block, record_count, key_len, value_len)?;
+    let payload_offset = metadata_len
+        .checked_add(CHECKSUM_LEN)
+        .ok_or(CorruptionError::Block)?;
+    let payload_len = block_value_payload_len(block, record_count, key_len, value_len)?;
     let payload_end = payload_offset
         .checked_add(payload_len)
         .ok_or(CorruptionError::Block)?;
-    if payload_end > footer_start || payload_offset > payload_end {
+    if payload_end
+        .checked_add(CHECKSUM_LEN)
+        .ok_or(CorruptionError::Block)?
+        > block.len()
+        || payload_offset > payload_end
+    {
         return Err(CorruptionError::Block.into());
     }
     Ok(payload_offset..payload_end)
 }
 
-fn read_block_footer_u32(block: &[u8], footer_start: usize, offset: usize) -> Result<u32> {
-    let start = footer_start
-        .checked_add(offset)
+fn block_lookup_metadata_len(
+    block: &[u8],
+    record_count: u32,
+    key_len: usize,
+    value_len: u32,
+) -> Result<usize> {
+    if block.len() < KEY_PREFIX_LEN_LEN {
+        return Err(CorruptionError::Block.into());
+    }
+    let prefix_len = u32::from_le_bytes(
+        block[..KEY_PREFIX_LEN_LEN]
+            .try_into()
+            .expect("prefix length width"),
+    ) as usize;
+    if prefix_len > key_len {
+        return Err(CorruptionError::Block.into());
+    }
+    let record_count = usize::try_from(record_count).expect("record count fits usize");
+    let suffix_len = key_len - prefix_len;
+    let key_section_len = KEY_PREFIX_LEN_LEN
+        .checked_add(prefix_len)
+        .and_then(|len| len.checked_add(record_count.checked_mul(suffix_len)?))
         .ok_or(CorruptionError::Block)?;
-    let end = start.checked_add(4).ok_or(CorruptionError::Block)?;
-    let bytes = block.get(start..end).ok_or(CorruptionError::Block)?;
-    Ok(u32::from_le_bytes(
-        bytes.try_into().expect("u32 footer field"),
-    ))
+    let value_index_len = if value_len == 0 {
+        record_count
+            .checked_add(1)
+            .and_then(|count| count.checked_mul(4))
+            .ok_or(CorruptionError::Block)?
+    } else {
+        0
+    };
+    let metadata_len = key_section_len
+        .checked_add(value_index_len)
+        .ok_or(CorruptionError::Block)?;
+    if metadata_len
+        .checked_add(CHECKSUM_LEN)
+        .ok_or(CorruptionError::Block)?
+        > block.len()
+    {
+        return Err(CorruptionError::Block.into());
+    }
+    Ok(metadata_len)
 }
 
-fn block_metadata_crc(metadata: &[u8], footer_descriptor: &[u8]) -> u32 {
-    crc32c_append(crc32c_append(0, metadata), footer_descriptor)
+fn block_value_payload_len(
+    block: &[u8],
+    record_count: u32,
+    key_len: usize,
+    value_len: u32,
+) -> Result<usize> {
+    let record_count = usize::try_from(record_count).expect("record count fits usize");
+    if value_len != 0 {
+        return record_count
+            .checked_mul(usize::try_from(value_len).expect("value len fits usize"))
+            .ok_or_else(|| CorruptionError::Block.into());
+    }
+    let metadata_len = block_lookup_metadata_len(
+        block,
+        u32::try_from(record_count).expect("record count round-trips"),
+        key_len,
+        value_len,
+    )?;
+    let sentinel_offset = metadata_len
+        .checked_sub(CHECKSUM_LEN)
+        .ok_or(CorruptionError::Block)?;
+    let bytes = block
+        .get(sentinel_offset..sentinel_offset + CHECKSUM_LEN)
+        .ok_or(CorruptionError::Block)?;
+    Ok(u32::from_le_bytes(bytes.try_into().expect("value payload sentinel width")) as usize)
 }

@@ -1,12 +1,15 @@
 //! Block decoder: on-disk block bytes in, zero-copy records out.
 //!
-//! Decoding validates the block footer, the value region, and key ordering
-//! before any record is returned; a block that fails any check is reported as
-//! [`CorruptionError::Block`] and degrades to a cache miss.
+//! Decoding validates the block lookup metadata, value layout, and key
+//! ordering before any record is returned. A block that fails validation is
+//! reported as [`CorruptionError::Block`] and degrades to a cache miss.
 
 use std::{cell::OnceCell, cmp::Ordering};
 
-use super::layout::{BlockFooter, BlockValueRegion};
+use super::layout::{
+    BlockLookupLayout, BlockValueRegion, CHECKSUM_LEN, KEY_PREFIX_LEN_LEN, block_crc,
+    read_stored_crc,
+};
 use crate::format::{CorruptionError, ValueLayout, segment::BlockIndexEntry};
 
 /// Decoded block bytes plus derived offsets needed for zero-copy record access.
@@ -16,11 +19,13 @@ pub(crate) struct DecodedBlock {
     key_len: usize,
     key_prefix_len: usize,
     suffix_len: usize,
-    key_region_len: usize,
+    key_section_len: usize,
+    payload_offset: usize,
+    payload_len: usize,
+    value_crc_offset: usize,
     value_region: BlockValueRegion,
-    footer: BlockFooter,
     /// Materialized only when the block strips a shared key prefix and the last
-    /// key is therefore not contiguous in the on-disk key region.
+    /// key is therefore not contiguous in the on-disk key section.
     last_key: Option<Vec<u8>>,
     /// Materialized lazily for scan-style APIs that must return borrowed full
     /// keys. Ordered lookup compares prefix/suffix bytes directly.
@@ -33,7 +38,7 @@ pub(crate) struct DecodedBlock {
 enum BlockStorage {
     /// Full block bytes, used by dense reads and scans.
     Full(Vec<u8>),
-    /// Key/index metadata with value payload loaded lazily.
+    /// Lookup metadata with value payload loaded lazily.
     Split {
         metadata: Vec<u8>,
         payload: Option<Vec<u8>>,
@@ -54,64 +59,53 @@ impl DecodedBlock {
         value_layout: ValueLayout,
         verify_checksum: bool,
     ) -> Result<Self, CorruptionError> {
-        let footer = BlockFooter::from_bytes(&bytes, verify_checksum)?;
-        let record_count = entry.record_count as usize;
-        if record_count == 0 {
-            return Err(CorruptionError::Block);
+        let layout = BlockLayout::from_block_bytes(&bytes, entry, key_len, value_layout)?;
+        if verify_checksum {
+            layout.verify_lookup_crc(&bytes)?;
+            layout.verify_payload_crc(&bytes)?;
         }
-        Self::from_storage(
-            BlockStorage::Full(bytes),
-            footer,
-            entry,
-            record_count,
-            key_len,
-            value_layout,
-        )
+        Self::from_storage(BlockStorage::Full(bytes), layout, entry)
     }
 
     pub(crate) fn decode_metadata(
-        metadata: Vec<u8>,
-        footer: BlockFooter,
+        mut metadata: Vec<u8>,
         entry: &BlockIndexEntry,
         key_len: usize,
         value_layout: ValueLayout,
+        verify_checksum: bool,
     ) -> Result<Self, CorruptionError> {
-        let record_count = entry.record_count as usize;
-        if record_count == 0 {
-            return Err(CorruptionError::Block);
+        let layout = BlockLayout::from_metadata_bytes(&metadata, entry, key_len, value_layout)?;
+        if verify_checksum {
+            layout.verify_lookup_crc(&metadata)?;
         }
+        metadata.truncate(layout.lookup_metadata_len);
         Self::from_storage(
             BlockStorage::Split {
                 metadata,
                 payload: None,
             },
-            footer,
+            layout,
             entry,
-            record_count,
-            key_len,
-            value_layout,
         )
     }
 
     fn from_storage(
         storage: BlockStorage,
-        footer: BlockFooter,
+        layout: BlockLayout,
         entry: &BlockIndexEntry,
-        record_count: usize,
-        key_len: usize,
-        value_layout: ValueLayout,
     ) -> Result<Self, CorruptionError> {
-        let layout = BlockLayout::new(record_count, key_len, value_layout, footer)?;
-        layout.validate_key_region(storage.metadata())?;
-        let last_key = layout.materialize_last_key_if_needed(storage.metadata(), key_len)?;
+        layout.validate_key_section(storage.metadata())?;
+        let last_key = layout.materialize_last_key_if_needed(storage.metadata())?;
         let block = Self {
-            record_count,
-            key_len,
-            key_prefix_len: layout.key_prefix_len,
+            record_count: layout.record_count,
+            key_len: layout.key_len,
+            key_prefix_len: layout.lookup.key_prefix_len,
             suffix_len: layout.suffix_len,
-            key_region_len: layout.key_region_len,
+            key_section_len: layout.lookup.key_section_len,
+            payload_offset: layout.payload_offset,
+            payload_len: layout.payload_len,
+            value_crc_offset: layout.value_crc_offset,
             value_region: layout.value_region,
-            footer,
             last_key,
             full_keys: OnceCell::new(),
             storage,
@@ -123,12 +117,23 @@ impl DecodedBlock {
 
     pub(crate) fn attach_payload(
         &mut self,
-        payload: Vec<u8>,
+        mut payload: Vec<u8>,
         verify_checksum: bool,
     ) -> Result<(), CorruptionError> {
         if verify_checksum {
-            self.footer.verify_payload(&payload)?;
-        } else if payload.len() != self.footer.payload_len {
+            let expected_len = self
+                .payload_len
+                .checked_add(CHECKSUM_LEN)
+                .ok_or(CorruptionError::Block)?;
+            if payload.len() != expected_len {
+                return Err(CorruptionError::Block);
+            }
+            let stored_crc = read_stored_crc(&payload, self.payload_len)?;
+            if block_crc(&payload[..self.payload_len]) != stored_crc {
+                return Err(CorruptionError::Block);
+            }
+            payload.truncate(self.payload_len);
+        } else if payload.len() != self.payload_len {
             return Err(CorruptionError::Block);
         }
         match &mut self.storage {
@@ -147,11 +152,17 @@ impl DecodedBlock {
     }
 
     pub(crate) fn payload_offset(&self) -> usize {
-        self.footer.payload_offset
+        self.payload_offset
     }
 
-    pub(crate) fn payload_len(&self) -> usize {
-        self.footer.payload_len
+    pub(crate) fn payload_read_len(&self, verify_checksum: bool) -> Result<usize, CorruptionError> {
+        if verify_checksum {
+            return self
+                .payload_len
+                .checked_add(CHECKSUM_LEN)
+                .ok_or(CorruptionError::Block);
+        }
+        Ok(self.payload_len)
     }
 
     pub(crate) fn has_payload(&self) -> bool {
@@ -160,14 +171,15 @@ impl DecodedBlock {
 
     pub(crate) fn first_key(&self) -> &[u8] {
         debug_assert!(self.record_count > 0);
-        &self.metadata()[..self.key_len]
+        let start = KEY_PREFIX_LEN_LEN;
+        &self.metadata()[start..start + self.key_len]
     }
 
     pub(crate) fn last_key(&self) -> &[u8] {
         if let Some(last_key) = &self.last_key {
             return last_key;
         }
-        let start = (self.record_count - 1) * self.key_len;
+        let start = KEY_PREFIX_LEN_LEN + (self.record_count - 1) * self.key_len;
         &self.metadata()[start..start + self.key_len]
     }
 
@@ -229,16 +241,28 @@ impl DecodedBlock {
             return Err(CorruptionError::Block);
         }
         if !self.needs_full_key_buffer() {
-            let start = index * self.key_len;
-            let end = start + self.key_len;
-            if end > self.key_region_len {
+            let start = KEY_PREFIX_LEN_LEN
+                .checked_add(
+                    index
+                        .checked_mul(self.key_len)
+                        .ok_or(CorruptionError::Block)?,
+                )
+                .ok_or(CorruptionError::Block)?;
+            let end = start
+                .checked_add(self.key_len)
+                .ok_or(CorruptionError::Block)?;
+            if end > self.key_section_len {
                 return Err(CorruptionError::Block);
             }
             return Ok(&self.metadata()[start..end]);
         }
 
-        let start = index * self.key_len;
-        let end = start + self.key_len;
+        let start = index
+            .checked_mul(self.key_len)
+            .ok_or(CorruptionError::Block)?;
+        let end = start
+            .checked_add(self.key_len)
+            .ok_or(CorruptionError::Block)?;
         let full_keys = self.full_keys.get_or_init(|| self.reconstruct_full_keys());
         if end > full_keys.len() {
             return Err(CorruptionError::Block);
@@ -252,9 +276,7 @@ impl DecodedBlock {
 
     fn payload(&self) -> Option<&[u8]> {
         match &self.storage {
-            BlockStorage::Full(bytes) => {
-                bytes.get(self.footer.payload_offset..self.footer.payload_end().ok()?)
-            }
+            BlockStorage::Full(bytes) => bytes.get(self.payload_offset..self.value_crc_offset),
             BlockStorage::Split { payload, .. } => payload.as_deref(),
         }
     }
@@ -263,7 +285,14 @@ impl DecodedBlock {
         if index >= self.record_count || key.len() != self.key_len {
             return Err(CorruptionError::Block);
         }
-        let prefix = &self.metadata()[..self.key_prefix_len];
+        let prefix_start = KEY_PREFIX_LEN_LEN;
+        let prefix_end = prefix_start
+            .checked_add(self.key_prefix_len)
+            .ok_or(CorruptionError::Block)?;
+        let prefix = self
+            .metadata()
+            .get(prefix_start..prefix_end)
+            .ok_or(CorruptionError::Block)?;
         let prefix_order = prefix.cmp(&key[..self.key_prefix_len]);
         if prefix_order != Ordering::Equal {
             return Ok(prefix_order);
@@ -276,8 +305,10 @@ impl DecodedBlock {
         if index >= self.record_count {
             return Err(CorruptionError::Block);
         }
-        let start = self
-            .key_prefix_len
+        let suffix_table_start = KEY_PREFIX_LEN_LEN
+            .checked_add(self.key_prefix_len)
+            .ok_or(CorruptionError::Block)?;
+        let start = suffix_table_start
             .checked_add(
                 index
                     .checked_mul(self.suffix_len)
@@ -287,7 +318,7 @@ impl DecodedBlock {
         let end = start
             .checked_add(self.suffix_len)
             .ok_or(CorruptionError::Block)?;
-        if end > self.key_region_len {
+        if end > self.key_section_len {
             return Err(CorruptionError::Block);
         }
         Ok(&self.metadata()[start..end])
@@ -298,10 +329,13 @@ impl DecodedBlock {
     }
 
     fn reconstruct_full_keys(&self) -> Vec<u8> {
-        let prefix = &self.metadata()[..self.key_prefix_len];
+        let prefix_start = KEY_PREFIX_LEN_LEN;
+        let prefix_end = prefix_start + self.key_prefix_len;
+        let prefix = &self.metadata()[prefix_start..prefix_end];
+        let suffix_table_start = prefix_end;
         let mut full_keys = Vec::with_capacity(self.record_count * self.key_len);
         for index in 0..self.record_count {
-            let suffix_start = self.key_prefix_len + index * self.suffix_len;
+            let suffix_start = suffix_table_start + index * self.suffix_len;
             let suffix_end = suffix_start + self.suffix_len;
             full_keys.extend_from_slice(prefix);
             full_keys.extend_from_slice(&self.metadata()[suffix_start..suffix_end]);
@@ -351,52 +385,119 @@ impl BlockStorage {
     }
 }
 
-/// Block layout derived from the block footer during decoding.
+/// Block layout derived from the lookup metadata during decoding.
 struct BlockLayout {
     record_count: usize,
-    key_prefix_len: usize,
+    key_len: usize,
     suffix_len: usize,
-    key_region_len: usize,
+    lookup: BlockLookupLayout,
+    lookup_metadata_len: usize,
+    payload_offset: usize,
+    payload_len: usize,
+    value_crc_offset: usize,
     value_region: BlockValueRegion,
 }
 
 impl BlockLayout {
-    fn new(
-        record_count: usize,
+    fn from_block_bytes(
+        bytes: &[u8],
+        entry: &BlockIndexEntry,
         key_len: usize,
         value_layout: ValueLayout,
-        footer: BlockFooter,
     ) -> Result<Self, CorruptionError> {
-        if footer.key_prefix_len > key_len {
+        if bytes.len() != entry.block_len as usize {
             return Err(CorruptionError::Block);
         }
-        let suffix_len = key_len - footer.key_prefix_len;
-        let suffix_table_len = record_count
-            .checked_mul(suffix_len)
-            .ok_or(CorruptionError::Block)?;
-        let key_region_len = footer
-            .key_prefix_len
-            .checked_add(suffix_table_len)
-            .ok_or(CorruptionError::Block)?;
-        let value_region = BlockValueRegion::from_footer(
+        Self::from_bytes(bytes, entry, key_len, value_layout)
+    }
+
+    fn from_metadata_bytes(
+        bytes: &[u8],
+        entry: &BlockIndexEntry,
+        key_len: usize,
+        value_layout: ValueLayout,
+    ) -> Result<Self, CorruptionError> {
+        Self::from_bytes(bytes, entry, key_len, value_layout)
+    }
+
+    fn from_bytes(
+        bytes: &[u8],
+        entry: &BlockIndexEntry,
+        key_len: usize,
+        value_layout: ValueLayout,
+    ) -> Result<Self, CorruptionError> {
+        let record_count = entry.record_count as usize;
+        if record_count == 0 {
+            return Err(CorruptionError::Block);
+        }
+        let key_prefix_len = BlockLookupLayout::read_key_prefix_len(bytes)?;
+        let lookup = BlockLookupLayout::new(record_count, key_len, value_layout, key_prefix_len)?;
+        let lookup_metadata_len = lookup.lookup_metadata_len;
+        let metadata_with_crc_len = lookup.metadata_with_crc_len()?;
+        if metadata_with_crc_len > bytes.len() {
+            return Err(CorruptionError::Block);
+        }
+        let payload_offset = metadata_with_crc_len;
+        let metadata = &bytes[..lookup_metadata_len];
+        let value_region = BlockValueRegion::from_metadata(
             value_layout,
             record_count,
-            key_region_len,
-            footer.payload_offset,
-            footer.payload_len,
+            lookup.key_section_len,
+            payload_offset,
+            metadata,
         )
         .ok_or(CorruptionError::Block)?;
+        let payload_len = value_region.payload_len();
+        let value_crc_offset = payload_offset
+            .checked_add(payload_len)
+            .ok_or(CorruptionError::Block)?;
+        let value_crc_end = value_crc_offset
+            .checked_add(CHECKSUM_LEN)
+            .ok_or(CorruptionError::Block)?;
+        if value_crc_end > entry.block_len as usize {
+            return Err(CorruptionError::Block);
+        }
         Ok(Self {
             record_count,
-            key_prefix_len: footer.key_prefix_len,
-            suffix_len,
-            key_region_len,
+            key_len,
+            suffix_len: key_len - key_prefix_len,
+            lookup,
+            lookup_metadata_len,
+            payload_offset,
+            payload_len,
+            value_crc_offset,
             value_region,
         })
     }
 
-    fn validate_key_region(&self, bytes: &[u8]) -> Result<(), CorruptionError> {
-        if self.key_region_len > bytes.len() {
+    fn verify_lookup_crc(&self, bytes: &[u8]) -> Result<(), CorruptionError> {
+        let stored_crc = read_stored_crc(bytes, self.lookup_metadata_len)?;
+        if block_crc(
+            bytes
+                .get(..self.lookup_metadata_len)
+                .ok_or(CorruptionError::Block)?,
+        ) != stored_crc
+        {
+            return Err(CorruptionError::Block);
+        }
+        Ok(())
+    }
+
+    fn verify_payload_crc(&self, bytes: &[u8]) -> Result<(), CorruptionError> {
+        let stored_crc = read_stored_crc(bytes, self.value_crc_offset)?;
+        if block_crc(
+            bytes
+                .get(self.payload_offset..self.value_crc_offset)
+                .ok_or(CorruptionError::Block)?,
+        ) != stored_crc
+        {
+            return Err(CorruptionError::Block);
+        }
+        Ok(())
+    }
+
+    fn validate_key_section(&self, bytes: &[u8]) -> Result<(), CorruptionError> {
+        if self.lookup.key_section_len > bytes.len() {
             return Err(CorruptionError::Block);
         }
         Ok(())
@@ -405,15 +506,16 @@ impl BlockLayout {
     fn materialize_last_key_if_needed(
         &self,
         bytes: &[u8],
-        key_len: usize,
     ) -> Result<Option<Vec<u8>>, CorruptionError> {
-        if self.key_prefix_len == 0 || self.record_count == 1 {
+        if self.lookup.key_prefix_len == 0 || self.record_count == 1 {
             return Ok(None);
         }
         let index = self.record_count - 1;
-        let prefix = &bytes[..self.key_prefix_len];
-        let suffix_start = self
-            .key_prefix_len
+        let prefix_start = KEY_PREFIX_LEN_LEN;
+        let prefix_end = prefix_start
+            .checked_add(self.lookup.key_prefix_len)
+            .ok_or(CorruptionError::Block)?;
+        let suffix_start = prefix_end
             .checked_add(
                 index
                     .checked_mul(self.suffix_len)
@@ -423,11 +525,11 @@ impl BlockLayout {
         let suffix_end = suffix_start
             .checked_add(self.suffix_len)
             .ok_or(CorruptionError::Block)?;
-        if suffix_end > self.key_region_len {
+        if suffix_end > self.lookup.key_section_len {
             return Err(CorruptionError::Block);
         }
-        let mut key = Vec::with_capacity(key_len);
-        key.extend_from_slice(prefix);
+        let mut key = Vec::with_capacity(self.key_len);
+        key.extend_from_slice(&bytes[prefix_start..prefix_end]);
         key.extend_from_slice(&bytes[suffix_start..suffix_end]);
         Ok(Some(key))
     }
@@ -474,8 +576,12 @@ mod tests {
                 record_count: 2,
             };
 
-            assert_eq!(&block[..3], b"aa0");
-            assert_eq!(&block[3..5], b"12");
+            assert_eq!(
+                u32::from_le_bytes(block[..4].try_into().expect("prefix len")),
+                3
+            );
+            assert_eq!(&block[4..7], b"aa0");
+            assert_eq!(&block[7..9], b"12");
 
             let decoded = DecodedBlock::decode(block, &entry, 4, ValueLayout::VARIABLE, true)
                 .expect("block should decode");
@@ -505,7 +611,7 @@ mod tests {
         }
 
         #[test]
-        fn single_record_block_borrows_raw_key_region() {
+        fn single_record_block_borrows_raw_key_section() {
             let entries = Entries {
                 entries: &[(b"aa01", b"only")],
             };

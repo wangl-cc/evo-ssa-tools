@@ -13,7 +13,7 @@ use crc32c::crc32c;
 use crate::format::{
     CorruptionError, FormatError, SegmentWriteError, ValueLayout,
     binary::BinaryCursor,
-    block::{BLOCK_FOOTER_LEN, BlockBuilder},
+    block::{BlockBuilder, CHECKSUM_LEN, KEY_PREFIX_LEN_LEN},
     common_prefix_len, format_u32,
     record::{EntrySource, EntryView},
 };
@@ -253,7 +253,7 @@ impl BlockIndexCodec {
         let mut decoded_records = 0u64;
         let mut previous_first_key: Option<&[u8]> = None;
         for entry in entries {
-            if entry.block_len < BLOCK_FOOTER_LEN as u32
+            if entry.block_len < (KEY_PREFIX_LEN_LEN + CHECKSUM_LEN * 2) as u32
                 || entry.record_count == 0
                 || entry.block_offset != expected_offset
                 || entry.first_key.len() != self.key_len
@@ -382,7 +382,7 @@ impl SegmentWriter {
             let prospective_count = end - start + 1;
             let prefix_len = common_prefix_len(first_key, entry.key());
             let suffix_len = self.key_len - prefix_len;
-            let key_region_len = prefix_len + prospective_count * suffix_len;
+            let key_region_len = KEY_PREFIX_LEN_LEN + prefix_len + prospective_count * suffix_len;
             let value_index_len = if self.value_layout.is_variable() {
                 (prospective_count + 1) * 4
             } else {
@@ -390,9 +390,10 @@ impl SegmentWriter {
             };
             let prospective_len = key_region_len
                 + value_index_len
+                + CHECKSUM_LEN
                 + payload_len
                 + entry.value().len()
-                + BLOCK_FOOTER_LEN;
+                + CHECKSUM_LEN;
             if end > start && prospective_len > self.target_block_size {
                 break;
             }

@@ -195,8 +195,9 @@ fn corrupted_block_key_ordering_becomes_miss_in_ordered_reads() -> Result<()> {
     let key_len = entries[0].0.len();
     mutate_block_metadata(&path, 0, |metadata| {
         let prefix_len = key_len - 1;
-        let first_suffix = prefix_len;
-        let second_suffix = prefix_len + 1;
+        let suffix_start = 4 + prefix_len;
+        let first_suffix = suffix_start;
+        let second_suffix = suffix_start + 1;
         metadata[second_suffix] = metadata[first_suffix];
     })?;
 
