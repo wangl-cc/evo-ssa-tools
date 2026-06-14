@@ -8,7 +8,10 @@ use crate::{
     engine::{
         io::WriterLock,
         paths::StorePaths,
-        segment_file::{OpenedSegment, read_block, read_block_reusing},
+        segment_file::{
+            OpenedSegment, read_block, read_block_metadata_reusing, read_block_payload,
+            read_block_reusing,
+        },
     },
     error::Result,
     format::{
@@ -157,5 +160,36 @@ impl SegmentState {
             verify_checksum,
             buffer,
         )
+    }
+
+    /// Reads and decodes only the key/index metadata for a block.
+    pub(crate) fn load_block_metadata_reusing(
+        &self,
+        block_index: usize,
+        key_len: usize,
+        value_layout: ValueLayout,
+        verify_checksum: bool,
+        buffer: Vec<u8>,
+    ) -> Result<DecodedBlock> {
+        let entry = &self.block_index[block_index];
+        read_block_metadata_reusing(
+            &self.file,
+            entry,
+            key_len,
+            value_layout,
+            verify_checksum,
+            buffer,
+        )
+    }
+
+    /// Loads the value payload for a metadata-only decoded block.
+    pub(crate) fn load_block_payload(
+        &self,
+        block_index: usize,
+        block: &mut DecodedBlock,
+        verify_checksum: bool,
+    ) -> Result<()> {
+        let entry = &self.block_index[block_index];
+        read_block_payload(&self.file, entry, block, verify_checksum)
     }
 }

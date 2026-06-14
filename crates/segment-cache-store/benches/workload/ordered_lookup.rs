@@ -22,7 +22,20 @@ pub(crate) fn workload(c: &mut Criterion) {
     for &profile in PROFILES {
         let dataset = build_dataset(16_384, profile);
         bench_ordered_fetch(c, profile, &dataset);
-        bench_sparse_ordered_fetch(c, profile, &dataset);
+        bench_sparse_ordered_fetch(
+            c,
+            profile,
+            "clustered_sparse_ordered_fetch",
+            &dataset.entries,
+            &dataset.clustered_sparse_ordered_keys,
+        );
+        bench_sparse_ordered_fetch(
+            c,
+            profile,
+            "random_sparse_ordered_fetch",
+            &dataset.entries,
+            &dataset.random_sparse_ordered_keys,
+        );
 
         if profile.uses_large_value_tuning() {
             bench_large_fetch_api(c, profile, &dataset);
@@ -54,22 +67,26 @@ fn bench_ordered_fetch(c: &mut Criterion, profile: ValueProfile, dataset: &Datas
     group.finish();
 }
 
-fn bench_sparse_ordered_fetch(c: &mut Criterion, profile: ValueProfile, dataset: &Dataset) {
-    let mut group = c.benchmark_group(format!("{}/sparse_ordered_fetch", profile.name()));
-    group.throughput(Throughput::Elements(
-        dataset.sparse_ordered_keys.len() as u64
-    ));
+fn bench_sparse_ordered_fetch(
+    c: &mut Criterion,
+    profile: ValueProfile,
+    name: &str,
+    entries: &[(Vec<u8>, Vec<u8>)],
+    keys: &[Vec<u8>],
+) {
+    let mut group = c.benchmark_group(format!("{}/{name}", profile.name()));
+    group.throughput(Throughput::Elements(keys.len() as u64));
 
     for &block_size in SPARSE_BLOCK_SIZE_VARIANTS {
         let tempdir = tempfile::tempdir().expect("tempdir should work");
         let store = create_filled_store(
             tempdir.path(),
             profile,
-            &dataset.entries,
+            entries,
             &commit_options_with_block_size(block_size),
         );
         group.bench_function(format!("block_{}k", block_size / 1024), |b| {
-            b.iter(|| black_box(sum_segment_fetches(&store, &dataset.sparse_ordered_keys)))
+            b.iter(|| black_box(sum_segment_fetches(&store, keys)))
         });
     }
 

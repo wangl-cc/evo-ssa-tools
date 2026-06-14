@@ -5,7 +5,7 @@ use std::sync::Arc;
 use crate::{
     engine::runtime::{SegmentSnapshot, SegmentState},
     error::{InputError, Result},
-    format::{ValueLayout, block::DecodedBlock},
+    format::{CorruptionError, ValueLayout, block::DecodedBlock},
     store::Store,
 };
 
@@ -378,6 +378,12 @@ where
     segment_index: usize,
 }
 
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum BlockLoadMode {
+    Full,
+    Metadata,
+}
+
 impl<'a, K, F> OrderedSegmentSweep<'a, K, F>
 where
     K: AsRef<[u8]>,
@@ -430,22 +436,7 @@ where
             }
 
             let block_index = self.lookup_state.initial_block_index(segment, key);
-            self.lookup_state.current_segment_index = Some(self.segment_index);
-
-            let block =
-                match self
-                    .lookup_state
-                    .ensure_loaded_block(segment, block_index, self.options)
-                {
-                    Ok(block) => block,
-                    Err(error) if error.is_cache_miss_corruption() => {
-                        self.visit_corrupt_block_misses(segment, block_index);
-                        continue;
-                    }
-                    Err(error) => return Err(error),
-                };
-            let block_upper = block.last_key().min(segment.max_key.as_slice());
-            let block_end = block_query_end(self.keys, self.key_index, block_upper);
+            let block_end = block_end_from_index(segment, block_index, self.keys, self.key_index);
             if block_end == self.key_index {
                 if should_advance_past_empty_block(segment, block_index, key) {
                     self.lookup_state.current_block_index = block_index.checked_add(1);
@@ -456,6 +447,50 @@ where
                 }
                 continue;
             }
+
+            self.lookup_state.current_segment_index = Some(self.segment_index);
+            let block_record_count = segment.block_index[block_index].record_count as usize;
+            let query_count = block_end - self.key_index;
+            let load_mode = if query_count < block_record_count {
+                BlockLoadMode::Metadata
+            } else {
+                BlockLoadMode::Full
+            };
+
+            let block = match self.lookup_state.ensure_loaded_block(
+                segment,
+                block_index,
+                self.options,
+                load_mode,
+            ) {
+                Ok(block) => block,
+                Err(error) if error.is_cache_miss_corruption() => {
+                    self.visit_corrupt_block_misses(segment, block_index);
+                    continue;
+                }
+                Err(error) => return Err(error),
+            };
+            if load_mode == BlockLoadMode::Metadata
+                && !block_has_any_hit(block, &self.keys[self.key_index..block_end])
+            {
+                for offset in self.key_index..block_end {
+                    (self.visitor)(self.base_index + offset, None);
+                }
+                self.key_index = block_end;
+                continue;
+            }
+            let block = match self.lookup_state.ensure_loaded_payload(
+                segment,
+                block_index,
+                self.options.verify_block_checksums,
+            ) {
+                Ok(block) => block,
+                Err(error) if error.is_cache_miss_corruption() => {
+                    self.visit_corrupt_block_misses(segment, block_index);
+                    continue;
+                }
+                Err(error) => return Err(error),
+            };
 
             process_block_keys(
                 block,
@@ -548,23 +583,60 @@ impl LookupState {
         segment: &SegmentState,
         block_index: usize,
         options: LookupReadOptions,
+        load_mode: BlockLoadMode,
     ) -> Result<&DecodedBlock> {
-        let buffer = match self.loaded_block.take() {
-            Some(block) if self.current_block_index == Some(block_index) => {
-                return Ok(self.loaded_block.insert(block));
+        if self.current_block_index == Some(block_index) && self.loaded_block.is_some() {
+            if load_mode == BlockLoadMode::Full
+                && let Some(block) = self.loaded_block.as_mut()
+                && !block.has_payload()
+            {
+                segment.load_block_payload(block_index, block, options.verify_block_checksums)?;
             }
+            return self
+                .loaded_block
+                .as_ref()
+                .ok_or(CorruptionError::Block)
+                .map_err(Into::into);
+        }
+
+        let buffer = match self.loaded_block.take() {
             Some(block) => block.into_bytes(),
             None => Vec::new(),
         };
-        let block = segment.load_block_reusing(
-            block_index,
-            options.key_len,
-            options.value_layout,
-            options.verify_block_checksums,
-            buffer,
-        )?;
+        let block = match load_mode {
+            BlockLoadMode::Full => segment.load_block_reusing(
+                block_index,
+                options.key_len,
+                options.value_layout,
+                options.verify_block_checksums,
+                buffer,
+            )?,
+            BlockLoadMode::Metadata => segment.load_block_metadata_reusing(
+                block_index,
+                options.key_len,
+                options.value_layout,
+                options.verify_block_checksums,
+                buffer,
+            )?,
+        };
         self.current_block_index = Some(block_index);
         Ok(self.loaded_block.insert(block))
+    }
+
+    fn ensure_loaded_payload(
+        &mut self,
+        segment: &SegmentState,
+        block_index: usize,
+        verify_checksum: bool,
+    ) -> Result<&DecodedBlock> {
+        let block = self.loaded_block.as_mut().ok_or(CorruptionError::Block)?;
+        if !block.has_payload() {
+            segment.load_block_payload(block_index, block, verify_checksum)?;
+        }
+        self.loaded_block
+            .as_ref()
+            .ok_or(CorruptionError::Block)
+            .map_err(Into::into)
     }
 }
 
@@ -590,17 +662,6 @@ where
         if !belongs_to_block {
             break;
         }
-        block_end += 1;
-    }
-    block_end
-}
-
-fn block_query_end<K>(keys: &[K], key_index: usize, block_upper: &[u8]) -> usize
-where
-    K: AsRef<[u8]>,
-{
-    let mut block_end = key_index;
-    while block_end < keys.len() && keys[block_end].as_ref() <= block_upper {
         block_end += 1;
     }
     block_end
@@ -635,4 +696,26 @@ where
             block.value_at_if_key(record_index, key),
         );
     }
+}
+
+fn block_has_any_hit<K>(block: &DecodedBlock, keys: &[K]) -> bool
+where
+    K: AsRef<[u8]>,
+{
+    let mut record_index = keys
+        .first()
+        .map_or(0, |key| block.lower_bound_index(key.as_ref()));
+
+    for key in keys {
+        let key = key.as_ref();
+        while record_index < block.record_count()
+            && block.compare_key_at_index(record_index, key) == std::cmp::Ordering::Less
+        {
+            record_index += 1;
+        }
+        if block.key_matches_at_index(record_index, key) {
+            return true;
+        }
+    }
+    false
 }

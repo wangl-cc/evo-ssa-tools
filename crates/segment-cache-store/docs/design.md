@@ -95,9 +95,9 @@ The storage design uses the following terms consistently. Code names should foll
 - `Segment`: an immutable file containing a sorted key range. Segments are the file-level sync unit and the manifest visibility unit.
 - `Segment header`: fixed-size metadata at the start of a segment. It identifies segment format and store geometry needed before decoding the rest of the file.
 - `Segment footer`: variable-size metadata at the end of a segment. It is the completion marker and owns the sparse block index.
-- `Block`: the complete physical read and checksum unit inside a segment. A block contains key bytes, value-layout bytes, padding, a block footer, and the block checksum.
+- `Block`: the complete physical read unit inside a segment. A block contains key bytes, value-layout bytes, value payload bytes, padding, and a block footer.
 - `Block index`: sparse segment-footer metadata with one entry per block. It maps each block's first key to its absolute file offset, physical length, and record count.
-- `Block footer`: fixed-size block-local decoding metadata stored at the end of a block. It records the common key prefix length, value payload location, and block checksum.
+- `Block footer`: fixed-size block-local decoding metadata stored at the end of a block. It records the common key prefix length, value payload location, metadata checksum, and value payload checksum.
 
 ### Block Internal Layout
 
@@ -225,7 +225,7 @@ Segment encoding is deterministic: the same sorted entries written with the same
 
 ## Block Layout
 
-Blocks do not have a header. Block length and record count come from the segment footer's block index. Block-local decoding metadata is stored in a fixed-size footer at the end of each block, with CRC32C as the final field.
+Blocks do not have a header. Block length and record count come from the segment footer's block index. Block-local decoding metadata is stored in a fixed-size footer at the end of each block.
 
 The block footer records the `ValuePayload` position because that is the part needed by both fixed and variable value layouts:
 
@@ -235,10 +235,13 @@ padding
 prefix_len: u32
 payload_offset: u32
 payload_len: u32
-block_crc32c: u32     // crc32c over all previous bytes in this block
+metadata_crc32c: u32  // crc32c over metadata bytes | prefix_len | payload_offset | payload_len
+payload_crc32c: u32   // crc32c over ValuePayload bytes
 ```
 
-`prefix_len` is the block-local common key prefix length. `payload_offset` and `payload_len` describe the packed value payload inside the block. Padding appears before the footer so the footer remains at `block_len - 16`.
+`prefix_len` is the block-local common key prefix length. `payload_offset` and `payload_len` describe the packed value payload inside the block. Metadata is everything before `payload_offset`: the key region plus any value-layout index bytes. Padding appears between the value payload and the footer and is not checksummed. The footer remains at `block_len - 20`.
+
+The split checksums let ordered lookup validate keys and variable-value offsets without reading value bytes. If a searched block contains no matching key, the lookup can return misses after metadata validation only. If a searched block contains a matching key, the reader must load and validate the value payload before returning a hit.
 
 `OpenOptions::with_block_checksum_verification(false)` disables data-block checksum verification for read-only benchmarking against engines that do not validate user value bytes on read. Writable opens reject this option so corrupted bytes cannot be merged into freshly checksummed replacement segments. This is not the default cache-safe mode: with verification disabled, corrupted value bytes may be returned as hits.
 
@@ -259,7 +262,8 @@ padding...
 prefix_len: u32
 payload_offset: u32
 payload_len: u32
-block_crc32c: u32
+metadata_crc32c: u32
+payload_crc32c: u32
 ```
 
 Fixed-value blocks omit the value index:
@@ -275,7 +279,8 @@ padding...
 prefix_len: u32
 payload_offset: u32
 payload_len: u32
-block_crc32c: u32
+metadata_crc32c: u32
+payload_crc32c: u32
 ```
 
 Lookup binary-searches the reconstructed fixed-width key table. Variable layout then uses the matching value offset pair. Fixed layout computes `value_start = payload_offset + index * value_len`.
@@ -352,7 +357,8 @@ This store follows cache semantics:
 
 - corrupted header: whole segment ignored
 - corrupted footer or block index: whole segment ignored
-- block checksum failure: that block behaves like missing data
+- block metadata checksum failure: that block behaves like missing data
+- block value payload checksum failure: matching keys in that block behave like missing data
 - malformed block: that block behaves like missing data
 - orphan temp file: ignored
 - orphan final segment not referenced by manifest: ignored
@@ -457,9 +463,9 @@ Consequences:
 
 - file-name collisions between devices disappear; identical files are the same file
 - identical work performed on two devices deduplicates automatically - but only when entries and writer configuration match exactly, so dedup is an opportunistic optimization that correctness never depends on
-- sync verification upgrades from per-block CRC32C to an end-to-end content hash per file
+- sync verification upgrades from block-local metadata/payload CRC32C to an end-to-end content hash per file
 
-The hash is computed exactly once, streamed while the segment is written. It is verified only when a file crosses a trust boundary: sync ingestion re-hashes received files against their names. The read path never verifies whole-file hashes - runtime corruption detection remains per-block CRC32C - and open does not verify them either, since open reads only the header and footer.
+The hash is computed exactly once, streamed while the segment is written. It is verified only when a file crosses a trust boundary: sync ingestion re-hashes received files against their names. The read path never verifies whole-file hashes - runtime corruption detection remains block-local metadata/payload CRC32C - and open does not verify them either, since open reads only the header and footer.
 
 ### One-Way Replication
 

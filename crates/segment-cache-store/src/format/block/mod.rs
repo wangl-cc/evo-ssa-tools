@@ -1,9 +1,11 @@
 //! Data-block encoding and decoding.
 //!
-//! A block is the physical read and checksum unit inside a segment. Block
-//! length and record count live in the segment block index; block-local
-//! decoding metadata lives in a fixed-size footer at the end of the block,
-//! with a CRC32C over all previous block bytes as the final field.
+//! A block is the physical read unit inside a segment. Block length and record
+//! count live in the segment block index; block-local decoding metadata lives
+//! in a fixed-size footer at the end of the block. The footer stores separate
+//! CRC32C values for lookup metadata and value payload bytes, so sparse ordered
+//! lookup can validate keys and value offsets before deciding whether it needs
+//! to read the value payload.
 //!
 //! The module splits along the data flow:
 //!
@@ -18,4 +20,4 @@ mod layout;
 
 pub(crate) use decode::{DecodedBlock, ParsedRecord};
 pub(super) use encode::BlockBuilder;
-pub(super) use layout::BLOCK_FOOTER_LEN;
+pub(crate) use layout::{BLOCK_FOOTER_LEN, BlockFooter};

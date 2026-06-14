@@ -8,8 +8,8 @@ One benchmark target is used for horizontal comparison against other embedded st
 
 ## Benchmark Targets
 
-- `comparison`: cross-backend summary benchmark. It compares `segment-cache-store`, tuned `fjall3`, and `redb` on ordered fetch, sparse ordered fetch, full iteration, append publish, and the small-profile parameter-evolution workload.
-- `ordered_lookup`: segment-only read-path benchmark with checksum verification enabled. It measures dense ordered lookup, sparse ordered lookup, large-value borrowed-vs-owned fetch APIs, large-value block-size sensitivity, L0 overlay ordered lookup, and L0 overlay scan amplification.
+- `comparison`: cross-backend summary benchmark. It compares `segment-cache-store`, tuned `fjall3`, and `redb` on ordered fetch, clustered sparse ordered fetch, full iteration, append publish, and the small-profile parameter-evolution workload.
+- `ordered_lookup`: segment-only read-path benchmark with checksum verification enabled. It measures dense ordered lookup, clustered/random sparse ordered lookup, large-value borrowed-vs-owned fetch APIs, large-value block-size sensitivity, L0 overlay ordered lookup, and L0 overlay scan amplification.
 - `append_publish`: segment-only write-path benchmark with checksum verification enabled. It measures sorted and unsorted batch publish into fresh stores.
 - `parameter_evolution`: segment-only cache-evolution benchmark with checksum verification enabled. It measures rebuild-vs-L0 behavior for middle inserts and repeated axis changes.
 
@@ -42,9 +42,9 @@ Each profile currently uses `16,384` records for the standard dataset. The param
 
 Fetches the full ordered stream of known keys and touches every returned value. This is the primary hot-path comparison. Variants: `segment`, `segment_no_crc`, `fjall3`, and `redb`.
 
-### `comparison_sparse_ordered_fetch`
+### `comparison_clustered_sparse_ordered_fetch`
 
-Fetches an ordered 1/16 subset of known keys. This tests ordered but sparse reuse, where larger physical blocks can increase read amplification. Variants: `segment`, `segment_no_crc`, `fjall3`, and `redb`.
+Fetches a clustered ordered 1/16 subset of known keys: each 256-record window contributes one contiguous 16-record burst. This keeps the sparse ratio comparable to the old evenly-spaced stress test while better modeling bursty parameter subsets where some blocks have multiple hits and others have none. Variants: `segment`, `segment_no_crc`, `fjall3`, and `redb`.
 
 ### `comparison_iter_all`
 
@@ -62,9 +62,13 @@ Runs several cache-shaped rounds where the active Cartesian-product parameter se
 
 Segment-only dense ordered lookup with checksum verification enabled. This is a stable internal regression target for the default read path.
 
-### `sparse_ordered_fetch`
+### `clustered_sparse_ordered_fetch`
 
-Segment-only sparse ordered lookup with checksum verification enabled. It sweeps block sizes `16K`, `32K`, `64K`, and `256K` to expose the sparse-read amplification tradeoff.
+Segment-only clustered sparse ordered lookup with checksum verification enabled. It sweeps block sizes `16K`, `32K`, `64K`, and `256K` to expose sparse-read amplification when hits have local bursts.
+
+### `random_sparse_ordered_fetch`
+
+Segment-only seeded random sparse ordered lookup with checksum verification enabled. It keeps the query stream sorted after sampling, but the selected keys are not evenly spaced. This tests a less regular sparse shape than the old every-16th-key stress case.
 
 ### `large_value_block_size`
 
@@ -151,7 +155,7 @@ The numbers below are local historical smoke-run results from the prototype benc
 
 ### Large read baseline before K/V checksum split
 
-Targeted local run after lazy key materialization, before K/V checksum split:
+Targeted local run after lazy key materialization, before K/V checksum split and before replacing the old evenly-spaced sparse stress case with clustered/random sparse workloads:
 
 ```bash
 cargo bench -p segment-cache-store --bench ordered_lookup --offline -- large/ --sample-size 20 --warm-up-time 1 --measurement-time 2 --noplot
@@ -172,6 +176,35 @@ cargo bench -p segment-cache-store --bench ordered_lookup --offline -- large/ --
 | `large/large_value_block_size/block_64k` | 41.9 ms |
 | `large/large_value_block_size/block_256k` | 36.2 ms |
 | `large/large_value_block_size/block_512k` | 35.6 ms |
+
+### Large sparse after K/V checksum split
+
+Targeted local run after splitting each block checksum into lookup metadata and value-payload checksums. Dense ordered lookup still loads complete blocks; sparse ordered lookup first validates metadata and only loads value payload for blocks that contain at least one matching key.
+
+```bash
+cargo bench -p segment-cache-store --bench ordered_lookup --offline -- large/clustered_sparse_ordered_fetch --sample-size 20 --warm-up-time 1 --measurement-time 2 --noplot
+cargo bench -p segment-cache-store --bench ordered_lookup --offline -- large/random_sparse_ordered_fetch --sample-size 20 --warm-up-time 1 --measurement-time 2 --noplot
+cargo bench -p segment-cache-store --bench ordered_lookup --offline -- large/ordered_fetch/default_block --sample-size 20 --warm-up-time 1 --measurement-time 2 --noplot
+cargo bench -p segment-cache-store --bench comparison --offline -- large/comparison_clustered_sparse_ordered_fetch --sample-size 20 --warm-up-time 1 --measurement-time 2 --noplot
+```
+
+| workload | 16K | 32K | 64K | 256K |
+| --- | ---: | ---: | ---: | ---: |
+| `large/clustered_sparse_ordered_fetch` | 2.84 ms | 3.52 ms | 3.16 ms | 4.69 ms |
+| `large/random_sparse_ordered_fetch` | 3.23 ms | 5.82 ms | 8.93 ms | 20.85 ms |
+
+| workload | result |
+| --- | ---: |
+| `large/ordered_fetch/default_block` | 47.15 ms |
+
+| backend | `large/comparison_clustered_sparse_ordered_fetch` |
+| --- | ---: |
+| segment | 2.86 ms |
+| segment_no_crc | 1.97 ms |
+| fjall3 | 1.24 ms |
+| redb | 0.85 ms |
+
+The old evenly spaced sparse stress case made every selected key land predictably across the key stream. The current clustered workload selects 16 contiguous keys out of each 256-record window, while the random workload uses a seeded 1/16 sample and then preserves sorted lookup order. The split checksum helps most when a loaded block has no matching key, because the reader can validate metadata and skip value-payload IO. It does not avoid payload validation for blocks that contain hits.
 
 ### Append publish
 

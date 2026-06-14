@@ -18,13 +18,26 @@ pub(crate) struct DecodedBlock {
     suffix_len: usize,
     key_region_len: usize,
     value_region: BlockValueRegion,
+    footer: BlockFooter,
     /// Materialized only when the block strips a shared key prefix and the last
     /// key is therefore not contiguous in the on-disk key region.
     last_key: Option<Vec<u8>>,
     /// Materialized lazily for scan-style APIs that must return borrowed full
     /// keys. Ordered lookup compares prefix/suffix bytes directly.
     full_keys: OnceCell<Vec<u8>>,
-    bytes: Vec<u8>,
+    storage: BlockStorage,
+}
+
+/// Backing bytes for a decoded block.
+#[derive(Debug)]
+enum BlockStorage {
+    /// Full block bytes, used by dense reads and scans.
+    Full(Vec<u8>),
+    /// Key/index metadata with value payload loaded lazily.
+    Split {
+        metadata: Vec<u8>,
+        payload: Option<Vec<u8>>,
+    },
 }
 
 /// Borrowed key/value record decoded from stored bytes.
@@ -46,9 +59,51 @@ impl DecodedBlock {
         if record_count == 0 {
             return Err(CorruptionError::Block);
         }
+        Self::from_storage(
+            BlockStorage::Full(bytes),
+            footer,
+            entry,
+            record_count,
+            key_len,
+            value_layout,
+        )
+    }
+
+    pub(crate) fn decode_metadata(
+        metadata: Vec<u8>,
+        footer: BlockFooter,
+        entry: &BlockIndexEntry,
+        key_len: usize,
+        value_layout: ValueLayout,
+    ) -> Result<Self, CorruptionError> {
+        let record_count = entry.record_count as usize;
+        if record_count == 0 {
+            return Err(CorruptionError::Block);
+        }
+        Self::from_storage(
+            BlockStorage::Split {
+                metadata,
+                payload: None,
+            },
+            footer,
+            entry,
+            record_count,
+            key_len,
+            value_layout,
+        )
+    }
+
+    fn from_storage(
+        storage: BlockStorage,
+        footer: BlockFooter,
+        entry: &BlockIndexEntry,
+        record_count: usize,
+        key_len: usize,
+        value_layout: ValueLayout,
+    ) -> Result<Self, CorruptionError> {
         let layout = BlockLayout::new(record_count, key_len, value_layout, footer)?;
-        layout.validate_key_region(&bytes)?;
-        let last_key = layout.materialize_last_key_if_needed(&bytes, key_len)?;
+        layout.validate_key_region(storage.metadata())?;
+        let last_key = layout.materialize_last_key_if_needed(storage.metadata(), key_len)?;
         let block = Self {
             record_count,
             key_len,
@@ -56,22 +111,56 @@ impl DecodedBlock {
             suffix_len: layout.suffix_len,
             key_region_len: layout.key_region_len,
             value_region: layout.value_region,
+            footer,
             last_key,
             full_keys: OnceCell::new(),
-            bytes,
+            storage,
         };
-        block.value_region.validate(&block.bytes)?;
+        block.value_region.validate(block.metadata())?;
         block.validate_key_ordering(entry)?;
         Ok(block)
     }
 
+    pub(crate) fn attach_payload(
+        &mut self,
+        payload: Vec<u8>,
+        verify_checksum: bool,
+    ) -> Result<(), CorruptionError> {
+        if verify_checksum {
+            self.footer.verify_payload(&payload)?;
+        } else if payload.len() != self.footer.payload_len {
+            return Err(CorruptionError::Block);
+        }
+        match &mut self.storage {
+            BlockStorage::Full(_) => Ok(()),
+            BlockStorage::Split {
+                payload: current, ..
+            } => {
+                *current = Some(payload);
+                Ok(())
+            }
+        }
+    }
+
     pub(crate) fn into_bytes(self) -> Vec<u8> {
-        self.bytes
+        self.storage.into_reusable_bytes()
+    }
+
+    pub(crate) fn payload_offset(&self) -> usize {
+        self.footer.payload_offset
+    }
+
+    pub(crate) fn payload_len(&self) -> usize {
+        self.footer.payload_len
+    }
+
+    pub(crate) fn has_payload(&self) -> bool {
+        self.payload().is_some()
     }
 
     pub(crate) fn first_key(&self) -> &[u8] {
         debug_assert!(self.record_count > 0);
-        &self.bytes[..self.key_len]
+        &self.metadata()[..self.key_len]
     }
 
     pub(crate) fn last_key(&self) -> &[u8] {
@@ -79,7 +168,7 @@ impl DecodedBlock {
             return last_key;
         }
         let start = (self.record_count - 1) * self.key_len;
-        &self.bytes[start..start + self.key_len]
+        &self.metadata()[start..start + self.key_len]
     }
 
     pub(crate) fn find_value(&self, key: &[u8]) -> Option<Vec<u8>> {
@@ -111,11 +200,15 @@ impl DecodedBlock {
     }
 
     pub(crate) fn value_at_if_key(&self, index: usize, key: &[u8]) -> Option<&[u8]> {
-        if self.compare_key(index, key).ok()? != Ordering::Equal {
+        if !self.key_matches_at_index(index, key) {
             return None;
         }
-        let range = self.value_region.range(&self.bytes, index).ok()?;
-        Some(&self.bytes[range])
+        let range = self.value_region.range(self.metadata(), index).ok()?;
+        self.payload().and_then(|payload| payload.get(range))
+    }
+
+    pub(crate) fn key_matches_at_index(&self, index: usize, key: &[u8]) -> bool {
+        self.compare_key(index, key).ok() == Some(Ordering::Equal)
     }
 
     fn partition_point_by_key(&self, key: &[u8]) -> usize {
@@ -141,7 +234,7 @@ impl DecodedBlock {
             if end > self.key_region_len {
                 return Err(CorruptionError::Block);
             }
-            return Ok(&self.bytes[start..end]);
+            return Ok(&self.metadata()[start..end]);
         }
 
         let start = index * self.key_len;
@@ -153,11 +246,24 @@ impl DecodedBlock {
         Ok(&full_keys[start..end])
     }
 
+    fn metadata(&self) -> &[u8] {
+        self.storage.metadata()
+    }
+
+    fn payload(&self) -> Option<&[u8]> {
+        match &self.storage {
+            BlockStorage::Full(bytes) => {
+                bytes.get(self.footer.payload_offset..self.footer.payload_end().ok()?)
+            }
+            BlockStorage::Split { payload, .. } => payload.as_deref(),
+        }
+    }
+
     fn compare_key(&self, index: usize, key: &[u8]) -> Result<Ordering, CorruptionError> {
         if index >= self.record_count || key.len() != self.key_len {
             return Err(CorruptionError::Block);
         }
-        let prefix = &self.bytes[..self.key_prefix_len];
+        let prefix = &self.metadata()[..self.key_prefix_len];
         let prefix_order = prefix.cmp(&key[..self.key_prefix_len]);
         if prefix_order != Ordering::Equal {
             return Ok(prefix_order);
@@ -184,7 +290,7 @@ impl DecodedBlock {
         if end > self.key_region_len {
             return Err(CorruptionError::Block);
         }
-        Ok(&self.bytes[start..end])
+        Ok(&self.metadata()[start..end])
     }
 
     fn needs_full_key_buffer(&self) -> bool {
@@ -192,23 +298,24 @@ impl DecodedBlock {
     }
 
     fn reconstruct_full_keys(&self) -> Vec<u8> {
-        let prefix = &self.bytes[..self.key_prefix_len];
+        let prefix = &self.metadata()[..self.key_prefix_len];
         let mut full_keys = Vec::with_capacity(self.record_count * self.key_len);
         for index in 0..self.record_count {
             let suffix_start = self.key_prefix_len + index * self.suffix_len;
             let suffix_end = suffix_start + self.suffix_len;
             full_keys.extend_from_slice(prefix);
-            full_keys.extend_from_slice(&self.bytes[suffix_start..suffix_end]);
+            full_keys.extend_from_slice(&self.metadata()[suffix_start..suffix_end]);
         }
         full_keys
     }
 
     fn record_at(&self, index: usize) -> Result<ParsedRecord<'_>, CorruptionError> {
         let key = self.key_at(index)?;
-        let range = self.value_region.range(&self.bytes, index)?;
+        let range = self.value_region.range(self.metadata(), index)?;
+        let payload = self.payload().ok_or(CorruptionError::Block)?;
         Ok(ParsedRecord {
             key,
-            value: &self.bytes[range],
+            value: &payload[range],
         })
     }
 
@@ -225,6 +332,22 @@ impl DecodedBlock {
             previous = current;
         }
         Ok(())
+    }
+}
+
+impl BlockStorage {
+    fn metadata(&self) -> &[u8] {
+        match self {
+            Self::Full(bytes) => bytes,
+            Self::Split { metadata, .. } => metadata,
+        }
+    }
+
+    fn into_reusable_bytes(self) -> Vec<u8> {
+        match self {
+            Self::Full(bytes) => bytes,
+            Self::Split { metadata, .. } => metadata,
+        }
     }
 }
 

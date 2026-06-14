@@ -7,10 +7,7 @@ fn corrupted_block_checksum_becomes_miss() -> Result<()> {
     let key = make_key(1, 1, 0);
     commit_entries(&store, &[(key.clone(), make_value(9, 16))], true)?;
     let path = first_segment_path(tempdir.path())?;
-    let mut file = FsOpenOptions::new().read(true).write(true).open(&path)?;
-    file.seek(SeekFrom::Start(block_offset(&path, 0)? + 24))?;
-    file.write_all(&[0xFF])?;
-    file.sync_all()?;
+    corrupt_block_value_payload(&path, 0)?;
 
     let reopened = reopen_store_read_only(&tempdir)?;
     assert_eq!(reopened.fetch_one(&key)?, None);
@@ -25,11 +22,7 @@ fn block_checksum_verification_can_be_disabled_for_benchmarks() -> Result<()> {
     let value = make_value(9, 16);
     commit_entries(&store, &[(key.clone(), value.clone())], true)?;
     let path = first_segment_path(tempdir.path())?;
-    let mut file = FsOpenOptions::new().read(true).write(true).open(&path)?;
-    let value_offset = SEGMENT_HEADER_LEN + key.len() as u64 + 4 + 4;
-    file.seek(SeekFrom::Start(value_offset))?;
-    file.write_all(&[0xFF])?;
-    file.sync_all()?;
+    corrupt_block_value_payload(&path, 0)?;
 
     let checked = reopen_store_read_only(&tempdir)?;
     assert_eq!(checked.fetch_one(&key)?, None);
@@ -171,11 +164,7 @@ fn corrupted_middle_block_only_loses_that_block() -> Result<()> {
         &CommitOptions::default().with_target_block_size(96),
     )?;
     let path = first_segment_path(tempdir.path())?;
-    let second_block_offset = block_offset(&path, 1)?;
-    let mut file = FsOpenOptions::new().read(true).write(true).open(path)?;
-    file.seek(SeekFrom::Start(second_block_offset + 24))?;
-    file.write_all(&[0xFF])?;
-    file.sync_all()?;
+    corrupt_block_value_payload(&path, 1)?;
 
     let reopened = reopen_store_read_only(&tempdir)?;
     let key_refs = entries
@@ -204,10 +193,11 @@ fn corrupted_block_key_ordering_becomes_miss_in_ordered_reads() -> Result<()> {
     commit_entries(&store, &entries, true)?;
     let path = first_segment_path(tempdir.path())?;
     let key_len = entries[0].0.len();
-    mutate_block_payload(&path, 0, |payload| {
-        let first_key_start = 0usize;
-        let second_key_start = first_key_start + key_len;
-        payload.copy_within(first_key_start..second_key_start, second_key_start);
+    mutate_block_metadata(&path, 0, |metadata| {
+        let prefix_len = key_len - 1;
+        let first_suffix = prefix_len;
+        let second_suffix = prefix_len + 1;
+        metadata[second_suffix] = metadata[first_suffix];
     })?;
 
     let reopened = reopen_store_read_only(&tempdir)?;

@@ -16,7 +16,7 @@ pub(crate) fn workload(c: &mut Criterion) {
     for &profile in PROFILES {
         let dataset = build_dataset(16_384, profile);
         bench_ordered_fetch(c, profile, &dataset);
-        bench_sparse_ordered_fetch(c, profile, &dataset);
+        bench_clustered_sparse_ordered_fetch(c, profile, &dataset);
         bench_iter_all(c, profile, &dataset);
         bench_append_commit(c, profile, &dataset);
     }
@@ -71,13 +71,17 @@ fn bench_ordered_fetch(c: &mut Criterion, profile: ValueProfile, dataset: &Datas
     group.finish();
 }
 
-fn bench_sparse_ordered_fetch(c: &mut Criterion, profile: ValueProfile, dataset: &Dataset) {
+fn bench_clustered_sparse_ordered_fetch(
+    c: &mut Criterion,
+    profile: ValueProfile,
+    dataset: &Dataset,
+) {
     let mut group = c.benchmark_group(format!(
-        "{}/comparison_sparse_ordered_fetch",
+        "{}/comparison_clustered_sparse_ordered_fetch",
         profile.name()
     ));
     group.throughput(Throughput::Elements(
-        dataset.sparse_ordered_keys.len() as u64
+        dataset.clustered_sparse_ordered_keys.len() as u64,
     ));
 
     let tempdir = tempfile::tempdir().expect("tempdir should work");
@@ -89,7 +93,12 @@ fn bench_sparse_ordered_fetch(c: &mut Criterion, profile: ValueProfile, dataset:
         true,
     );
     group.bench_function("segment", |b| {
-        b.iter(|| black_box(sum_segment_fetches(&store, &dataset.sparse_ordered_keys)))
+        b.iter(|| {
+            black_box(sum_segment_fetches(
+                &store,
+                &dataset.clustered_sparse_ordered_keys,
+            ))
+        })
     });
 
     let tempdir = tempfile::tempdir().expect("tempdir should work");
@@ -101,21 +110,26 @@ fn bench_sparse_ordered_fetch(c: &mut Criterion, profile: ValueProfile, dataset:
         false,
     );
     group.bench_function("segment_no_crc", |b| {
-        b.iter(|| black_box(sum_segment_fetches(&store, &dataset.sparse_ordered_keys)))
+        b.iter(|| {
+            black_box(sum_segment_fetches(
+                &store,
+                &dataset.clustered_sparse_ordered_keys,
+            ))
+        })
     });
 
     let tempdir = tempfile::tempdir().expect("tempdir should work");
     let fjall = Fjall3Backend::open(tempdir.path(), profile);
     fjall.fill(&dataset.entries);
     group.bench_function("fjall3", |b| {
-        b.iter(|| black_box(fjall.sum_fetches(&dataset.sparse_ordered_keys)))
+        b.iter(|| black_box(fjall.sum_fetches(&dataset.clustered_sparse_ordered_keys)))
     });
 
     let tempdir = tempfile::tempdir().expect("tempdir should work");
     let redb = RedbBackend::open(tempdir.path());
     redb.fill(&dataset.entries);
     group.bench_function("redb", |b| {
-        b.iter(|| black_box(redb.sum_fetches(&dataset.sparse_ordered_keys)))
+        b.iter(|| black_box(redb.sum_fetches(&dataset.clustered_sparse_ordered_keys)))
     });
 
     group.finish();

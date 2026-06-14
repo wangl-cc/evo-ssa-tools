@@ -60,11 +60,7 @@ impl<'a, S: EntrySource + ?Sized> BlockBuilder<'a, S> {
         self.write_keys(&mut block, key_prefix_len);
         value_region.write_index(self.entries, &mut block)?;
         self.write_values(&mut block);
-        Self::finish_block(
-            block,
-            block_len,
-            BlockFooter::new(key_prefix_len, value_region),
-        )
+        Self::finish_block(block, block_len, key_prefix_len, value_region)
     }
 
     fn common_key_prefix_len(&self) -> usize {
@@ -96,13 +92,15 @@ impl<'a, S: EntrySource + ?Sized> BlockBuilder<'a, S> {
     fn finish_block(
         mut block: Vec<u8>,
         block_len: usize,
-        footer: BlockFooter,
+        key_prefix_len: usize,
+        value_region: BlockValueRegion,
     ) -> Result<Vec<u8>, FormatError> {
         debug_assert!(block_len >= BLOCK_FOOTER_LEN);
         let body_len = block_len - BLOCK_FOOTER_LEN;
         if block.len() < body_len {
             block.resize(body_len, 0);
         }
+        let footer = BlockFooter::new(key_prefix_len, value_region, &block)?;
         footer.into_bytes(&mut block)?;
         debug_assert_eq!(block.len(), block_len);
         Ok(block)

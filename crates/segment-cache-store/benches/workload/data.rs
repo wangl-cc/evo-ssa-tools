@@ -11,7 +11,8 @@ use crate::profile::{KEY_LEN, ValueProfile};
 pub(crate) struct Dataset {
     pub(crate) entries: Vec<(Vec<u8>, Vec<u8>)>,
     pub(crate) ordered_keys: Vec<Vec<u8>>,
-    pub(crate) sparse_ordered_keys: Vec<Vec<u8>>,
+    pub(crate) clustered_sparse_ordered_keys: Vec<Vec<u8>>,
+    pub(crate) random_sparse_ordered_keys: Vec<Vec<u8>>,
 }
 
 #[derive(Clone)]
@@ -111,16 +112,25 @@ pub(crate) fn build_dataset(n: usize, profile: ValueProfile) -> Dataset {
         .iter()
         .map(|(key, _)| key.clone())
         .collect::<Vec<_>>();
-    let sparse_ordered_keys = entries
+    let clustered_sparse_ordered_keys = entries
         .iter()
         .enumerate()
-        .filter(|(index, _)| index % 16 == 0)
+        .filter(|(index, _)| index % 256 < 16)
         .map(|(_, (key, _))| key.clone())
+        .collect::<Vec<_>>();
+    let mut sparse_rng = StdRng::seed_from_u64(
+        7_331 + u64::try_from(profile.base_len()).expect("profile base len should fit"),
+    );
+    let random_sparse_ordered_keys = entries
+        .iter()
+        .filter(|_| usize::from(sparse_rng.random::<u16>()) % 16 == 0)
+        .map(|(key, _)| key.clone())
         .collect::<Vec<_>>();
     Dataset {
         entries,
         ordered_keys,
-        sparse_ordered_keys,
+        clustered_sparse_ordered_keys,
+        random_sparse_ordered_keys,
     }
 }
 
