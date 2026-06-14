@@ -206,6 +206,35 @@ cargo bench -p segment-cache-store --bench comparison --offline -- large/compari
 
 The old evenly spaced sparse stress case made every selected key land predictably across the key stream. The current clustered workload selects 16 contiguous keys out of each 256-record window, while the random workload uses a seeded 1/16 sample and then preserves sorted lookup order. The split checksum helps most when a loaded block has no matching key, because the reader can validate metadata and skip value-payload IO. It does not avoid payload validation for blocks that contain hits.
 
+### Large reads after process-local verification reuse
+
+Targeted local run after adding process-local per-block verification state. Criterion warmup validates the relevant blocks first, so these numbers represent warm repeated reads in one process, not first-touch cold reads from a fresh open:
+
+```bash
+cargo bench -p segment-cache-store --bench ordered_lookup --offline -- large/ordered_fetch/default_block --sample-size 20 --warm-up-time 1 --measurement-time 2 --noplot
+cargo bench -p segment-cache-store --bench ordered_lookup --offline -- large/clustered_sparse_ordered_fetch --sample-size 20 --warm-up-time 1 --measurement-time 2 --noplot
+cargo bench -p segment-cache-store --bench ordered_lookup --offline -- large/random_sparse_ordered_fetch --sample-size 20 --warm-up-time 1 --measurement-time 2 --noplot
+cargo bench -p segment-cache-store --bench comparison --offline -- large/comparison_clustered_sparse_ordered_fetch --sample-size 20 --warm-up-time 1 --measurement-time 2 --noplot
+```
+
+| workload | result |
+| --- | ---: |
+| `large/ordered_fetch/default_block` | 37.93 ms |
+
+| workload | 16K | 32K | 64K | 256K |
+| --- | ---: | ---: | ---: | ---: |
+| `large/clustered_sparse_ordered_fetch` | 2.44 ms | 3.42 ms | 3.18 ms | 4.38 ms |
+| `large/random_sparse_ordered_fetch` | 2.99 ms | 5.47 ms | 8.29 ms | 18.49 ms |
+
+| backend | `large/comparison_clustered_sparse_ordered_fetch` |
+| --- | ---: |
+| segment | 2.32 ms |
+| segment_no_crc | 3.31 ms |
+| fjall3 | 1.59 ms |
+| redb | 1.24 ms |
+
+The segment-only runs are the cleaner signal: dense large ordered fetch improved by roughly 20%, clustered sparse 16K by roughly 13%, and random sparse 16K by roughly 8%. The comparison run was noisier in this local pass: `segment_no_crc`, `fjall3`, and `redb` all regressed relative to their previous local baselines, so the cross-backend row should be treated as a smoke result rather than a stable ranking.
+
 ### Append publish
 
 | namespace | segment sorted | fjall3 | redb |

@@ -321,6 +321,8 @@ Ordered lookup is the main hot path. The low-level APIs are:
 
 Ordered lookup sweeps sorted keys against the main tier and, when patches exist, sweeps each patch segment with block reuse before applying the same winner rule. Within a segment it keeps the current block loaded and consumes all keys that fall inside that block range before advancing. This reduces repeated block loads and makes large ordered hit streams much cheaper than independent lookups.
 
+Each open store also keeps process-local verification state per immutable segment block. After a block's lookup metadata or value payload has passed checksum verification once in the current process, later reads of the same part may skip recomputing that checksum. This cache does not persist, does not change the on-disk format, and is only valid under the store contract that segment files are not modified externally while a store handle is open. A fresh open starts with no verified blocks and must validate bytes again.
+
 `iter_all()` returns all visible records in order. `range(start, end)` returns the half-open range `[start, end)`. If no patch segments are visible, scan cursors concatenate main-tier segment cursors in manifest order. If patches exist, scan uses a k-way merge across main and patch cursors and deduplicates copies with the winner rule. They stream at block granularity and do not materialize the full scan result before returning.
 
 ## Write Path
@@ -525,6 +527,10 @@ Ordered lookup processes one block and consumes all keys that fall within that b
 ### Position-Independent Block Reads
 
 Segment files are read using offset-based reads rather than mutating a shared file cursor. Lookup sessions and scan cursors also reuse their previous block buffer, so steady-state ordered reads of same-sized blocks avoid an extra zero-fill before each disk read.
+
+### Process-Local Verification Reuse
+
+Segment blocks are immutable while a store is open. The runtime records whether each block's lookup metadata and value payload have already passed checksum verification. Repeated analysis or visualization passes over the same cache can therefore avoid hashing the same bytes again while still validating every block on first use in a fresh process.
 
 ### Oversized-Block Space Control
 
