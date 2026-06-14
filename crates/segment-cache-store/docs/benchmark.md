@@ -149,6 +149,30 @@ The numbers below are local historical smoke-run results from the prototype benc
 | medium | 4.87-5.11 ms | 6.54-6.58 ms | 5.14-5.18 ms |
 | large | 61.89-63.39 ms | 26.65-27.14 ms | 22.64-25.75 ms |
 
+### Large read baseline before K/V checksum split
+
+Targeted local run after lazy key materialization, before K/V checksum split:
+
+```bash
+cargo bench -p segment-cache-store --bench ordered_lookup --offline -- large/ --sample-size 20 --warm-up-time 1 --measurement-time 2 --noplot
+```
+
+| workload | result |
+| --- | ---: |
+| `large/ordered_fetch/default_block` | 47.8 ms |
+| `large/sparse_ordered_fetch/block_16k` | 3.29 ms |
+| `large/sparse_ordered_fetch/block_32k` | 4.82 ms |
+| `large/sparse_ordered_fetch/block_64k` | 8.25 ms |
+| `large/sparse_ordered_fetch/block_256k` | 28.25 ms |
+| `large/large_value_fetch_api/borrowed_block_16k` | 47.0 ms |
+| `large/large_value_fetch_api/owned_block_16k` | 56.8 ms |
+| `large/large_value_fetch_api/borrowed_block_512k` | 35.2 ms |
+| `large/large_value_fetch_api/owned_block_512k` | 49.5 ms |
+| `large/large_value_block_size/block_16k` | 47.5 ms |
+| `large/large_value_block_size/block_64k` | 41.9 ms |
+| `large/large_value_block_size/block_256k` | 36.2 ms |
+| `large/large_value_block_size/block_512k` | 35.6 ms |
+
 ### Append publish
 
 | namespace | segment sorted | fjall3 | redb |
