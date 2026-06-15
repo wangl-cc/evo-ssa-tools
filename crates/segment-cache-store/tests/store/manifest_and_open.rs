@@ -28,6 +28,26 @@ fn changing_target_block_size_can_reopen_existing_segments() -> Result<()> {
 }
 
 #[test]
+fn target_block_size_does_not_pad_physical_blocks() -> Result<()> {
+    let tempdir = tempfile::tempdir()?;
+    let store = create_store(&tempdir)?;
+    let target_block_size = 1024 * 1024;
+    commit_entries_with_options(
+        &store,
+        &[(make_key(1, 0, 0), make_value(1, 32))],
+        true,
+        &CommitOptions::default().with_target_block_size(target_block_size),
+    )?;
+
+    let segment_len = fs::metadata(first_segment_path(tempdir.path())?)?.len();
+    assert!(
+        segment_len < target_block_size as u64,
+        "target_block_size is a logical split target, not physical padding"
+    );
+    Ok(())
+}
+
+#[test]
 fn manifest_is_binary_v1_snapshot() -> Result<()> {
     let tempdir = tempfile::tempdir()?;
     let store = create_store(&tempdir)?;
