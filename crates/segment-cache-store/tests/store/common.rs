@@ -8,15 +8,16 @@ pub(crate) use std::{
 
 use crc32c::crc32c;
 pub(crate) use segment_cache_store::{
-    CatalogError, CatalogMismatch, CommitOptions, CommitStats, CorruptionError, CreateOptions,
-    Error, InputError, OpenOptions as StoreOpenOptions, OptionsError, Result, Store, StoreMetadata,
-    ValueLayout,
+    BlockChecksumKind, CatalogError, CatalogMismatch, CommitOptions, CommitStats, CorruptionError,
+    CreateOptions, Error, InputError, OpenOptions as StoreOpenOptions, OptionsError, Result, Store,
+    StoreMetadata, ValueLayout,
 };
 
 pub(crate) const FOOTER_TRAILER_LEN: u64 = 8;
 const KEY_PREFIX_LEN_LEN: usize = 4;
-const CHECKSUM_LEN: usize = 4;
+const VALUE_OFFSET_LEN: usize = 4;
 const SEGMENT_VALUE_LEN_OFFSET: u64 = 12;
+const SEGMENT_BLOCK_CHECKSUM_ID_OFFSET: u64 = 16;
 
 pub(crate) fn metadata() -> StoreMetadata {
     StoreMetadata::from_text("segment-cache-store-test")
@@ -149,14 +150,16 @@ pub(crate) fn mutate_block_metadata(
     let mut file = FsOpenOptions::new().read(true).write(true).open(path)?;
     let key_len = read_key_len(&mut file)?;
     let value_len = read_value_len(&mut file)?;
+    let block_checksum = read_block_checksum(&mut file)?;
     let mut block = vec![0u8; usize::try_from(block_len).expect("block len")];
     file.seek(SeekFrom::Start(block_offset))?;
     file.read_exact(&mut block)?;
 
-    let metadata_len = block_lookup_metadata_len(&block, record_count, key_len, value_len)?;
+    let metadata_len =
+        block_lookup_metadata_len(&block, record_count, key_len, value_len, block_checksum)?;
     mutate(&mut block[..metadata_len]);
-    let crc = crc32c(&block[..metadata_len]);
-    block[metadata_len..metadata_len + CHECKSUM_LEN].copy_from_slice(&crc.to_le_bytes());
+    let checksum = block_checksum_digest(block_checksum, &block[..metadata_len]);
+    block[metadata_len..metadata_len + checksum.len()].copy_from_slice(&checksum);
     file.seek(SeekFrom::Start(block_offset))?;
     file.write_all(&block)?;
     file.sync_all()?;
@@ -168,10 +171,12 @@ pub(crate) fn corrupt_block_value_payload(path: &Path, block_index: usize) -> Re
     let mut file = FsOpenOptions::new().read(true).write(true).open(path)?;
     let key_len = read_key_len(&mut file)?;
     let value_len = read_value_len(&mut file)?;
+    let block_checksum = read_block_checksum(&mut file)?;
     let mut block = vec![0u8; usize::try_from(block_len).expect("block len")];
     file.seek(SeekFrom::Start(block_offset))?;
     file.read_exact(&mut block)?;
-    let payload_range = block_value_payload_range(&block, record_count, key_len, value_len)?;
+    let payload_range =
+        block_value_payload_range(&block, record_count, key_len, value_len, block_checksum)?;
     let first_payload_byte = payload_range.start;
     block[first_payload_byte] ^= 0xFF;
     file.seek(SeekFrom::Start(block_offset))?;
@@ -225,6 +230,11 @@ fn read_value_len(file: &mut fs::File) -> Result<u32> {
     read_u32_at(file, SEGMENT_VALUE_LEN_OFFSET)
 }
 
+fn read_block_checksum(file: &mut fs::File) -> Result<BlockChecksumKind> {
+    let format_id = read_u32_at(file, SEGMENT_BLOCK_CHECKSUM_ID_OFFSET)?;
+    BlockChecksumKind::from_format_id(format_id).ok_or(CorruptionError::SegmentFormat.into())
+}
+
 fn read_u32_at(file: &mut fs::File, offset: u64) -> Result<u32> {
     file.seek(SeekFrom::Start(offset))?;
     let mut bytes = [0u8; 4];
@@ -255,17 +265,20 @@ fn block_value_payload_range(
     record_count: u32,
     key_len: usize,
     value_len: u32,
+    block_checksum: BlockChecksumKind,
 ) -> Result<Range<usize>> {
-    let metadata_len = block_lookup_metadata_len(block, record_count, key_len, value_len)?;
+    let metadata_len =
+        block_lookup_metadata_len(block, record_count, key_len, value_len, block_checksum)?;
     let payload_offset = metadata_len
-        .checked_add(CHECKSUM_LEN)
+        .checked_add(block_checksum.digest_len())
         .ok_or(CorruptionError::Block)?;
-    let payload_len = block_value_payload_len(block, record_count, key_len, value_len)?;
+    let payload_len =
+        block_value_payload_len(block, record_count, key_len, value_len, block_checksum)?;
     let payload_end = payload_offset
         .checked_add(payload_len)
         .ok_or(CorruptionError::Block)?;
     if payload_end
-        .checked_add(CHECKSUM_LEN)
+        .checked_add(block_checksum.digest_len())
         .ok_or(CorruptionError::Block)?
         > block.len()
         || payload_offset > payload_end
@@ -280,6 +293,7 @@ fn block_lookup_metadata_len(
     record_count: u32,
     key_len: usize,
     value_len: u32,
+    block_checksum: BlockChecksumKind,
 ) -> Result<usize> {
     if block.len() < KEY_PREFIX_LEN_LEN {
         return Err(CorruptionError::Block.into());
@@ -310,7 +324,7 @@ fn block_lookup_metadata_len(
         .checked_add(value_index_len)
         .ok_or(CorruptionError::Block)?;
     if metadata_len
-        .checked_add(CHECKSUM_LEN)
+        .checked_add(block_checksum.digest_len())
         .ok_or(CorruptionError::Block)?
         > block.len()
     {
@@ -324,6 +338,7 @@ fn block_value_payload_len(
     record_count: u32,
     key_len: usize,
     value_len: u32,
+    block_checksum: BlockChecksumKind,
 ) -> Result<usize> {
     let record_count = usize::try_from(record_count).expect("record count fits usize");
     if value_len != 0 {
@@ -336,12 +351,19 @@ fn block_value_payload_len(
         u32::try_from(record_count).expect("record count round-trips"),
         key_len,
         value_len,
+        block_checksum,
     )?;
     let sentinel_offset = metadata_len
-        .checked_sub(CHECKSUM_LEN)
+        .checked_sub(VALUE_OFFSET_LEN)
         .ok_or(CorruptionError::Block)?;
     let bytes = block
-        .get(sentinel_offset..sentinel_offset + CHECKSUM_LEN)
+        .get(sentinel_offset..sentinel_offset + VALUE_OFFSET_LEN)
         .ok_or(CorruptionError::Block)?;
     Ok(u32::from_le_bytes(bytes.try_into().expect("value payload sentinel width")) as usize)
+}
+
+fn block_checksum_digest(checksum: BlockChecksumKind, bytes: &[u8]) -> Vec<u8> {
+    let mut digest = vec![0u8; checksum.digest_len()];
+    checksum.digest_into(bytes, &mut digest);
+    digest
 }

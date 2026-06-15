@@ -51,15 +51,22 @@ pub(crate) struct StoreDescriptor {
     pub(crate) metadata: StoreMetadata,
     pub(crate) key_len: usize,
     pub(crate) value_layout: ValueLayout,
+    pub(crate) block_checksum_id: u32,
 }
 
 impl StoreDescriptor {
-    pub(crate) fn new(metadata: StoreMetadata, key_len: usize, value_layout: ValueLayout) -> Self {
+    pub(crate) fn new(
+        metadata: StoreMetadata,
+        key_len: usize,
+        value_layout: ValueLayout,
+        block_checksum_id: u32,
+    ) -> Self {
         Self {
             version: STORE_VERSION,
             metadata,
             key_len,
             value_layout,
+            block_checksum_id,
         }
     }
 
@@ -75,6 +82,10 @@ impl StoreDescriptor {
         push_line(
             &mut out,
             &format!("value_len={}", self.value_layout.to_u32()),
+        );
+        push_line(
+            &mut out,
+            &format!("block_checksum_id={}", self.block_checksum_id),
         );
         out
     }
@@ -117,6 +128,7 @@ impl<'a> StoreParser<'a> {
         let metadata = StoreMetadata::parse_store_value(self.required_str("metadata")?)?;
         let key_len = self.required_value::<usize>("key_len")?;
         let value_len = self.required_value::<u32>("value_len")?;
+        let block_checksum_id = self.required_value::<u32>("block_checksum_id")?;
         if self.lines.any(|line| !line.is_empty()) {
             return Err(StoreFileParseError::UnexpectedTrailingFields);
         }
@@ -125,6 +137,7 @@ impl<'a> StoreParser<'a> {
             metadata,
             key_len,
             value_layout: ValueLayout::from_u32(value_len),
+            block_checksum_id,
         })
     }
 
@@ -188,10 +201,12 @@ mod tests {
                 StoreMetadata::from_text("meta"),
                 16,
                 ValueLayout::fixed(std::num::NonZeroU32::new(32).expect("non-zero")),
+                1,
             );
             let parsed = StoreDescriptor::parse(&descriptor.encode()).expect("store should parse");
             assert_eq!(parsed.metadata, descriptor.metadata);
             assert_eq!(parsed.key_len, 16);
+            assert_eq!(parsed.block_checksum_id, 1);
             assert_eq!(
                 parsed.value_layout,
                 ValueLayout::fixed(std::num::NonZeroU32::new(32).expect("non-zero"))

@@ -6,7 +6,7 @@ use crate::{
     engine::runtime::SegmentState,
     error::Result,
     format::{
-        ValueLayout,
+        BlockChecksumKind, ValueLayout,
         block::{DecodedBlock, ParsedRecord},
     },
 };
@@ -226,6 +226,7 @@ pub(crate) struct SegmentRangeCursor {
     segment: Arc<SegmentState>,
     key_len: usize,
     value_layout: ValueLayout,
+    block_checksum: BlockChecksumKind,
     verify_block_checksums: bool,
     start: Option<Vec<u8>>,
     end: Option<Vec<u8>>,
@@ -241,6 +242,7 @@ impl SegmentRangeCursor {
         segment: Arc<SegmentState>,
         key_len: usize,
         value_layout: ValueLayout,
+        block_checksum: BlockChecksumKind,
         verify_block_checksums: bool,
         start: Option<Vec<u8>>,
         end: Option<Vec<u8>>,
@@ -252,6 +254,7 @@ impl SegmentRangeCursor {
             segment,
             key_len,
             value_layout,
+            block_checksum,
             verify_block_checksums,
             start,
             end,
@@ -305,6 +308,7 @@ impl SegmentRangeCursor {
                 block_index,
                 self.key_len,
                 self.value_layout,
+                self.block_checksum,
                 self.verify_block_checksums,
                 buffer,
             ) {

@@ -3,7 +3,7 @@
 //! A block is the physical read unit inside a segment. Block length and record
 //! count live in the segment block index. Block-local metadata is section-local:
 //! the key section starts with its prefix descriptor, variable-value blocks keep
-//! their value offset table beside the key section, and CRC32C values follow the
+//! their value offset table beside the key section, and checksums follow the
 //! metadata and value payload they protect.
 //!
 //! The module splits along the data flow:
@@ -18,4 +18,4 @@ mod layout;
 
 pub(crate) use decode::{DecodedBlock, ParsedRecord};
 pub(super) use encode::BlockBuilder;
-pub(crate) use layout::{BlockLookupLayout, CHECKSUM_LEN, KEY_PREFIX_LEN_LEN};
+pub(crate) use layout::{BlockLookupLayout, KEY_PREFIX_LEN_LEN};

@@ -1025,6 +1025,7 @@ dependencies = [
  "fjall",
  "parking_lot",
  "rand",
+ "rapidhash",
  "redb",
  "tempfile",
  "thiserror",

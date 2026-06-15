@@ -15,6 +15,47 @@ fn corrupted_block_checksum_becomes_miss() -> Result<()> {
 }
 
 #[test]
+fn rapidhash_block_checksum_round_trips() -> Result<()> {
+    let tempdir = tempfile::tempdir()?;
+    let store = create_store_with(
+        &tempdir,
+        create_options().with_block_checksum(BlockChecksumKind::RapidHashV3_64),
+    )?;
+    let entries = vec![
+        (make_key(1, 1, 0), make_value(1, 16)),
+        (make_key(1, 1, 1), make_value(2, 16)),
+    ];
+    commit_entries(&store, &entries, true)?;
+    drop(store);
+
+    let reopened = reopen_store(&tempdir)?;
+    assert_eq!(reopened.iter_all()?.collect::<Result<Vec<_>>>()?, entries);
+    Ok(())
+}
+
+#[test]
+fn no_checksum_store_does_not_detect_payload_corruption() -> Result<()> {
+    let tempdir = tempfile::tempdir()?;
+    let store = create_store_with(
+        &tempdir,
+        create_options().with_block_checksum(BlockChecksumKind::None),
+    )?;
+    let key = make_key(1, 1, 0);
+    let value = make_value(9, 16);
+    commit_entries(&store, &[(key.clone(), value.clone())], true)?;
+    let path = first_segment_path(tempdir.path())?;
+    corrupt_block_value_payload(&path, 0)?;
+    drop(store);
+
+    let reopened = reopen_store_read_only(&tempdir)?;
+    let corrupted = reopened
+        .fetch_one(&key)?
+        .expect("no-checksum store cannot detect corruption");
+    assert_ne!(corrupted, value);
+    Ok(())
+}
+
+#[test]
 fn block_checksum_verification_can_be_disabled_for_benchmarks() -> Result<()> {
     let tempdir = tempfile::tempdir()?;
     let store = create_store(&tempdir)?;

@@ -2,15 +2,12 @@
 
 use std::ops::Range;
 
-use crc32c::crc32c_append;
-
 use crate::format::{
-    CorruptionError, FormatError, ValueLayout, binary::BinaryCursor, format_u32,
+    BlockChecksumKind, CorruptionError, FormatError, ValueLayout, binary::BinaryCursor, format_u32,
     record::EntrySource,
 };
 
 pub(crate) const KEY_PREFIX_LEN_LEN: usize = 4;
-pub(crate) const CHECKSUM_LEN: usize = 4;
 
 /// Derived lookup-metadata layout for one block.
 ///
@@ -22,7 +19,7 @@ pub(crate) const CHECKSUM_LEN: usize = 4;
 /// key_prefix
 /// key_suffixes
 /// optional value_offsets
-/// lookup_crc32c
+/// lookup_checksum
 /// ```
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct BlockLookupLayout {
@@ -68,9 +65,12 @@ impl BlockLookupLayout {
         Ok(cursor.read::<u32>().ok_or(CorruptionError::Block)? as usize)
     }
 
-    pub(crate) fn metadata_with_crc_len(self) -> Result<usize, CorruptionError> {
+    pub(crate) fn metadata_with_checksum_len(
+        self,
+        block_checksum: BlockChecksumKind,
+    ) -> Result<usize, CorruptionError> {
         self.lookup_metadata_len
-            .checked_add(CHECKSUM_LEN)
+            .checked_add(block_checksum.digest_len())
             .ok_or(CorruptionError::Block)
     }
 }
@@ -281,16 +281,15 @@ impl ValueIndex {
     }
 }
 
-pub(super) fn block_crc(bytes: &[u8]) -> u32 {
-    crc32c_append(0, bytes)
-}
-
-pub(crate) fn read_stored_crc(bytes: &[u8], offset: usize) -> Result<u32, CorruptionError> {
+pub(crate) fn read_stored_checksum(
+    bytes: &[u8],
+    offset: usize,
+    block_checksum: BlockChecksumKind,
+) -> Result<&[u8], CorruptionError> {
     let end = offset
-        .checked_add(CHECKSUM_LEN)
+        .checked_add(block_checksum.digest_len())
         .ok_or(CorruptionError::Block)?;
-    let bytes = bytes.get(offset..end).ok_or(CorruptionError::Block)?;
-    Ok(u32::from_le_bytes(bytes.try_into().expect("crc32c width")))
+    bytes.get(offset..end).ok_or(CorruptionError::Block)
 }
 
 #[cfg(test)]

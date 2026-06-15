@@ -5,6 +5,11 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
+[features]
+default = ["checksum-rapidhash"]
+checksum-crc32c = []
+checksum-rapidhash = ["dep:rapidhash"]
+
 [[bench]]
 harness = false
 name = "comparison"
@@ -24,6 +29,7 @@ name = "parameter_evolution"
 [dependencies]
 crc32c = { workspace = true }
 parking_lot = { workspace = true }
+rapidhash = { workspace = true, optional = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]

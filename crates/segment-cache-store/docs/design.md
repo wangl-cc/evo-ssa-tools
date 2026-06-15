@@ -63,7 +63,7 @@ Future work is isolated in [Future Sync Design](#future-sync-design). It is not 
 
 ## Caller Contract
 
-The store validates key length, fixed value length, manifest structure, segment structure, and block checksums. The store cannot validate the caller's logical encoding and cache semantics.
+The store validates key length, fixed value length, manifest structure, segment structure, and block checksums unless the namespace was explicitly created with `BlockChecksumKind::None`. The store cannot validate the caller's logical encoding and cache semantics.
 
 - **Stable key encoding.** The caller must encode each logical input into the same fixed-width key bytes wherever the cache is used. The store compares keys lexicographically and does not understand their internal structure.
 - **Interchangeable values for one key.** If the same key appears in multiple visible segments, any value copy may be retained or returned according to the deterministic winner rule. Byte equality is not required, but the copies must be semantically equivalent for the caller's cache contract.
@@ -114,7 +114,7 @@ The current implementation separates persistent identity, visibility, immutable 
 
 ```mermaid
 flowchart TD
-  Root["Store root"] --> StoreFile["STORE<br/>metadata, key_len, value_len"]
+  Root["Store root"] --> StoreFile["STORE<br/>metadata, key_len, value_len, block_checksum_id"]
   Root --> Manifest["MANIFEST<br/>atomic visible snapshot"]
   Root --> Lock["LOCK<br/>single writer"]
   Root --> SegmentDir["segments/"]
@@ -132,10 +132,10 @@ flowchart TD
 
   Blocks --> Block["Block<br/>physical read unit"]
   Block --> LookupMetadata["LookupMetadata<br/>KeySection + optional ValueIndexSection"]
-  LookupMetadata --> LookupCrc["lookup_crc32c"]
+  LookupMetadata --> LookupChecksum["lookup_checksum"]
   Block --> ValuePayload["ValuePayload<br/>packed value bytes"]
-  ValuePayload --> ValueCrc["value_crc32c"]
-  ValueCrc --> Padding["padding"]
+  ValuePayload --> ValueChecksum["value_checksum"]
+  ValueChecksum --> Padding["padding"]
 ```
 
 The layering in code mirrors this structure:
@@ -189,9 +189,10 @@ version=1
 metadata=<hex>
 key_len=<u32, decimal>
 value_len=<u32, decimal>
+block_checksum_id=<u32, decimal>
 ```
 
-`value_len=0` means variable-length values. A non-zero value means fixed-length values of exactly that many bytes. `STORE` is authoritative for `key_len` and `value_len`.
+`value_len=0` means variable-length values. A non-zero value means fixed-length values of exactly that many bytes. `block_checksum_id` selects the block checksum implementation used by all segments in the store. Built-in ids are `0 = BlockChecksumKind::None`, `1 = BlockChecksumKind::Crc32c`, and `2 = BlockChecksumKind::RapidHashV3_64`; `Crc32c` is exposed by the `checksum-crc32c` feature, while `RapidHashV3_64` is exposed by the default `checksum-rapidhash` feature and is the default block checksum for `CreateOptions::new`. If default features are disabled, callers must use `CreateOptions::new_with_block_checksum(key_len, metadata, kind)` to make the checksum choice explicit. `STORE` is authoritative for `key_len`, `value_len`, and `block_checksum_id`.
 
 ### MANIFEST
 
@@ -277,7 +278,7 @@ magic[4]             # b"SCSG"
 format_version:u32   # 1
 key_len:u32
 value_len:u32        # 0 = variable, >0 = fixed value length
-reserved:u32         # must be 0
+block_checksum_id:u32
 header_crc32c:u32    # crc32c over previous 20 bytes
 ```
 
@@ -308,15 +309,15 @@ Segment encoding is deterministic for the same sorted entries and writer options
 
 ## Block Format
 
-Blocks have no header or footer. Their length and record count come from the segment footer's block index. Block-local metadata is stored beside the section it describes: `prefix_len` is the first field in `KeySection`, variable-value offsets live in `ValueIndexSection`, and checksums immediately follow the bytes they protect.
+Blocks have no header or footer. Their length and record count come from the segment footer's block index. Block-local metadata is stored beside the section it describes: `prefix_len` is the first field in `KeySection`, variable-value offsets live in `ValueIndexSection`, and checksums immediately follow the bytes they protect. The checksum width is determined by `block_checksum_id`; `BlockChecksumKind::None` has width zero and stores no checksum bytes.
 
 There is no stored `payload_offset` or `payload_len` descriptor. The decoder derives payload position and length from the store value layout:
 
-- `payload_offset = lookup_metadata_len + sizeof(lookup_crc32c)`
+- `payload_offset = lookup_metadata_len + block_checksum.digest_len`
 - variable values: `payload_len = value_offsets[record_count]`
 - fixed values: `payload_len = record_count * value_len`
 
-`LookupMetadata` is intentionally not just key bytes. For variable values, the offset table is part of lookup correctness because a corrupted offset can make a valid key return the wrong value slice. Padding is after `value_crc32c` and is not checksummed.
+`LookupMetadata` is intentionally not just key bytes. For variable values, the offset table is part of lookup correctness because a corrupted offset can make a valid key return the wrong value slice. Padding is after `value_checksum` and is not checksummed.
 
 Each block strips the common prefix shared by the first and last key. Since records are sorted, that prefix is shared by every key in the block. The suffix table remains fixed-width, so lookup can binary-search by record index without variable-length key decoding.
 
@@ -329,10 +330,10 @@ KeySection:
   key_suffixes[record_count * (key_len - prefix_len)]
 ValueIndexSection:
   value_offsets[record_count + 1]:u32
-lookup_crc32c        # crc32c over KeySection | ValueIndexSection
+lookup_checksum      # selected block checksum over KeySection | ValueIndexSection
 ValuePayload:
   values...
-value_crc32c         # crc32c over ValuePayload only
+value_checksum       # selected block checksum over ValuePayload only
 padding...
 ```
 
@@ -343,10 +344,10 @@ KeySection:
   prefix_len:u32
   key_prefix[prefix_len]
   key_suffixes[record_count * (key_len - prefix_len)]
-lookup_crc32c        # crc32c over KeySection
+lookup_checksum      # selected block checksum over KeySection
 ValuePayload:
   values[record_count * value_len]
-value_crc32c         # crc32c over ValuePayload only
+value_checksum       # selected block checksum over ValuePayload only
 padding...
 ```
 
@@ -358,11 +359,11 @@ flowchart LR
   Metadata --> Layout{"value layout"}
   Layout -->|variable| Offsets["ValueIndexSection<br/>value_offsets[record_count + 1]"]
   Layout -->|fixed| NoOffsets["no ValueIndexSection"]
-  Offsets --> LookupCrc["lookup_crc32c"]
-  NoOffsets --> LookupCrc
-  LookupCrc --> Payload["ValuePayload"]
-  Payload --> ValueCrc["value_crc32c"]
-  ValueCrc --> Padding["padding"]
+  Offsets --> LookupChecksum["lookup_checksum"]
+  NoOffsets --> LookupChecksum
+  LookupChecksum --> Payload["ValuePayload"]
+  Payload --> ValueChecksum["value_checksum"]
+  ValueChecksum --> Padding["padding"]
 ```
 
 For variable values, value `i` is `value_offsets[i]..value_offsets[i + 1]`; the last offset is the payload length, so the last value needs no special branch. For fixed values, value `i` starts at `i * value_len`.
@@ -508,7 +509,7 @@ Within one segment, ordered lookup reuses cursor state and the last loaded block
 
 Sparse lookup can read only block metadata first. If none of the searched keys exist in that block, the reader emits misses without loading or verifying value payload bytes. If any searched key matches, the value payload must be loaded and verified before returning a hit.
 
-With default checksum verification, `contains_many_ordered` is cache-safe, not index-only. A key counts as present only if the value payload needed to prove that hit is successfully loaded and verified. If read-only checksum verification is explicitly disabled for benchmarking, this guarantee is intentionally weakened for that open handle.
+With default checksum verification and a non-zero-width checksum algorithm, `contains_many_ordered` is cache-safe, not index-only. A key counts as present only if the value payload needed to prove that hit is successfully loaded and verified. If read-only checksum verification is explicitly disabled for benchmarking, or if the store was created with `BlockChecksumKind::None`, this guarantee is intentionally weakened for that open handle or namespace.
 
 ## Range And Full Scan
 
@@ -532,7 +533,7 @@ The store is allowed to forget cached data. It is not allowed to return wrong ca
 - Temp file after crash: ignored.
 - Final segment not referenced by manifest: ignored and later collected.
 
-Checksum verification can be disabled only for read-only opens. This is an explicit benchmarking mode, not the cache-safe default. Writable opens require checksum verification so normalization cannot merge corrupted bytes into newly checksummed output.
+Checksum verification can be disabled only for read-only opens. This is an explicit benchmarking mode, not the cache-safe default. Writable opens require checksum verification so normalization cannot merge corrupted bytes into newly checksummed output. `BlockChecksumKind::None` is different: it is a create-time block format choice with `block_checksum_id=0`, stores no checksum bytes, and therefore cannot provide corruption-as-miss for damaged block bytes.
 
 ## Atomicity And Filesystem Protocol
 
@@ -576,7 +577,7 @@ flowchart TD
   OrderedWorkload --> PrefixStrip["block-local key prefix stripping"]
 
   SparseReads["sparse ordered reads"] --> MetadataFirst["metadata-first block loading"]
-  MetadataFirst --> SplitCRC["split metadata/payload checksums"]
+  MetadataFirst --> SplitChecksums["split metadata/payload checksums"]
 
   RepeatedReads["repeated reads in one process"] --> VerifyCache["process-local verified-block state"]
   LargeValues["large values"] --> OversizedBlocks["natural-size oversized blocks"]
@@ -598,7 +599,7 @@ Blocks are decoded as raw bytes plus layout metadata. Lookup and scan APIs can b
 
 ### Metadata-First Sparse Lookup
 
-Sparse ordered lookup may read only `LookupMetadata` and `lookup_crc32c` first. The reader gets `prefix_len` from the first four block bytes, derives the lookup metadata length, then validates keys and value offsets before touching value bytes. Blocks with no matching key do not require value payload IO.
+Sparse ordered lookup may read only `LookupMetadata` and `lookup_checksum` first. The reader gets `prefix_len` from the first four block bytes, derives the lookup metadata length, then validates keys and value offsets before touching value bytes. Blocks with no matching key do not require value payload IO.
 
 ### Split Block Checksums
 

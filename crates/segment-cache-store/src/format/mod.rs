@@ -1,8 +1,8 @@
 //! Pure on-disk format: encoding, decoding, and validation of every persisted
 //! byte layout.
 //!
-//! This layer is self-contained: it depends only on `std` and the checksum
-//! crate — no filesystem access, no other crate modules. Encoders write into
+//! This layer is self-contained: it depends only on `std` and checksum/hash
+//! crates — no filesystem access, no other crate modules. Encoders write into
 //! byte buffers or generic [`std::io::Write`] sinks; decoders read from byte
 //! slices. Functions return the precise format-owned error types from
 //! [`error`] (decoding fails as corruption, encoding fails on format limits);
@@ -16,11 +16,13 @@
 //! - [`manifest`]: the binary `MANIFEST` snapshot
 //! - [`segment`]: segment header, footer, sparse block index, and writer
 //! - [`block`]: data-block encoding, layout math, and decoding
+//! - [`checksum`]: block checksum trait implementations and persisted ids
 //! - [`record`], [`value`], [`metadata`]: shared logical-data vocabulary
 //! - [`error`]: the format-owned error vocabulary
 
 mod binary;
 pub(crate) mod block;
+mod checksum;
 mod error;
 pub(crate) mod manifest;
 mod metadata;
@@ -29,6 +31,8 @@ pub(crate) mod segment;
 pub(crate) mod store_file;
 mod value;
 
+pub use checksum::BlockChecksumKind;
+pub(crate) use checksum::MAX_BLOCK_CHECKSUM_LEN;
 pub(crate) use error::SegmentWriteError;
 pub use error::{CatalogError, CatalogMismatch, CorruptionError, FormatError};
 pub use manifest::{ManifestEncodeError, ManifestParseError};

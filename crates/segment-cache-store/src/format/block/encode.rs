@@ -1,13 +1,17 @@
 //! Block encoder: sorted entries in, on-disk block bytes out.
 
-use super::layout::{BlockLookupLayout, BlockValueRegion, CHECKSUM_LEN, block_crc};
-use crate::format::{FormatError, ValueLayout, common_prefix_len, record::EntrySource};
+use super::layout::{BlockLookupLayout, BlockValueRegion};
+use crate::format::{
+    BlockChecksumKind, FormatError, MAX_BLOCK_CHECKSUM_LEN, ValueLayout, common_prefix_len,
+    record::EntrySource,
+};
 
 /// Encodes one sorted run of key/value entries into the on-disk block layout.
 pub(crate) struct BlockBuilder<'a, S: EntrySource + ?Sized> {
     entries: &'a S,
     key_len: usize,
     value_layout: ValueLayout,
+    block_checksum: BlockChecksumKind,
     target_block_size: usize,
 }
 
@@ -16,12 +20,14 @@ impl<'a, S: EntrySource + ?Sized> BlockBuilder<'a, S> {
         entries: &'a S,
         key_len: usize,
         value_layout: ValueLayout,
+        block_checksum: BlockChecksumKind,
         target_block_size: usize,
     ) -> Self {
         Self {
             entries,
             key_len,
             value_layout,
+            block_checksum,
             target_block_size,
         }
     }
@@ -41,7 +47,7 @@ impl<'a, S: EntrySource + ?Sized> BlockBuilder<'a, S> {
                 .ok_or(FormatError::limit("block value payload length"))
         })?;
         let payload_offset = lookup_layout
-            .metadata_with_crc_len()
+            .metadata_with_checksum_len(self.block_checksum)
             .map_err(|_| FormatError::limit("block payload offset"))?;
         let value_region = BlockValueRegion::for_write(
             self.value_layout,
@@ -54,19 +60,26 @@ impl<'a, S: EntrySource + ?Sized> BlockBuilder<'a, S> {
         let encoded_len = value_region
             .payload_offset()
             .checked_add(payload_len)
-            .and_then(|len| len.checked_add(CHECKSUM_LEN))
+            .and_then(|len| len.checked_add(self.block_checksum.digest_len()))
             .ok_or(FormatError::limit("block length"))?;
         let block_len = encoded_len.max(self.target_block_size);
         let mut block = Vec::with_capacity(block_len);
         self.write_keys(&mut block, key_prefix_len);
         value_region.write_index(self.entries, &mut block)?;
         debug_assert_eq!(block.len(), lookup_layout.lookup_metadata_len);
-        let lookup_crc = block_crc(&block);
-        block.extend_from_slice(&lookup_crc.to_le_bytes());
+        append_checksum(
+            self.block_checksum,
+            &mut block,
+            0..lookup_layout.lookup_metadata_len,
+        );
         debug_assert_eq!(block.len(), value_region.payload_offset());
+        let payload_start = block.len();
         self.write_values(&mut block);
-        let value_crc = block_crc(&block[value_region.payload_offset()..]);
-        block.extend_from_slice(&value_crc.to_le_bytes());
+        append_checksum(
+            self.block_checksum,
+            &mut block,
+            payload_start..payload_start + payload_len,
+        );
         if block.len() < block_len {
             block.resize(block_len, 0);
         }
@@ -103,4 +116,18 @@ impl<'a, S: EntrySource + ?Sized> BlockBuilder<'a, S> {
             block.extend_from_slice(self.entries.entry(index).value());
         }
     }
+}
+
+fn append_checksum(
+    block_checksum: BlockChecksumKind,
+    block: &mut Vec<u8>,
+    checked_range: std::ops::Range<usize>,
+) {
+    let digest_len = block_checksum.digest_len();
+    if digest_len == 0 {
+        return;
+    }
+    let mut digest = [0u8; MAX_BLOCK_CHECKSUM_LEN];
+    block_checksum.digest_into(&block[checked_range], &mut digest[..digest_len]);
+    block.extend_from_slice(&digest[..digest_len]);
 }

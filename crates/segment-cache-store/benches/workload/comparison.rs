@@ -43,18 +43,6 @@ fn bench_ordered_fetch(c: &mut Criterion, profile: ValueProfile, dataset: &Datas
     });
 
     let tempdir = tempfile::tempdir().expect("tempdir should work");
-    let store = create_filled_segment_store(
-        tempdir.path(),
-        profile,
-        &dataset.entries,
-        &commit_options_with_block_size(16 * 1024),
-        false,
-    );
-    group.bench_function("segment_no_crc", |b| {
-        b.iter(|| black_box(sum_segment_fetches(&store, &dataset.ordered_keys)))
-    });
-
-    let tempdir = tempfile::tempdir().expect("tempdir should work");
     let fjall = Fjall3Backend::open(tempdir.path(), profile);
     fjall.fill(&dataset.entries);
     group.bench_function("fjall3", |b| {
@@ -102,23 +90,6 @@ fn bench_clustered_sparse_ordered_fetch(
     });
 
     let tempdir = tempfile::tempdir().expect("tempdir should work");
-    let store = create_filled_segment_store(
-        tempdir.path(),
-        profile,
-        &dataset.entries,
-        &commit_options_with_block_size(16 * 1024),
-        false,
-    );
-    group.bench_function("segment_no_crc", |b| {
-        b.iter(|| {
-            black_box(sum_segment_fetches(
-                &store,
-                &dataset.clustered_sparse_ordered_keys,
-            ))
-        })
-    });
-
-    let tempdir = tempfile::tempdir().expect("tempdir should work");
     let fjall = Fjall3Backend::open(tempdir.path(), profile);
     fjall.fill(&dataset.entries);
     group.bench_function("fjall3", |b| {
@@ -148,18 +119,6 @@ fn bench_iter_all(c: &mut Criterion, profile: ValueProfile, dataset: &Dataset) {
         true,
     );
     group.bench_function("segment", |b| {
-        b.iter(|| black_box(sum_segment_iter(&store)))
-    });
-
-    let tempdir = tempfile::tempdir().expect("tempdir should work");
-    let store = create_filled_segment_store(
-        tempdir.path(),
-        profile,
-        &dataset.entries,
-        &commit_options_with_block_size(16 * 1024),
-        false,
-    );
-    group.bench_function("segment_no_crc", |b| {
         b.iter(|| black_box(sum_segment_iter(&store)))
     });
 

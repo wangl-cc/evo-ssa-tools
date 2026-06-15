@@ -10,7 +10,10 @@ use crate::{
         paths::{self, StorePaths},
     },
     error::{InputError, OptionsError, Result},
-    format::{StoreMetadata, ValueLayout, manifest::StoreManifest, store_file::StoreDescriptor},
+    format::{
+        BlockChecksumKind, StoreMetadata, ValueLayout, manifest::StoreManifest,
+        store_file::StoreDescriptor,
+    },
     store::Store,
 };
 
@@ -26,16 +29,36 @@ pub struct CreateOptions {
     pub key_len: usize,
     /// Value layout shared by all visible segments.
     pub value_layout: ValueLayout,
+    /// Block checksum kind persisted for all visible segments.
+    pub block_checksum: BlockChecksumKind,
     /// Opaque caller compatibility metadata for this namespace.
     pub metadata: StoreMetadata,
 }
 
 impl CreateOptions {
     /// Creates default creation options for a store with fixed-width keys.
+    #[cfg(feature = "checksum-rapidhash")]
     pub fn new(key_len: usize, metadata: StoreMetadata) -> Self {
         Self {
             key_len,
             value_layout: ValueLayout::VARIABLE,
+            block_checksum: BlockChecksumKind::DEFAULT,
+            metadata,
+        }
+    }
+
+    /// Creates options with an explicit block checksum implementation.
+    ///
+    /// This is the constructor to use when default features are disabled.
+    pub fn new_with_block_checksum(
+        key_len: usize,
+        metadata: StoreMetadata,
+        block_checksum: BlockChecksumKind,
+    ) -> Self {
+        Self {
+            key_len,
+            value_layout: ValueLayout::VARIABLE,
+            block_checksum,
             metadata,
         }
     }
@@ -49,6 +72,12 @@ impl CreateOptions {
     /// Enables fixed-value layout and rejects future writes with any other value length.
     pub fn with_fixed_value_len(mut self, value_len: NonZeroU32) -> Self {
         self.value_layout = ValueLayout::fixed(value_len);
+        self
+    }
+
+    /// Selects the block checksum implementation for newly written segments.
+    pub fn with_block_checksum(mut self, block_checksum: BlockChecksumKind) -> Self {
+        self.block_checksum = block_checksum;
         self
     }
 
@@ -91,6 +120,7 @@ impl Store {
             options.metadata.clone(),
             options.key_len,
             options.value_layout,
+            options.block_checksum.format_id(),
         );
         // Write `MANIFEST` first and `STORE` last. A crash between the two leaves
         // a root with no `STORE`, which `create` can safely re-create and `open`

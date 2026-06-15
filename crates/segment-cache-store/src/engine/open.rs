@@ -14,7 +14,8 @@ use crate::{
     },
     error::{OptionsError, Result},
     format::{
-        CatalogMismatch, StoreMetadata, manifest::StoreManifest, store_file::StoreDescriptor,
+        BlockChecksumKind, CatalogMismatch, StoreMetadata, manifest::StoreManifest,
+        store_file::StoreDescriptor,
     },
     store::Store,
 };
@@ -28,7 +29,7 @@ use crate::{
 pub struct OpenOptions {
     /// Required caller metadata for this namespace.
     pub expected_metadata: StoreMetadata,
-    /// Whether data-block CRC32C checksums are verified on read.
+    /// Whether data-block checksums are verified on read.
     pub verify_block_checksums: bool,
     /// Whether this open is read-only.
     ///
@@ -73,6 +74,11 @@ impl OpenOptions {
         }
         Ok(())
     }
+
+    fn resolve_block_checksum(&self, format_id: u32) -> Result<BlockChecksumKind> {
+        BlockChecksumKind::from_format_id(format_id)
+            .ok_or(CatalogMismatch::UnsupportedBlockChecksum { format_id }.into())
+    }
 }
 
 impl Store {
@@ -94,6 +100,7 @@ pub(super) fn open_existing(
     if descriptor.metadata != options.expected_metadata {
         return Err(CatalogMismatch::Metadata.into());
     }
+    let block_checksum = options.resolve_block_checksum(descriptor.block_checksum_id)?;
 
     // A writer takes the advisory lock before reading the manifest so that
     // garbage collection and any later commit run under the same lock without
@@ -122,6 +129,7 @@ pub(super) fn open_existing(
         paths,
         descriptor,
         manifest,
+        block_checksum,
         options.verify_block_checksums,
         writer_lock,
     )
@@ -137,10 +145,11 @@ fn build_store(
     paths: StorePaths,
     descriptor: StoreDescriptor,
     manifest: StoreManifest,
+    block_checksum: BlockChecksumKind,
     verify_block_checksums: bool,
     writer_lock: Option<WriterLock>,
 ) -> Result<Store> {
-    let geometry = StoreGeometry::from_descriptor(&descriptor);
+    let geometry = StoreGeometry::from_descriptor(&descriptor, block_checksum);
     let mut main_segment_states = Vec::new();
     let mut patch_segment_states = Vec::new();
     for entry in &manifest.segments {
@@ -148,6 +157,7 @@ fn build_store(
         let segment = match OpenedSegment::open(path, SegmentOpenOptions {
             expected_key_len: geometry.key_len,
             expected_value_layout: geometry.value_layout,
+            expected_block_checksum: geometry.block_checksum,
         })? {
             Some(segment) if entry.matches_segment_footer(&segment.min_key, &segment.max_key) => {
                 segment

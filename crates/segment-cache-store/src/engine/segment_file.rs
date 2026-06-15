@@ -11,7 +11,7 @@ use crate::{
     engine::io::read_exact_at,
     error::Result,
     format::{
-        ValueLayout,
+        BlockChecksumKind, ValueLayout,
         block::{BlockLookupLayout, DecodedBlock, KEY_PREFIX_LEN_LEN},
         segment::{
             BlockIndexEntry, SEGMENT_FOOTER_TRAILER_LEN, SEGMENT_HEADER_LEN, SegmentFooter,
@@ -24,6 +24,7 @@ use crate::{
 pub(super) struct SegmentOpenOptions {
     pub(super) expected_key_len: usize,
     pub(super) expected_value_layout: ValueLayout,
+    pub(super) expected_block_checksum: BlockChecksumKind,
 }
 
 /// Open segment handle with its sparse block index loaded into memory.
@@ -52,7 +53,11 @@ impl OpenedSegment {
             Err(error) if error.is_cache_miss_corruption() => return Ok(None),
             Err(error) => return Err(error),
         };
-        if !header.matches_geometry(options.expected_key_len, options.expected_value_layout) {
+        if !header.matches_geometry(
+            options.expected_key_len,
+            options.expected_value_layout,
+            options.expected_block_checksum,
+        ) {
             return Ok(None);
         }
         let footer = match read_footer(&file, options.expected_key_len) {
@@ -107,6 +112,7 @@ pub(super) fn read_block(
     entry: &BlockIndexEntry,
     key_len: usize,
     value_layout: ValueLayout,
+    block_checksum: BlockChecksumKind,
     verify_checksum: bool,
 ) -> Result<DecodedBlock> {
     read_block_reusing(
@@ -114,6 +120,7 @@ pub(super) fn read_block(
         entry,
         key_len,
         value_layout,
+        block_checksum,
         verify_checksum,
         Vec::new(),
     )
@@ -125,6 +132,7 @@ pub(super) fn read_block_reusing(
     entry: &BlockIndexEntry,
     key_len: usize,
     value_layout: ValueLayout,
+    block_checksum: BlockChecksumKind,
     verify_checksum: bool,
     mut bytes: Vec<u8>,
 ) -> Result<DecodedBlock> {
@@ -140,6 +148,7 @@ pub(super) fn read_block_reusing(
         entry,
         key_len,
         value_layout,
+        block_checksum,
         verify_checksum,
     )?)
 }
@@ -150,6 +159,7 @@ pub(super) fn read_block_metadata_reusing(
     entry: &BlockIndexEntry,
     key_len: usize,
     value_layout: ValueLayout,
+    block_checksum: BlockChecksumKind,
     verify_checksum: bool,
     mut metadata: Vec<u8>,
 ) -> Result<DecodedBlock> {
@@ -167,7 +177,7 @@ pub(super) fn read_block_metadata_reusing(
         value_layout,
         prefix_len,
     )?;
-    let metadata_len = lookup_layout.metadata_with_crc_len()?;
+    let metadata_len = lookup_layout.metadata_with_checksum_len(block_checksum)?;
     if metadata_len > entry.block_len as usize {
         return Err(CorruptionError::Block.into());
     }
@@ -182,6 +192,7 @@ pub(super) fn read_block_metadata_reusing(
         entry,
         key_len,
         value_layout,
+        block_checksum,
         verify_checksum,
     )?)
 }

@@ -86,7 +86,7 @@ fn writable_open_requires_block_checksum_verification() -> Result<()> {
         tempdir.path(),
         open_options().with_block_checksum_verification(false),
     ) {
-        Ok(_) => panic!("writable no-crc open should be rejected"),
+        Ok(_) => panic!("writable unchecked open should be rejected"),
         Err(error) => error,
     };
     assert!(matches!(

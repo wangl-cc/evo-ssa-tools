@@ -11,9 +11,9 @@ use std::io::Write;
 use crc32c::crc32c;
 
 use crate::format::{
-    CorruptionError, FormatError, SegmentWriteError, ValueLayout,
+    BlockChecksumKind, CorruptionError, FormatError, SegmentWriteError, ValueLayout,
     binary::BinaryCursor,
-    block::{BlockBuilder, CHECKSUM_LEN, KEY_PREFIX_LEN_LEN},
+    block::{BlockBuilder, KEY_PREFIX_LEN_LEN},
     common_prefix_len, format_u32,
     record::{EntrySource, EntryView},
 };
@@ -31,15 +31,21 @@ pub(crate) struct SegmentHeader {
     version: u32,
     key_len: u32,
     value_layout: ValueLayout,
+    block_checksum_id: u32,
 }
 
 impl SegmentHeader {
-    pub(crate) fn new(key_len: usize, value_layout: ValueLayout) -> Result<Self, FormatError> {
+    pub(crate) fn new(
+        key_len: usize,
+        value_layout: ValueLayout,
+        block_checksum: BlockChecksumKind,
+    ) -> Result<Self, FormatError> {
         Ok(Self {
             version: SEGMENT_FORMAT_VERSION,
             key_len: u32::try_from(key_len)
                 .map_err(|_| FormatError::limit("segment key length"))?,
             value_layout,
+            block_checksum_id: block_checksum.format_id(),
         })
     }
 
@@ -57,14 +63,12 @@ impl SegmentHeader {
         let version = cursor.read::<u32>().ok_or(CorruptionError::SegmentFormat)?;
         let key_len = cursor.read::<u32>().ok_or(CorruptionError::SegmentFormat)?;
         let value_len = cursor.read::<u32>().ok_or(CorruptionError::SegmentFormat)?;
-        let reserved = cursor.read::<u32>().ok_or(CorruptionError::SegmentFormat)?;
-        if reserved != 0 {
-            return Err(CorruptionError::SegmentFormat);
-        }
+        let block_checksum_id = cursor.read::<u32>().ok_or(CorruptionError::SegmentFormat)?;
         Ok(Self {
             version,
             key_len,
             value_layout: ValueLayout::from_u32(value_len),
+            block_checksum_id,
         })
     }
 
@@ -74,7 +78,7 @@ impl SegmentHeader {
         buffer.extend_from_slice(&self.version.to_le_bytes());
         buffer.extend_from_slice(&self.key_len.to_le_bytes());
         buffer.extend_from_slice(&self.value_layout.to_u32().to_le_bytes());
-        buffer.extend_from_slice(&0u32.to_le_bytes());
+        buffer.extend_from_slice(&self.block_checksum_id.to_le_bytes());
         let crc = crc32c(&buffer[start..start + 20]);
         buffer.extend_from_slice(&crc.to_le_bytes());
     }
@@ -83,10 +87,12 @@ impl SegmentHeader {
         self,
         expected_key_len: usize,
         expected_value_layout: ValueLayout,
+        expected_block_checksum: BlockChecksumKind,
     ) -> bool {
         self.version == SEGMENT_FORMAT_VERSION
             && self.key_len as usize == expected_key_len
             && self.value_layout == expected_value_layout
+            && self.block_checksum_id == expected_block_checksum.format_id()
     }
 }
 
@@ -253,7 +259,7 @@ impl BlockIndexCodec {
         let mut decoded_records = 0u64;
         let mut previous_first_key: Option<&[u8]> = None;
         for entry in entries {
-            if entry.block_len < (KEY_PREFIX_LEN_LEN + CHECKSUM_LEN * 2) as u32
+            if entry.block_len < KEY_PREFIX_LEN_LEN as u32
                 || entry.record_count == 0
                 || entry.block_offset != expected_offset
                 || entry.first_key.len() != self.key_len
@@ -291,15 +297,22 @@ impl BlockIndexCodec {
 pub(crate) struct SegmentWriter {
     key_len: usize,
     value_layout: ValueLayout,
+    block_checksum: BlockChecksumKind,
     target_block_size: usize,
 }
 
 impl SegmentWriter {
     /// Creates a writer for one sorted immutable segment.
-    pub(crate) fn new(key_len: usize, value_layout: ValueLayout, target_block_size: usize) -> Self {
+    pub(crate) fn new(
+        key_len: usize,
+        value_layout: ValueLayout,
+        block_checksum: BlockChecksumKind,
+        target_block_size: usize,
+    ) -> Self {
         Self {
             key_len,
             value_layout,
+            block_checksum,
             target_block_size,
         }
     }
@@ -311,7 +324,8 @@ impl SegmentWriter {
         entries: &S,
     ) -> Result<SegmentFooter, SegmentWriteError> {
         let mut header = Vec::with_capacity(SEGMENT_HEADER_LEN);
-        SegmentHeader::new(self.key_len, self.value_layout)?.into_bytes(&mut header);
+        SegmentHeader::new(self.key_len, self.value_layout, self.block_checksum)?
+            .into_bytes(&mut header);
         debug_assert_eq!(header.len(), SEGMENT_HEADER_LEN);
         out.write_all(&header)?;
 
@@ -353,6 +367,7 @@ impl SegmentWriter {
                 &block_entries,
                 self.key_len,
                 self.value_layout,
+                self.block_checksum,
                 self.target_block_size,
             )
             .encode()?;
@@ -390,10 +405,10 @@ impl SegmentWriter {
             };
             let prospective_len = key_region_len
                 + value_index_len
-                + CHECKSUM_LEN
+                + self.block_checksum.digest_len()
                 + payload_len
                 + entry.value().len()
-                + CHECKSUM_LEN;
+                + self.block_checksum.digest_len();
             if end > start && prospective_len > self.target_block_size {
                 break;
             }

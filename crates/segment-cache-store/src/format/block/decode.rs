@@ -7,10 +7,9 @@
 use std::{cell::OnceCell, cmp::Ordering};
 
 use super::layout::{
-    BlockLookupLayout, BlockValueRegion, CHECKSUM_LEN, KEY_PREFIX_LEN_LEN, block_crc,
-    read_stored_crc,
+    BlockLookupLayout, BlockValueRegion, KEY_PREFIX_LEN_LEN, read_stored_checksum,
 };
-use crate::format::{CorruptionError, ValueLayout, segment::BlockIndexEntry};
+use crate::format::{BlockChecksumKind, CorruptionError, ValueLayout, segment::BlockIndexEntry};
 
 /// Decoded block bytes plus derived offsets needed for zero-copy record access.
 #[derive(Debug)]
@@ -22,7 +21,8 @@ pub(crate) struct DecodedBlock {
     key_section_len: usize,
     payload_offset: usize,
     payload_len: usize,
-    value_crc_offset: usize,
+    value_checksum_offset: usize,
+    block_checksum: BlockChecksumKind,
     value_region: BlockValueRegion,
     /// Materialized only when the block strips a shared key prefix and the last
     /// key is therefore not contiguous in the on-disk key section.
@@ -57,12 +57,14 @@ impl DecodedBlock {
         entry: &BlockIndexEntry,
         key_len: usize,
         value_layout: ValueLayout,
+        block_checksum: BlockChecksumKind,
         verify_checksum: bool,
     ) -> Result<Self, CorruptionError> {
-        let layout = BlockLayout::from_block_bytes(&bytes, entry, key_len, value_layout)?;
+        let layout =
+            BlockLayout::from_block_bytes(&bytes, entry, key_len, value_layout, block_checksum)?;
         if verify_checksum {
-            layout.verify_lookup_crc(&bytes)?;
-            layout.verify_payload_crc(&bytes)?;
+            layout.verify_lookup_checksum(&bytes)?;
+            layout.verify_payload_checksum(&bytes)?;
         }
         Self::from_storage(BlockStorage::Full(bytes), layout, entry)
     }
@@ -72,11 +74,18 @@ impl DecodedBlock {
         entry: &BlockIndexEntry,
         key_len: usize,
         value_layout: ValueLayout,
+        block_checksum: BlockChecksumKind,
         verify_checksum: bool,
     ) -> Result<Self, CorruptionError> {
-        let layout = BlockLayout::from_metadata_bytes(&metadata, entry, key_len, value_layout)?;
+        let layout = BlockLayout::from_metadata_bytes(
+            &metadata,
+            entry,
+            key_len,
+            value_layout,
+            block_checksum,
+        )?;
         if verify_checksum {
-            layout.verify_lookup_crc(&metadata)?;
+            layout.verify_lookup_checksum(&metadata)?;
         }
         metadata.truncate(layout.lookup_metadata_len);
         Self::from_storage(
@@ -104,7 +113,8 @@ impl DecodedBlock {
             key_section_len: layout.lookup.key_section_len,
             payload_offset: layout.payload_offset,
             payload_len: layout.payload_len,
-            value_crc_offset: layout.value_crc_offset,
+            value_checksum_offset: layout.value_checksum_offset,
+            block_checksum: layout.block_checksum,
             value_region: layout.value_region,
             last_key,
             full_keys: OnceCell::new(),
@@ -123,13 +133,17 @@ impl DecodedBlock {
         if verify_checksum {
             let expected_len = self
                 .payload_len
-                .checked_add(CHECKSUM_LEN)
+                .checked_add(self.block_checksum.digest_len())
                 .ok_or(CorruptionError::Block)?;
             if payload.len() != expected_len {
                 return Err(CorruptionError::Block);
             }
-            let stored_crc = read_stored_crc(&payload, self.payload_len)?;
-            if block_crc(&payload[..self.payload_len]) != stored_crc {
+            let stored_checksum =
+                read_stored_checksum(&payload, self.payload_len, self.block_checksum)?;
+            if !self
+                .block_checksum
+                .verify(&payload[..self.payload_len], stored_checksum)
+            {
                 return Err(CorruptionError::Block);
             }
             payload.truncate(self.payload_len);
@@ -159,7 +173,7 @@ impl DecodedBlock {
         if verify_checksum {
             return self
                 .payload_len
-                .checked_add(CHECKSUM_LEN)
+                .checked_add(self.block_checksum.digest_len())
                 .ok_or(CorruptionError::Block);
         }
         Ok(self.payload_len)
@@ -276,7 +290,7 @@ impl DecodedBlock {
 
     fn payload(&self) -> Option<&[u8]> {
         match &self.storage {
-            BlockStorage::Full(bytes) => bytes.get(self.payload_offset..self.value_crc_offset),
+            BlockStorage::Full(bytes) => bytes.get(self.payload_offset..self.value_checksum_offset),
             BlockStorage::Split { payload, .. } => payload.as_deref(),
         }
     }
@@ -394,7 +408,8 @@ struct BlockLayout {
     lookup_metadata_len: usize,
     payload_offset: usize,
     payload_len: usize,
-    value_crc_offset: usize,
+    value_checksum_offset: usize,
+    block_checksum: BlockChecksumKind,
     value_region: BlockValueRegion,
 }
 
@@ -404,11 +419,12 @@ impl BlockLayout {
         entry: &BlockIndexEntry,
         key_len: usize,
         value_layout: ValueLayout,
+        block_checksum: BlockChecksumKind,
     ) -> Result<Self, CorruptionError> {
         if bytes.len() != entry.block_len as usize {
             return Err(CorruptionError::Block);
         }
-        Self::from_bytes(bytes, entry, key_len, value_layout)
+        Self::from_bytes(bytes, entry, key_len, value_layout, block_checksum)
     }
 
     fn from_metadata_bytes(
@@ -416,8 +432,9 @@ impl BlockLayout {
         entry: &BlockIndexEntry,
         key_len: usize,
         value_layout: ValueLayout,
+        block_checksum: BlockChecksumKind,
     ) -> Result<Self, CorruptionError> {
-        Self::from_bytes(bytes, entry, key_len, value_layout)
+        Self::from_bytes(bytes, entry, key_len, value_layout, block_checksum)
     }
 
     fn from_bytes(
@@ -425,6 +442,7 @@ impl BlockLayout {
         entry: &BlockIndexEntry,
         key_len: usize,
         value_layout: ValueLayout,
+        block_checksum: BlockChecksumKind,
     ) -> Result<Self, CorruptionError> {
         let record_count = entry.record_count as usize;
         if record_count == 0 {
@@ -433,11 +451,11 @@ impl BlockLayout {
         let key_prefix_len = BlockLookupLayout::read_key_prefix_len(bytes)?;
         let lookup = BlockLookupLayout::new(record_count, key_len, value_layout, key_prefix_len)?;
         let lookup_metadata_len = lookup.lookup_metadata_len;
-        let metadata_with_crc_len = lookup.metadata_with_crc_len()?;
-        if metadata_with_crc_len > bytes.len() {
+        let metadata_with_checksum_len = lookup.metadata_with_checksum_len(block_checksum)?;
+        if metadata_with_checksum_len > bytes.len() {
             return Err(CorruptionError::Block);
         }
-        let payload_offset = metadata_with_crc_len;
+        let payload_offset = metadata_with_checksum_len;
         let metadata = &bytes[..lookup_metadata_len];
         let value_region = BlockValueRegion::from_metadata(
             value_layout,
@@ -448,13 +466,13 @@ impl BlockLayout {
         )
         .ok_or(CorruptionError::Block)?;
         let payload_len = value_region.payload_len();
-        let value_crc_offset = payload_offset
+        let value_checksum_offset = payload_offset
             .checked_add(payload_len)
             .ok_or(CorruptionError::Block)?;
-        let value_crc_end = value_crc_offset
-            .checked_add(CHECKSUM_LEN)
+        let value_checksum_end = value_checksum_offset
+            .checked_add(block_checksum.digest_len())
             .ok_or(CorruptionError::Block)?;
-        if value_crc_end > entry.block_len as usize {
+        if value_checksum_end > entry.block_len as usize {
             return Err(CorruptionError::Block);
         }
         Ok(Self {
@@ -465,32 +483,31 @@ impl BlockLayout {
             lookup_metadata_len,
             payload_offset,
             payload_len,
-            value_crc_offset,
+            value_checksum_offset,
+            block_checksum,
             value_region,
         })
     }
 
-    fn verify_lookup_crc(&self, bytes: &[u8]) -> Result<(), CorruptionError> {
-        let stored_crc = read_stored_crc(bytes, self.lookup_metadata_len)?;
-        if block_crc(
-            bytes
-                .get(..self.lookup_metadata_len)
-                .ok_or(CorruptionError::Block)?,
-        ) != stored_crc
-        {
+    fn verify_lookup_checksum(&self, bytes: &[u8]) -> Result<(), CorruptionError> {
+        let stored_checksum =
+            read_stored_checksum(bytes, self.lookup_metadata_len, self.block_checksum)?;
+        let checked = bytes
+            .get(..self.lookup_metadata_len)
+            .ok_or(CorruptionError::Block)?;
+        if !self.block_checksum.verify(checked, stored_checksum) {
             return Err(CorruptionError::Block);
         }
         Ok(())
     }
 
-    fn verify_payload_crc(&self, bytes: &[u8]) -> Result<(), CorruptionError> {
-        let stored_crc = read_stored_crc(bytes, self.value_crc_offset)?;
-        if block_crc(
-            bytes
-                .get(self.payload_offset..self.value_crc_offset)
-                .ok_or(CorruptionError::Block)?,
-        ) != stored_crc
-        {
+    fn verify_payload_checksum(&self, bytes: &[u8]) -> Result<(), CorruptionError> {
+        let stored_checksum =
+            read_stored_checksum(bytes, self.value_checksum_offset, self.block_checksum)?;
+        let checked = bytes
+            .get(self.payload_offset..self.value_checksum_offset)
+            .ok_or(CorruptionError::Block)?;
+        if !self.block_checksum.verify(checked, stored_checksum) {
             return Err(CorruptionError::Block);
         }
         Ok(())
@@ -539,6 +556,7 @@ impl BlockLayout {
 mod tests {
     use super::*;
     use crate::format::{
+        BlockChecksumKind,
         block::BlockBuilder,
         record::{EntryRef, EntrySource},
     };
@@ -566,7 +584,8 @@ mod tests {
             let entries = Entries {
                 entries: &[(b"aa01", b"first"), (b"aa02", b"second")],
             };
-            let block = BlockBuilder::new(&entries, 4, ValueLayout::VARIABLE, 0)
+            let checksum = BlockChecksumKind::None;
+            let block = BlockBuilder::new(&entries, 4, ValueLayout::VARIABLE, checksum, 0)
                 .encode()
                 .expect("block should encode");
             let entry = BlockIndexEntry {
@@ -583,8 +602,9 @@ mod tests {
             assert_eq!(&block[4..7], b"aa0");
             assert_eq!(&block[7..9], b"12");
 
-            let decoded = DecodedBlock::decode(block, &entry, 4, ValueLayout::VARIABLE, true)
-                .expect("block should decode");
+            let decoded =
+                DecodedBlock::decode(block, &entry, 4, ValueLayout::VARIABLE, checksum, true)
+                    .expect("block should decode");
 
             assert!(
                 decoded.full_keys.get().is_none(),
@@ -615,7 +635,8 @@ mod tests {
             let entries = Entries {
                 entries: &[(b"aa01", b"only")],
             };
-            let block = BlockBuilder::new(&entries, 4, ValueLayout::VARIABLE, 0)
+            let checksum = BlockChecksumKind::None;
+            let block = BlockBuilder::new(&entries, 4, ValueLayout::VARIABLE, checksum, 0)
                 .encode()
                 .expect("block should encode");
             let entry = BlockIndexEntry {
@@ -625,8 +646,9 @@ mod tests {
                 record_count: 1,
             };
 
-            let decoded = DecodedBlock::decode(block, &entry, 4, ValueLayout::VARIABLE, true)
-                .expect("block should decode");
+            let decoded =
+                DecodedBlock::decode(block, &entry, 4, ValueLayout::VARIABLE, checksum, true)
+                    .expect("block should decode");
 
             assert!(decoded.full_keys.get().is_none());
             assert_eq!(decoded.first_key(), b"aa01");

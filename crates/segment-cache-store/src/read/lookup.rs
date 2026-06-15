@@ -5,7 +5,7 @@ use std::sync::Arc;
 use crate::{
     engine::runtime::{SegmentSnapshot, SegmentState},
     error::{InputError, Result},
-    format::{CorruptionError, ValueLayout, block::DecodedBlock},
+    format::{BlockChecksumKind, CorruptionError, ValueLayout, block::DecodedBlock},
     store::Store,
 };
 
@@ -59,6 +59,7 @@ pub(crate) struct SegmentSetReader<'a> {
 pub(crate) struct LookupReadOptions {
     pub(crate) key_len: usize,
     pub(crate) value_layout: ValueLayout,
+    pub(crate) block_checksum: BlockChecksumKind,
     pub(crate) verify_block_checksums: bool,
 }
 
@@ -353,6 +354,7 @@ impl<'a> SegmentSetReader<'a> {
             block_index,
             self.options.key_len,
             self.options.value_layout,
+            self.options.block_checksum,
             self.options.verify_block_checksums,
         ) {
             Ok(block) => block,
@@ -608,6 +610,7 @@ impl LookupState {
                 block_index,
                 options.key_len,
                 options.value_layout,
+                options.block_checksum,
                 options.verify_block_checksums,
                 buffer,
             )?,
@@ -615,6 +618,7 @@ impl LookupState {
                 block_index,
                 options.key_len,
                 options.value_layout,
+                options.block_checksum,
                 options.verify_block_checksums,
                 buffer,
             )?,

@@ -523,6 +523,7 @@ impl Store {
                 Arc::clone(segment),
                 geometry.key_len,
                 geometry.value_layout,
+                geometry.block_checksum,
                 verify,
                 None,
                 None,
@@ -610,6 +611,7 @@ impl Store {
             Ok(SegmentWriter::new(
                 geometry.key_len,
                 geometry.value_layout,
+                geometry.block_checksum,
                 options.target_block_size,
             )
             .write(file, &segment_entries)?)
