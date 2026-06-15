@@ -521,9 +521,7 @@ impl Store {
         for segment in affected {
             cursors.push(SegmentRangeCursor::new(
                 Arc::clone(segment),
-                geometry.key_len,
-                geometry.value_layout,
-                geometry.block_checksum,
+                geometry,
                 verify,
                 None,
                 None,
@@ -612,6 +610,7 @@ impl Store {
                 geometry.key_len,
                 geometry.value_layout,
                 geometry.block_checksum,
+                geometry.value_payload_compression,
                 options.target_block_size,
             )
             .write(file, &segment_entries)?)

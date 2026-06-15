@@ -11,7 +11,7 @@ use crate::{
     engine::io::read_exact_at,
     error::Result,
     format::{
-        BlockChecksumKind, ValueLayout,
+        BlockChecksumKind, ValueLayout, ValuePayloadCompressionKind,
         block::{BlockLookupLayout, DecodedBlock, KEY_PREFIX_LEN_LEN},
         segment::{
             BlockIndexEntry, SEGMENT_FOOTER_TRAILER_LEN, SEGMENT_HEADER_LEN, SegmentFooter,
@@ -25,6 +25,16 @@ pub(super) struct SegmentOpenOptions {
     pub(super) expected_key_len: usize,
     pub(super) expected_value_layout: ValueLayout,
     pub(super) expected_block_checksum: BlockChecksumKind,
+    pub(super) expected_value_payload_compression: ValuePayloadCompressionKind,
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct BlockReadOptions {
+    pub(super) key_len: usize,
+    pub(super) value_layout: ValueLayout,
+    pub(super) block_checksum: BlockChecksumKind,
+    pub(super) value_payload_compression: ValuePayloadCompressionKind,
+    pub(super) verify_checksum: bool,
 }
 
 /// Open segment handle with its sparse block index loaded into memory.
@@ -57,6 +67,7 @@ impl OpenedSegment {
             options.expected_key_len,
             options.expected_value_layout,
             options.expected_block_checksum,
+            options.expected_value_payload_compression,
         ) {
             return Ok(None);
         }
@@ -110,30 +121,16 @@ fn read_footer(file: &File, key_len: usize) -> Result<SegmentFooter> {
 pub(super) fn read_block(
     file: &File,
     entry: &BlockIndexEntry,
-    key_len: usize,
-    value_layout: ValueLayout,
-    block_checksum: BlockChecksumKind,
-    verify_checksum: bool,
+    options: BlockReadOptions,
 ) -> Result<DecodedBlock> {
-    read_block_reusing(
-        file,
-        entry,
-        key_len,
-        value_layout,
-        block_checksum,
-        verify_checksum,
-        Vec::new(),
-    )
+    read_block_reusing(file, entry, options, Vec::new())
 }
 
 /// Reads and decodes one block while reusing a caller-owned backing buffer.
 pub(super) fn read_block_reusing(
     file: &File,
     entry: &BlockIndexEntry,
-    key_len: usize,
-    value_layout: ValueLayout,
-    block_checksum: BlockChecksumKind,
-    verify_checksum: bool,
+    options: BlockReadOptions,
     mut bytes: Vec<u8>,
 ) -> Result<DecodedBlock> {
     let block_len = entry.block_len as usize;
@@ -146,10 +143,11 @@ pub(super) fn read_block_reusing(
     Ok(DecodedBlock::decode(
         bytes,
         entry,
-        key_len,
-        value_layout,
-        block_checksum,
-        verify_checksum,
+        options.key_len,
+        options.value_layout,
+        options.block_checksum,
+        options.value_payload_compression,
+        options.verify_checksum,
     )?)
 }
 
@@ -157,10 +155,7 @@ pub(super) fn read_block_reusing(
 pub(super) fn read_block_metadata_reusing(
     file: &File,
     entry: &BlockIndexEntry,
-    key_len: usize,
-    value_layout: ValueLayout,
-    block_checksum: BlockChecksumKind,
-    verify_checksum: bool,
+    options: BlockReadOptions,
     mut metadata: Vec<u8>,
 ) -> Result<DecodedBlock> {
     use crate::format::CorruptionError;
@@ -173,11 +168,11 @@ pub(super) fn read_block_metadata_reusing(
     let prefix_len = u32::from_le_bytes(prefix_len_bytes) as usize;
     let lookup_layout = BlockLookupLayout::new(
         entry.record_count as usize,
-        key_len,
-        value_layout,
+        options.key_len,
+        options.value_layout,
         prefix_len,
     )?;
-    let metadata_len = lookup_layout.metadata_with_checksum_len(block_checksum)?;
+    let metadata_len = lookup_layout.metadata_with_checksum_len(options.block_checksum)?;
     if metadata_len > entry.block_len as usize {
         return Err(CorruptionError::Block.into());
     }
@@ -190,10 +185,11 @@ pub(super) fn read_block_metadata_reusing(
     Ok(DecodedBlock::decode_metadata(
         metadata,
         entry,
-        key_len,
-        value_layout,
-        block_checksum,
-        verify_checksum,
+        options.key_len,
+        options.value_layout,
+        options.block_checksum,
+        options.value_payload_compression,
+        options.verify_checksum,
     )?)
 }
 
@@ -207,11 +203,27 @@ pub(super) fn read_block_payload(
     if block.has_payload() {
         return Ok(());
     }
-    let mut payload = vec![0u8; block.payload_read_len(verify_checksum)?];
-    read_exact_at(
-        file,
-        entry.block_offset + block.payload_offset() as u64,
-        &mut payload,
-    )?;
+    let payload_offset = block.payload_offset();
+    let header_len = block.payload_frame_header_len();
+    let mut payload = vec![0u8; header_len];
+    if header_len > 0 {
+        read_exact_at(
+            file,
+            entry.block_offset + payload_offset as u64,
+            &mut payload,
+        )?;
+    }
+    let read_len = block.payload_read_len_from_header(&payload, verify_checksum)?;
+    if payload.len() < read_len {
+        let already_read = payload.len();
+        payload.resize(read_len, 0);
+        read_exact_at(
+            file,
+            entry.block_offset + payload_offset as u64 + already_read as u64,
+            &mut payload[already_read..],
+        )?;
+    } else if payload.len() > read_len {
+        payload.truncate(read_len);
+    }
     Ok(block.attach_payload(payload, verify_checksum)?)
 }

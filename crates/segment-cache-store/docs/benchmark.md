@@ -12,6 +12,7 @@ One benchmark target is used for horizontal comparison against other embedded st
 - `ordered_lookup`: segment-only read-path benchmark with checksum verification enabled. It measures dense ordered lookup, clustered/random sparse ordered lookup, large-value borrowed-vs-owned fetch APIs, large-value block-size sensitivity, L0 overlay ordered lookup, and L0 overlay scan amplification.
 - `append_publish`: segment-only write-path benchmark with checksum verification enabled. It measures sorted and unsorted batch publish into fresh stores.
 - `parameter_evolution`: segment-only cache-evolution benchmark with checksum verification enabled. It measures rebuild-vs-L0 behavior for middle inserts and repeated axis changes.
+- `compression`: segment-only value-payload compression benchmark, available with `--features value-compression-lz4`. It compares uncompressed and LZ4-created stores on large random versus large compressible values, reports store bytes, and measures ordered fetch, full iteration, and append publish.
 
 `segment_no_crc` appears only in `comparison`. It opens the segment store read-only with block checksum verification disabled, so it is an explicit upper-bound variant for comparing against engines that do not validate user value bytes on read. All segment-only diagnostics keep checksum verification enabled because they are meant to measure the cache-safe implementation.
 
@@ -89,6 +90,18 @@ Segment-only L0 overlay scan benchmark. It uses the same logical layout as `over
 ### `append_publish`
 
 Segment-only publish benchmark for `sorted_batch` and `unsorted_batch`. The sorted variant models callers that already emit canonical key order; the unsorted variant includes backend sorting cost.
+
+### `compression_ordered_fetch`
+
+Segment-only dense ordered lookup for the `large` profile with checksum verification enabled. It uses random and compressible value streams, compares `ValuePayloadCompressionKind::None` and `ValuePayloadCompressionKind::Lz4`, and sweeps `4K`, `16K`, and `256K` logical block split targets. This exposes decompression overhead and how split granularity interacts with sparse metadata reads and compressed payloads.
+
+### `compression_iter_all`
+
+Segment-only full scan for the `large` profile with random and compressible value streams. It uses the default `16K` block size and compares uncompressed versus LZ4-created stores.
+
+### `compression_append_publish`
+
+Segment-only publish benchmark for the `large` profile with random and compressible value streams. It uses the default `16K` block size and compares the write cost of uncompressed stores against LZ4-created stores.
 
 ### `middle_insert_then_read`
 

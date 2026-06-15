@@ -42,6 +42,7 @@ fn manifest_is_binary_v1_snapshot() -> Result<()> {
     assert!(store_file.contains("key_len=16\n"));
     assert!(store_file.contains("value_len=0\n"));
     assert!(store_file.contains("block_checksum_id=2\n"));
+    assert!(store_file.contains("value_payload_compression_id=0\n"));
     assert!(!store_file.contains('{'));
 
     assert_eq!(&manifest[..4], b"SCSM");
@@ -84,6 +85,33 @@ fn unsupported_store_block_checksum_is_rejected() -> Result<()> {
         error,
         Error::Catalog(CatalogError::Mismatch(
             CatalogMismatch::UnsupportedBlockChecksum { format_id: 999 }
+        ))
+    ));
+    Ok(())
+}
+
+#[test]
+fn unsupported_store_value_payload_compression_is_rejected() -> Result<()> {
+    let tempdir = tempfile::tempdir()?;
+    let store = create_store(&tempdir)?;
+    drop(store);
+
+    let store_path = tempdir.path().join("STORE");
+    let mut store_file = fs::read_to_string(&store_path)?;
+    store_file = store_file.replace(
+        "value_payload_compression_id=0\n",
+        "value_payload_compression_id=999\n",
+    );
+    fs::write(store_path, store_file)?;
+
+    let error = match Store::open(tempdir.path(), open_options()) {
+        Ok(_) => panic!("unsupported value payload compression id should reject open"),
+        Err(error) => error,
+    };
+    assert!(matches!(
+        error,
+        Error::Catalog(CatalogError::Mismatch(
+            CatalogMismatch::UnsupportedValuePayloadCompression { format_id: 999 }
         ))
     ));
     Ok(())

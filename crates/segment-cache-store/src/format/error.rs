@@ -60,6 +60,9 @@ pub enum CatalogMismatch {
     #[error("STORE block checksum algorithm is unsupported: format id {format_id}")]
     UnsupportedBlockChecksum { format_id: u32 },
 
+    #[error("STORE value payload compression is unsupported: format id {format_id}")]
+    UnsupportedValuePayloadCompression { format_id: u32 },
+
     #[error("MANIFEST key length does not match STORE")]
     ManifestKeyLen,
 

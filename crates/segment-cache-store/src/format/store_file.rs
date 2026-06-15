@@ -52,6 +52,7 @@ pub(crate) struct StoreDescriptor {
     pub(crate) key_len: usize,
     pub(crate) value_layout: ValueLayout,
     pub(crate) block_checksum_id: u32,
+    pub(crate) value_payload_compression_id: u32,
 }
 
 impl StoreDescriptor {
@@ -60,6 +61,7 @@ impl StoreDescriptor {
         key_len: usize,
         value_layout: ValueLayout,
         block_checksum_id: u32,
+        value_payload_compression_id: u32,
     ) -> Self {
         Self {
             version: STORE_VERSION,
@@ -67,6 +69,7 @@ impl StoreDescriptor {
             key_len,
             value_layout,
             block_checksum_id,
+            value_payload_compression_id,
         }
     }
 
@@ -86,6 +89,13 @@ impl StoreDescriptor {
         push_line(
             &mut out,
             &format!("block_checksum_id={}", self.block_checksum_id),
+        );
+        push_line(
+            &mut out,
+            &format!(
+                "value_payload_compression_id={}",
+                self.value_payload_compression_id
+            ),
         );
         out
     }
@@ -129,6 +139,8 @@ impl<'a> StoreParser<'a> {
         let key_len = self.required_value::<usize>("key_len")?;
         let value_len = self.required_value::<u32>("value_len")?;
         let block_checksum_id = self.required_value::<u32>("block_checksum_id")?;
+        let value_payload_compression_id =
+            self.required_value::<u32>("value_payload_compression_id")?;
         if self.lines.any(|line| !line.is_empty()) {
             return Err(StoreFileParseError::UnexpectedTrailingFields);
         }
@@ -138,6 +150,7 @@ impl<'a> StoreParser<'a> {
             key_len,
             value_layout: ValueLayout::from_u32(value_len),
             block_checksum_id,
+            value_payload_compression_id,
         })
     }
 
@@ -191,6 +204,7 @@ fn push_line(out: &mut String, line: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::format::ValuePayloadCompressionKind;
 
     mod store_file {
         use super::*;
@@ -202,11 +216,16 @@ mod tests {
                 16,
                 ValueLayout::fixed(std::num::NonZeroU32::new(32).expect("non-zero")),
                 1,
+                ValuePayloadCompressionKind::None.format_id(),
             );
             let parsed = StoreDescriptor::parse(&descriptor.encode()).expect("store should parse");
             assert_eq!(parsed.metadata, descriptor.metadata);
             assert_eq!(parsed.key_len, 16);
             assert_eq!(parsed.block_checksum_id, 1);
+            assert_eq!(
+                parsed.value_payload_compression_id,
+                ValuePayloadCompressionKind::None.format_id()
+            );
             assert_eq!(
                 parsed.value_layout,
                 ValueLayout::fixed(std::num::NonZeroU32::new(32).expect("non-zero"))

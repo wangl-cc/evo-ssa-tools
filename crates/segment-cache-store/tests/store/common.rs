@@ -185,6 +185,29 @@ pub(crate) fn corrupt_block_value_payload(path: &Path, block_index: usize) -> Re
     Ok(())
 }
 
+#[cfg(feature = "value-compression-lz4")]
+pub(crate) fn corrupt_block_value_frame_start(path: &Path, block_index: usize) -> Result<()> {
+    let (block_offset, block_len, record_count) = block_index_entry(path, block_index)?;
+    let mut file = FsOpenOptions::new().read(true).write(true).open(path)?;
+    let key_len = read_key_len(&mut file)?;
+    let value_len = read_value_len(&mut file)?;
+    let block_checksum = read_block_checksum(&mut file)?;
+    let mut block = vec![0u8; usize::try_from(block_len).expect("block len")];
+    file.seek(SeekFrom::Start(block_offset))?;
+    file.read_exact(&mut block)?;
+    let metadata_len =
+        block_lookup_metadata_len(&block, record_count, key_len, value_len, block_checksum)?;
+    let frame_offset = metadata_len
+        .checked_add(block_checksum.digest_len())
+        .ok_or(CorruptionError::Block)?;
+    let byte = block.get_mut(frame_offset).ok_or(CorruptionError::Block)?;
+    *byte ^= 0xFF;
+    file.seek(SeekFrom::Start(block_offset))?;
+    file.write_all(&block)?;
+    file.sync_all()?;
+    Ok(())
+}
+
 fn read_footer_bytes(file: &mut fs::File) -> Result<(u64, Vec<u8>)> {
     let file_len = file.metadata()?.len();
     file.seek(SeekFrom::End(

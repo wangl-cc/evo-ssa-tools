@@ -33,7 +33,7 @@ pub use error::{Error, InputError, OptionsError, Result};
 pub use format::{
     BlockChecksumKind, CatalogError, CatalogMismatch, CorruptionError, FormatError,
     ManifestEncodeError, ManifestParseError, MetadataParseError, StoreFileParseError,
-    StoreMetadata, ValueLayout,
+    StoreMetadata, ValueLayout, ValuePayloadCompressionKind,
 };
 pub use read::{OrderedLookup, RangeCursor};
 pub use store::Store;

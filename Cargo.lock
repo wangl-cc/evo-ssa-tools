@@ -1023,6 +1023,7 @@ dependencies = [
  "crc32c",
  "criterion",
  "fjall",
+ "lz4_flex",
  "parking_lot",
  "rand",
  "rapidhash",

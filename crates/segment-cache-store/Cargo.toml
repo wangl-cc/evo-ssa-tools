@@ -9,6 +9,7 @@ license.workspace = true
 default = ["checksum-rapidhash"]
 checksum-crc32c = []
 checksum-rapidhash = ["dep:rapidhash"]
+value-compression-lz4 = ["dep:lz4_flex"]
 
 [[bench]]
 harness = false
@@ -26,8 +27,14 @@ name = "append_publish"
 harness = false
 name = "parameter_evolution"
 
+[[bench]]
+harness = false
+name = "compression"
+required-features = ["value-compression-lz4"]
+
 [dependencies]
 crc32c = { workspace = true }
+lz4_flex = { workspace = true, optional = true }
 parking_lot = { workspace = true }
 rapidhash = { workspace = true, optional = true }
 thiserror = { workspace = true }

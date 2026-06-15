@@ -3,12 +3,9 @@
 use std::sync::Arc;
 
 use crate::{
-    engine::runtime::SegmentState,
+    engine::runtime::{SegmentState, StoreGeometry},
     error::Result,
-    format::{
-        BlockChecksumKind, ValueLayout,
-        block::{DecodedBlock, ParsedRecord},
-    },
+    format::block::{DecodedBlock, ParsedRecord},
 };
 
 /// Streaming cursor over records in key order.
@@ -224,9 +221,7 @@ impl Iterator for RangeCursor {
 
 pub(crate) struct SegmentRangeCursor {
     segment: Arc<SegmentState>,
-    key_len: usize,
-    value_layout: ValueLayout,
-    block_checksum: BlockChecksumKind,
+    geometry: StoreGeometry,
     verify_block_checksums: bool,
     start: Option<Vec<u8>>,
     end: Option<Vec<u8>>,
@@ -240,9 +235,7 @@ pub(crate) struct SegmentRangeCursor {
 impl SegmentRangeCursor {
     pub(crate) fn new(
         segment: Arc<SegmentState>,
-        key_len: usize,
-        value_layout: ValueLayout,
-        block_checksum: BlockChecksumKind,
+        geometry: StoreGeometry,
         verify_block_checksums: bool,
         start: Option<Vec<u8>>,
         end: Option<Vec<u8>>,
@@ -252,9 +245,7 @@ impl SegmentRangeCursor {
             .map_or(0, |start| segment.find_block_index(start));
         let mut cursor = Self {
             segment,
-            key_len,
-            value_layout,
-            block_checksum,
+            geometry,
             verify_block_checksums,
             start,
             end,
@@ -306,9 +297,7 @@ impl SegmentRangeCursor {
             let buffer = std::mem::take(&mut self.spare_block_bytes);
             let block = match self.segment.load_block_reusing(
                 block_index,
-                self.key_len,
-                self.value_layout,
-                self.block_checksum,
+                self.geometry,
                 self.verify_block_checksums,
                 buffer,
             ) {

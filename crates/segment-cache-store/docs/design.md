@@ -92,7 +92,7 @@ The store validates key length, fixed value length, manifest structure, segment 
 
 - `Store root`: directory containing one cache namespace.
 - `Metadata`: caller-defined compatibility bytes persisted in `STORE`.
-- `STORE`: stable descriptor for metadata, key length, and value layout.
+- `STORE`: stable descriptor for metadata, key length, value layout, block checksum, and value-payload compression.
 - `MANIFEST`: atomic visible-data snapshot.
 - `Manifest entry`: one visible segment reference plus tier and key range.
 
@@ -105,7 +105,7 @@ The store validates key length, fixed value length, manifest structure, segment 
 - `Block index`: segment-footer table with one entry per block.
 - `KeySection`: block-local key metadata. It starts with `prefix_len:u32`, then stores the common key prefix and the fixed-width suffix table.
 - `ValueIndexSection`: variable-value offset table with `record_count + 1` offsets. Fixed-value blocks do not have this section.
-- `ValuePayload`: packed user value bytes.
+- `ValuePayloadFrame`: raw or compressed packed user value bytes for one block.
 - `LookupMetadata`: the bytes needed to prove key membership and locate values in a block. It is `KeySection` plus `ValueIndexSection` for variable-value blocks, and just `KeySection` for fixed-value blocks.
 
 ## Architecture
@@ -114,7 +114,7 @@ The current implementation separates persistent identity, visibility, immutable 
 
 ```mermaid
 flowchart TD
-  Root["Store root"] --> StoreFile["STORE<br/>metadata, key_len, value_len, block_checksum_id"]
+  Root["Store root"] --> StoreFile["STORE<br/>metadata, key_len, value_len,<br/>block_checksum_id, value_payload_compression_id"]
   Root --> Manifest["MANIFEST<br/>atomic visible snapshot"]
   Root --> Lock["LOCK<br/>single writer"]
   Root --> SegmentDir["segments/"]
@@ -133,9 +133,8 @@ flowchart TD
   Blocks --> Block["Block<br/>physical read unit"]
   Block --> LookupMetadata["LookupMetadata<br/>KeySection + optional ValueIndexSection"]
   LookupMetadata --> LookupChecksum["lookup_checksum"]
-  Block --> ValuePayload["ValuePayload<br/>packed value bytes"]
+  Block --> ValuePayload["ValuePayloadFrame<br/>raw or compressed value bytes"]
   ValuePayload --> ValueChecksum["value_checksum"]
-  ValueChecksum --> Padding["padding"]
 ```
 
 The layering in code mirrors this structure:
@@ -190,9 +189,10 @@ metadata=<hex>
 key_len=<u32, decimal>
 value_len=<u32, decimal>
 block_checksum_id=<u32, decimal>
+value_payload_compression_id=<u32, decimal>
 ```
 
-`value_len=0` means variable-length values. A non-zero value means fixed-length values of exactly that many bytes. `block_checksum_id` selects the block checksum implementation used by all segments in the store. Built-in ids are `0 = BlockChecksumKind::None`, `1 = BlockChecksumKind::Crc32c`, and `2 = BlockChecksumKind::RapidHashV3_64`; `Crc32c` is exposed by the `checksum-crc32c` feature, while `RapidHashV3_64` is exposed by the default `checksum-rapidhash` feature and is the default block checksum for `CreateOptions::new`. If default features are disabled, callers must use `CreateOptions::new_with_block_checksum(key_len, metadata, kind)` to make the checksum choice explicit. `STORE` is authoritative for `key_len`, `value_len`, and `block_checksum_id`.
+`value_len=0` means variable-length values. A non-zero value means fixed-length values of exactly that many bytes. `block_checksum_id` selects the block checksum implementation used by all segments in the store. Built-in ids are `0 = BlockChecksumKind::None`, `1 = BlockChecksumKind::Crc32c`, and `2 = BlockChecksumKind::RapidHashV3_64`; `Crc32c` is exposed by the `checksum-crc32c` feature, while `RapidHashV3_64` is exposed by the default `checksum-rapidhash` feature and is the default block checksum for `CreateOptions::new`. `value_payload_compression_id` selects the store-wide value-payload compression policy. Built-in ids are `0 = ValuePayloadCompressionKind::None` and `1 = ValuePayloadCompressionKind::Lz4`; LZ4 is exposed by the optional `value-compression-lz4` feature and is not part of the default feature set. If default features are disabled, callers must use `CreateOptions::new_with_block_checksum(key_len, metadata, kind)` so the checksum choice remains explicit. `STORE` is authoritative for `key_len`, `value_len`, `block_checksum_id`, and `value_payload_compression_id`.
 
 ### MANIFEST
 
@@ -264,12 +264,12 @@ SegmentFooterV1
 
 ```mermaid
 flowchart LR
-  Header["SegmentHeaderV1<br/>24 bytes"] --> Block0["DataBlock 0"]
+  Header["SegmentHeaderV1<br/>28 bytes"] --> Block0["DataBlock 0"]
   Block0 --> BlockN["DataBlock ..."]
   BlockN --> Footer["SegmentFooterV1<br/>record_count, min/max, block index, CRC"]
 ```
 
-All integer fields are little-endian. The first data block starts immediately after the 24-byte header.
+All integer fields are little-endian. The first data block starts immediately after the 28-byte header.
 
 The fixed segment header is:
 
@@ -279,7 +279,8 @@ format_version:u32   # 1
 key_len:u32
 value_len:u32        # 0 = variable, >0 = fixed value length
 block_checksum_id:u32
-header_crc32c:u32    # crc32c over previous 20 bytes
+value_payload_compression_id:u32
+header_crc32c:u32    # crc32c over previous 24 bytes
 ```
 
 The footer body is variable length because it contains `min_key`, `max_key`, and the sparse block index:
@@ -309,15 +310,26 @@ Segment encoding is deterministic for the same sorted entries and writer options
 
 ## Block Format
 
-Blocks have no header or footer. Their length and record count come from the segment footer's block index. Block-local metadata is stored beside the section it describes: `prefix_len` is the first field in `KeySection`, variable-value offsets live in `ValueIndexSection`, and checksums immediately follow the bytes they protect. The checksum width is determined by `block_checksum_id`; `BlockChecksumKind::None` has width zero and stores no checksum bytes.
+Blocks have no block-level header or footer. Their length and record count come from the segment footer's block index. Block-local metadata is stored beside the section it describes: `prefix_len` is the first field in `KeySection`, variable-value offsets live in `ValueIndexSection`, optional value-payload compression metadata lives at the start of `ValuePayloadFrame`, and checksums immediately follow the bytes they protect. The checksum width is determined by `block_checksum_id`; `BlockChecksumKind::None` has width zero and stores no checksum bytes.
 
-There is no stored `payload_offset` or `payload_len` descriptor. The decoder derives payload position and length from the store value layout:
+There is no stored `payload_offset` descriptor. The decoder derives the value frame position and decoded payload length from the store value layout:
 
-- `payload_offset = lookup_metadata_len + block_checksum.digest_len`
-- variable values: `payload_len = value_offsets[record_count]`
-- fixed values: `payload_len = record_count * value_len`
+- `payload_frame_offset = lookup_metadata_len + block_checksum.digest_len`
+- variable values: `decoded_payload_len = value_offsets[record_count]`
+- fixed values: `decoded_payload_len = record_count * value_len`
 
 `LookupMetadata` is intentionally not just key bytes. For variable values, the offset table is part of lookup correctness because a corrupted offset can make a valid key return the wrong value slice. Padding is after `value_checksum` and is not checksummed.
+
+`ValuePayloadCompressionKind::None` stores no value frame header: `ValuePayloadFrame` is exactly the decoded value payload bytes. `ValuePayloadCompressionKind::Lz4` stores a 12-byte frame header before each block's encoded payload:
+
+```text
+encoding_id:u32      # 0 = raw, 1 = lz4
+raw_len:u32          # decoded payload length
+encoded_len:u32      # following encoded payload bytes
+encoded_payload[encoded_len]
+```
+
+LZ4 is a store-wide policy, but each block records its actual frame encoding. Small or poorly compressible blocks are stored as `encoding_id=0` raw frames so the writer does not pay space or decode cost for negative compression. The current writer attempts LZ4 only when the raw value payload is at least 64 KiB and keeps the compressed frame only if it saves at least 10%.
 
 Each block strips the common prefix shared by the first and last key. Since records are sorted, that prefix is shared by every key in the block. The suffix table remains fixed-width, so lookup can binary-search by record index without variable-length key decoding.
 
@@ -331,10 +343,10 @@ KeySection:
 ValueIndexSection:
   value_offsets[record_count + 1]:u32
 lookup_checksum      # selected block checksum over KeySection | ValueIndexSection
-ValuePayload:
+ValuePayloadFrame:
+  optional frame header
   values...
-value_checksum       # selected block checksum over ValuePayload only
-padding...
+value_checksum       # selected block checksum over ValuePayloadFrame only
 ```
 
 Fixed-value block layout:
@@ -345,10 +357,10 @@ KeySection:
   key_prefix[prefix_len]
   key_suffixes[record_count * (key_len - prefix_len)]
 lookup_checksum      # selected block checksum over KeySection
-ValuePayload:
+ValuePayloadFrame:
+  optional frame header
   values[record_count * value_len]
-value_checksum       # selected block checksum over ValuePayload only
-padding...
+value_checksum       # selected block checksum over ValuePayloadFrame only
 ```
 
 ```mermaid
@@ -361,17 +373,21 @@ flowchart LR
   Layout -->|fixed| NoOffsets["no ValueIndexSection"]
   Offsets --> LookupChecksum["lookup_checksum"]
   NoOffsets --> LookupChecksum
-  LookupChecksum --> Payload["ValuePayload"]
-  Payload --> ValueChecksum["value_checksum"]
-  ValueChecksum --> Padding["padding"]
+  LookupChecksum --> Payload["ValuePayloadFrame"]
+  Payload --> FrameKind{"compression policy"}
+  FrameKind -->|none| RawPayload["decoded value payload"]
+  FrameKind -->|lz4| PayloadHeader["frame header<br/>raw or lz4"]
+  PayloadHeader --> EncodedPayload["encoded payload"]
+  RawPayload --> ValueChecksum
+  EncodedPayload --> ValueChecksum
 ```
 
-For variable values, value `i` is `value_offsets[i]..value_offsets[i + 1]`; the last offset is the payload length, so the last value needs no special branch. For fixed values, value `i` starts at `i * value_len`.
+For variable values, value `i` is `value_offsets[i]..value_offsets[i + 1]` in the decoded value payload; the last offset is the decoded payload length, so the last value needs no special branch. For fixed values, value `i` starts at `i * value_len` in the decoded value payload.
 
 Block sizing is a writer policy:
 
-- blocks smaller than the target block size are padded up to the target
-- oversized blocks are written at their natural size and are not rounded up
+- `target_block_size` is a logical split target used while grouping records into blocks
+- physical block length is the actual encoded length after metadata, optional compression, and checksums
 - existing segments remain readable if future commits use a different target block size because physical block lengths are stored in the block index
 
 ## Format Limits
@@ -492,11 +508,11 @@ flowchart TD
   SegmentSweep --> BlockRange["consume all query keys<br/>belonging to one block"]
   BlockRange --> SparseChoice{"query_count < block_record_count?"}
 
-  SparseChoice -->|yes| MetadataOnly["read footer + metadata<br/>verify metadata CRC"]
-  SparseChoice -->|no| FullBlock["read full block<br/>verify metadata + payload CRC"]
+  SparseChoice -->|yes| MetadataOnly["read footer + metadata<br/>verify metadata checksum"]
+  SparseChoice -->|no| FullBlock["read full block<br/>verify metadata + payload checksums"]
   MetadataOnly --> HitCheck{"any matching key?"}
   HitCheck -->|no| Misses["emit misses"]
-  HitCheck -->|yes| PayloadRead["read ValuePayload<br/>verify payload CRC"]
+  HitCheck -->|yes| PayloadRead["read ValuePayloadFrame<br/>verify payload checksum"]
   FullBlock --> Emit["visit borrowed value slices<br/>or copy for owned fetch"]
   PayloadRead --> Emit
   Emit --> Output["results in input order"]
@@ -507,7 +523,7 @@ When the patch tier is empty, ordered lookup sweeps the main tier directly. When
 
 Within one segment, ordered lookup reuses cursor state and the last loaded block. It consumes all keys that fall before the next block's first key before loading another block.
 
-Sparse lookup can read only block metadata first. If none of the searched keys exist in that block, the reader emits misses without loading or verifying value payload bytes. If any searched key matches, the value payload must be loaded and verified before returning a hit.
+Sparse lookup can read only block metadata first. If none of the searched keys exist in that block, the reader emits misses without loading or verifying value payload bytes. If any searched key matches, the value payload frame must be loaded, verified, and decoded before returning a hit.
 
 With default checksum verification and a non-zero-width checksum algorithm, `contains_many_ordered` is cache-safe, not index-only. A key counts as present only if the value payload needed to prove that hit is successfully loaded and verified. If read-only checksum verification is explicitly disabled for benchmarking, or if the store was created with `BlockChecksumKind::None`, this guarantee is intentionally weakened for that open handle or namespace.
 
@@ -528,7 +544,7 @@ The store is allowed to forget cached data. It is not allowed to return wrong ca
 - Manifest entry pointing to a missing segment: entry is invisible and later dropped.
 - Manifest entry whose min/max range does not match the segment footer: segment ignored.
 - Corrupted block metadata checksum: that block behaves like missing data.
-- Corrupted block value payload checksum: matching keys in that block behave like missing data.
+- Corrupted block value payload frame checksum: matching keys in that block behave like missing data.
 - Malformed block layout: that block behaves like missing data.
 - Temp file after crash: ignored.
 - Final segment not referenced by manifest: ignored and later collected.
@@ -576,11 +592,11 @@ flowchart TD
   OrderedWorkload --> BorrowedVisit["borrowed visit APIs"]
   OrderedWorkload --> PrefixStrip["block-local key prefix stripping"]
 
-  SparseReads["sparse ordered reads"] --> MetadataFirst["metadata-first block loading"]
-  MetadataFirst --> SplitChecksums["split metadata/payload checksums"]
-
   RepeatedReads["repeated reads in one process"] --> VerifyCache["process-local verified-block state"]
   LargeValues["large values"] --> OversizedBlocks["natural-size oversized blocks"]
+  LargeValues --> PayloadCompression["optional value-payload compression"]
+  SparseReads["sparse ordered reads"] --> MetadataFirst["metadata-first block loading"]
+  MetadataFirst --> SplitChecksums["split metadata/payload checksums"]
   FixedValues["fixed-size values"] --> FixedLayout["fixed-value payload arithmetic"]
   Scans["range / iter_all"] --> StreamingCursor["streaming block cursor"]
 ```
@@ -595,7 +611,7 @@ Ordered lookup processes all query keys that fall inside the current block befor
 
 ### Borrowed Block Parsing
 
-Blocks are decoded as raw bytes plus layout metadata. Lookup and scan APIs can borrow key/value slices from the decoded block. Values are copied only by APIs that return owned vectors.
+Blocks are decoded as raw bytes plus layout metadata. Lookup and scan APIs can borrow key/value slices from the decoded block. For compressed value frames, the decoded block owns a temporary decoded payload buffer and still exposes borrowed value slices from that buffer. Values are copied only by APIs that return owned vectors.
 
 ### Metadata-First Sparse Lookup
 
@@ -603,7 +619,11 @@ Sparse ordered lookup may read only `LookupMetadata` and `lookup_checksum` first
 
 ### Split Block Checksums
 
-Block checksum state is split into lookup metadata and value payload checksums. Metadata verification protects key lookup and, for variable values, the offset table used to locate value slices. Payload verification protects returned value bytes. For fixed-value blocks this is effectively a `KeySection` checksum plus a value-payload checksum; for variable-value blocks it is key-plus-offset metadata versus value payload.
+Block checksum state is split into lookup metadata and value payload checksums. Metadata verification protects key lookup and, for variable values, the offset table used to locate value slices. Payload verification protects returned value bytes and any value-payload frame header. For fixed-value blocks this is effectively a `KeySection` checksum plus a value-payload-frame checksum; for variable-value blocks it is key-plus-offset metadata versus value payload frame.
+
+### Optional Value-Payload Compression
+
+Compression is deliberately below the caller codec and above the raw block payload bytes. It never changes keys or value indexes. With `ValuePayloadCompressionKind::Lz4`, the writer compresses the whole block value payload as one frame and stores raw fallback frames for small or incompressible payloads. This centralizes checksum and decompression handling in the storage backend while preserving metadata-first sparse lookup.
 
 ### Process-Local Verification Reuse
 
@@ -617,13 +637,26 @@ A block stores the common key prefix once and then stores fixed-width suffixes. 
 
 Stores with fixed-width values can use `CreateOptions::with_fixed_value_len`. Fixed blocks omit the value offset table and compute value ranges arithmetically.
 
-### Oversized-Block Space Control
+### Logical Block Sizing
 
-Blocks smaller than the target are padded to the target size. Blocks larger than the target are written at natural size. This avoids extreme padding overhead for large values.
+`CommitOptions::target_block_size` controls how many records are grouped into one block. It is not a physical minimum size. Blocks are written at their actual encoded length, so compressed value payloads can produce much smaller physical blocks while preserving the same logical lookup granularity.
 
 ### Positioned Reads And Buffer Reuse
 
 Segment files are read with positioned reads, so shared file handles do not have a mutable seek cursor. Lookup sessions and scan cursors reuse their previous block buffer when loading the next block.
+
+## Future OS And Filesystem Hints
+
+The current implementation intentionally uses ordinary buffered file IO and relies on the OS page cache. Blocks are variable-length physical units; `target_block_size` only controls logical split granularity, and the format does not add block padding for filesystem alignment.
+
+If benchmarks show an IO bottleneck that the current read buffer reuse cannot address, OS-specific hints can be added behind a narrow internal abstraction without changing the disk format:
+
+- sequential scan and export paths can use `posix_fadvise(SEQUENTIAL)` or platform equivalents to improve readahead
+- sparse lookup paths can use `posix_fadvise(RANDOM)` or no hint to avoid excessive readahead
+- large one-shot scans can optionally use `posix_fadvise(DONTNEED)` after consumption to avoid polluting the process-wide page cache
+- vectored positioned reads can be evaluated if metadata-first lookup becomes syscall-bound
+
+Lower-level strategies such as `O_DIRECT`, explicit block alignment, mmap-first readers, file preallocation, or platform-specific clone/reflink workflows are deliberately out of scope for the v1 backend. They add platform constraints and correctness surface area, and should only be introduced with benchmark evidence and tests for the affected operating systems.
 
 ## Future Sync Design
 

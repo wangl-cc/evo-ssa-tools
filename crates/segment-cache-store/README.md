@@ -28,11 +28,11 @@ let value = reopened.fetch_one(&[0; 16])?;
 # Ok::<_, segment_cache_store::Error>(())
 ```
 
-One store root has one fixed key length, one value layout, one block checksum implementation, and one caller-defined metadata namespace. The default block checksum is `BlockChecksumKind::RapidHashV3_64`; callers can select another built-in implementation through `CreateOptions::with_block_checksum(kind)`. Published segment files are immutable. The main tier remains globally non-overlapping; a bounded patch tier can temporarily overlap main segments so small interleaving commits avoid immediate rebuild. When the patch tier reaches its configured bound, the store normalizes the touched range and atomically publishes a replacement `MANIFEST`. Callers can also run `Store::normalize()` explicitly before a read-heavy phase.
+One store root has one fixed key length, one value layout, one block checksum implementation, one value-payload compression policy, and one caller-defined metadata namespace. The default block checksum is `BlockChecksumKind::RapidHashV3_64`; callers can select another built-in implementation through `CreateOptions::with_block_checksum(kind)`. Value-payload compression defaults to `ValuePayloadCompressionKind::None`; when the `value-compression-lz4` feature is enabled, callers can select `ValuePayloadCompressionKind::Lz4` through `CreateOptions::with_value_payload_compression(kind)`. Published segment files are immutable. The main tier remains globally non-overlapping; a bounded patch tier can temporarily overlap main segments so small interleaving commits avoid immediate rebuild. When the patch tier reaches its configured bound, the store normalizes the touched range and atomically publishes a replacement `MANIFEST`. Callers can also run `Store::normalize()` explicitly before a read-heavy phase.
 
 ## Feature Flags
 
-The default feature set enables `checksum-rapidhash`, which exposes `BlockChecksumKind::RapidHashV3_64` and makes `CreateOptions::new` use it as the default block checksum. `BlockChecksumKind::None` is always available. `checksum-crc32c` exposes `BlockChecksumKind::Crc32c` as an optional block checksum implementation; CRC32C is still used internally for fixed catalog and segment structural checks. If default features are disabled, use `CreateOptions::new_with_block_checksum(key_len, metadata, kind)` so the checksum choice remains explicit.
+The default feature set enables `checksum-rapidhash`, which exposes `BlockChecksumKind::RapidHashV3_64` and makes `CreateOptions::new` use it as the default block checksum. `BlockChecksumKind::None` is always available. `checksum-crc32c` exposes `BlockChecksumKind::Crc32c` as an optional block checksum implementation; CRC32C is still used internally for fixed catalog and segment structural checks. `value-compression-lz4` exposes optional block-level value-payload compression. If default features are disabled, use `CreateOptions::new_with_block_checksum(key_len, metadata, kind)` so the checksum choice remains explicit.
 
 Internal design and evaluation notes live in:
 
@@ -46,5 +46,6 @@ cargo bench -p segment-cache-store --bench comparison
 cargo bench -p segment-cache-store --bench ordered_lookup
 cargo bench -p segment-cache-store --bench append_publish
 cargo bench -p segment-cache-store --bench parameter_evolution
+cargo bench -p segment-cache-store --features value-compression-lz4 --bench compression
 cargo run -p segment-cache-store --example space_usage --offline
 ```

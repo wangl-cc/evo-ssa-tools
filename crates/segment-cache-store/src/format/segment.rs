@@ -12,6 +12,7 @@ use crc32c::crc32c;
 
 use crate::format::{
     BlockChecksumKind, CorruptionError, FormatError, SegmentWriteError, ValueLayout,
+    ValuePayloadCompressionKind,
     binary::BinaryCursor,
     block::{BlockBuilder, KEY_PREFIX_LEN_LEN},
     common_prefix_len, format_u32,
@@ -19,7 +20,7 @@ use crate::format::{
 };
 
 const SEGMENT_FORMAT_VERSION: u32 = 1;
-pub(crate) const SEGMENT_HEADER_LEN: usize = 24;
+pub(crate) const SEGMENT_HEADER_LEN: usize = 28;
 pub(crate) const SEGMENT_FOOTER_TRAILER_LEN: usize = 8;
 const HEADER_MAGIC: &[u8; 4] = b"SCSG";
 
@@ -32,6 +33,7 @@ pub(crate) struct SegmentHeader {
     key_len: u32,
     value_layout: ValueLayout,
     block_checksum_id: u32,
+    value_payload_compression_id: u32,
 }
 
 impl SegmentHeader {
@@ -39,6 +41,7 @@ impl SegmentHeader {
         key_len: usize,
         value_layout: ValueLayout,
         block_checksum: BlockChecksumKind,
+        value_payload_compression: ValuePayloadCompressionKind,
     ) -> Result<Self, FormatError> {
         Ok(Self {
             version: SEGMENT_FORMAT_VERSION,
@@ -46,6 +49,7 @@ impl SegmentHeader {
                 .map_err(|_| FormatError::limit("segment key length"))?,
             value_layout,
             block_checksum_id: block_checksum.format_id(),
+            value_payload_compression_id: value_payload_compression.format_id(),
         })
     }
 
@@ -54,9 +58,9 @@ impl SegmentHeader {
             return Err(CorruptionError::SegmentFormat);
         }
         let mut cursor = BinaryCursor::new(bytes);
-        cursor.seek(20);
+        cursor.seek(24);
         let stored_crc = cursor.read::<u32>().ok_or(CorruptionError::SegmentFormat)?;
-        if crc32c(&bytes[..20]) != stored_crc {
+        if crc32c(&bytes[..24]) != stored_crc {
             return Err(CorruptionError::SegmentFormat);
         }
         cursor.seek(4);
@@ -64,11 +68,14 @@ impl SegmentHeader {
         let key_len = cursor.read::<u32>().ok_or(CorruptionError::SegmentFormat)?;
         let value_len = cursor.read::<u32>().ok_or(CorruptionError::SegmentFormat)?;
         let block_checksum_id = cursor.read::<u32>().ok_or(CorruptionError::SegmentFormat)?;
+        let value_payload_compression_id =
+            cursor.read::<u32>().ok_or(CorruptionError::SegmentFormat)?;
         Ok(Self {
             version,
             key_len,
             value_layout: ValueLayout::from_u32(value_len),
             block_checksum_id,
+            value_payload_compression_id,
         })
     }
 
@@ -79,7 +86,8 @@ impl SegmentHeader {
         buffer.extend_from_slice(&self.key_len.to_le_bytes());
         buffer.extend_from_slice(&self.value_layout.to_u32().to_le_bytes());
         buffer.extend_from_slice(&self.block_checksum_id.to_le_bytes());
-        let crc = crc32c(&buffer[start..start + 20]);
+        buffer.extend_from_slice(&self.value_payload_compression_id.to_le_bytes());
+        let crc = crc32c(&buffer[start..start + 24]);
         buffer.extend_from_slice(&crc.to_le_bytes());
     }
 
@@ -88,11 +96,13 @@ impl SegmentHeader {
         expected_key_len: usize,
         expected_value_layout: ValueLayout,
         expected_block_checksum: BlockChecksumKind,
+        expected_value_payload_compression: ValuePayloadCompressionKind,
     ) -> bool {
         self.version == SEGMENT_FORMAT_VERSION
             && self.key_len as usize == expected_key_len
             && self.value_layout == expected_value_layout
             && self.block_checksum_id == expected_block_checksum.format_id()
+            && self.value_payload_compression_id == expected_value_payload_compression.format_id()
     }
 }
 
@@ -298,6 +308,7 @@ pub(crate) struct SegmentWriter {
     key_len: usize,
     value_layout: ValueLayout,
     block_checksum: BlockChecksumKind,
+    value_payload_compression: ValuePayloadCompressionKind,
     target_block_size: usize,
 }
 
@@ -307,12 +318,14 @@ impl SegmentWriter {
         key_len: usize,
         value_layout: ValueLayout,
         block_checksum: BlockChecksumKind,
+        value_payload_compression: ValuePayloadCompressionKind,
         target_block_size: usize,
     ) -> Self {
         Self {
             key_len,
             value_layout,
             block_checksum,
+            value_payload_compression,
             target_block_size,
         }
     }
@@ -324,8 +337,13 @@ impl SegmentWriter {
         entries: &S,
     ) -> Result<SegmentFooter, SegmentWriteError> {
         let mut header = Vec::with_capacity(SEGMENT_HEADER_LEN);
-        SegmentHeader::new(self.key_len, self.value_layout, self.block_checksum)?
-            .into_bytes(&mut header);
+        SegmentHeader::new(
+            self.key_len,
+            self.value_layout,
+            self.block_checksum,
+            self.value_payload_compression,
+        )?
+        .into_bytes(&mut header);
         debug_assert_eq!(header.len(), SEGMENT_HEADER_LEN);
         out.write_all(&header)?;
 
@@ -368,7 +386,7 @@ impl SegmentWriter {
                 self.key_len,
                 self.value_layout,
                 self.block_checksum,
-                self.target_block_size,
+                self.value_payload_compression,
             )
             .encode()?;
             let block_len = format_u32(block_bytes.len(), "block length")?;
@@ -406,6 +424,7 @@ impl SegmentWriter {
             let prospective_len = key_region_len
                 + value_index_len
                 + self.block_checksum.digest_len()
+                + self.value_payload_compression.frame_header_len()
                 + payload_len
                 + entry.value().len()
                 + self.block_checksum.digest_len();

@@ -3,9 +3,9 @@
 use std::sync::Arc;
 
 use crate::{
-    engine::runtime::{SegmentSnapshot, SegmentState},
+    engine::runtime::{SegmentSnapshot, SegmentState, StoreGeometry},
     error::{InputError, Result},
-    format::{BlockChecksumKind, CorruptionError, ValueLayout, block::DecodedBlock},
+    format::{CorruptionError, block::DecodedBlock},
     store::Store,
 };
 
@@ -57,9 +57,7 @@ pub(crate) struct SegmentSetReader<'a> {
 
 #[derive(Clone, Copy)]
 pub(crate) struct LookupReadOptions {
-    pub(crate) key_len: usize,
-    pub(crate) value_layout: ValueLayout,
-    pub(crate) block_checksum: BlockChecksumKind,
+    pub(crate) geometry: StoreGeometry,
     pub(crate) verify_block_checksums: bool,
 }
 
@@ -352,9 +350,7 @@ impl<'a> SegmentSetReader<'a> {
         let block_index = segment.find_block_index(key);
         let block = match segment.load_block(
             block_index,
-            self.options.key_len,
-            self.options.value_layout,
-            self.options.block_checksum,
+            self.options.geometry,
             self.options.verify_block_checksums,
         ) {
             Ok(block) => block,
@@ -608,17 +604,13 @@ impl LookupState {
         let block = match load_mode {
             BlockLoadMode::Full => segment.load_block_reusing(
                 block_index,
-                options.key_len,
-                options.value_layout,
-                options.block_checksum,
+                options.geometry,
                 options.verify_block_checksums,
                 buffer,
             )?,
             BlockLoadMode::Metadata => segment.load_block_metadata_reusing(
                 block_index,
-                options.key_len,
-                options.value_layout,
-                options.block_checksum,
+                options.geometry,
                 options.verify_block_checksums,
                 buffer,
             )?,

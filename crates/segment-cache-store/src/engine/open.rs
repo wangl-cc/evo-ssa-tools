@@ -14,8 +14,8 @@ use crate::{
     },
     error::{OptionsError, Result},
     format::{
-        BlockChecksumKind, CatalogMismatch, StoreMetadata, manifest::StoreManifest,
-        store_file::StoreDescriptor,
+        BlockChecksumKind, CatalogMismatch, StoreMetadata, ValuePayloadCompressionKind,
+        manifest::StoreManifest, store_file::StoreDescriptor,
     },
     store::Store,
 };
@@ -79,6 +79,14 @@ impl OpenOptions {
         BlockChecksumKind::from_format_id(format_id)
             .ok_or(CatalogMismatch::UnsupportedBlockChecksum { format_id }.into())
     }
+
+    fn resolve_value_payload_compression(
+        &self,
+        format_id: u32,
+    ) -> Result<ValuePayloadCompressionKind> {
+        ValuePayloadCompressionKind::from_format_id(format_id)
+            .ok_or(CatalogMismatch::UnsupportedValuePayloadCompression { format_id }.into())
+    }
 }
 
 impl Store {
@@ -101,6 +109,8 @@ pub(super) fn open_existing(
         return Err(CatalogMismatch::Metadata.into());
     }
     let block_checksum = options.resolve_block_checksum(descriptor.block_checksum_id)?;
+    let value_payload_compression =
+        options.resolve_value_payload_compression(descriptor.value_payload_compression_id)?;
 
     // A writer takes the advisory lock before reading the manifest so that
     // garbage collection and any later commit run under the same lock without
@@ -130,6 +140,7 @@ pub(super) fn open_existing(
         descriptor,
         manifest,
         block_checksum,
+        value_payload_compression,
         options.verify_block_checksums,
         writer_lock,
     )
@@ -146,10 +157,12 @@ fn build_store(
     descriptor: StoreDescriptor,
     manifest: StoreManifest,
     block_checksum: BlockChecksumKind,
+    value_payload_compression: ValuePayloadCompressionKind,
     verify_block_checksums: bool,
     writer_lock: Option<WriterLock>,
 ) -> Result<Store> {
-    let geometry = StoreGeometry::from_descriptor(&descriptor, block_checksum);
+    let geometry =
+        StoreGeometry::from_descriptor(&descriptor, block_checksum, value_payload_compression);
     let mut main_segment_states = Vec::new();
     let mut patch_segment_states = Vec::new();
     for entry in &manifest.segments {
@@ -158,6 +171,7 @@ fn build_store(
             expected_key_len: geometry.key_len,
             expected_value_layout: geometry.value_layout,
             expected_block_checksum: geometry.block_checksum,
+            expected_value_payload_compression: geometry.value_payload_compression,
         })? {
             Some(segment) if entry.matches_segment_footer(&segment.min_key, &segment.max_key) => {
                 segment

@@ -15,6 +15,21 @@ pub(crate) struct Dataset {
     pub(crate) random_sparse_ordered_keys: Vec<Vec<u8>>,
 }
 
+#[derive(Clone, Copy)]
+pub(crate) enum ValueEntropy {
+    Random,
+    Compressible,
+}
+
+impl ValueEntropy {
+    pub(crate) const fn name(self) -> &'static str {
+        match self {
+            Self::Random => "random",
+            Self::Compressible => "compressible",
+        }
+    }
+}
+
 #[derive(Clone)]
 pub(crate) struct MiddleInsertDataset {
     pub(crate) old_entries: Vec<(Vec<u8>, Vec<u8>)>,
@@ -79,6 +94,33 @@ fn make_value(rng: &mut StdRng, profile: ValueProfile) -> Vec<u8> {
     (0..len).map(|_| rng.random()).collect()
 }
 
+fn make_sized_entropy_value(
+    rng: &mut StdRng,
+    base_len: usize,
+    jitter: usize,
+    entropy: ValueEntropy,
+    index: usize,
+) -> Vec<u8> {
+    let spread = jitter.saturating_mul(2) + 1;
+    let offset = usize::from(rng.random::<u16>()) % spread;
+    let len = base_len + offset - jitter;
+    let mut value = (0..len).map(|_| rng.random()).collect::<Vec<_>>();
+    match entropy {
+        ValueEntropy::Random => value,
+        ValueEntropy::Compressible => {
+            let tag = index.to_le_bytes()[0];
+            for (offset, byte) in value.iter_mut().enumerate() {
+                *byte = if offset % 128 == 0 {
+                    tag.wrapping_add(offset.to_le_bytes()[0])
+                } else {
+                    tag
+                };
+            }
+            value
+        }
+    }
+}
+
 fn make_grid_value(profile: ValueProfile, x: u32, y: u32, rep: u64) -> Vec<u8> {
     let seed = 1_000_003u64
         .wrapping_mul(u64::from(x) + 1)
@@ -125,6 +167,54 @@ pub(crate) fn build_dataset(n: usize, profile: ValueProfile) -> Dataset {
         .iter()
         .filter(|_| usize::from(sparse_rng.random::<u16>()) % 16 == 0)
         .map(|(key, _)| key.clone())
+        .collect::<Vec<_>>();
+    Dataset {
+        entries,
+        ordered_keys,
+        clustered_sparse_ordered_keys,
+        random_sparse_ordered_keys,
+    }
+}
+
+pub(crate) fn build_compression_dataset(
+    n: usize,
+    value_len: usize,
+    jitter: usize,
+    entropy: ValueEntropy,
+) -> Dataset {
+    let mut rng = StdRng::seed_from_u64(
+        9_999 + u64::try_from(value_len).expect("value len should fit in seed"),
+    );
+    let mut entries = Vec::with_capacity(n);
+    for index in 0..n {
+        let axis_0 = (index / 4096) as u64;
+        let axis_1 = ((index / 1024) % 4) as u64;
+        let axis_2 = ((index / 256) % 4) as u64;
+        let axis_3 = ((index / 16) % 16) as u64;
+        let axis_4 = 0;
+        let rep = (index % 16) as u64;
+        entries.push((
+            make_key(axis_0, axis_1, axis_2, axis_3, axis_4, rep),
+            make_sized_entropy_value(&mut rng, value_len, jitter, entropy, index),
+        ));
+    }
+    entries.sort_by(|left, right| left.0.cmp(&right.0));
+
+    let ordered_keys = entries
+        .iter()
+        .map(|(key, _)| key.clone())
+        .collect::<Vec<_>>();
+    let clustered_sparse_ordered_keys = entries
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| index % 256 < 16)
+        .map(|(_, (key, _))| key.clone())
+        .collect::<Vec<_>>();
+    let random_sparse_ordered_keys = entries
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| index % 16 == 0)
+        .map(|(_, (key, _))| key.clone())
         .collect::<Vec<_>>();
     Dataset {
         entries,

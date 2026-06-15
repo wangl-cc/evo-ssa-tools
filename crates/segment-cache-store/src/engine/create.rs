@@ -11,8 +11,8 @@ use crate::{
     },
     error::{InputError, OptionsError, Result},
     format::{
-        BlockChecksumKind, StoreMetadata, ValueLayout, manifest::StoreManifest,
-        store_file::StoreDescriptor,
+        BlockChecksumKind, StoreMetadata, ValueLayout, ValuePayloadCompressionKind,
+        manifest::StoreManifest, store_file::StoreDescriptor,
     },
     store::Store,
 };
@@ -31,6 +31,8 @@ pub struct CreateOptions {
     pub value_layout: ValueLayout,
     /// Block checksum kind persisted for all visible segments.
     pub block_checksum: BlockChecksumKind,
+    /// Value-payload compression policy persisted for all visible segments.
+    pub value_payload_compression: ValuePayloadCompressionKind,
     /// Opaque caller compatibility metadata for this namespace.
     pub metadata: StoreMetadata,
 }
@@ -43,6 +45,7 @@ impl CreateOptions {
             key_len,
             value_layout: ValueLayout::VARIABLE,
             block_checksum: BlockChecksumKind::DEFAULT,
+            value_payload_compression: ValuePayloadCompressionKind::DEFAULT,
             metadata,
         }
     }
@@ -59,6 +62,7 @@ impl CreateOptions {
             key_len,
             value_layout: ValueLayout::VARIABLE,
             block_checksum,
+            value_payload_compression: ValuePayloadCompressionKind::DEFAULT,
             metadata,
         }
     }
@@ -78,6 +82,15 @@ impl CreateOptions {
     /// Selects the block checksum implementation for newly written segments.
     pub fn with_block_checksum(mut self, block_checksum: BlockChecksumKind) -> Self {
         self.block_checksum = block_checksum;
+        self
+    }
+
+    /// Selects the block-level value-payload compression policy.
+    pub fn with_value_payload_compression(
+        mut self,
+        compression: ValuePayloadCompressionKind,
+    ) -> Self {
+        self.value_payload_compression = compression;
         self
     }
 
@@ -121,6 +134,7 @@ impl Store {
             options.key_len,
             options.value_layout,
             options.block_checksum.format_id(),
+            options.value_payload_compression.format_id(),
         );
         // Write `MANIFEST` first and `STORE` last. A crash between the two leaves
         // a root with no `STORE`, which `create` can safely re-create and `open`

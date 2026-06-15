@@ -189,9 +189,7 @@ impl Store {
 
     pub(crate) fn lookup_read_options(&self) -> LookupReadOptions {
         LookupReadOptions {
-            key_len: self.inner.geometry.key_len,
-            value_layout: self.inner.geometry.value_layout,
-            block_checksum: self.inner.geometry.block_checksum,
+            geometry: self.inner.geometry,
             verify_block_checksums: self.inner.verify_block_checksums,
         }
     }
@@ -219,9 +217,7 @@ impl Store {
             }
             cursors.push(SegmentRangeCursor::new(
                 Arc::clone(segment),
-                self.inner.geometry.key_len,
-                self.inner.geometry.value_layout,
-                self.inner.geometry.block_checksum,
+                self.inner.geometry,
                 self.inner.verify_block_checksums,
                 start.map(ToOwned::to_owned),
                 end.map(ToOwned::to_owned),

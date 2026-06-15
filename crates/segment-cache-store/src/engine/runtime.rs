@@ -9,14 +9,14 @@ use crate::{
         io::WriterLock,
         paths::StorePaths,
         segment_file::{
-            OpenedSegment, read_block, read_block_metadata_reusing, read_block_payload,
-            read_block_reusing,
+            BlockReadOptions, OpenedSegment, read_block, read_block_metadata_reusing,
+            read_block_payload, read_block_reusing,
         },
     },
     error::Result,
     format::{
-        BlockChecksumKind, ValueLayout, block::DecodedBlock, manifest::StoreManifest,
-        segment::BlockIndexEntry, store_file::StoreDescriptor,
+        BlockChecksumKind, ValueLayout, ValuePayloadCompressionKind, block::DecodedBlock,
+        manifest::StoreManifest, segment::BlockIndexEntry, store_file::StoreDescriptor,
     },
 };
 
@@ -35,6 +35,7 @@ pub(crate) struct StoreGeometry {
     pub(crate) key_len: usize,
     pub(crate) value_layout: ValueLayout,
     pub(crate) block_checksum: BlockChecksumKind,
+    pub(crate) value_payload_compression: ValuePayloadCompressionKind,
 }
 
 pub(crate) struct StoreState {
@@ -83,11 +84,23 @@ impl StoreGeometry {
     pub(crate) fn from_descriptor(
         descriptor: &StoreDescriptor,
         block_checksum: BlockChecksumKind,
+        value_payload_compression: ValuePayloadCompressionKind,
     ) -> Self {
         Self {
             key_len: descriptor.key_len,
             value_layout: descriptor.value_layout,
             block_checksum,
+            value_payload_compression,
+        }
+    }
+
+    fn block_read_options(self, verify_checksum: bool) -> BlockReadOptions {
+        BlockReadOptions {
+            key_len: self.key_len,
+            value_layout: self.value_layout,
+            block_checksum: self.block_checksum,
+            value_payload_compression: self.value_payload_compression,
+            verify_checksum,
         }
     }
 }
@@ -168,21 +181,12 @@ impl SegmentState {
     pub(crate) fn load_block(
         &self,
         block_index: usize,
-        key_len: usize,
-        value_layout: ValueLayout,
-        block_checksum: BlockChecksumKind,
+        geometry: StoreGeometry,
         verify_checksum: bool,
     ) -> Result<DecodedBlock> {
         let entry = &self.block_index[block_index];
         let verify = self.needs_verification(block_index, VerifiedBlockPart::Full, verify_checksum);
-        let block = read_block(
-            &self.file,
-            entry,
-            key_len,
-            value_layout,
-            block_checksum,
-            verify,
-        )?;
+        let block = read_block(&self.file, entry, geometry.block_read_options(verify))?;
         if verify_checksum {
             self.mark_verified(block_index, VerifiedBlockPart::Full);
         }
@@ -193,9 +197,7 @@ impl SegmentState {
     pub(crate) fn load_block_reusing(
         &self,
         block_index: usize,
-        key_len: usize,
-        value_layout: ValueLayout,
-        block_checksum: BlockChecksumKind,
+        geometry: StoreGeometry,
         verify_checksum: bool,
         buffer: Vec<u8>,
     ) -> Result<DecodedBlock> {
@@ -204,10 +206,7 @@ impl SegmentState {
         let block = read_block_reusing(
             &self.file,
             entry,
-            key_len,
-            value_layout,
-            block_checksum,
-            verify,
+            geometry.block_read_options(verify),
             buffer,
         )?;
         if verify_checksum {
@@ -220,9 +219,7 @@ impl SegmentState {
     pub(crate) fn load_block_metadata_reusing(
         &self,
         block_index: usize,
-        key_len: usize,
-        value_layout: ValueLayout,
-        block_checksum: BlockChecksumKind,
+        geometry: StoreGeometry,
         verify_checksum: bool,
         buffer: Vec<u8>,
     ) -> Result<DecodedBlock> {
@@ -232,10 +229,7 @@ impl SegmentState {
         let block = read_block_metadata_reusing(
             &self.file,
             entry,
-            key_len,
-            value_layout,
-            block_checksum,
-            verify,
+            geometry.block_read_options(verify),
             buffer,
         )?;
         if verify_checksum {

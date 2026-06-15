@@ -2,8 +2,8 @@
 
 use super::layout::{BlockLookupLayout, BlockValueRegion};
 use crate::format::{
-    BlockChecksumKind, FormatError, MAX_BLOCK_CHECKSUM_LEN, ValueLayout, common_prefix_len,
-    record::EntrySource,
+    BlockChecksumKind, FormatError, MAX_BLOCK_CHECKSUM_LEN, ValueLayout,
+    ValuePayloadCompressionKind, common_prefix_len, record::EntrySource,
 };
 
 /// Encodes one sorted run of key/value entries into the on-disk block layout.
@@ -12,7 +12,7 @@ pub(crate) struct BlockBuilder<'a, S: EntrySource + ?Sized> {
     key_len: usize,
     value_layout: ValueLayout,
     block_checksum: BlockChecksumKind,
-    target_block_size: usize,
+    value_payload_compression: ValuePayloadCompressionKind,
 }
 
 impl<'a, S: EntrySource + ?Sized> BlockBuilder<'a, S> {
@@ -21,14 +21,14 @@ impl<'a, S: EntrySource + ?Sized> BlockBuilder<'a, S> {
         key_len: usize,
         value_layout: ValueLayout,
         block_checksum: BlockChecksumKind,
-        target_block_size: usize,
+        value_payload_compression: ValuePayloadCompressionKind,
     ) -> Self {
         Self {
             entries,
             key_len,
             value_layout,
             block_checksum,
-            target_block_size,
+            value_payload_compression,
         }
     }
 
@@ -57,13 +57,15 @@ impl<'a, S: EntrySource + ?Sized> BlockBuilder<'a, S> {
             payload_len,
         )
         .ok_or(FormatError::limit("block value region offsets"))?;
-        let encoded_len = value_region
+        let payload_frame_len = payload_len
+            .checked_add(self.value_payload_compression.frame_header_len())
+            .ok_or(FormatError::limit("block value payload frame length"))?;
+        let capacity_len = value_region
             .payload_offset()
-            .checked_add(payload_len)
+            .checked_add(payload_frame_len)
             .and_then(|len| len.checked_add(self.block_checksum.digest_len()))
             .ok_or(FormatError::limit("block length"))?;
-        let block_len = encoded_len.max(self.target_block_size);
-        let mut block = Vec::with_capacity(block_len);
+        let mut block = Vec::with_capacity(capacity_len);
         self.write_keys(&mut block, key_prefix_len);
         value_region.write_index(self.entries, &mut block)?;
         debug_assert_eq!(block.len(), lookup_layout.lookup_metadata_len);
@@ -74,16 +76,20 @@ impl<'a, S: EntrySource + ?Sized> BlockBuilder<'a, S> {
         );
         debug_assert_eq!(block.len(), value_region.payload_offset());
         let payload_start = block.len();
-        self.write_values(&mut block);
-        append_checksum(
-            self.block_checksum,
-            &mut block,
-            payload_start..payload_start + payload_len,
-        );
-        if block.len() < block_len {
-            block.resize(block_len, 0);
+        match self.value_payload_compression {
+            ValuePayloadCompressionKind::None => self.write_values(&mut block),
+            #[cfg(feature = "value-compression-lz4")]
+            ValuePayloadCompressionKind::Lz4 => {
+                let mut raw_payload = Vec::with_capacity(payload_len);
+                self.write_values(&mut raw_payload);
+                let frame = self
+                    .value_payload_compression
+                    .encode_frame(&raw_payload, &mut block)?;
+                debug_assert_eq!(frame.frame_len(), block.len() - payload_start);
+            }
         }
-        debug_assert_eq!(block.len(), block_len);
+        let payload_end = block.len();
+        append_checksum(self.block_checksum, &mut block, payload_start..payload_end);
         Ok(block)
     }
 
