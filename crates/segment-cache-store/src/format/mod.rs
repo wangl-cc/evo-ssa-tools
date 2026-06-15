@@ -34,8 +34,8 @@ mod value;
 
 pub use checksum::BlockChecksumKind;
 pub(crate) use checksum::MAX_BLOCK_CHECKSUM_LEN;
-pub(crate) use compression::DecodedPayload;
-pub use compression::ValuePayloadCompressionKind;
+pub(crate) use compression::{DecodedPayload, ValuePayloadDecoder, ValuePayloadEncoder};
+pub use compression::{ValuePayloadCompressionKind, ValuePayloadCompressionPolicy};
 pub(crate) use error::SegmentWriteError;
 pub use error::{CatalogError, CatalogMismatch, CorruptionError, FormatError};
 pub use manifest::{ManifestEncodeError, ManifestParseError};

@@ -12,7 +12,7 @@ use crc32c::crc32c;
 
 use crate::format::{
     BlockChecksumKind, CorruptionError, FormatError, SegmentWriteError, ValueLayout,
-    ValuePayloadCompressionKind,
+    ValuePayloadCompressionKind, ValuePayloadCompressionPolicy, ValuePayloadEncoder,
     binary::BinaryCursor,
     block::{BlockBuilder, KEY_PREFIX_LEN_LEN},
     common_prefix_len, format_u32,
@@ -309,6 +309,7 @@ pub(crate) struct SegmentWriter {
     value_layout: ValueLayout,
     block_checksum: BlockChecksumKind,
     value_payload_compression: ValuePayloadCompressionKind,
+    value_payload_compression_policy: ValuePayloadCompressionPolicy,
     target_block_size: usize,
 }
 
@@ -319,6 +320,7 @@ impl SegmentWriter {
         value_layout: ValueLayout,
         block_checksum: BlockChecksumKind,
         value_payload_compression: ValuePayloadCompressionKind,
+        value_payload_compression_policy: ValuePayloadCompressionPolicy,
         target_block_size: usize,
     ) -> Self {
         Self {
@@ -326,6 +328,7 @@ impl SegmentWriter {
             value_layout,
             block_checksum,
             value_payload_compression,
+            value_payload_compression_policy,
             target_block_size,
         }
     }
@@ -377,6 +380,7 @@ impl SegmentWriter {
         let mut offset = SEGMENT_HEADER_LEN as u64;
         let mut record_count = 0u64;
         let mut start = 0usize;
+        let mut payload_encoder = ValuePayloadEncoder::new(self.value_payload_compression);
 
         while start < entries.len() {
             let end = self.next_block_end(entries, start);
@@ -387,8 +391,9 @@ impl SegmentWriter {
                 self.value_layout,
                 self.block_checksum,
                 self.value_payload_compression,
+                self.value_payload_compression_policy,
             )
-            .encode()?;
+            .encode(&mut payload_encoder)?;
             let block_len = format_u32(block_bytes.len(), "block length")?;
             let block_record_count = format_u32(block_entries.len(), "block record count")?;
             block_index.push(BlockIndexEntry {

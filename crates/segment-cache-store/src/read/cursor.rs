@@ -5,7 +5,10 @@ use std::sync::Arc;
 use crate::{
     engine::runtime::{SegmentState, StoreGeometry},
     error::Result,
-    format::block::{DecodedBlock, ParsedRecord},
+    format::{
+        ValuePayloadDecoder,
+        block::{DecodedBlock, ParsedRecord},
+    },
 };
 
 /// Streaming cursor over records in key order.
@@ -228,6 +231,7 @@ pub(crate) struct SegmentRangeCursor {
     block_index: usize,
     current_block: Option<DecodedBlock>,
     spare_block_bytes: Vec<u8>,
+    payload_decoder: ValuePayloadDecoder,
     record_index: usize,
     exhausted: bool,
 }
@@ -252,6 +256,7 @@ impl SegmentRangeCursor {
             block_index,
             current_block: None,
             spare_block_bytes: Vec::new(),
+            payload_decoder: ValuePayloadDecoder::new(geometry.value_payload_compression),
             record_index: 0,
             exhausted: false,
         };
@@ -287,7 +292,10 @@ impl SegmentRangeCursor {
 
     fn load_next_valid_record(&mut self) -> Result<()> {
         if let Some(block) = self.current_block.take() {
-            self.spare_block_bytes = block.into_bytes();
+            let buffers = block.into_reusable_buffers();
+            self.spare_block_bytes = buffers.bytes;
+            self.payload_decoder
+                .reclaim_payload_buffer(buffers.decoded_payload);
         }
         self.record_index = 0;
 
@@ -300,6 +308,7 @@ impl SegmentRangeCursor {
                 self.geometry,
                 self.verify_block_checksums,
                 buffer,
+                &mut self.payload_decoder,
             ) {
                 Ok(block) => block,
                 Err(error) if error.is_cache_miss_corruption() => continue,

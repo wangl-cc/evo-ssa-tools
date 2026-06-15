@@ -18,14 +18,18 @@ pub(crate) struct Dataset {
 #[derive(Clone, Copy)]
 pub(crate) enum ValueEntropy {
     Random,
-    Compressible,
+    TemplateNoise,
+    CorrelatedSeries,
+    RepeatedRuns,
 }
 
 impl ValueEntropy {
     pub(crate) const fn name(self) -> &'static str {
         match self {
-            Self::Random => "random",
-            Self::Compressible => "compressible",
+            Self::Random => "random_bytes",
+            Self::TemplateNoise => "template_noise",
+            Self::CorrelatedSeries => "correlated_series",
+            Self::RepeatedRuns => "repeated_runs",
         }
     }
 }
@@ -104,10 +108,12 @@ fn make_sized_entropy_value(
     let spread = jitter.saturating_mul(2) + 1;
     let offset = usize::from(rng.random::<u16>()) % spread;
     let len = base_len + offset - jitter;
-    let mut value = (0..len).map(|_| rng.random()).collect::<Vec<_>>();
     match entropy {
-        ValueEntropy::Random => value,
-        ValueEntropy::Compressible => {
+        ValueEntropy::Random => (0..len).map(|_| rng.random()).collect(),
+        ValueEntropy::TemplateNoise => make_template_noise_value(rng, len),
+        ValueEntropy::CorrelatedSeries => make_correlated_series_value(rng, len, index),
+        ValueEntropy::RepeatedRuns => {
+            let mut value = vec![0; len];
             let tag = index.to_le_bytes()[0];
             for (offset, byte) in value.iter_mut().enumerate() {
                 *byte = if offset % 128 == 0 {
@@ -119,6 +125,52 @@ fn make_sized_entropy_value(
             value
         }
     }
+}
+
+fn make_correlated_series_value(rng: &mut StdRng, len: usize, index: usize) -> Vec<u8> {
+    let mut value = Vec::with_capacity(len);
+    let mut state =
+        (i32::try_from(index % 1024).expect("index modulo should fit in i32") - 512) * 64;
+
+    while value.len() < len {
+        let noise = i32::from(rng.random::<u16>() % 129) - 64;
+        let drift = -state / 64;
+        state = state.saturating_add(drift).saturating_add(noise);
+        let sample = state.wrapping_add(
+            i32::try_from(value.len() / 4 % 31).expect("small sample phase should fit in i32"),
+        );
+        for byte in sample.to_le_bytes() {
+            if value.len() == len {
+                return value;
+            }
+            value.push(byte);
+        }
+    }
+    value
+}
+
+fn make_template_noise_value(rng: &mut StdRng, len: usize) -> Vec<u8> {
+    const CHUNK_LEN: usize = 64;
+    const TEMPLATE_LEN: usize = 32;
+    let mut value = Vec::with_capacity(len);
+    while value.len() < len {
+        let template_id = rng.random::<u8>() & 0x0f;
+        for offset in 0..TEMPLATE_LEN {
+            if value.len() == len {
+                return value;
+            }
+            value.push(template_byte(template_id, offset));
+        }
+        while value.len() % CHUNK_LEN != 0 && value.len() < len {
+            value.push(rng.random());
+        }
+    }
+    value
+}
+
+fn template_byte(template_id: u8, offset: usize) -> u8 {
+    const TEMPLATE: &[u8; 32] = b"segment-cache-template-noise-v1!";
+    TEMPLATE[offset] ^ template_id.wrapping_mul(17)
 }
 
 fn make_grid_value(profile: ValueProfile, x: u32, y: u32, rep: u64) -> Vec<u8> {

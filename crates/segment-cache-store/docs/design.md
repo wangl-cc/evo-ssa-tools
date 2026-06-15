@@ -192,7 +192,7 @@ block_checksum_id=<u32, decimal>
 value_payload_compression_id=<u32, decimal>
 ```
 
-`value_len=0` means variable-length values. A non-zero value means fixed-length values of exactly that many bytes. `block_checksum_id` selects the block checksum implementation used by all segments in the store. Built-in ids are `0 = BlockChecksumKind::None`, `1 = BlockChecksumKind::Crc32c`, and `2 = BlockChecksumKind::RapidHashV3_64`; `Crc32c` is exposed by the `checksum-crc32c` feature, while `RapidHashV3_64` is exposed by the default `checksum-rapidhash` feature and is the default block checksum for `CreateOptions::new`. `value_payload_compression_id` selects the store-wide value-payload compression policy. Built-in ids are `0 = ValuePayloadCompressionKind::None` and `1 = ValuePayloadCompressionKind::Lz4`; LZ4 is exposed by the optional `value-compression-lz4` feature and is not part of the default feature set. If default features are disabled, callers must use `CreateOptions::new_with_block_checksum(key_len, metadata, kind)` so the checksum choice remains explicit. `STORE` is authoritative for `key_len`, `value_len`, `block_checksum_id`, and `value_payload_compression_id`.
+`value_len=0` means variable-length values. A non-zero value means fixed-length values of exactly that many bytes. `block_checksum_id` selects the block checksum implementation used by all segments in the store. Built-in ids are `0 = BlockChecksumKind::None`, `1 = BlockChecksumKind::Crc32c`, and `2 = BlockChecksumKind::RapidHashV3_64`; `Crc32c` is exposed by the `checksum-crc32c` feature, while `RapidHashV3_64` is exposed by the default `checksum-rapidhash` feature and is the default block checksum for `CreateOptions::new`. `value_payload_compression_id` selects the store-wide value-payload compression policy. Built-in ids are `0 = ValuePayloadCompressionKind::None`, `1 = ValuePayloadCompressionKind::Lz4`, and `2 = ValuePayloadCompressionKind::ZstdLevel1`; LZ4 is exposed by the optional `value-compression-lz4` feature, Zstandard level 1 is exposed by the optional `value-compression-zstd` feature, and neither is part of the default feature set. If default features are disabled, callers must use `CreateOptions::new_with_block_checksum(key_len, metadata, kind)` so the checksum choice remains explicit. `STORE` is authoritative for `key_len`, `value_len`, `block_checksum_id`, and `value_payload_compression_id`.
 
 ### MANIFEST
 
@@ -320,16 +320,16 @@ There is no stored `payload_offset` descriptor. The decoder derives the value fr
 
 `LookupMetadata` is intentionally not just key bytes. For variable values, the offset table is part of lookup correctness because a corrupted offset can make a valid key return the wrong value slice. Padding is after `value_checksum` and is not checksummed.
 
-`ValuePayloadCompressionKind::None` stores no value frame header: `ValuePayloadFrame` is exactly the decoded value payload bytes. `ValuePayloadCompressionKind::Lz4` stores a 12-byte frame header before each block's encoded payload:
+`ValuePayloadCompressionKind::None` stores no value frame header: `ValuePayloadFrame` is exactly the decoded value payload bytes. Compression-capable kinds store a 12-byte frame header before each block's encoded payload:
 
 ```text
-encoding_id:u32      # 0 = raw, 1 = lz4
+encoding_id:u32      # 0 = raw, 1 = lz4, 2 = zstd_level1
 raw_len:u32          # decoded payload length
 encoded_len:u32      # following encoded payload bytes
 encoded_payload[encoded_len]
 ```
 
-LZ4 is a store-wide policy, but each block records its actual frame encoding. Small or poorly compressible blocks are stored as `encoding_id=0` raw frames so the writer does not pay space or decode cost for negative compression. The current writer attempts LZ4 only when the raw value payload is at least 64 KiB and keeps the compressed frame only if it saves at least 10%.
+Compression support is a store-wide format capability, but each block records its actual frame encoding. Small or poorly compressible blocks are stored as `encoding_id=0` raw frames so the writer does not pay space or decode cost for negative compression. `CommitOptions::value_payload_compression_policy` controls the writer-side thresholds for newly written blocks. The default policy attempts compression only when the raw value payload is at least 64 KiB and keeps the compressed frame only if it saves at least 20%.
 
 Each block strips the common prefix shared by the first and last key. Since records are sorted, that prefix is shared by every key in the block. The suffix table remains fixed-width, so lookup can binary-search by record index without variable-length key decoding.
 
@@ -376,7 +376,7 @@ flowchart LR
   LookupChecksum --> Payload["ValuePayloadFrame"]
   Payload --> FrameKind{"compression policy"}
   FrameKind -->|none| RawPayload["decoded value payload"]
-  FrameKind -->|lz4| PayloadHeader["frame header<br/>raw or lz4"]
+  FrameKind -->|lz4/zstd| PayloadHeader["frame header<br/>raw or compressed"]
   PayloadHeader --> EncodedPayload["encoded payload"]
   RawPayload --> ValueChecksum
   EncodedPayload --> ValueChecksum
@@ -623,7 +623,9 @@ Block checksum state is split into lookup metadata and value payload checksums. 
 
 ### Optional Value-Payload Compression
 
-Compression is deliberately below the caller codec and above the raw block payload bytes. It never changes keys or value indexes. With `ValuePayloadCompressionKind::Lz4`, the writer compresses the whole block value payload as one frame and stores raw fallback frames for small or incompressible payloads. This centralizes checksum and decompression handling in the storage backend while preserving metadata-first sparse lookup.
+Compression is deliberately below the caller codec and above the raw block payload bytes. It never changes keys or value indexes. With a compression-capable `ValuePayloadCompressionKind`, the writer can compress the whole block value payload as one frame and stores raw fallback frames for small or incompressible payloads. `ValuePayloadCompressionPolicy` is a non-persistent commit-time tuning knob: changing it affects future blocks but does not affect the reader contract for existing segments. This centralizes checksum and decompression handling in the storage backend while preserving metadata-first sparse lookup.
+
+Compression codecs have process-local contexts. Segment writing creates one value-payload encoder per segment publish and reuses it across all blocks in that segment. Ordered lookup sessions and range cursors own value-payload decoders, so zstd can reuse its decompression context instead of recreating one per block. Decoded payload buffers are moved into the current decoded block and reclaimed by the owning cursor when that block is evicted. This keeps the public read contract borrowed while avoiding repeated zstd context creation and most repeated decoded-buffer allocation in scan-like reads.
 
 ### Process-Local Verification Reuse
 

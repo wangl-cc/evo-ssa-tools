@@ -15,8 +15,9 @@ use crate::{
     },
     error::Result,
     format::{
-        BlockChecksumKind, ValueLayout, ValuePayloadCompressionKind, block::DecodedBlock,
-        manifest::StoreManifest, segment::BlockIndexEntry, store_file::StoreDescriptor,
+        BlockChecksumKind, ValueLayout, ValuePayloadCompressionKind, ValuePayloadDecoder,
+        block::DecodedBlock, manifest::StoreManifest, segment::BlockIndexEntry,
+        store_file::StoreDescriptor,
     },
 };
 
@@ -183,10 +184,16 @@ impl SegmentState {
         block_index: usize,
         geometry: StoreGeometry,
         verify_checksum: bool,
+        payload_decoder: &mut ValuePayloadDecoder,
     ) -> Result<DecodedBlock> {
         let entry = &self.block_index[block_index];
         let verify = self.needs_verification(block_index, VerifiedBlockPart::Full, verify_checksum);
-        let block = read_block(&self.file, entry, geometry.block_read_options(verify))?;
+        let block = read_block(
+            &self.file,
+            entry,
+            geometry.block_read_options(verify),
+            payload_decoder,
+        )?;
         if verify_checksum {
             self.mark_verified(block_index, VerifiedBlockPart::Full);
         }
@@ -200,6 +207,7 @@ impl SegmentState {
         geometry: StoreGeometry,
         verify_checksum: bool,
         buffer: Vec<u8>,
+        payload_decoder: &mut ValuePayloadDecoder,
     ) -> Result<DecodedBlock> {
         let entry = &self.block_index[block_index];
         let verify = self.needs_verification(block_index, VerifiedBlockPart::Full, verify_checksum);
@@ -208,6 +216,7 @@ impl SegmentState {
             entry,
             geometry.block_read_options(verify),
             buffer,
+            payload_decoder,
         )?;
         if verify_checksum {
             self.mark_verified(block_index, VerifiedBlockPart::Full);
@@ -244,11 +253,12 @@ impl SegmentState {
         block_index: usize,
         block: &mut DecodedBlock,
         verify_checksum: bool,
+        payload_decoder: &mut ValuePayloadDecoder,
     ) -> Result<()> {
         let entry = &self.block_index[block_index];
         let verify =
             self.needs_verification(block_index, VerifiedBlockPart::Payload, verify_checksum);
-        read_block_payload(&self.file, entry, block, verify)?;
+        read_block_payload(&self.file, entry, block, verify, payload_decoder)?;
         if verify_checksum {
             self.mark_verified(block_index, VerifiedBlockPart::Payload);
         }

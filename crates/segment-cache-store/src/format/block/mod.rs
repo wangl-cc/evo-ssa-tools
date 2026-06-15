@@ -16,6 +16,6 @@ mod decode;
 mod encode;
 mod layout;
 
-pub(crate) use decode::{DecodedBlock, ParsedRecord};
+pub(crate) use decode::{BlockDecodeOptions, DecodedBlock, ParsedRecord};
 pub(super) use encode::BlockBuilder;
 pub(crate) use layout::{BlockLookupLayout, KEY_PREFIX_LEN_LEN};

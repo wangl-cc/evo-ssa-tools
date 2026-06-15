@@ -16,13 +16,13 @@ const RECORD_COUNT: usize = 512;
 const VALUE_LEN: usize = 128 * 1024;
 const VALUE_JITTER: usize = 8 * 1024;
 const WORKLOAD_NAME: &str = "value_128k";
-const READ_BLOCK_SIZES: &[usize] = &[4 * 1024, 16 * 1024, 256 * 1024];
 const DEFAULT_BLOCK_SIZE: usize = 16 * 1024;
 
 #[derive(Clone, Copy)]
 enum CompressionMode {
     None,
     Lz4,
+    ZstdLevel1,
 }
 
 impl CompressionMode {
@@ -30,6 +30,7 @@ impl CompressionMode {
         match self {
             Self::None => "none",
             Self::Lz4 => "lz4",
+            Self::ZstdLevel1 => "zstd_level1",
         }
     }
 
@@ -37,6 +38,7 @@ impl CompressionMode {
         match self {
             Self::None => None,
             Self::Lz4 => Some(ValuePayloadCompressionKind::Lz4),
+            Self::ZstdLevel1 => Some(ValuePayloadCompressionKind::ZstdLevel1),
         }
     }
 }
@@ -49,12 +51,30 @@ pub(crate) fn workload(c: &mut Criterion) {
             build_compression_dataset(RECORD_COUNT, VALUE_LEN, VALUE_JITTER, ValueEntropy::Random),
         ),
         (
-            ValueEntropy::Compressible,
+            ValueEntropy::TemplateNoise,
             build_compression_dataset(
                 RECORD_COUNT,
                 VALUE_LEN,
                 VALUE_JITTER,
-                ValueEntropy::Compressible,
+                ValueEntropy::TemplateNoise,
+            ),
+        ),
+        (
+            ValueEntropy::CorrelatedSeries,
+            build_compression_dataset(
+                RECORD_COUNT,
+                VALUE_LEN,
+                VALUE_JITTER,
+                ValueEntropy::CorrelatedSeries,
+            ),
+        ),
+        (
+            ValueEntropy::RepeatedRuns,
+            build_compression_dataset(
+                RECORD_COUNT,
+                VALUE_LEN,
+                VALUE_JITTER,
+                ValueEntropy::RepeatedRuns,
             ),
         ),
     ];
@@ -81,21 +101,18 @@ fn bench_ordered_fetch(
     ));
     group.throughput(Throughput::Elements(dataset.ordered_keys.len() as u64));
 
-    for &block_size in READ_BLOCK_SIZES {
-        for mode in [CompressionMode::None, CompressionMode::Lz4] {
-            let tempdir = tempfile::tempdir().expect("tempdir should work");
-            let store = create_filled_store(
-                tempdir.path(),
-                profile,
-                mode,
-                &dataset.entries,
-                &commit_options_with_block_size(block_size),
-            );
-            group.bench_function(
-                format!("{}_block_{}k", mode.name(), block_size / 1024),
-                |b| b.iter(|| black_box(sum_segment_fetches(&store, &dataset.ordered_keys))),
-            );
-        }
+    for mode in compression_modes() {
+        let tempdir = tempfile::tempdir().expect("tempdir should work");
+        let store = create_filled_store(
+            tempdir.path(),
+            profile,
+            mode,
+            &dataset.entries,
+            &commit_options(),
+        );
+        group.bench_function(mode.name(), |b| {
+            b.iter(|| black_box(sum_segment_fetches(&store, &dataset.ordered_keys)))
+        });
     }
 
     group.finish();
@@ -114,14 +131,14 @@ fn bench_iter_all(
     ));
     group.throughput(Throughput::Elements(dataset.entries.len() as u64));
 
-    for mode in [CompressionMode::None, CompressionMode::Lz4] {
+    for mode in compression_modes() {
         let tempdir = tempfile::tempdir().expect("tempdir should work");
         let store = create_filled_store(
             tempdir.path(),
             profile,
             mode,
             &dataset.entries,
-            &commit_options_with_block_size(DEFAULT_BLOCK_SIZE),
+            &commit_options(),
         );
         group.bench_function(mode.name(), |b| {
             b.iter(|| black_box(sum_segment_iter(&store)))
@@ -144,17 +161,13 @@ fn bench_append_publish(
     ));
     group.throughput(Throughput::Elements(dataset.entries.len() as u64));
 
-    for mode in [CompressionMode::None, CompressionMode::Lz4] {
+    for mode in compression_modes() {
         group.bench_function(mode.name(), |b| {
             b.iter_batched(
                 || tempfile::tempdir().expect("tempdir should work"),
                 |tempdir| {
                     let store = create_segment_store(tempdir.path(), profile, mode);
-                    fill_segment_store_with_options(
-                        &store,
-                        &dataset.entries,
-                        &commit_options_with_block_size(DEFAULT_BLOCK_SIZE),
-                    );
+                    fill_segment_store_with_options(&store, &dataset.entries, &commit_options());
                 },
                 BatchSize::LargeInput,
             )
@@ -171,28 +184,26 @@ fn report_space(profile: ValueProfile, datasets: &[(ValueEntropy, Dataset)]) {
             .iter()
             .map(|(_, value)| value.len() as u64)
             .sum::<u64>();
-        for &block_size in READ_BLOCK_SIZES {
-            for mode in [CompressionMode::None, CompressionMode::Lz4] {
-                let tempdir = tempfile::tempdir().expect("tempdir should work");
-                let _store = create_filled_store(
-                    tempdir.path(),
-                    profile,
-                    mode,
-                    &dataset.entries,
-                    &commit_options_with_block_size(block_size),
-                );
-                let store_bytes = dir_size(tempdir.path());
-                eprintln!(
-                    "{}/{}/compression_space mode={} block={}k raw_value_bytes={} store_bytes={} space_amp={:.3}",
-                    WORKLOAD_NAME,
-                    entropy.name(),
-                    mode.name(),
-                    block_size / 1024,
-                    raw_value_bytes,
-                    store_bytes,
-                    store_bytes as f64 / raw_value_bytes as f64,
-                );
-            }
+        for mode in compression_modes() {
+            let tempdir = tempfile::tempdir().expect("tempdir should work");
+            let _store = create_filled_store(
+                tempdir.path(),
+                profile,
+                mode,
+                &dataset.entries,
+                &commit_options(),
+            );
+            let store_bytes = dir_size(tempdir.path());
+            eprintln!(
+                "{}/{}/compression_space mode={} block={}k raw_value_bytes={} store_bytes={} space_amp={:.3}",
+                WORKLOAD_NAME,
+                entropy.name(),
+                mode.name(),
+                DEFAULT_BLOCK_SIZE / 1024,
+                raw_value_bytes,
+                store_bytes,
+                store_bytes as f64 / raw_value_bytes as f64,
+            );
         }
     }
 }
@@ -215,6 +226,18 @@ fn create_segment_store(root: &Path, profile: ValueProfile, mode: CompressionMod
         options = options.with_value_payload_compression(kind);
     }
     Store::create(root, options).expect("segment store should create")
+}
+
+fn compression_modes() -> [CompressionMode; 3] {
+    [
+        CompressionMode::None,
+        CompressionMode::Lz4,
+        CompressionMode::ZstdLevel1,
+    ]
+}
+
+fn commit_options() -> CommitOptions {
+    commit_options_with_block_size(DEFAULT_BLOCK_SIZE)
 }
 
 fn dir_size(path: &Path) -> u64 {

@@ -11,8 +11,8 @@ use crate::{
     engine::io::read_exact_at,
     error::Result,
     format::{
-        BlockChecksumKind, ValueLayout, ValuePayloadCompressionKind,
-        block::{BlockLookupLayout, DecodedBlock, KEY_PREFIX_LEN_LEN},
+        BlockChecksumKind, ValueLayout, ValuePayloadCompressionKind, ValuePayloadDecoder,
+        block::{BlockDecodeOptions, BlockLookupLayout, DecodedBlock, KEY_PREFIX_LEN_LEN},
         segment::{
             BlockIndexEntry, SEGMENT_FOOTER_TRAILER_LEN, SEGMENT_HEADER_LEN, SegmentFooter,
             SegmentHeader,
@@ -122,8 +122,9 @@ pub(super) fn read_block(
     file: &File,
     entry: &BlockIndexEntry,
     options: BlockReadOptions,
+    payload_decoder: &mut ValuePayloadDecoder,
 ) -> Result<DecodedBlock> {
-    read_block_reusing(file, entry, options, Vec::new())
+    read_block_reusing(file, entry, options, Vec::new(), payload_decoder)
 }
 
 /// Reads and decodes one block while reusing a caller-owned backing buffer.
@@ -132,6 +133,7 @@ pub(super) fn read_block_reusing(
     entry: &BlockIndexEntry,
     options: BlockReadOptions,
     mut bytes: Vec<u8>,
+    payload_decoder: &mut ValuePayloadDecoder,
 ) -> Result<DecodedBlock> {
     let block_len = entry.block_len as usize;
     if bytes.len() < block_len {
@@ -143,11 +145,14 @@ pub(super) fn read_block_reusing(
     Ok(DecodedBlock::decode(
         bytes,
         entry,
-        options.key_len,
-        options.value_layout,
-        options.block_checksum,
-        options.value_payload_compression,
-        options.verify_checksum,
+        BlockDecodeOptions {
+            key_len: options.key_len,
+            value_layout: options.value_layout,
+            block_checksum: options.block_checksum,
+            value_payload_compression: options.value_payload_compression,
+            verify_checksum: options.verify_checksum,
+        },
+        payload_decoder,
     )?)
 }
 
@@ -185,11 +190,13 @@ pub(super) fn read_block_metadata_reusing(
     Ok(DecodedBlock::decode_metadata(
         metadata,
         entry,
-        options.key_len,
-        options.value_layout,
-        options.block_checksum,
-        options.value_payload_compression,
-        options.verify_checksum,
+        BlockDecodeOptions {
+            key_len: options.key_len,
+            value_layout: options.value_layout,
+            block_checksum: options.block_checksum,
+            value_payload_compression: options.value_payload_compression,
+            verify_checksum: options.verify_checksum,
+        },
     )?)
 }
 
@@ -199,6 +206,7 @@ pub(super) fn read_block_payload(
     entry: &BlockIndexEntry,
     block: &mut DecodedBlock,
     verify_checksum: bool,
+    payload_decoder: &mut ValuePayloadDecoder,
 ) -> Result<()> {
     if block.has_payload() {
         return Ok(());
@@ -225,5 +233,5 @@ pub(super) fn read_block_payload(
     } else if payload.len() > read_len {
         payload.truncate(read_len);
     }
-    Ok(block.attach_payload(payload, verify_checksum)?)
+    Ok(block.attach_payload(payload, verify_checksum, payload_decoder)?)
 }

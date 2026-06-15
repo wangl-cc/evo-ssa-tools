@@ -3,7 +3,8 @@
 use super::layout::{BlockLookupLayout, BlockValueRegion};
 use crate::format::{
     BlockChecksumKind, FormatError, MAX_BLOCK_CHECKSUM_LEN, ValueLayout,
-    ValuePayloadCompressionKind, common_prefix_len, record::EntrySource,
+    ValuePayloadCompressionKind, ValuePayloadCompressionPolicy, ValuePayloadEncoder,
+    common_prefix_len, record::EntrySource,
 };
 
 /// Encodes one sorted run of key/value entries into the on-disk block layout.
@@ -13,6 +14,14 @@ pub(crate) struct BlockBuilder<'a, S: EntrySource + ?Sized> {
     value_layout: ValueLayout,
     block_checksum: BlockChecksumKind,
     value_payload_compression: ValuePayloadCompressionKind,
+    #[cfg_attr(
+        not(any(feature = "value-compression-lz4", feature = "value-compression-zstd")),
+        expect(
+            dead_code,
+            reason = "policy is only read when value payload compression is enabled"
+        )
+    )]
+    value_payload_compression_policy: ValuePayloadCompressionPolicy,
 }
 
 impl<'a, S: EntrySource + ?Sized> BlockBuilder<'a, S> {
@@ -22,6 +31,7 @@ impl<'a, S: EntrySource + ?Sized> BlockBuilder<'a, S> {
         value_layout: ValueLayout,
         block_checksum: BlockChecksumKind,
         value_payload_compression: ValuePayloadCompressionKind,
+        value_payload_compression_policy: ValuePayloadCompressionPolicy,
     ) -> Self {
         Self {
             entries,
@@ -29,10 +39,17 @@ impl<'a, S: EntrySource + ?Sized> BlockBuilder<'a, S> {
             value_layout,
             block_checksum,
             value_payload_compression,
+            value_payload_compression_policy,
         }
     }
 
-    pub(crate) fn encode(&self) -> Result<Vec<u8>, FormatError> {
+    pub(crate) fn encode(
+        &self,
+        payload_encoder: &mut ValuePayloadEncoder,
+    ) -> Result<Vec<u8>, FormatError> {
+        #[cfg(not(any(feature = "value-compression-lz4", feature = "value-compression-zstd")))]
+        let _ = payload_encoder;
+
         let record_count = self.entries.len();
         let key_prefix_len = self.common_key_prefix_len();
         let lookup_layout = BlockLookupLayout::new(
@@ -82,9 +99,22 @@ impl<'a, S: EntrySource + ?Sized> BlockBuilder<'a, S> {
             ValuePayloadCompressionKind::Lz4 => {
                 let mut raw_payload = Vec::with_capacity(payload_len);
                 self.write_values(&mut raw_payload);
-                let frame = self
-                    .value_payload_compression
-                    .encode_frame(&raw_payload, &mut block)?;
+                let frame = payload_encoder.encode_frame(
+                    &raw_payload,
+                    self.value_payload_compression_policy,
+                    &mut block,
+                )?;
+                debug_assert_eq!(frame.frame_len(), block.len() - payload_start);
+            }
+            #[cfg(feature = "value-compression-zstd")]
+            ValuePayloadCompressionKind::ZstdLevel1 => {
+                let mut raw_payload = Vec::with_capacity(payload_len);
+                self.write_values(&mut raw_payload);
+                let frame = payload_encoder.encode_frame(
+                    &raw_payload,
+                    self.value_payload_compression_policy,
+                    &mut block,
+                )?;
                 debug_assert_eq!(frame.frame_len(), block.len() - payload_start);
             }
         }

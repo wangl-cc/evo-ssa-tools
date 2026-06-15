@@ -10,7 +10,7 @@ use crc32c::crc32c;
 pub(crate) use segment_cache_store::{
     BlockChecksumKind, CatalogError, CatalogMismatch, CommitOptions, CommitStats, CorruptionError,
     CreateOptions, Error, InputError, OpenOptions as StoreOpenOptions, OptionsError, Result, Store,
-    StoreMetadata, ValueLayout,
+    StoreMetadata, ValueLayout, ValuePayloadCompressionPolicy,
 };
 
 pub(crate) const FOOTER_TRAILER_LEN: u64 = 8;
@@ -185,7 +185,7 @@ pub(crate) fn corrupt_block_value_payload(path: &Path, block_index: usize) -> Re
     Ok(())
 }
 
-#[cfg(feature = "value-compression-lz4")]
+#[cfg(any(feature = "value-compression-lz4", feature = "value-compression-zstd"))]
 pub(crate) fn corrupt_block_value_frame_start(path: &Path, block_index: usize) -> Result<()> {
     let (block_offset, block_len, record_count) = block_index_entry(path, block_index)?;
     let mut file = FsOpenOptions::new().read(true).write(true).open(path)?;

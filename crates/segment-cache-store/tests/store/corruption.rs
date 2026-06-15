@@ -66,6 +66,40 @@ fn lz4_value_payload_compression_round_trips() -> Result<()> {
     Ok(())
 }
 
+#[cfg(feature = "value-compression-zstd")]
+#[test]
+fn zstd_value_payload_compression_round_trips() -> Result<()> {
+    let tempdir = tempfile::tempdir()?;
+    let store = create_store_with(
+        &tempdir,
+        create_options().with_value_payload_compression(
+            segment_cache_store::ValuePayloadCompressionKind::ZstdLevel1,
+        ),
+    )?;
+    let entries = vec![
+        (make_key(1, 1, 0), make_value(1, 96 * 1024)),
+        (make_key(1, 1, 1), make_value(2, 96 * 1024)),
+    ];
+    commit_entries(&store, &entries, true)?;
+
+    assert_eq!(store.fetch_one(&entries[0].0)?, Some(entries[0].1.clone()));
+    assert_eq!(
+        store.fetch_many_ordered(entries.iter().map(|(key, _)| key.as_slice()))?,
+        entries
+            .iter()
+            .map(|(_, value)| Some(value.clone()))
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(store.iter_all()?.collect::<Result<Vec<_>>>()?, entries);
+
+    let segment_len = fs::metadata(first_segment_path(tempdir.path())?)?.len();
+    assert!(
+        segment_len < 64 * 1024,
+        "compressible payloads should be stored smaller than their raw bytes"
+    );
+    Ok(())
+}
+
 #[cfg(feature = "value-compression-lz4")]
 #[test]
 fn corrupted_lz4_value_payload_becomes_miss() -> Result<()> {
@@ -74,6 +108,27 @@ fn corrupted_lz4_value_payload_becomes_miss() -> Result<()> {
         &tempdir,
         create_options()
             .with_value_payload_compression(segment_cache_store::ValuePayloadCompressionKind::Lz4),
+    )?;
+    let key = make_key(1, 1, 0);
+    commit_entries(&store, &[(key.clone(), make_value(9, 96 * 1024))], true)?;
+    let path = first_segment_path(tempdir.path())?;
+    corrupt_block_value_frame_start(&path, 0)?;
+    drop(store);
+
+    let reopened = reopen_store_read_only(&tempdir)?;
+    assert_eq!(reopened.fetch_one(&key)?, None);
+    Ok(())
+}
+
+#[cfg(feature = "value-compression-zstd")]
+#[test]
+fn corrupted_zstd_value_payload_becomes_miss() -> Result<()> {
+    let tempdir = tempfile::tempdir()?;
+    let store = create_store_with(
+        &tempdir,
+        create_options().with_value_payload_compression(
+            segment_cache_store::ValuePayloadCompressionKind::ZstdLevel1,
+        ),
     )?;
     let key = make_key(1, 1, 0);
     commit_entries(&store, &[(key.clone(), make_value(9, 96 * 1024))], true)?;

@@ -42,6 +42,9 @@ fn invalid_store_options_are_rejected() -> Result<()> {
     for invalid in [
         CommitOptions::default().with_flush_threshold_records(0),
         CommitOptions::default().with_flush_threshold_bytes(0),
+        CommitOptions::default().with_value_payload_compression_policy(
+            ValuePayloadCompressionPolicy::DEFAULT.with_min_saved_percent(101),
+        ),
     ] {
         let store = create_store(&tempfile::tempdir()?)?;
         let error = store
@@ -50,7 +53,9 @@ fn invalid_store_options_are_rejected() -> Result<()> {
         assert!(matches!(
             error,
             Error::Input(InputError::InvalidOptions(
-                OptionsError::FlushThresholdRecordsZero | OptionsError::FlushThresholdBytesZero
+                OptionsError::FlushThresholdRecordsZero
+                    | OptionsError::FlushThresholdBytesZero
+                    | OptionsError::CompressionMinSavedPercentTooLarge
             ))
         ));
     }

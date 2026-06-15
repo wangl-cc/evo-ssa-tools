@@ -5,7 +5,9 @@ use std::sync::Arc;
 use crate::{
     engine::runtime::{SegmentSnapshot, SegmentState, StoreGeometry},
     error::{InputError, Result},
-    format::{CorruptionError, block::DecodedBlock},
+    format::{
+        CorruptionError, ValuePayloadCompressionKind, ValuePayloadDecoder, block::DecodedBlock,
+    },
     store::Store,
 };
 
@@ -18,7 +20,6 @@ pub struct OrderedLookup {
     state: LookupState,
 }
 
-#[derive(Default)]
 struct LookupState {
     /// The segment snapshot the cached cursor positions below were resolved
     /// against. Cached indices and the loaded block are only meaningful relative
@@ -29,9 +30,20 @@ struct LookupState {
     current_segment_index: Option<usize>,
     current_block_index: Option<usize>,
     loaded_block: Option<DecodedBlock>,
+    payload_decoder: ValuePayloadDecoder,
 }
 
 impl LookupState {
+    fn new(value_payload_compression: ValuePayloadCompressionKind) -> Self {
+        Self {
+            snapshot: None,
+            current_segment_index: None,
+            current_block_index: None,
+            loaded_block: None,
+            payload_decoder: ValuePayloadDecoder::new(value_payload_compression),
+        }
+    }
+
     /// Rebinds cached cursor state to `snapshot`, discarding stale positions and
     /// the loaded block when the snapshot changed since the previous call.
     fn bind_snapshot(&mut self, snapshot: &SegmentSnapshot) {
@@ -43,8 +55,18 @@ impl LookupState {
             self.snapshot = Some(Arc::clone(snapshot));
             self.current_segment_index = None;
             self.current_block_index = None;
-            self.loaded_block = None;
+            self.recycle_loaded_block();
         }
+    }
+
+    fn recycle_loaded_block(&mut self) -> Vec<u8> {
+        let Some(block) = self.loaded_block.take() else {
+            return Vec::new();
+        };
+        let buffers = block.into_reusable_buffers();
+        self.payload_decoder
+            .reclaim_payload_buffer(buffers.decoded_payload);
+        buffers.bytes
     }
 }
 
@@ -63,9 +85,10 @@ pub(crate) struct LookupReadOptions {
 
 impl OrderedLookup {
     pub(crate) fn new(store: Store) -> Self {
+        let value_payload_compression = store.inner.geometry.value_payload_compression;
         Self {
             store,
-            state: LookupState::default(),
+            state: LookupState::new(value_payload_compression),
         }
     }
 
@@ -170,7 +193,7 @@ impl OrderedLookup {
             if key_range.is_empty() {
                 continue;
             }
-            let mut patch_state = LookupState::default();
+            let mut patch_state = LookupState::new(options.geometry.value_payload_compression);
             let mut collect_hit = |index: usize, value: Option<&[u8]>| {
                 if value.is_some() {
                     results[index] = true;
@@ -209,7 +232,7 @@ impl OrderedLookup {
             if key_range.is_empty() {
                 continue;
             }
-            let mut patch_state = LookupState::default();
+            let mut patch_state = LookupState::new(options.geometry.value_payload_compression);
             let mut collect_hit = |index: usize, value: Option<&[u8]>| {
                 if let Some(value) = value {
                     keep_winner(&mut patch_winners[index], value);
@@ -348,10 +371,13 @@ impl<'a> SegmentSetReader<'a> {
         key: &[u8],
     ) -> Result<Option<Vec<u8>>> {
         let block_index = segment.find_block_index(key);
+        let mut payload_decoder =
+            ValuePayloadDecoder::new(self.options.geometry.value_payload_compression);
         let block = match segment.load_block(
             block_index,
             self.options.geometry,
             self.options.verify_block_checksums,
+            &mut payload_decoder,
         ) {
             Ok(block) => block,
             Err(error) if error.is_cache_miss_corruption() => return Ok(None),
@@ -523,7 +549,7 @@ where
         }
         self.key_index = block_end;
         self.lookup_state.current_block_index = block_index.checked_add(1);
-        self.lookup_state.loaded_block = None;
+        self.lookup_state.recycle_loaded_block();
     }
 }
 
@@ -572,7 +598,7 @@ impl LookupState {
         if self.current_segment_index != Some(segment_index) {
             self.current_segment_index = Some(segment_index);
             self.current_block_index = None;
-            self.loaded_block = None;
+            self.recycle_loaded_block();
         }
     }
 
@@ -588,7 +614,12 @@ impl LookupState {
                 && let Some(block) = self.loaded_block.as_mut()
                 && !block.has_payload()
             {
-                segment.load_block_payload(block_index, block, options.verify_block_checksums)?;
+                segment.load_block_payload(
+                    block_index,
+                    block,
+                    options.verify_block_checksums,
+                    &mut self.payload_decoder,
+                )?;
             }
             return self
                 .loaded_block
@@ -597,16 +628,14 @@ impl LookupState {
                 .map_err(Into::into);
         }
 
-        let buffer = match self.loaded_block.take() {
-            Some(block) => block.into_bytes(),
-            None => Vec::new(),
-        };
+        let buffer = self.recycle_loaded_block();
         let block = match load_mode {
             BlockLoadMode::Full => segment.load_block_reusing(
                 block_index,
                 options.geometry,
                 options.verify_block_checksums,
                 buffer,
+                &mut self.payload_decoder,
             )?,
             BlockLoadMode::Metadata => segment.load_block_metadata_reusing(
                 block_index,
@@ -627,7 +656,12 @@ impl LookupState {
     ) -> Result<&DecodedBlock> {
         let block = self.loaded_block.as_mut().ok_or(CorruptionError::Block)?;
         if !block.has_payload() {
-            segment.load_block_payload(block_index, block, verify_checksum)?;
+            segment.load_block_payload(
+                block_index,
+                block,
+                verify_checksum,
+                &mut self.payload_decoder,
+            )?;
         }
         self.loaded_block
             .as_ref()

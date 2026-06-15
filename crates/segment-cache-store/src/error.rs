@@ -135,6 +135,9 @@ pub enum OptionsError {
     #[error("flush_threshold_bytes must be greater than zero")]
     FlushThresholdBytesZero,
 
+    #[error("value payload compression min_saved_percent must be at most 100")]
+    CompressionMinSavedPercentTooLarge,
+
     #[error("writable stores must keep block checksum verification enabled")]
     WritableStoreRequiresBlockChecksumVerification,
 }
