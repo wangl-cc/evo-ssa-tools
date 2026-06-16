@@ -225,6 +225,26 @@ fn truncated_segment_file_is_ignored_on_reopen() -> Result<()> {
 }
 
 #[test]
+fn footer_length_past_file_hides_whole_segment() -> Result<()> {
+    let tempdir = tempfile::tempdir()?;
+    let store = create_store(&tempdir)?;
+    let key = make_key(1, 1, 0);
+    commit_entries(&store, &[(key.clone(), make_value(9, 16))], true)?;
+    let path = first_segment_path(tempdir.path())?;
+    let mut file = FsOpenOptions::new().read(true).write(true).open(path)?;
+    file.seek(SeekFrom::End(
+        -i64::try_from(FOOTER_TRAILER_LEN).expect("trailer len fits"),
+    ))?;
+    file.write_all(&u32::MAX.to_le_bytes())?;
+    file.sync_all()?;
+
+    let reopened = reopen_store_read_only(&tempdir)?;
+    assert_eq!(reopened.fetch_one(&key)?, None);
+    assert_eq!(reopened.iter_all()?.count(), 0);
+    Ok(())
+}
+
+#[test]
 fn metadata_mismatch_rejects_open() -> Result<()> {
     let tempdir = tempfile::tempdir()?;
     let store = create_store(&tempdir)?;

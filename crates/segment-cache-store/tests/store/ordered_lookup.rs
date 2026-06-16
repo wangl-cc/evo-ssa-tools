@@ -76,6 +76,106 @@ fn visit_many_matches_owned_fetch() -> Result<()> {
 }
 
 #[test]
+fn sparse_ordered_lookup_loads_payload_after_metadata_hit() -> Result<()> {
+    let tempdir = tempfile::tempdir()?;
+    let store = create_store(&tempdir)?;
+    let entries: Vec<_> = (0..8u64)
+        .map(|rep| (make_key(1, 0, rep), make_value(rep as u8, 8)))
+        .collect();
+    commit_entries_with_options(
+        &store,
+        &entries,
+        true,
+        &CommitOptions::default()
+            .with_target_block_size(4096)
+            .with_flush_threshold_records(128),
+    )?;
+
+    let key = make_key(1, 0, 4);
+    assert_eq!(store.fetch_many_ordered([key.as_slice()])?, vec![Some(
+        make_value(4, 8)
+    )]);
+    Ok(())
+}
+
+#[test]
+fn sparse_ordered_lookup_skips_payload_when_metadata_misses() -> Result<()> {
+    let tempdir = tempfile::tempdir()?;
+    let store = create_store(&tempdir)?;
+    let entries = vec![
+        (make_key(1, 0, 0), make_value(0, 8)),
+        (make_key(1, 0, 2), make_value(2, 8)),
+        (make_key(1, 0, 4), make_value(4, 8)),
+    ];
+    commit_entries_with_options(
+        &store,
+        &entries,
+        true,
+        &CommitOptions::default()
+            .with_target_block_size(4096)
+            .with_flush_threshold_records(128),
+    )?;
+
+    let key = make_key(1, 0, 3);
+    assert_eq!(store.fetch_many_ordered([key.as_slice()])?, vec![None]);
+    Ok(())
+}
+
+#[test]
+fn ordered_lookup_merges_visible_patch_winners() -> Result<()> {
+    let tempdir = tempfile::tempdir()?;
+    let store = create_store(&tempdir)?;
+    commit_entries(
+        &store,
+        &[
+            (make_key(1, 0, 0), make_value(0, 8)),
+            (make_key(1, 0, 2), make_value(2, 8)),
+            (make_key(1, 0, 5), make_value(9, 8)),
+        ],
+        true,
+    )?;
+    commit_entries(
+        &store,
+        &[
+            (make_key(1, 0, 1), make_value(1, 8)),
+            (make_key(1, 0, 5), make_value(3, 8)),
+            (make_key(1, 0, 6), make_value(6, 8)),
+        ],
+        true,
+    )?;
+    let keys = [
+        make_key(1, 0, 0),
+        make_key(1, 0, 1),
+        make_key(1, 0, 2),
+        make_key(1, 0, 5),
+        make_key(1, 0, 6),
+        make_key(1, 0, 7),
+    ];
+    let expected = vec![
+        Some(make_value(0, 8)),
+        Some(make_value(1, 8)),
+        Some(make_value(2, 8)),
+        Some(make_value(3, 8)),
+        Some(make_value(6, 8)),
+        None,
+    ];
+
+    let fetched = store.fetch_many_ordered(keys.iter().map(Vec::as_slice))?;
+    assert_eq!(fetched, expected);
+    assert_eq!(
+        store.contains_many_ordered(keys.iter().map(Vec::as_slice))?,
+        expected.iter().map(Option::is_some).collect::<Vec<_>>()
+    );
+
+    let mut visited = vec![None; keys.len()];
+    store.visit_many_ordered(keys.iter().map(Vec::as_slice), |index, value| {
+        visited[index] = value.map(ToOwned::to_owned);
+    })?;
+    assert_eq!(visited, expected);
+    Ok(())
+}
+
+#[test]
 fn session_can_restart_from_earlier_block() -> Result<()> {
     let tempdir = tempfile::tempdir()?;
     let store = create_store(&tempdir)?;

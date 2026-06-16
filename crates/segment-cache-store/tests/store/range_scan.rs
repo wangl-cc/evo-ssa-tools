@@ -98,6 +98,48 @@ fn visit_all_matches_iter_all_order() -> Result<()> {
 }
 
 #[test]
+fn range_cursors_merge_visible_patch_winners() -> Result<()> {
+    let tempdir = tempfile::tempdir()?;
+    let store = create_store(&tempdir)?;
+    commit_entries(
+        &store,
+        &[
+            (make_key(1, 0, 0), make_value(0, 8)),
+            (make_key(1, 0, 2), make_value(2, 8)),
+            (make_key(1, 0, 5), make_value(9, 8)),
+        ],
+        true,
+    )?;
+    commit_entries(
+        &store,
+        &[
+            (make_key(1, 0, 1), make_value(1, 8)),
+            (make_key(1, 0, 5), make_value(3, 8)),
+            (make_key(1, 0, 6), make_value(6, 8)),
+        ],
+        true,
+    )?;
+    let expected = vec![
+        (make_key(1, 0, 0), make_value(0, 8)),
+        (make_key(1, 0, 1), make_value(1, 8)),
+        (make_key(1, 0, 2), make_value(2, 8)),
+        (make_key(1, 0, 5), make_value(3, 8)),
+        (make_key(1, 0, 6), make_value(6, 8)),
+    ];
+
+    assert_eq!(store.iter_all()?.collect::<Result<Vec<_>>>()?, expected);
+    let mut visited = Vec::new();
+    store.visit_all(|key, value| visited.push((key.to_vec(), value.to_vec())))?;
+    assert_eq!(visited, expected);
+
+    let range = store
+        .range(&make_key(1, 0, 1), &make_key(1, 0, 6))?
+        .collect::<Result<Vec<_>>>()?;
+    assert_eq!(range, expected[1..4]);
+    Ok(())
+}
+
+#[test]
 fn visit_many_ordered_slice_matches_fetch_many() -> Result<()> {
     let tempdir = tempfile::tempdir()?;
     let store = create_store(&tempdir)?;

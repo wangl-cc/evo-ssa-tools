@@ -209,6 +209,17 @@ mod tests {
     mod store_file {
         use super::*;
 
+        fn store_file_text() -> String {
+            StoreDescriptor::new(
+                StoreMetadata::from_text("meta"),
+                16,
+                ValueLayout::VARIABLE,
+                1,
+                ValuePayloadCompressionKind::None.format_id(),
+            )
+            .encode()
+        }
+
         #[test]
         fn round_trips_store_descriptor() {
             let descriptor = StoreDescriptor::new(
@@ -237,6 +248,80 @@ mod tests {
             assert!(matches!(
                 StoreDescriptor::parse("bad\n"),
                 Err(StoreFileParseError::UnsupportedMagic)
+            ));
+        }
+
+        #[test]
+        fn rejects_store_file_field_shape_errors() {
+            assert!(matches!(
+                StoreDescriptor::parse(""),
+                Err(StoreFileParseError::Empty)
+            ));
+            assert!(matches!(
+                StoreDescriptor::parse("segment-cache-store store v1\n"),
+                Err(StoreFileParseError::MissingField { field: "version" })
+            ));
+
+            let malformed = store_file_text().replace("version=1\n", "version\n");
+            assert!(matches!(
+                StoreDescriptor::parse(&malformed),
+                Err(StoreFileParseError::MalformedField { field: "version" })
+            ));
+
+            let wrong_order =
+                store_file_text().replace("metadata=6d657461\nkey_len=16\n", "key_len=16\n");
+            assert!(matches!(
+                StoreDescriptor::parse(&wrong_order),
+                Err(StoreFileParseError::UnexpectedFieldOrder {
+                    expected: "metadata",
+                    ..
+                })
+            ));
+
+            let invalid_value = store_file_text().replace("key_len=16\n", "key_len=not-a-len\n");
+            assert!(matches!(
+                StoreDescriptor::parse(&invalid_value),
+                Err(StoreFileParseError::InvalidFieldValue { field: "key_len" })
+            ));
+
+            let mut trailing = store_file_text();
+            trailing.push_str("extra=field\n");
+            assert!(matches!(
+                StoreDescriptor::parse(&trailing),
+                Err(StoreFileParseError::UnexpectedTrailingFields)
+            ));
+        }
+
+        #[test]
+        fn rejects_invalid_store_descriptor_structure() {
+            let mut descriptor = StoreDescriptor::new(
+                StoreMetadata::from_text("meta"),
+                16,
+                ValueLayout::VARIABLE,
+                1,
+                ValuePayloadCompressionKind::None.format_id(),
+            );
+
+            descriptor.version = 2;
+            assert!(matches!(
+                descriptor.validate_structure(),
+                Err(CatalogError::UnsupportedVersion {
+                    file: "STORE",
+                    version: 2
+                })
+            ));
+
+            descriptor.version = 1;
+            descriptor.key_len = 0;
+            assert!(matches!(
+                descriptor.validate_structure(),
+                Err(CatalogError::Mismatch(CatalogMismatch::StoreKeyLenZero))
+            ));
+
+            descriptor.key_len = u32::MAX as usize + 1;
+            assert!(matches!(
+                descriptor.validate_structure(),
+                Err(CatalogError::Mismatch(CatalogMismatch::StoreKeyLenTooLarge))
             ));
         }
     }
