@@ -56,25 +56,37 @@ impl std::error::Error for ValidationError {}
 /// ```
 #[macro_export]
 macro_rules! validate {
-    // Range checks use comma-separated clauses and render the corresponding interval.
-    // `validate!(config.probability: >= lower(), < upper())`.
-    ($value:ident $(.$field:tt)* : $lower_operator:tt $lower:expr, $upper_operator:tt $upper:expr $(,)?) => {
-        $crate::validate!(@range (
+    // Explicit diagnostic aliases keep the checked field path separate from the reported name.
+    // `validate!(self.probability as probability: >= lower(), <= upper())`.
+    ($value:ident $(.$field:tt)* as $name:ident $(.$name_field:tt)* : $($rule:tt)+) => {
+        $crate::validate!(@named (
+            stringify!($name $(.$name_field)*),
+            $value $(.$field)*
+        ): $($rule)+)
+    };
+    // Without an explicit alias, the field path text is the diagnostic name.
+    ($value:ident $(.$field:tt)* : $($rule:tt)+) => {
+        $crate::validate!(@named (
             stringify!($value $(.$field)*),
             $value $(.$field)*
-        ), $lower_operator, $lower, $upper_operator, $upper)
+        ): $($rule)+)
+    };
+    // Range checks use comma-separated clauses and render the corresponding interval.
+    // `validate!(config.probability: >= lower(), < upper())`.
+    (@named ($name:expr, $value:expr): $lower_operator:tt $lower:expr, $upper_operator:tt $upper:expr $(,)?) => {
+        $crate::validate!(@range ($name, $value), $lower_operator, $lower, $upper_operator, $upper)
     };
     // Single comparison checks. Bounds are full Rust expressions.
     // `validate!(config.steps: >= min_steps())`.
-    ($value:ident $(.$field:tt)* : $operator:tt $bound:expr $(,)?) => {
-        $crate::validate!(@cmp (stringify!($value $(.$field)*), $value $(.$field)*), $operator, $bound)
+    (@named ($name:expr, $value:expr): $operator:tt $bound:expr $(,)?) => {
+        $crate::validate!(@cmp ($name, $value), $operator, $bound)
     };
-    // Custom predicate that uses the field path text as the diagnostic name:
+    // Custom predicate.
     // `validate!(sigma: sigma.is_finite(); "finite")`.
-    ($value:ident $(.$field:tt)* : $condition:expr ; $expected:expr $(,)?) => {{
-        $crate::validate!(@check $condition, stringify!($value $(.$field)*), &$value $(.$field)*, $expected)
+    (@named ($name:expr, $value:expr): $condition:expr ; $expected:expr $(,)?) => {{
+        $crate::validate!(@check $condition, $name, &$value, $expected)
     }};
-    // Shared comparison implementation. Public comparison arms only extract `(name, value)`;
+    // Shared comparison implementation. Front-end arms only extract `(name, value)`;
     // this arm evaluates the value and bound once, then delegates condition checking.
     (@cmp ($name:expr, $value:expr), $operator:tt, $bound:expr) => {{
         let value = &$value;
@@ -399,6 +411,54 @@ mod tests {
             error,
             "config.inner.sigma",
             "invalid parameter `config.inner.sigma`: expected finite, got NaN",
+        );
+    }
+
+    #[test]
+    fn explicit_diagnostic_names_override_field_paths() {
+        struct Inner {
+            probability: f64,
+        }
+
+        struct Config {
+            inner: Inner,
+            rate: f64,
+        }
+
+        impl Config {
+            fn validate_rate(&self) -> Result<(), ValidationError> {
+                validate!(self.rate as rate: > 0.0)
+            }
+
+            fn validate_finite_rate(&self) -> Result<(), ValidationError> {
+                validate!(self.rate as rate: self.rate.is_finite(); "finite")
+            }
+        }
+
+        let config = Config {
+            inner: Inner { probability: 1.2 },
+            rate: f64::NAN,
+        };
+
+        assert_validation_error(
+            config.validate_rate().unwrap_err(),
+            "rate",
+            "invalid parameter `rate`: expected > 0.0, got NaN",
+        );
+        assert_validation_error(
+            validate!(config.inner.probability as probability: >= 0.0, <= 1.0).unwrap_err(),
+            "probability",
+            "invalid parameter `probability`: expected in [0.0, 1.0], got 1.2",
+        );
+        assert_validation_error(
+            config.validate_finite_rate().unwrap_err(),
+            "rate",
+            "invalid parameter `rate`: expected finite, got NaN",
+        );
+        assert_validation_error(
+            validate!(config.rate as parameters.rate: > 0.0).unwrap_err(),
+            "parameters.rate",
+            "invalid parameter `parameters.rate`: expected > 0.0, got NaN",
         );
     }
 }

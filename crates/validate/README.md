@@ -71,3 +71,15 @@ Custom checks use `;` to separate an arbitrary boolean expression from its stati
 validate!(sigma: sigma.is_finite(); "finite")?;
 # Ok::<(), ValidationError>(())
 ```
+
+When the checked value is a field path but the diagnostic should use a shorter user-facing name or field path, add an explicit `as diagnostic_name` or `as diagnostic.path` before `:`. This override affects only `ValidationError::name()` and the rendered diagnostic; the checked value remains the full field path.
+
+```rust
+# use validate::{ValidationError, validate};
+# struct Config { rate: f64, probability: f64 }
+# let config = Config { rate: 0.5, probability: 0.5 };
+validate!(config.rate as rate: > 0.0)?;
+validate!(config.probability as parameters.probability: >= 0.0, <= 1.0)?;
+validate!(config.rate as rate: config.rate.is_finite(); "finite")?;
+# Ok::<(), ValidationError>(())
+```
