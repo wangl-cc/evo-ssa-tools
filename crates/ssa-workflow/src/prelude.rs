@@ -19,6 +19,7 @@ pub use crate::{
     cache::{CanonicalEncode, StorageProviderExt, memory::ManagedHashCache},
     compute::{
         DependentInput, DependentStochasticInput, DeterministicTask, RandomVariable, RngBundle,
-        StochasticInput, StochasticTask, StochasticTransform, Transform, TransformExt,
+        StochasticComputeExt, StochasticInput, StochasticTask, StochasticTransform, Transform,
+        TransformExt,
     },
 };

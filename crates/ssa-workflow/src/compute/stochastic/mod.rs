@@ -113,8 +113,10 @@
 
 use std::marker::PhantomData;
 
+use rayon::prelude::{IndexedParallelIterator, IntoParallelIterator, ParallelIterator};
+
 use crate::{
-    Compute, Result,
+    BatchExecution, Compute, Result,
     cache::{Cache, CacheProvider, CanonicalEncode, CloneShared},
     compute::{
         NoFunction,
@@ -176,6 +178,40 @@ impl<P: CanonicalEncode> CanonicalEncode for StochasticInput<P> {
         }
     }
 }
+
+/// Convenience methods for computations keyed by [`StochasticInput`].
+///
+/// This trait is implemented for every [`Compute`] node, including stochastic tasks and
+/// deterministic transforms built from stochastic tasks. Import it from the prelude to run the
+/// common "same deterministic input, many stochastic repetitions" batch without manually building
+/// `StochasticInput` values.
+pub trait StochasticComputeExt: Compute {
+    /// Start a batch execution for `repetitions` stochastic repetitions of one deterministic input.
+    ///
+    /// The batch uses `0..repetitions` as its indexed parallel input range and converts each item
+    /// to `StochasticInput::new(param.clone(), index as u64)`. Collected outputs therefore
+    /// remain in repetition-index order while the stochastic identity continues to use a
+    /// platform-stable `u64` repetition id.
+    fn with_repeated_input<P>(
+        &self,
+        param: P,
+        repetitions: usize,
+    ) -> BatchExecution<'_, Self, impl IndexedParallelIterator<Item = StochasticInput<P>>>
+    where
+        Self: Sized + Compute<Input = StochasticInput<P>>,
+        P: Clone + Send,
+    {
+        self.with_inputs(
+            (0..repetitions)
+                .into_par_iter()
+                .map_with(param, |param, index| {
+                    StochasticInput::new(param.clone(), index as u64)
+                }),
+        )
+    }
+}
+
+impl<T: Compute> StochasticComputeExt for T {}
 
 /// Memoized stochastic task with reproducible randomness.
 ///
