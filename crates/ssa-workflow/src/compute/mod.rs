@@ -8,7 +8,7 @@ pub mod transform;
 
 pub use deterministic::DeterministicTask;
 pub use execution::{BatchExecution, Compute, InterruptSignal};
-pub use stochastic::{StochasticInput, StochasticTask};
+pub use stochastic::{StochasticComputeExt, StochasticInput, StochasticTask};
 pub use stream::{
     MultiStreams, RandomVariable, RngBundle, SeedSource, SingleStream, StreamSeed, StreamSeeds,
 };

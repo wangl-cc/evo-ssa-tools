@@ -85,13 +85,15 @@ fn main() -> ssa_workflow::error::Result<()> {
         .build()?;
 
     // Same parameter set, eight independent stochastic repetitions.
-    let inputs: Vec<_> = (0..8u64)
-        .map(|rep| StochasticInput::new((25u32, 100u32), rep))
-        .collect();
+    let repetitions = 8;
 
     // Execution is demand-driven: cache misses compute, hits reuse stored results.
-    let first_run = peak_population.with_inputs(inputs.clone()).collect()?;
-    let second_run = peak_population.with_inputs(inputs).collect()?;
+    let first_run = peak_population
+        .with_repeated_input((25u32, 100u32), repetitions)
+        .collect()?;
+    let second_run = peak_population
+        .with_repeated_input((25u32, 100u32), repetitions)
+        .collect()?;
 
     assert_eq!(first_run, second_run);
     Ok(())
@@ -100,7 +102,7 @@ fn main() -> ssa_workflow::error::Result<()> {
 
 ## Core Concepts
 
-- `StochasticTask` runs a simulation with reproducible RNG streams. Each `StochasticInput<P>` combines a parameter value with a `repetition_index`.
+- `StochasticTask` runs a simulation with reproducible RNG streams. Each `StochasticInput<P>` combines a parameter value with a `repetition_index`; use `.with_repeated_input(param, repetitions)` for the common same-parameter batch case.
 - `DeterministicTask` runs a pure `input -> output` root computation.
 - `.transform(...)` builds a dependent deterministic analysis from an upstream task or transform.
 - `.stochastic_transform(...)` builds a dependent stochastic analysis from an upstream result.
