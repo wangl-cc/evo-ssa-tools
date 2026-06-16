@@ -1,5 +1,5 @@
 //! Steady-state write design: replacing commits, dead-entry dropping, the
-//! advisory writer lock, open-time GC, and the lookup-across-commit fix.
+//! advisory writer lock, explicit GC, and the lookup-across-commit fix.
 
 use crate::common::*;
 
@@ -242,6 +242,13 @@ fn explicit_normalize_folds_patch_segments_into_main() -> Result<()> {
         .filter_map(std::result::Result::ok)
         .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "seg"))
         .count();
+    assert_eq!(segments, 4);
+
+    store.garbage_collect()?;
+    let segments = fs::read_dir(tempdir.path().join("segments"))?
+        .filter_map(std::result::Result::ok)
+        .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "seg"))
+        .count();
     assert_eq!(segments, 1);
     Ok(())
 }
@@ -341,11 +348,10 @@ fn unrelated_commit_drops_a_dead_manifest_entry() -> Result<()> {
 }
 
 #[test]
-fn open_time_gc_deletes_unreferenced_files() -> Result<()> {
+fn explicit_gc_deletes_unreferenced_files() -> Result<()> {
     let tempdir = tempfile::tempdir()?;
     let store = create_store(&tempdir)?;
     commit_entries(&store, &[(make_key(1, 0, 0), make_value(1, 8))], true)?;
-    drop(store);
 
     let seg_dir = tempdir.path().join("segments");
     let orphan = seg_dir.join("segment-0000000099.seg");
@@ -353,8 +359,7 @@ fn open_time_gc_deletes_unreferenced_files() -> Result<()> {
     fs::write(&orphan, b"orphan")?;
     fs::write(&leftover_tmp, b"tmp")?;
 
-    // A writer reopen runs GC under the writer lock.
-    let store = reopen_store(&tempdir)?;
+    store.garbage_collect()?;
     assert!(!orphan.exists());
     assert!(!leftover_tmp.exists());
     assert_eq!(store.iter_all()?.count(), 1);
@@ -362,7 +367,7 @@ fn open_time_gc_deletes_unreferenced_files() -> Result<()> {
 }
 
 #[test]
-fn read_only_handle_rejects_commit() -> Result<()> {
+fn read_only_handle_rejects_mutating_operations() -> Result<()> {
     let tempdir = tempfile::tempdir()?;
     let store = create_store(&tempdir)?;
     commit_entries(&store, &[(make_key(1, 0, 0), make_value(1, 8))], true)?;
@@ -370,6 +375,11 @@ fn read_only_handle_rejects_commit() -> Result<()> {
     let reader = reopen_store_read_only(&tempdir)?;
     let error = match commit_entries(&reader, &[(make_key(2, 0, 0), make_value(2, 8))], true) {
         Ok(_) => panic!("a read-only handle must not publish"),
+        Err(error) => error,
+    };
+    assert!(matches!(error, Error::Input(InputError::ReadOnlyStore)));
+    let error = match reader.garbage_collect() {
+        Ok(_) => panic!("a read-only handle must not run GC"),
         Err(error) => error,
     };
     assert!(matches!(error, Error::Input(InputError::ReadOnlyStore)));
@@ -384,7 +394,7 @@ fn read_only_handle_rejects_commit() -> Result<()> {
 }
 
 #[test]
-fn commit_time_gc_deletes_unreferenced_files() -> Result<()> {
+fn commit_keeps_unreferenced_files_until_explicit_gc() -> Result<()> {
     let tempdir = tempfile::tempdir()?;
     let store = create_store(&tempdir)?;
     commit_entries(&store, &[(make_key(1, 0, 0), make_value(1, 8))], true)?;
@@ -393,11 +403,34 @@ fn commit_time_gc_deletes_unreferenced_files() -> Result<()> {
     let orphan = seg_dir.join("segment-0000000099.seg");
     fs::write(&orphan, b"orphan")?;
 
-    // A long-running writer reclaims orphans at its next publication, without
-    // needing a reopen.
     commit_entries(&store, &[(make_key(5, 0, 0), make_value(5, 8))], true)?;
-    assert!(!orphan.exists());
+    assert!(orphan.exists());
     assert_eq!(store.iter_all()?.count(), 2);
+
+    store.garbage_collect()?;
+    assert!(!orphan.exists());
+    Ok(())
+}
+
+#[test]
+fn commit_keeps_retired_segments_until_explicit_gc() -> Result<()> {
+    let tempdir = tempfile::tempdir()?;
+    let store = create_store(&tempdir)?;
+    commit_entries(&store, &[(make_key(1, 0, 0), make_value(1, 8))], true)?;
+    let retired = first_segment_path(tempdir.path())?;
+
+    let stats = commit_entries_with_options(
+        &store,
+        &[(make_key(1, 0, 0), make_value(2, 8))],
+        true,
+        &commit_options().with_patch_segment_limit(0),
+    )?;
+    assert_eq!(stats.segments_retired, 1);
+    assert!(retired.exists());
+    assert_eq!(store.fetch_one(&make_key(1, 0, 0))?, Some(make_value(1, 8)));
+
+    store.garbage_collect()?;
+    assert!(!retired.exists());
     Ok(())
 }
 

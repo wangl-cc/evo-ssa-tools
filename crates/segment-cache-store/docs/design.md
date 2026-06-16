@@ -42,7 +42,7 @@ Currently implemented:
 - deterministic duplicate-key winner rule
 - dead manifest-entry dropping
 - advisory single-writer lock
-- open-time and post-commit garbage collection
+- explicit garbage collection
 - split metadata/payload block checksums
 - process-local verified-block reuse
 
@@ -164,7 +164,7 @@ root/
 
 Temporary files are sibling files created by adding a `.tmp` extension to the final path. They are part of atomic publication only. Open and read paths never discover visible data by scanning directories.
 
-`LOCK` is stable and is never atomically replaced, so cooperating writers lock the same inode. `segments/` may contain orphan files after a crash; they are ignored unless referenced by `MANIFEST` and are removed by best-effort garbage collection.
+`LOCK` is stable and is never atomically replaced, so cooperating writers lock the same inode. `segments/` may contain orphan files after a crash or retired files after replacement commits; they are ignored unless referenced by `MANIFEST` and are removed only by explicit best-effort garbage collection.
 
 ## Store Creation
 
@@ -241,10 +241,10 @@ flowchart TD
   LockChoice -->|yes| NoLock["skip writer lock"]
   WriterLock --> Manifest["read and validate MANIFEST"]
   NoLock --> Manifest
-  Manifest --> GC{"writer open?"}
-  GC -->|yes| Collect["ensure dirs, remove stale catalog temps, GC unreferenced segments"]
-  GC -->|no| Build["build runtime snapshots"]
-  Collect --> Build
+  Manifest --> Housekeeping{"writer open?"}
+  Housekeeping -->|yes| CatalogTemps["ensure dirs, remove stale catalog temps"]
+  Housekeeping -->|no| Build["build runtime snapshots"]
+  CatalogTemps --> Build
   Build --> OpenSegments["open manifest-referenced segments"]
   OpenSegments --> Split["split live segments into main and patch snapshots"]
   Split --> Store["return Store handle"]
@@ -439,7 +439,6 @@ flowchart TD
   WriteSeg --> Rename["fsync file, rename, fsync parent dir"]
   Rename --> Publish["atomically publish replacing MANIFEST"]
   Publish --> Swap["swap runtime snapshot"]
-  Swap --> GC["best-effort GC unreferenced segments"]
 ```
 
 A commit first validates the input batch, sorts it when needed, and rejects duplicate keys inside the batch. It then builds a plan from one manifest/runtime snapshot.
@@ -562,7 +561,7 @@ Catalog files and segment files use the same publication protocol:
 
 For data visibility, `MANIFEST` is the only atomic publish point. A segment file becomes visible only when a later manifest snapshot references it.
 
-Garbage collection scans `segments/` only to delete files not referenced by the current manifest. Directory contents are never used to discover visible data.
+Garbage collection is an explicit writer maintenance operation. It scans `segments/` only to delete files not referenced by the current manifest. Directory contents are never used to discover visible data. Open and commit do not run segment GC automatically because read-only opens do not take the writer lock; a reader that already loaded an older manifest must have a chance to open the segment files that manifest references.
 
 ## Process Model
 
@@ -580,6 +579,7 @@ Across processes:
 - A writable open holds the advisory `LOCK` file for the lifetime of the store handle.
 - A second cooperating writer fails fast with `InputError::WriterLocked`.
 - Read-only opens do not take the writer lock, do not run garbage collection, and never mutate the filesystem.
+- Segment garbage collection is explicit on writable handles; callers should run it only when they accept that older manifest snapshots may no longer be openable.
 - External tools that mutate the root without the lock are outside the safety contract.
 
 ## Runtime Optimizations

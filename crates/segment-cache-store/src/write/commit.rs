@@ -9,7 +9,7 @@ use std::{
 };
 
 use crate::{
-    engine::{gc::garbage_collect_unreferenced, paths, runtime::SegmentState},
+    engine::{paths, runtime::SegmentState},
     error::{InputError, OptionsError, Result},
     format::{
         CatalogMismatch, ValuePayloadCompressionPolicy,
@@ -506,11 +506,6 @@ impl Store {
         let publication = plan.into_publication(written, key_len)?;
         paths::publish_manifest(&self.inner.paths, &publication.manifest)?;
 
-        // Reclaim everything the new manifest no longer references: the run
-        // this publication retired, dead entries' files, and any orphans left
-        // by earlier failed publications. Best-effort: open readers may still
-        // hold descriptors, and a failed unlink is retried by the next pass.
-        garbage_collect_unreferenced(&self.inner.paths, &publication.manifest);
         let stats = CommitPublicationStats {
             segments_published: publication.segments_published,
             segments_retired: publication.segments_retired,

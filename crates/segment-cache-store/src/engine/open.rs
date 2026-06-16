@@ -6,7 +6,6 @@ use parking_lot::{Mutex, RwLock};
 
 use crate::{
     engine::{
-        gc::garbage_collect_unreferenced,
         io::WriterLock,
         paths::{self, StorePaths},
         runtime::{SegmentState, StoreGeometry, StoreInner, StoreState},
@@ -113,8 +112,8 @@ pub(super) fn open_existing(
         options.resolve_value_payload_compression(descriptor.value_payload_compression_id)?;
 
     // A writer takes the advisory lock before reading the manifest so that
-    // garbage collection and any later commit run under the same lock without
-    // a gap a second writer could slip into.
+    // any later commit runs under the same lock without a gap a second writer
+    // could slip into.
     let writer_lock = if options.read_only {
         None
     } else if let Some(writer_lock) = pre_acquired_writer_lock {
@@ -126,13 +125,12 @@ pub(super) fn open_existing(
     let manifest = paths::load_manifest(&paths)?.ok_or(CatalogMismatch::MissingManifest)?;
     manifest.validate_structure(descriptor.key_len)?;
 
-    // Only a writer mutates the filesystem on open. A read-only open must
-    // work on a read-only mount; a missing `segments/` directory just means
-    // every manifest entry is dead.
+    // Only a writer mutates catalog housekeeping on open. Segment garbage
+    // collection is explicit so it cannot race a read-only open that already
+    // read an older manifest but has not opened all referenced segments yet.
     if writer_lock.is_some() {
         paths.ensure_dirs()?;
         paths.remove_stale_catalog_temps();
-        garbage_collect_unreferenced(&paths, &manifest);
     }
 
     build_store(

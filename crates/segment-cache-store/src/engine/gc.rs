@@ -1,4 +1,4 @@
-//! Open-time and post-commit garbage collection.
+//! Explicit segment garbage collection.
 
 use std::{collections::HashSet, fs};
 
@@ -15,8 +15,11 @@ use crate::{
 /// any `.tmp` leftovers. Deletion is best-effort; failures are left for a later
 /// pass and never affect visibility.
 ///
-/// Runs under the writer lock: at open, and after every successful commit (so a
-/// long-running writer reclaims retired and orphaned files without a reopen).
+/// Callers must run this only from an explicit writer maintenance operation.
+/// It does not run during open or commit because read-only opens intentionally
+/// take no writer lock; automatic deletion could remove segment files from an
+/// older manifest snapshot that a concurrent read-only open has already read
+/// but not fully opened yet.
 pub(crate) fn garbage_collect_unreferenced(paths: &StorePaths, manifest: &StoreManifest) {
     let referenced: HashSet<String> = manifest
         .segments

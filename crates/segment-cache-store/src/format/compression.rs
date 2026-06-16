@@ -46,6 +46,7 @@ pub enum ValuePayloadCompressionKind {
 /// LZ4 and raw frames are stateless. Zstandard keeps a reusable compression
 /// context so one segment publish does not recreate it for every block.
 pub(crate) struct ValuePayloadEncoder {
+    #[cfg(any(feature = "value-compression-lz4", feature = "value-compression-zstd"))]
     kind: ValuePayloadCompressionKind,
     #[cfg(feature = "value-compression-zstd")]
     zstd: Option<zstd::bulk::Compressor<'static>>,
@@ -211,7 +212,11 @@ impl ValuePayloadCompressionKind {
 
 impl ValuePayloadEncoder {
     pub(crate) fn new(kind: ValuePayloadCompressionKind) -> Self {
+        #[cfg(not(any(feature = "value-compression-lz4", feature = "value-compression-zstd")))]
+        let _ = kind;
+
         Self {
+            #[cfg(any(feature = "value-compression-lz4", feature = "value-compression-zstd"))]
             kind,
             #[cfg(feature = "value-compression-zstd")]
             zstd: match kind {
@@ -226,13 +231,7 @@ impl ValuePayloadEncoder {
         }
     }
 
-    #[cfg_attr(
-        not(any(feature = "value-compression-lz4", feature = "value-compression-zstd")),
-        expect(
-            dead_code,
-            reason = "frame encoding is inlined for no-compression builds"
-        )
-    )]
+    #[cfg(any(feature = "value-compression-lz4", feature = "value-compression-zstd"))]
     pub(crate) fn encode_frame(
         &mut self,
         raw_payload: &[u8],
@@ -562,21 +561,18 @@ mod tests {
 
         #[test]
         fn stores_payload_without_header() {
-            let mut frame = Vec::new();
             let compression = ValuePayloadCompressionKind::None;
-            let mut encoder = ValuePayloadEncoder::new(compression);
-            let layout = encoder
-                .encode_frame(b"abc", ValuePayloadCompressionPolicy::DEFAULT, &mut frame)
-                .expect("frame should encode");
+            let frame = b"abc";
+            let layout =
+                ValuePayloadFrame::raw_without_header(frame.len()).expect("frame should encode");
 
-            assert_eq!(frame, b"abc");
             assert_eq!(layout.frame_len(), 3);
             assert_eq!(layout.encoded_range(), 0..3);
             assert!(layout.is_raw_borrowable());
             let mut decoder = ValuePayloadDecoder::new(compression);
             assert_eq!(
                 compression
-                    .decode_frame(&mut decoder, &frame, 3)
+                    .decode_frame(&mut decoder, frame, 3)
                     .expect("frame should decode")
                     .as_slice(),
                 b"abc"

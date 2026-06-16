@@ -10,7 +10,7 @@
 use std::sync::Arc;
 
 use crate::{
-    engine::runtime::StoreInner,
+    engine::{gc::garbage_collect_unreferenced, runtime::StoreInner},
     error::{InputError, Result},
     read::{
         cursor::{RangeCursor, SegmentRangeCursor},
@@ -87,6 +87,29 @@ impl Store {
     ///
     /// v1 only publishes through `commit_batch`, so this is currently a no-op.
     pub fn flush(&self) -> Result<()> {
+        Ok(())
+    }
+
+    /// Deletes segment files not referenced by the current manifest.
+    ///
+    /// Garbage collection is explicit rather than automatic. Commits publish a
+    /// new manifest and keep retired segment files in place so a concurrent
+    /// read-only open that already read the previous manifest can still open
+    /// every file it references. Call this only when the caller accepts that
+    /// older manifest snapshots may no longer be openable after the method
+    /// returns.
+    ///
+    /// Returns [`InputError::ReadOnlyStore`] on a read-only handle.
+    pub fn garbage_collect(&self) -> Result<()> {
+        if self.inner.writer_lock.is_none() {
+            return Err(InputError::ReadOnlyStore.into());
+        }
+        let _commit_guard = self.inner.commit_lock.lock();
+        let manifest = {
+            let state = self.inner.state.read();
+            state.manifest.clone()
+        };
+        garbage_collect_unreferenced(&self.inner.paths, &manifest);
         Ok(())
     }
 

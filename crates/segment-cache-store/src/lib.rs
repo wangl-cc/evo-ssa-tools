@@ -15,7 +15,8 @@
 //!    [`CatalogError`]/[`FormatError`]/[`CorruptionError`]); this module is where they aggregate at
 //!    the API boundary.
 //! 2. `format`: pure byte layouts — no filesystem access
-//! 3. `engine`: open-store substrate — filesystem primitives, runtime state, create/open, GC
+//! 3. `engine`: open-store substrate — filesystem primitives, runtime state, create/open, explicit
+//!    GC
 //! 4. `read`: point lookups and range cursors over engine snapshots
 //! 5. `write`: buffered batches and replacing-manifest commits
 //! 6. [`Store`]: the cheaply cloneable public handle, whose operational API is assembled in `store`
