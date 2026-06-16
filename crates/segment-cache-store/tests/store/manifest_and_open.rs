@@ -61,7 +61,10 @@ fn manifest_is_binary_v1_snapshot() -> Result<()> {
     assert!(store_file.contains("metadata=7365676d656e742d63616368652d73746f72652d74657374\n"));
     assert!(store_file.contains("key_len=16\n"));
     assert!(store_file.contains("value_len=0\n"));
-    assert!(store_file.contains("block_checksum_id=2\n"));
+    assert!(store_file.contains(&format!(
+        "block_checksum_id={}\n",
+        test_block_checksum().format_id()
+    )));
     assert!(store_file.contains("value_payload_compression_id=0\n"));
     assert!(!store_file.contains('{'));
 
@@ -94,7 +97,10 @@ fn unsupported_store_block_checksum_is_rejected() -> Result<()> {
 
     let store_path = tempdir.path().join("STORE");
     let mut store_file = fs::read_to_string(&store_path)?;
-    store_file = store_file.replace("block_checksum_id=2\n", "block_checksum_id=999\n");
+    store_file = store_file.replace(
+        &format!("block_checksum_id={}\n", test_block_checksum().format_id()),
+        "block_checksum_id=999\n",
+    );
     fs::write(store_path, store_file)?;
 
     let error = match Store::open(tempdir.path(), open_options()) {

@@ -9,7 +9,7 @@ It is optimized for:
 - full ordered iteration
 - corruption-as-miss semantics
 
-This crate is intentionally narrower than a general-purpose database. It does not provide transactions, deletes, compaction, or WAL recovery.
+This crate is intentionally narrower than a general-purpose database. It does not provide transactions, deletes, compaction, or WAL recovery. Values for one key are expected to be deterministic and semantically immutable: if duplicate visible copies exist, reads and normalization keep the lexicographically smallest value bytes rather than applying last-writer-wins updates.
 
 ## Basic Use
 
@@ -17,7 +17,21 @@ This crate is intentionally narrower than a general-purpose database. It does no
 use segment_cache_store::{CreateOptions, OpenOptions, Store, StoreMetadata};
 
 let metadata = StoreMetadata::from_text("my-cache-schema-v1");
-let store = Store::create("cache-root", CreateOptions::new(16, metadata.clone()))?;
+let create_options = {
+    #[cfg(feature = "checksum-rapidhash")]
+    {
+        CreateOptions::new(16, metadata.clone())
+    }
+    #[cfg(not(feature = "checksum-rapidhash"))]
+    {
+        CreateOptions::new_with_block_checksum(
+            16,
+            metadata.clone(),
+            segment_cache_store::BlockChecksumKind::None,
+        )
+    }
+};
+let store = Store::create("cache-root", create_options)?;
 
 let mut batch = store.begin_batch();
 batch.push(&[0; 16], b"serialized value")?;

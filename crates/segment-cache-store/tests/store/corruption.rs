@@ -1,5 +1,6 @@
 use crate::common::*;
 
+#[cfg(any(feature = "checksum-crc32c", feature = "checksum-rapidhash"))]
 #[test]
 fn corrupted_block_checksum_becomes_miss() -> Result<()> {
     let tempdir = tempfile::tempdir()?;
@@ -15,6 +16,7 @@ fn corrupted_block_checksum_becomes_miss() -> Result<()> {
 }
 
 #[test]
+#[cfg(feature = "checksum-rapidhash")]
 fn rapidhash_block_checksum_round_trips() -> Result<()> {
     let tempdir = tempfile::tempdir()?;
     let store = create_store_with(
@@ -163,6 +165,7 @@ fn no_checksum_store_does_not_detect_payload_corruption() -> Result<()> {
     Ok(())
 }
 
+#[cfg(any(feature = "checksum-crc32c", feature = "checksum-rapidhash"))]
 #[test]
 fn block_checksum_verification_can_be_disabled_for_benchmarks() -> Result<()> {
     let tempdir = tempfile::tempdir()?;
@@ -299,6 +302,7 @@ fn malformed_block_becomes_miss_in_all_read_paths() -> Result<()> {
     Ok(())
 }
 
+#[cfg(any(feature = "checksum-crc32c", feature = "checksum-rapidhash"))]
 #[test]
 fn corrupted_middle_block_only_loses_that_block() -> Result<()> {
     let tempdir = tempfile::tempdir()?;

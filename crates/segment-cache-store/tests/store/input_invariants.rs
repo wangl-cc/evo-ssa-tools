@@ -23,8 +23,8 @@ fn wrong_length_keys_are_rejected() -> Result<()> {
 fn invalid_store_options_are_rejected() -> Result<()> {
     let tempdir = tempfile::tempdir()?;
     let invalid_options = vec![
-        CreateOptions::new(0, metadata()),
-        CreateOptions::new(usize::MAX, metadata()),
+        create_options_with_key_len(0),
+        create_options_with_key_len(usize::MAX),
     ];
     for invalid in invalid_options {
         let error = match Store::create(tempdir.path(), invalid) {
@@ -114,7 +114,7 @@ fn writable_open_requires_block_checksum_verification() -> Result<()> {
 #[test]
 fn default_options_support_short_keys() -> Result<()> {
     let tempdir = tempfile::tempdir()?;
-    let store = create_store_with(&tempdir, CreateOptions::new(8, metadata()))?;
+    let store = create_store_with(&tempdir, create_options_with_key_len(8))?;
     let key = 7u64.to_be_bytes().to_vec();
     let value = make_value(7, 8);
     commit_entries(&store, &[(key.clone(), value.clone())], true)?;

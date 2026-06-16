@@ -23,8 +23,27 @@ pub(crate) fn metadata() -> StoreMetadata {
     StoreMetadata::from_text("segment-cache-store-test")
 }
 
+pub(crate) fn test_block_checksum() -> BlockChecksumKind {
+    #[cfg(feature = "checksum-rapidhash")]
+    {
+        BlockChecksumKind::RapidHashV3_64
+    }
+    #[cfg(all(not(feature = "checksum-rapidhash"), feature = "checksum-crc32c"))]
+    {
+        BlockChecksumKind::Crc32c
+    }
+    #[cfg(not(any(feature = "checksum-rapidhash", feature = "checksum-crc32c")))]
+    {
+        BlockChecksumKind::None
+    }
+}
+
+pub(crate) fn create_options_with_key_len(key_len: usize) -> CreateOptions {
+    CreateOptions::new_with_block_checksum(key_len, metadata(), test_block_checksum())
+}
+
 pub(crate) fn create_options() -> CreateOptions {
-    CreateOptions::new(16, metadata())
+    create_options_with_key_len(16)
 }
 
 pub(crate) fn open_options() -> StoreOpenOptions {

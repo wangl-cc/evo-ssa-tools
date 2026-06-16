@@ -24,7 +24,18 @@ pub(crate) fn store_metadata() -> StoreMetadata {
 }
 
 pub(crate) fn store_create_options(key_len: usize) -> CreateOptions {
-    CreateOptions::new(key_len, store_metadata())
+    #[cfg(feature = "checksum-rapidhash")]
+    {
+        CreateOptions::new(key_len, store_metadata())
+    }
+    #[cfg(not(feature = "checksum-rapidhash"))]
+    {
+        CreateOptions::new_with_block_checksum(
+            key_len,
+            store_metadata(),
+            segment_cache_store::BlockChecksumKind::None,
+        )
+    }
 }
 
 pub(crate) fn commit_options_with_block_size(block_size: usize) -> CommitOptions {

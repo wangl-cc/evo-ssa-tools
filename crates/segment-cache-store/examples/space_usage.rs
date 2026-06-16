@@ -165,11 +165,26 @@ fn write_fixed_segment_store(
 }
 
 fn segment_create_options(fixed_value_len: Option<NonZeroU32>) -> CreateOptions {
-    let options = CreateOptions::new(KEY_LEN, StoreMetadata::from_text("space-usage"));
+    let options = default_segment_create_options();
     if let Some(value_len) = fixed_value_len {
         options.with_fixed_value_len(value_len)
     } else {
         options
+    }
+}
+
+fn default_segment_create_options() -> CreateOptions {
+    #[cfg(feature = "checksum-rapidhash")]
+    {
+        CreateOptions::new(KEY_LEN, StoreMetadata::from_text("space-usage"))
+    }
+    #[cfg(not(feature = "checksum-rapidhash"))]
+    {
+        CreateOptions::new_with_block_checksum(
+            KEY_LEN,
+            StoreMetadata::from_text("space-usage"),
+            segment_cache_store::BlockChecksumKind::None,
+        )
     }
 }
 
