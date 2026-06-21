@@ -27,7 +27,7 @@ pub struct Store {
 }
 
 impl Store {
-    // ─── Store Identity ────────────────────────────────────────────────────
+    // Store identity.
 
     /// Returns the caller-defined compatibility metadata persisted for this store.
     #[must_use]
@@ -59,7 +59,7 @@ impl Store {
         self.inner.geometry.value_payload_compression
     }
 
-    // ─── Write path ─────────────────────────────────────────────────────────
+    // Write path.
 
     /// Starts a buffered write batch.
     #[must_use]
@@ -146,13 +146,6 @@ impl Store {
         self.merge_store_with_options(source, options)
     }
 
-    /// Flushes pending writes.
-    ///
-    /// v1 only publishes through `commit_batch`, so this is currently a no-op.
-    pub fn flush(&self) -> Result<()> {
-        Ok(())
-    }
-
     /// Deletes segment files not referenced by the current manifest.
     ///
     /// Garbage collection is explicit rather than automatic. Commits publish a
@@ -176,7 +169,7 @@ impl Store {
         Ok(())
     }
 
-    // ─── Read path ──────────────────────────────────────────────────────────
+    // Read path.
 
     /// Checks an ordered key stream and returns a cache-safe hit bitmap.
     ///
@@ -271,7 +264,7 @@ impl Store {
         self.range_cursor(None, None)?.visit_all(visitor)
     }
 
-    // ─── Shared read helpers ────────────────────────────────────────────────
+    // Shared read helpers.
 
     pub(crate) fn lookup_read_options(&self) -> LookupReadOptions {
         LookupReadOptions {

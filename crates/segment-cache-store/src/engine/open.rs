@@ -1,6 +1,9 @@
 //! Store open options and implementation.
 
-use std::{path::PathBuf, sync::Arc};
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use parking_lot::{Mutex, RwLock};
 
@@ -13,8 +16,8 @@ use crate::{
     },
     error::{OptionsError, Result},
     format::{
-        BlockChecksumKind, CatalogMismatch, StoreMetadata, ValuePayloadCompressionKind,
-        manifest::StoreManifest, store_file::StoreDescriptor,
+        BlockChecksumKind, CatalogMismatch, StoreMetadata, ValueLayout,
+        ValuePayloadCompressionKind, manifest::StoreManifest, store_file::StoreDescriptor,
     },
     store::Store,
 };
@@ -35,6 +38,21 @@ pub struct OpenOptions {
     /// A read-only open takes no writer lock and runs no garbage collection, so
     /// multiple read-only opens of one root can coexist with a writer.
     pub read_only: bool,
+}
+
+/// Persistent store identity read from a root's `STORE` descriptor.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StoreInfo {
+    /// Caller-defined compatibility metadata for this namespace.
+    pub metadata: StoreMetadata,
+    /// Fixed key length in bytes.
+    pub key_len: usize,
+    /// Value layout shared by all visible segments.
+    pub value_layout: ValueLayout,
+    /// Block checksum kind persisted for all visible segments.
+    pub block_checksum: BlockChecksumKind,
+    /// Value-payload compression kind persisted for all visible segments.
+    pub value_payload_compression: ValuePayloadCompressionKind,
 }
 
 impl OpenOptions {
@@ -73,22 +91,35 @@ impl OpenOptions {
         }
         Ok(())
     }
+}
 
-    fn resolve_block_checksum(&self, format_id: u32) -> Result<BlockChecksumKind> {
-        BlockChecksumKind::from_format_id(format_id)
-            .ok_or(CatalogMismatch::UnsupportedBlockChecksum { format_id }.into())
-    }
-
-    fn resolve_value_payload_compression(
-        &self,
-        format_id: u32,
-    ) -> Result<ValuePayloadCompressionKind> {
-        ValuePayloadCompressionKind::from_format_id(format_id)
-            .ok_or(CatalogMismatch::UnsupportedValuePayloadCompression { format_id }.into())
+impl StoreInfo {
+    fn from_descriptor(descriptor: StoreDescriptor) -> Result<Self> {
+        descriptor.validate_structure()?;
+        Ok(Self {
+            metadata: descriptor.metadata,
+            key_len: descriptor.key_len,
+            value_layout: descriptor.value_layout,
+            block_checksum: resolve_block_checksum(descriptor.block_checksum_id)?,
+            value_payload_compression: resolve_value_payload_compression(
+                descriptor.value_payload_compression_id,
+            )?,
+        })
     }
 }
 
 impl Store {
+    /// Reads persistent store identity from `STORE` without opening segment files.
+    ///
+    /// This does not acquire the writer lock, validate `MANIFEST`, or run any
+    /// catalog housekeeping. It is intended for tools that need to discover the
+    /// metadata required by [`OpenOptions::new`].
+    pub fn inspect(root: impl AsRef<Path>) -> Result<StoreInfo> {
+        let paths = StorePaths::new(root);
+        let descriptor = paths::load_descriptor(&paths)?.ok_or(CatalogMismatch::MissingStore)?;
+        StoreInfo::from_descriptor(descriptor)
+    }
+
     /// Opens an existing store rooted at `root`.
     pub fn open(root: impl Into<PathBuf>, options: OpenOptions) -> Result<Self> {
         open_existing(root.into(), options, None)
@@ -107,9 +138,9 @@ pub(super) fn open_existing(
     if descriptor.metadata != options.expected_metadata {
         return Err(CatalogMismatch::Metadata.into());
     }
-    let block_checksum = options.resolve_block_checksum(descriptor.block_checksum_id)?;
+    let block_checksum = resolve_block_checksum(descriptor.block_checksum_id)?;
     let value_payload_compression =
-        options.resolve_value_payload_compression(descriptor.value_payload_compression_id)?;
+        resolve_value_payload_compression(descriptor.value_payload_compression_id)?;
 
     // A writer takes the advisory lock before reading the manifest so that
     // any later commit runs under the same lock without a gap a second writer
@@ -199,4 +230,14 @@ fn build_store(
             writer_lock,
         }),
     })
+}
+
+fn resolve_block_checksum(format_id: u32) -> Result<BlockChecksumKind> {
+    BlockChecksumKind::from_format_id(format_id)
+        .ok_or(CatalogMismatch::UnsupportedBlockChecksum { format_id }.into())
+}
+
+fn resolve_value_payload_compression(format_id: u32) -> Result<ValuePayloadCompressionKind> {
+    ValuePayloadCompressionKind::from_format_id(format_id)
+        .ok_or(CatalogMismatch::UnsupportedValuePayloadCompression { format_id }.into())
 }

@@ -4,7 +4,7 @@ use std::{
     process,
 };
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use segment_cache_store::{CommitStats, OpenOptions, Result as StoreResult, Store, StoreMetadata};
 
@@ -215,8 +215,9 @@ impl StoreRoot {
     }
 
     fn open(&self, mode: OpenMode) -> Result<OpenedStore> {
-        let metadata = self.read_metadata()?;
-        let options = OpenOptions::new(metadata).with_read_only(mode.is_read_only());
+        let info = Store::inspect(&self.path)
+            .with_context(|| format!("inspect store `{}`", self.path.display()))?;
+        let options = OpenOptions::new(info.metadata).with_read_only(mode.is_read_only());
         Ok(OpenedStore {
             store: Store::open(&self.path, options).with_context(|| {
                 format!(
@@ -226,25 +227,6 @@ impl StoreRoot {
                 )
             })?,
         })
-    }
-
-    fn read_metadata(&self) -> Result<StoreMetadata> {
-        let store_file = self.path.join("STORE");
-        let text = fs::read_to_string(&store_file)
-            .with_context(|| format!("read store descriptor `{}`", store_file.display()))?;
-        for line in text.lines() {
-            if let Some(hex) = line.strip_prefix("metadata=") {
-                return Ok(StoreMetadata::from_bytes(
-                    hex.parse_hex_bytes().with_context(|| {
-                        format!("parse metadata field in `{}`", store_file.display())
-                    })?,
-                ));
-            }
-        }
-        Err(anyhow!(
-            "{} does not contain a metadata field",
-            store_file.display()
-        ))
     }
 }
 

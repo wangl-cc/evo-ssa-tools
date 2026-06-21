@@ -29,4 +29,4 @@ pub(crate) mod runtime;
 pub(crate) mod segment_file;
 
 pub use create::CreateOptions;
-pub use open::OpenOptions;
+pub use open::{OpenOptions, StoreInfo};

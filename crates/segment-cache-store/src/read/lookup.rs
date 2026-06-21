@@ -495,7 +495,7 @@ where
                 Err(error) => return Err(error),
             };
             if load_mode == BlockLoadMode::Metadata
-                && !block_has_any_hit(block, &self.keys[self.key_index..block_end])
+                && !BlockKeySweep::new(block, &self.keys[self.key_index..block_end]).has_any_hit()
             {
                 for offset in self.key_index..block_end {
                     (self.visitor)(self.base_index + offset, None);
@@ -516,12 +516,8 @@ where
                 Err(error) => return Err(error),
             };
 
-            process_block_keys(
-                block,
-                &self.keys[self.key_index..block_end],
-                self.base_index + self.key_index,
-                self.visitor,
-            );
+            BlockKeySweep::new(block, &self.keys[self.key_index..block_end])
+                .visit(self.base_index + self.key_index, self.visitor);
             self.key_index = block_end;
         }
 
@@ -670,6 +666,67 @@ impl LookupState {
     }
 }
 
+struct BlockKeySweep<'a, K>
+where
+    K: AsRef<[u8]>,
+{
+    block: &'a DecodedBlock,
+    keys: &'a [K],
+    record_index: usize,
+}
+
+impl<'a, K> BlockKeySweep<'a, K>
+where
+    K: AsRef<[u8]>,
+{
+    fn new(block: &'a DecodedBlock, keys: &'a [K]) -> Self {
+        let record_index = keys
+            .first()
+            .map_or(0, |key| block.lower_bound_index(key.as_ref()));
+        Self {
+            block,
+            keys,
+            record_index,
+        }
+    }
+
+    fn has_any_hit(mut self) -> bool {
+        for key in self.keys {
+            if self.key_matches(key.as_ref()) {
+                return true;
+            }
+        }
+        false
+    }
+
+    fn visit<F>(mut self, base_index: usize, visitor: &mut F)
+    where
+        F: FnMut(usize, Option<&[u8]>),
+    {
+        for (offset, key) in self.keys.iter().enumerate() {
+            visitor(base_index + offset, self.value_for(key.as_ref()));
+        }
+    }
+
+    fn key_matches(&mut self, key: &[u8]) -> bool {
+        self.advance_to(key);
+        self.block.key_matches_at_index(self.record_index, key)
+    }
+
+    fn value_for(&mut self, key: &[u8]) -> Option<&'a [u8]> {
+        self.advance_to(key);
+        self.block.value_at_if_key(self.record_index, key)
+    }
+
+    fn advance_to(&mut self, key: &[u8]) {
+        while self.record_index < self.block.record_count()
+            && self.block.compare_key_at_index(self.record_index, key) == std::cmp::Ordering::Less
+        {
+            self.record_index += 1;
+        }
+    }
+}
+
 fn block_end_from_index<K>(
     segment: &SegmentState,
     block_index: usize,
@@ -702,50 +759,4 @@ fn should_advance_past_empty_block(segment: &SegmentState, block_index: usize, k
         .block_index
         .get(block_index + 1)
         .is_some_and(|next| key >= next.first_key.as_slice())
-}
-
-fn process_block_keys<K, F>(block: &DecodedBlock, keys: &[K], base_index: usize, visitor: &mut F)
-where
-    K: AsRef<[u8]>,
-    F: FnMut(usize, Option<&[u8]>),
-{
-    let mut record_index = keys
-        .first()
-        .map_or(0, |key| block.lower_bound_index(key.as_ref()));
-
-    for (offset, key) in keys.iter().enumerate() {
-        let key = key.as_ref();
-        while record_index < block.record_count()
-            && block.compare_key_at_index(record_index, key) == std::cmp::Ordering::Less
-        {
-            record_index += 1;
-        }
-
-        visitor(
-            base_index + offset,
-            block.value_at_if_key(record_index, key),
-        );
-    }
-}
-
-fn block_has_any_hit<K>(block: &DecodedBlock, keys: &[K]) -> bool
-where
-    K: AsRef<[u8]>,
-{
-    let mut record_index = keys
-        .first()
-        .map_or(0, |key| block.lower_bound_index(key.as_ref()));
-
-    for key in keys {
-        let key = key.as_ref();
-        while record_index < block.record_count()
-            && block.compare_key_at_index(record_index, key) == std::cmp::Ordering::Less
-        {
-            record_index += 1;
-        }
-        if block.key_matches_at_index(record_index, key) {
-            return true;
-        }
-    }
-    false
 }

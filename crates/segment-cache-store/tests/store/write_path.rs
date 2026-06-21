@@ -62,7 +62,7 @@ fn owned_batch_entries_round_trip() -> Result<()> {
 }
 
 #[test]
-fn empty_batch_flush_and_batch_len_are_noops() -> Result<()> {
+fn empty_batch_commit_and_batch_len_are_noops() -> Result<()> {
     let tempdir = tempfile::tempdir()?;
     let store = create_store(&tempdir)?;
     let mut batch = store.begin_batch();
@@ -72,7 +72,6 @@ fn empty_batch_flush_and_batch_len_are_noops() -> Result<()> {
 
     let empty_stats = store.commit_batch(store.begin_batch())?;
     assert_eq!(empty_stats, CommitStats::default());
-    store.flush()?;
     assert_eq!(store.iter_all()?.count(), 0);
     Ok(())
 }

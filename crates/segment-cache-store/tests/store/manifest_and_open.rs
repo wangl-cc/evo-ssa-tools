@@ -90,6 +90,24 @@ fn manifest_is_binary_v1_snapshot() -> Result<()> {
 }
 
 #[test]
+fn inspect_reads_store_identity() -> Result<()> {
+    let tempdir = tempfile::tempdir()?;
+    let _store = create_store(&tempdir)?;
+
+    let info = Store::inspect(tempdir.path())?;
+
+    assert_eq!(info.metadata, metadata());
+    assert_eq!(info.key_len, 16);
+    assert_eq!(info.value_layout, ValueLayout::VARIABLE);
+    assert_eq!(info.block_checksum, test_block_checksum());
+    assert_eq!(
+        info.value_payload_compression,
+        segment_cache_store::ValuePayloadCompressionKind::None
+    );
+    Ok(())
+}
+
+#[test]
 fn unsupported_store_block_checksum_is_rejected() -> Result<()> {
     let tempdir = tempfile::tempdir()?;
     let store = create_store(&tempdir)?;
