@@ -35,7 +35,7 @@ pub trait CanonicalEncode {
     /// Implementations must only access `buffer[..Self::SIZE]`.
     unsafe fn encode_with_buffer<'b>(&self, buffer: &'b mut [u8]) -> &'b [u8] {
         unsafe { self.encode_into(buffer) };
-        &buffer[..Self::SIZE]
+        unsafe { buffer.get_unchecked(..Self::SIZE) }
     }
 }
 
@@ -44,6 +44,15 @@ impl CanonicalEncode for () {
 
     #[inline]
     unsafe fn encode_into(&self, _buffer: &mut [u8]) {}
+}
+
+impl CanonicalEncode for bool {
+    const SIZE: usize = 1;
+
+    #[inline]
+    unsafe fn encode_into(&self, buffer: &mut [u8]) {
+        unsafe { *buffer.get_unchecked_mut(0) = *self as u8 };
+    }
 }
 
 /// Sequential writer for building a [`CanonicalEncode`] implementation field by field.
@@ -122,7 +131,7 @@ macro_rules! impl_encode_for_int {
 
                 #[inline]
                 unsafe fn encode_into(&self, buffer: &mut [u8]) {
-                    buffer[..$size].copy_from_slice(&self.to_be_bytes());
+                    unsafe { buffer.get_unchecked_mut(..$size) }.copy_from_slice(&self.to_be_bytes());
                 }
             }
         )+
@@ -150,7 +159,7 @@ macro_rules! impl_encode_for_float {
                     } else {
                         self.to_bits()
                     };
-                    buffer[..$size].copy_from_slice(&bits.to_be_bytes());
+                    unsafe { buffer.get_unchecked_mut(..$size) }.copy_from_slice(&bits.to_be_bytes());
                 }
             }
         )+
@@ -168,10 +177,11 @@ macro_rules! impl_encode_for_tuple {
             unsafe fn encode_into(&self, buffer: &mut [u8]) {
                 let mut offset = 0usize;
                 $(
+                    let end = offset + $T::SIZE;
                     unsafe {
-                        self.$idx.encode_into(&mut buffer[offset..offset + $T::SIZE]);
+                        self.$idx.encode_into(buffer.get_unchecked_mut(offset..end));
                     }
-                    offset += $T::SIZE;
+                    offset = end;
                 )+
             }
         }
@@ -199,8 +209,11 @@ impl<T: CanonicalEncode, const N: usize> CanonicalEncode for [T; N] {
             return;
         }
 
-        for (item, chunk) in self.iter().zip(buf.chunks_exact_mut(T::SIZE)) {
-            unsafe { item.encode_into(chunk) }
+        let mut offset = 0usize;
+        for item in self {
+            let end = offset + T::SIZE;
+            unsafe { item.encode_into(buf.get_unchecked_mut(offset..end)) };
+            offset = end;
         }
     }
 }
@@ -210,135 +223,219 @@ impl<T: CanonicalEncode, const N: usize> CanonicalEncode for [T; N] {
 mod tests {
     use super::{CanonicalEncode, CanonicalEncodeWriter};
 
-    struct SearchKey {
-        generation: u64,
-        selection: f64,
-        counts: [u16; 3],
+    fn canonical_encode_size<T: CanonicalEncode>(_: &T) -> usize {
+        T::SIZE
     }
 
-    impl CanonicalEncode for SearchKey {
-        const SIZE: usize = u64::SIZE + f64::SIZE + <[u16; 3]>::SIZE;
+    macro_rules! assert_size {
+        ($t:ty, $size:literal) => {
+            assert_eq!(<$t as CanonicalEncode>::SIZE, $size);
+        };
+    }
 
-        unsafe fn encode_into(&self, buffer: &mut [u8]) {
-            CanonicalEncodeWriter::for_type::<Self>(buffer)
-                .write(&self.generation)
-                .write(&self.selection)
-                .write(&self.counts)
-                .finish();
+    macro_rules! assert_encode {
+        ($value:expr, [$($byte:literal),* $(,)?]) => {{
+            let value = $value;
+            let expected: &[u8] = &[$($byte),*];
+            assert_eq!(expected.len(), canonical_encode_size(&value));
+
+            let mut buffer = vec![0u8; expected.len()];
+            let encoded = unsafe { value.encode_with_buffer(&mut buffer) };
+            assert_eq!(encoded, expected);
+        }};
+    }
+
+    mod unit_encode {
+        use super::*;
+
+        #[test]
+        fn encodes_empty() {
+            assert_encode!((), []);
         }
     }
 
-    #[test]
-    fn test_float_encode_size_matches_type_width() {
-        assert_eq!(f32::SIZE, 4);
-        assert_eq!(f64::SIZE, 8);
+    mod bool_encode {
+        use super::*;
+
+        #[test]
+        fn encode_size() {
+            assert_size!(bool, 1);
+        }
+
+        #[test]
+        fn encodes_correctly() {
+            assert_encode!(true, [0x01]);
+            assert_encode!(false, [0x00]);
+        }
     }
 
-    #[test]
-    fn test_unit_encode_is_empty() {
-        let mut buffer = [];
-        let encoded = unsafe { ().encode_with_buffer(&mut buffer) };
-        assert!(encoded.is_empty());
+    mod int_encode {
+        use super::*;
+
+        #[test]
+        fn encode_size() {
+            assert_size!(u8, 1);
+            assert_size!(u16, 2);
+            assert_size!(u32, 4);
+            assert_size!(u64, 8);
+            assert_size!(usize, 8);
+            assert_size!(u128, 16);
+            assert_size!(i8, 1);
+            assert_size!(i16, 2);
+            assert_size!(i32, 4);
+            assert_size!(i64, 8);
+            assert_size!(isize, 8);
+            assert_size!(i128, 16);
+        }
+
+        #[test]
+        fn encodes_unsigned_big_endian() {
+            assert_encode!(0x12u8, [0x12]);
+            assert_encode!(0x0102u16, [0x01, 0x02]);
+            assert_encode!(0x0102_0304u32, [0x01, 0x02, 0x03, 0x04]);
+            assert_encode!(0x0102_0304_0506_0708u64, [
+                0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
+            ]);
+            assert_encode!(0x0102_0304_0506_0708usize, [
+                0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
+            ]);
+            assert_encode!(0x0102_0304_0506_0708_090a_0b0c_0d0e_0f10u128, [
+                0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e,
+                0x0f, 0x10,
+            ]);
+        }
+
+        #[test]
+        fn encodes_signed_big_endian() {
+            assert_encode!(-0x12i8, [0xee]);
+            assert_encode!(-0x0102i16, [0xfe, 0xfe]);
+            assert_encode!(-0x0102_0304i32, [0xfe, 0xfd, 0xfc, 0xfc]);
+            assert_encode!(-0x0102_0304_0506_0708i64, [
+                0xfe, 0xfd, 0xfc, 0xfb, 0xfa, 0xf9, 0xf8, 0xf8,
+            ]);
+            assert_encode!(-0x0102_0304_0506_0708isize, [
+                0xfe, 0xfd, 0xfc, 0xfb, 0xfa, 0xf9, 0xf8, 0xf8,
+            ]);
+            assert_encode!(-0x0102_0304_0506_0708_090a_0b0c_0d0e_0f10i128, [
+                0xfe, 0xfd, 0xfc, 0xfb, 0xfa, 0xf9, 0xf8, 0xf7, 0xf6, 0xf5, 0xf4, 0xf3, 0xf2, 0xf1,
+                0xf0, 0xf0,
+            ]);
+        }
     }
 
-    #[test]
-    fn test_tuple_encode_concatenates_same_width_elements() {
-        let value = (0x0102_0304_0506_0708u64, 0x1112_1314_1516_1718u64);
-        let mut buffer = vec![0u8; <(u64, u64) as CanonicalEncode>::SIZE];
-        let encoded = unsafe { value.encode_with_buffer(&mut buffer) };
+    mod float_encode {
+        use super::*;
 
-        let mut expected = Vec::new();
-        expected.extend_from_slice(&0x0102_0304_0506_0708u64.to_be_bytes());
-        expected.extend_from_slice(&0x1112_1314_1516_1718u64.to_be_bytes());
-        assert_eq!(encoded, expected);
+        #[test]
+        fn encode_size() {
+            assert_size!(f32, 4);
+            assert_size!(f64, 8);
+        }
+
+        #[test]
+        fn encodes_f32_canonical_bytes() {
+            assert_encode!(f32::from_bits(0x7fc0_0001), [0x7f, 0xc0, 0x00, 0x00]);
+            assert_encode!(f32::NAN, [0x7f, 0xc0, 0x00, 0x00]);
+            assert_encode!(0.0f32, [0x00, 0x00, 0x00, 0x00]);
+            assert_encode!(-0.0f32, [0x00, 0x00, 0x00, 0x00]);
+            assert_encode!(1.5f32, [0x3f, 0xc0, 0x00, 0x00]);
+        }
+
+        #[test]
+        fn encodes_f64_canonical_bytes() {
+            assert_encode!(f64::from_bits(0x7ff8_0000_0000_0001), [
+                0x7f, 0xf8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            ]);
+            assert_encode!(f64::NAN, [0x7f, 0xf8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,]);
+            assert_encode!(0.0f64, [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,]);
+            assert_encode!(-0.0f64, [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,]);
+            assert_encode!(1.5f64, [0x3f, 0xf8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,]);
+        }
     }
 
-    #[test]
-    fn test_tuple_encode_concatenates_mixed_width_elements() {
-        let value = (0x0102u16, 0x0304_0506_0708_090au64);
-        let mut buffer = vec![0u8; <(u16, u64) as CanonicalEncode>::SIZE];
-        let encoded = unsafe { value.encode_with_buffer(&mut buffer) };
+    mod tuple_encode {
+        use super::*;
 
-        let mut expected = Vec::new();
-        expected.extend_from_slice(&0x0102u16.to_be_bytes());
-        expected.extend_from_slice(&0x0304_0506_0708_090au64.to_be_bytes());
-        assert_eq!(encoded, expected);
+        #[test]
+        fn concatenates_same_width_elements() {
+            assert_encode!((0x0102_0304_0506_0708u64, 0x1112_1314_1516_1718u64), [
+                0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16,
+                0x17, 0x18,
+            ]);
+        }
+
+        #[test]
+        fn concatenates_mixed_width_elements() {
+            assert_encode!((0x0102u16, 0x0304_0506_0708_090au64), [
+                0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a,
+            ]);
+        }
     }
 
-    #[test]
-    fn test_float_encode_canonicalization() {
-        let mut buffer_a = vec![0u8; f32::SIZE];
-        let mut buffer_b = vec![0u8; f32::SIZE];
-        let mut buffer_c = vec![0u8; f32::SIZE];
+    mod array_encode {
+        use super::*;
 
-        let nan_non_canonical = f32::from_bits(0x7fc0_0001);
-        let nan_canonical = f32::NAN;
-        let encoded_nan_non_canonical =
-            unsafe { nan_non_canonical.encode_with_buffer(&mut buffer_a) };
-        let encoded_nan_canonical = unsafe { nan_canonical.encode_with_buffer(&mut buffer_b) };
-        assert_eq!(encoded_nan_non_canonical, encoded_nan_canonical);
+        #[test]
+        fn concatenates_elements() {
+            assert_encode!([0x0102u16, 0x0304u16, 0x0506u16], [
+                0x01, 0x02, 0x03, 0x04, 0x05, 0x06,
+            ]);
+        }
 
-        let encoded_pos_zero = unsafe { 0.0f32.encode_with_buffer(&mut buffer_c) };
-        let mut buffer_d = vec![0u8; f32::SIZE];
-        let encoded_neg_zero = unsafe { (-0.0f32).encode_with_buffer(&mut buffer_d) };
-        assert_eq!(encoded_pos_zero, encoded_neg_zero);
-
-        let normal = 1.5f32;
-        let mut buffer_e = vec![0u8; f32::SIZE];
-        let encoded_normal = unsafe { normal.encode_with_buffer(&mut buffer_e) };
-        assert_eq!(encoded_normal, normal.to_bits().to_be_bytes());
+        #[test]
+        fn zero_sized_array_is_empty() {
+            assert_encode!([(); 8], []);
+        }
     }
 
-    #[test]
-    fn test_array_encode_concatenates_elements() {
-        let value = [0x0102u16, 0x0304u16, 0x0506u16];
-        let mut buffer = vec![0u8; <[u16; 3] as CanonicalEncode>::SIZE];
-        let encoded = unsafe { value.encode_with_buffer(&mut buffer) };
+    mod writer_encode {
+        use super::*;
 
-        let mut expected = Vec::new();
-        expected.extend_from_slice(&0x0102u16.to_be_bytes());
-        expected.extend_from_slice(&0x0304u16.to_be_bytes());
-        expected.extend_from_slice(&0x0506u16.to_be_bytes());
-        assert_eq!(encoded, expected);
-    }
+        struct SearchKey {
+            generation: u64,
+            selection: f64,
+            counts: [u16; 3],
+        }
 
-    #[test]
-    fn test_zero_sized_array_encode_is_empty() {
-        let value = [(); 8];
-        let mut buffer = [];
-        let encoded = unsafe { value.encode_with_buffer(&mut buffer) };
+        impl CanonicalEncode for SearchKey {
+            const SIZE: usize = u64::SIZE + f64::SIZE + <[u16; 3]>::SIZE;
 
-        assert!(encoded.is_empty());
-    }
+            unsafe fn encode_into(&self, buffer: &mut [u8]) {
+                CanonicalEncodeWriter::for_type::<Self>(buffer)
+                    .write(&self.generation)
+                    .write(&self.selection)
+                    .write(&self.counts)
+                    .finish();
+            }
+        }
 
-    #[test]
-    fn test_writer_encodes_custom_struct_fields_in_order() {
-        let value = SearchKey {
-            generation: 0x0102_0304_0506_0708,
-            selection: -0.0,
-            counts: [0x090a, 0x0b0c, 0x0d0e],
-        };
-        let mut buffer = vec![0u8; SearchKey::SIZE];
-        let encoded = unsafe { value.encode_with_buffer(&mut buffer) };
+        #[test]
+        fn encodes_custom_struct_fields_in_order() {
+            assert_encode!(
+                SearchKey {
+                    generation: 0x0102_0304_0506_0708,
+                    selection: -0.0,
+                    counts: [0x090a, 0x0b0c, 0x0d0e],
+                },
+                [
+                    0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, // generation
+                    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                    0x00, // selection: -0.0 canonicalized to +0.0
+                    0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, // counts
+                ]
+            );
+        }
 
-        let mut expected = Vec::new();
-        expected.extend_from_slice(&value.generation.to_be_bytes());
-        expected.extend_from_slice(&0f64.to_bits().to_be_bytes());
-        expected.extend_from_slice(&0x090au16.to_be_bytes());
-        expected.extend_from_slice(&0x0b0cu16.to_be_bytes());
-        expected.extend_from_slice(&0x0d0eu16.to_be_bytes());
-        assert_eq!(encoded, expected);
-    }
-
-    #[test]
-    #[cfg(debug_assertions)]
-    #[should_panic(
-        expected = "CanonicalEncodeWriter::finish called before filling the full buffer"
-    )]
-    fn test_writer_finish_panics_when_bytes_remain() {
-        let mut buffer = [0u8; SearchKey::SIZE];
-        let mut writer = CanonicalEncodeWriter::for_type::<SearchKey>(&mut buffer);
-        writer.write(&1u64);
-        writer.finish();
+        #[test]
+        #[cfg(debug_assertions)]
+        #[should_panic(
+            expected = "CanonicalEncodeWriter::finish called before filling the full buffer"
+        )]
+        fn finish_panics_when_bytes_remain() {
+            let mut buffer = [0u8; SearchKey::SIZE];
+            let mut writer = CanonicalEncodeWriter::for_type::<SearchKey>(&mut buffer);
+            writer.write(&1u64);
+            writer.finish();
+        }
     }
 }

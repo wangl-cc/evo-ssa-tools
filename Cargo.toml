@@ -29,6 +29,7 @@ rayon = { version = "1.10.0" }
 serde = { version = "1", default-features = false }
 tempfile = { version = "3.20.0" }
 thiserror = { version = "2" }
+validate = { path = "crates/validate", version = "0.1" }
 zerocopy = { version = "0.8.26" }
 zstd = { version = "0.13", default-features = false }
 

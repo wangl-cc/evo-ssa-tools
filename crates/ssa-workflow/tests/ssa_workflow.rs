@@ -77,12 +77,11 @@ fn birth_death_ssa_transform_is_reproducible_and_cached() -> Result<()> {
         .cache(ManagedHashCache::<SsaSummary>::default())
         .build()?;
 
-    let inputs: Vec<_> = (0..16)
-        .map(|repetition| StochasticInput::new((INITIAL_CELLS, MAX_EVENTS), repetition))
-        .collect();
-    let input_count = inputs.len();
+    let input_count = 16;
 
-    let first_run: Vec<SsaSummary> = transform.with_inputs(inputs.clone()).collect()?;
+    let first_run: Vec<SsaSummary> = transform
+        .with_repeated_input((INITIAL_CELLS, MAX_EVENTS), input_count)
+        .collect()?;
 
     assert_eq!(first_run.len(), input_count);
     assert!(first_run.iter().all(|summary| summary.events <= MAX_EVENTS));
@@ -94,7 +93,9 @@ fn birth_death_ssa_transform_is_reproducible_and_cached() -> Result<()> {
     assert_eq!(ssa_calls.load(Ordering::SeqCst), input_count);
     assert_eq!(summary_calls.load(Ordering::SeqCst), input_count);
 
-    let second_run: Vec<SsaSummary> = transform.with_inputs(inputs).collect()?;
+    let second_run: Vec<SsaSummary> = transform
+        .with_repeated_input((INITIAL_CELLS, MAX_EVENTS), input_count)
+        .collect()?;
 
     assert_eq!(first_run, second_run);
     assert_eq!(ssa_calls.load(Ordering::SeqCst), input_count);
