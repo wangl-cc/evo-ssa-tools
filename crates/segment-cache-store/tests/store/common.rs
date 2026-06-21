@@ -160,6 +160,32 @@ pub(crate) fn mutate_footer_payload(path: &Path, mutate: impl FnOnce(&mut [u8]))
     Ok(())
 }
 
+pub(crate) fn truncate_first_block_to_declared_len(path: &Path, block_len: u32) -> Result<()> {
+    let (block_offset, ..) = block_index_entry(path, 0)?;
+    let mut file = FsOpenOptions::new().read(true).write(true).open(path)?;
+    let key_len = read_key_len(&mut file)?;
+    let (_, mut footer) = read_footer_bytes(&mut file)?;
+    let payload_len = footer
+        .len()
+        .checked_sub(usize::try_from(FOOTER_TRAILER_LEN).expect("trailer len"))
+        .expect("footer should include trailer");
+    let block_count_offset = 8 + key_len * 2;
+    let first_entry_offset = block_count_offset + 4;
+    let block_len_offset = first_entry_offset + key_len + 8;
+    assert!(block_len_offset + 4 <= payload_len);
+    footer[block_len_offset..block_len_offset + 4].copy_from_slice(&block_len.to_le_bytes());
+    let crc_offset = footer.len() - 4;
+    let crc = crc32c(&footer[..crc_offset]);
+    footer[crc_offset..].copy_from_slice(&crc.to_le_bytes());
+
+    let footer_start = block_offset + u64::from(block_len);
+    file.seek(SeekFrom::Start(footer_start))?;
+    file.write_all(&footer)?;
+    file.set_len(footer_start + u64::try_from(footer.len()).expect("footer len fits"))?;
+    file.sync_all()?;
+    Ok(())
+}
+
 pub(crate) fn mutate_block_metadata(
     path: &Path,
     block_index: usize,

@@ -435,6 +435,26 @@ fn commit_keeps_retired_segments_until_explicit_gc() -> Result<()> {
 }
 
 #[test]
+fn normalization_keeps_smaller_batch_value_for_duplicate_key() -> Result<()> {
+    let tempdir = tempfile::tempdir()?;
+    let store = create_store(&tempdir)?;
+    let key = make_key(1, 0, 0);
+    let options = commit_options().with_patch_segment_limit(0);
+
+    commit_entries_with_options(&store, &[(key.clone(), make_value(9, 8))], true, &options)?;
+    let stats =
+        commit_entries_with_options(&store, &[(key.clone(), make_value(1, 8))], true, &options)?;
+
+    assert_eq!(stats.segments_retired, 1);
+    assert_eq!(store.fetch_one(&key)?, Some(make_value(1, 8)));
+    assert_eq!(store.iter_all()?.collect::<Result<Vec<_>>>()?, vec![(
+        key,
+        make_value(1, 8)
+    )]);
+    Ok(())
+}
+
+#[test]
 fn create_recovers_from_leftover_manifest_without_store() -> Result<()> {
     let tempdir = tempfile::tempdir()?;
     let store = create_store(&tempdir)?;

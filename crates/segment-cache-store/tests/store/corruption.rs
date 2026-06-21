@@ -15,6 +15,35 @@ fn corrupted_block_checksum_becomes_miss() -> Result<()> {
     Ok(())
 }
 
+#[cfg(any(feature = "checksum-crc32c", feature = "checksum-rapidhash"))]
+#[test]
+fn sparse_ordered_lookup_corrupted_payload_becomes_miss() -> Result<()> {
+    let tempdir = tempfile::tempdir()?;
+    let store = create_store(&tempdir)?;
+    let entries: Vec<_> = (0..8u64)
+        .map(|rep| (make_key(1, 1, rep), make_value(rep as u8, 32)))
+        .collect();
+    commit_entries_with_options(
+        &store,
+        &entries,
+        true,
+        &CommitOptions::default()
+            .with_target_block_size(4096)
+            .with_flush_threshold_records(128),
+    )?;
+    let path = first_segment_path(tempdir.path())?;
+    corrupt_block_value_payload(&path, 0)?;
+    drop(store);
+
+    let reopened = reopen_store_read_only(&tempdir)?;
+    let key = make_key(1, 1, 4);
+    assert_eq!(reopened.fetch_many_ordered([key.as_slice()])?, vec![None]);
+    assert_eq!(reopened.contains_many_ordered([key.as_slice()])?, vec![
+        false
+    ]);
+    Ok(())
+}
+
 #[test]
 #[cfg(feature = "checksum-rapidhash")]
 fn rapidhash_block_checksum_round_trips() -> Result<()> {
@@ -122,6 +151,40 @@ fn corrupted_lz4_value_payload_becomes_miss() -> Result<()> {
     Ok(())
 }
 
+#[cfg(feature = "value-compression-lz4")]
+#[test]
+fn sparse_lz4_frame_header_corruption_becomes_miss() -> Result<()> {
+    let tempdir = tempfile::tempdir()?;
+    let store = create_store_with(
+        &tempdir,
+        create_options()
+            .with_value_payload_compression(segment_cache_store::ValuePayloadCompressionKind::Lz4),
+    )?;
+    let entries: Vec<_> = (0..4u64)
+        .map(|rep| (make_key(1, 2, rep), make_value(rep as u8 + 1, 16 * 1024)))
+        .collect();
+    commit_entries_with_options(
+        &store,
+        &entries,
+        true,
+        &CommitOptions::default()
+            .with_target_block_size(256 * 1024)
+            .with_flush_threshold_records(128)
+            .with_value_payload_compression_policy(ValuePayloadCompressionPolicy::new(1, 0)),
+    )?;
+    let path = first_segment_path(tempdir.path())?;
+    corrupt_block_value_frame_start(&path, 0)?;
+    drop(store);
+
+    let reopened = reopen_store_read_only(&tempdir)?;
+    let key = make_key(1, 2, 2);
+    assert_eq!(reopened.fetch_many_ordered([key.as_slice()])?, vec![None]);
+    assert_eq!(reopened.contains_many_ordered([key.as_slice()])?, vec![
+        false
+    ]);
+    Ok(())
+}
+
 #[cfg(feature = "value-compression-zstd")]
 #[test]
 fn corrupted_zstd_value_payload_becomes_miss() -> Result<()> {
@@ -140,6 +203,41 @@ fn corrupted_zstd_value_payload_becomes_miss() -> Result<()> {
 
     let reopened = reopen_store_read_only(&tempdir)?;
     assert_eq!(reopened.fetch_one(&key)?, None);
+    Ok(())
+}
+
+#[cfg(feature = "value-compression-zstd")]
+#[test]
+fn sparse_zstd_frame_header_corruption_becomes_miss() -> Result<()> {
+    let tempdir = tempfile::tempdir()?;
+    let store = create_store_with(
+        &tempdir,
+        create_options().with_value_payload_compression(
+            segment_cache_store::ValuePayloadCompressionKind::ZstdLevel1,
+        ),
+    )?;
+    let entries: Vec<_> = (0..4u64)
+        .map(|rep| (make_key(1, 3, rep), make_value(rep as u8 + 1, 16 * 1024)))
+        .collect();
+    commit_entries_with_options(
+        &store,
+        &entries,
+        true,
+        &CommitOptions::default()
+            .with_target_block_size(256 * 1024)
+            .with_flush_threshold_records(128)
+            .with_value_payload_compression_policy(ValuePayloadCompressionPolicy::new(1, 0)),
+    )?;
+    let path = first_segment_path(tempdir.path())?;
+    corrupt_block_value_frame_start(&path, 0)?;
+    drop(store);
+
+    let reopened = reopen_store_read_only(&tempdir)?;
+    let key = make_key(1, 3, 2);
+    assert_eq!(reopened.fetch_many_ordered([key.as_slice()])?, vec![None]);
+    assert_eq!(reopened.contains_many_ordered([key.as_slice()])?, vec![
+        false
+    ]);
     Ok(())
 }
 
@@ -405,6 +503,35 @@ fn malformed_footer_block_index_metadata_hides_whole_segment() -> Result<()> {
 
     let reopened = reopen_store_read_only(&tempdir)?;
     assert_eq!(reopened.fetch_one(&key)?, None);
+    assert_eq!(reopened.contains_many_ordered([key.as_slice()])?, vec![
+        false
+    ]);
+    assert_eq!(reopened.iter_all()?.count(), 0);
+    Ok(())
+}
+
+#[test]
+fn sparse_ordered_lookup_short_block_metadata_becomes_miss() -> Result<()> {
+    let tempdir = tempfile::tempdir()?;
+    let store = create_store(&tempdir)?;
+    let entries: Vec<_> = (0..8u64)
+        .map(|rep| (make_key(1, 4, rep), make_value(rep as u8, 32)))
+        .collect();
+    commit_entries_with_options(
+        &store,
+        &entries,
+        true,
+        &CommitOptions::default()
+            .with_target_block_size(4096)
+            .with_flush_threshold_records(128),
+    )?;
+    let path = first_segment_path(tempdir.path())?;
+    truncate_first_block_to_declared_len(&path, 4)?;
+    drop(store);
+
+    let reopened = reopen_store_read_only(&tempdir)?;
+    let key = make_key(1, 4, 4);
+    assert_eq!(reopened.fetch_many_ordered([key.as_slice()])?, vec![None]);
     assert_eq!(reopened.contains_many_ordered([key.as_slice()])?, vec![
         false
     ]);
