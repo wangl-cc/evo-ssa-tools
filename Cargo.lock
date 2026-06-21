@@ -1100,6 +1100,7 @@ dependencies = [
  "anyhow",
  "clap",
  "segment-cache-store",
+ "tempfile",
 ]
 
 [[package]]

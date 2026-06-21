@@ -10,6 +10,9 @@ anyhow = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
 segment-cache-store = { path = "../segment-cache-store", default-features = false }
 
+[dev-dependencies]
+tempfile = { workspace = true }
+
 [features]
 default = ["segment-cache-store/default"]
 checksum-crc32c = ["segment-cache-store/checksum-crc32c"]
