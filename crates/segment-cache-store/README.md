@@ -5,11 +5,12 @@
 It is optimized for:
 
 - append-only inserts
+- merging compatible worker stores
 - ordered batch lookup
 - full ordered iteration
 - corruption-as-miss semantics
 
-This crate is intentionally narrower than a general-purpose database. It does not provide transactions, deletes, compaction, or WAL recovery. Values for one key are expected to be deterministic and semantically immutable: if duplicate visible copies exist, reads and normalization keep the lexicographically smallest value bytes rather than applying last-writer-wins updates.
+This crate is intentionally narrower than a general-purpose database. It does not provide transactions, deletes, compaction, or WAL recovery. Values for one key are expected to be deterministic and semantically immutable: if duplicate visible copies exist, reads, normalization, and store merges keep the lexicographically smallest value bytes rather than applying last-writer-wins updates.
 
 ## Basic Use
 
@@ -42,7 +43,7 @@ let value = reopened.fetch_one(&[0; 16])?;
 # Ok::<_, segment_cache_store::Error>(())
 ```
 
-One store root has one fixed key length, one value layout, one block checksum implementation, one value-payload compression kind, and one caller-defined metadata namespace. The default block checksum is `BlockChecksumKind::RapidHashV3_64`; callers can select another built-in implementation through `CreateOptions::with_block_checksum(kind)`. Value-payload compression defaults to `ValuePayloadCompressionKind::None`; optional feature flags expose compression-capable kinds such as `ValuePayloadCompressionKind::Lz4` and `ValuePayloadCompressionKind::ZstdLevel1` for `CreateOptions::with_value_payload_compression(kind)`. Per-commit `ValuePayloadCompressionPolicy` thresholds control when newly written compression-capable blocks actually keep compressed frames. Published segment files are immutable. The main tier remains globally non-overlapping; a bounded patch tier can temporarily overlap main segments so small interleaving commits avoid immediate rebuild. When the patch tier reaches its configured bound, the store normalizes the touched range and atomically publishes a replacement `MANIFEST`. Callers can also run `Store::normalize()` explicitly before a read-heavy phase and `Store::garbage_collect()` explicitly when retired segment files should be reclaimed.
+One store root has one fixed key length, one value layout, one block checksum implementation, one value-payload compression kind, and one caller-defined metadata namespace. The default block checksum is `BlockChecksumKind::RapidHashV3_64`; callers can select another built-in implementation through `CreateOptions::with_block_checksum(kind)`. Value-payload compression defaults to `ValuePayloadCompressionKind::None`; optional feature flags expose compression-capable kinds such as `ValuePayloadCompressionKind::Lz4` and `ValuePayloadCompressionKind::ZstdLevel1` for `CreateOptions::with_value_payload_compression(kind)`. Per-commit `ValuePayloadCompressionPolicy` thresholds control when newly written compression-capable blocks actually keep compressed frames. Published segment files are immutable. The main tier remains globally non-overlapping; a bounded patch tier can temporarily overlap main segments so small interleaving commits avoid immediate rebuild. When the patch tier reaches its configured bound, the store normalizes the touched range and atomically publishes a replacement `MANIFEST`. Callers can also run `Store::normalize()` explicitly before a read-heavy phase, `Store::merge_from(&source)` to atomically import visible records from a compatible worker store, and `Store::garbage_collect()` explicitly when retired segment files should be reclaimed.
 
 ## Feature Flags
 
@@ -56,6 +57,10 @@ Internal design and evaluation notes live in:
 Useful commands:
 
 ```bash
+cargo run -p scs -- stats cache-root
+cargo run -p scs -- get cache-root <hex-key>
+cargo run -p scs -- merge cache-root worker-cache-root
+cargo run -p scs -- compact cache-root
 cargo bench -p segment-cache-store --bench comparison
 cargo bench -p segment-cache-store --bench ordered_lookup
 cargo bench -p segment-cache-store --bench append_publish

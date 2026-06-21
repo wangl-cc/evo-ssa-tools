@@ -187,6 +187,7 @@ fn build_store(
     Ok(Store {
         inner: Arc::new(StoreInner {
             paths,
+            metadata: descriptor.metadata.clone(),
             geometry,
             verify_block_checksums,
             commit_lock: Mutex::new(()),

@@ -12,6 +12,7 @@ use std::sync::Arc;
 use crate::{
     engine::{gc::garbage_collect_unreferenced, runtime::StoreInner},
     error::{InputError, Result},
+    format::{BlockChecksumKind, StoreMetadata, ValueLayout, ValuePayloadCompressionKind},
     read::{
         cursor::{RangeCursor, SegmentRangeCursor},
         lookup::{LookupReadOptions, OrderedLookup, SegmentSetReader},
@@ -26,6 +27,38 @@ pub struct Store {
 }
 
 impl Store {
+    // ─── Store Identity ────────────────────────────────────────────────────
+
+    /// Returns the caller-defined compatibility metadata persisted for this store.
+    #[must_use]
+    pub fn metadata(&self) -> &StoreMetadata {
+        &self.inner.metadata
+    }
+
+    /// Returns the fixed key length used by every record in this store.
+    #[must_use]
+    pub fn key_len(&self) -> usize {
+        self.inner.geometry.key_len
+    }
+
+    /// Returns the persisted value layout used by this store.
+    #[must_use]
+    pub fn value_layout(&self) -> ValueLayout {
+        self.inner.geometry.value_layout
+    }
+
+    /// Returns the block checksum implementation used by this store.
+    #[must_use]
+    pub fn block_checksum(&self) -> BlockChecksumKind {
+        self.inner.geometry.block_checksum
+    }
+
+    /// Returns the value-payload compression kind used by this store.
+    #[must_use]
+    pub fn value_payload_compression(&self) -> ValuePayloadCompressionKind {
+        self.inner.geometry.value_payload_compression
+    }
+
     // ─── Write path ─────────────────────────────────────────────────────────
 
     /// Starts a buffered write batch.
@@ -81,6 +114,36 @@ impl Store {
     /// on a read-only handle.
     pub fn normalize_with_options(&self, options: &CommitOptions) -> Result<CommitStats> {
         self.normalize_patches_with_options(options)
+    }
+
+    /// Merges another compatible store into this store with default segment write options.
+    ///
+    /// The destination handle is modified; `source` is only read. Both stores
+    /// must have the same caller metadata, key length, and value layout. The
+    /// source may use different physical block checksum or value-payload
+    /// compression settings because records are decoded and re-written into
+    /// the destination format.
+    ///
+    /// Duplicate keys are resolved with the same deterministic winner rule as
+    /// normal commits and range reads: the lexicographically smallest value
+    /// bytes survive. The merge is published with one manifest update, so a
+    /// failed merge does not make a partial result visible.
+    ///
+    /// Returns [`InputError::ReadOnlyStore`] on a read-only destination handle.
+    pub fn merge_from(&self, source: &Store) -> Result<CommitStats> {
+        self.merge_from_with_options(source, &CommitOptions::default())
+    }
+
+    /// Merges another compatible store into this store using explicit segment write options.
+    ///
+    /// `options` controls newly written destination segments only; it does not
+    /// have to match the source store's physical format.
+    pub fn merge_from_with_options(
+        &self,
+        source: &Store,
+        options: &CommitOptions,
+    ) -> Result<CommitStats> {
+        self.merge_store_with_options(source, options)
     }
 
     /// Flushes pending writes.

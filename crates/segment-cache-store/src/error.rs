@@ -115,6 +115,15 @@ pub enum InputError {
 
     #[error("commit attempted on a read-only store handle")]
     ReadOnlyStore,
+
+    #[error("source store metadata does not match destination store")]
+    SourceMetadataMismatch,
+
+    #[error("source store key length mismatch: expected {expected}, got {actual}")]
+    SourceKeyLengthMismatch { expected: usize, actual: usize },
+
+    #[error("source store value layout does not match destination store")]
+    SourceValueLayoutMismatch,
 }
 
 /// Invalid creation or commit options.

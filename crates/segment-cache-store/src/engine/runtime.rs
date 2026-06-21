@@ -15,14 +15,15 @@ use crate::{
     },
     error::Result,
     format::{
-        BlockChecksumKind, ValueLayout, ValuePayloadCompressionKind, ValuePayloadDecoder,
-        block::DecodedBlock, manifest::StoreManifest, segment::BlockIndexEntry,
-        store_file::StoreDescriptor,
+        BlockChecksumKind, StoreMetadata, ValueLayout, ValuePayloadCompressionKind,
+        ValuePayloadDecoder, block::DecodedBlock, manifest::StoreManifest,
+        segment::BlockIndexEntry, store_file::StoreDescriptor,
     },
 };
 
 pub(crate) struct StoreInner {
     pub(crate) paths: StorePaths,
+    pub(crate) metadata: StoreMetadata,
     pub(crate) geometry: StoreGeometry,
     pub(crate) verify_block_checksums: bool,
     pub(crate) commit_lock: Mutex<()>,

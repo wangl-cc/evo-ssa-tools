@@ -34,6 +34,12 @@ impl ValueLayout {
         self.fixed_len
     }
 
+    /// Returns the fixed value length when this store uses fixed-width values.
+    #[must_use]
+    pub fn fixed_value_len(self) -> Option<NonZeroU32> {
+        self.fixed_len
+    }
+
     /// Encodes this layout into the persisted `value_len` integer.
     pub(super) fn to_u32(self) -> u32 {
         self.fixed_len.map_or(0, NonZeroU32::get)
