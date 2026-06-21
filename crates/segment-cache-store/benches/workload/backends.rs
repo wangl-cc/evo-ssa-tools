@@ -94,7 +94,7 @@ pub(crate) fn fill_segment_store_with_options(
     entries: &[(Vec<u8>, Vec<u8>)],
     options: &CommitOptions,
 ) {
-    let mut batch = store.begin_batch().mark_sorted();
+    let mut batch = store.begin_batch();
     for (key, value) in entries {
         batch.push(key, value).expect("push should succeed");
     }
@@ -110,7 +110,7 @@ pub(crate) fn rebuild_segment_store_into(
     new_entries: &[(Vec<u8>, Vec<u8>)],
 ) -> (Store, usize) {
     let new_store = create_segment_store(new_root, profile);
-    let mut batch = new_store.begin_batch().mark_sorted();
+    let mut batch = new_store.begin_batch();
     let mut old_records = old_store
         .iter_all()
         .expect("old store should scan")
@@ -240,7 +240,7 @@ pub(crate) fn run_segment_axis_changes(
         if missing_indices.is_empty() {
             continue;
         }
-        let mut batch = store.begin_batch().mark_sorted();
+        let mut batch = store.begin_batch();
         for index in missing_indices {
             let (key, value) = &round.entries[index];
             report.checksum = report.checksum.wrapping_add(touch_bytes(value));

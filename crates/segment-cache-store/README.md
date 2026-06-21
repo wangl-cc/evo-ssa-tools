@@ -36,7 +36,7 @@ let store = Store::create("cache-root", create_options)?;
 
 let mut batch = store.begin_batch();
 batch.push(&[0; 16], b"serialized value")?;
-store.commit_batch(batch.mark_sorted())?;
+store.commit_batch(batch)?;
 
 let reopened = Store::open("cache-root", OpenOptions::new(metadata))?;
 let value = reopened.fetch_one(&[0; 16])?;

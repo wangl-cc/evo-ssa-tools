@@ -50,7 +50,7 @@ fn owned_batch_entries_round_trip() -> Result<()> {
         (make_key(1, 0, 0), make_value(1, 8)),
         (make_key(1, 0, 1), make_value(2, 16)),
     ];
-    let mut batch = store.begin_batch().mark_sorted();
+    let mut batch = store.begin_batch();
     for (key, value) in entries.clone() {
         batch.push_owned(key, value)?;
     }

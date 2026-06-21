@@ -122,12 +122,8 @@ impl Store {
             )
         };
         let mut plan = CommitPlan::from_snapshot(manifest, main_segments, patch_segments);
-        let (normalize_min, normalize_max) =
-            plan.normalization_bounds(&source_snapshot.min_key, &source_snapshot.max_key);
-        let affected_main = plan.affected_main_range(&normalize_min, &normalize_max);
-        let mut affected_live = plan.affected_main_segments(affected_main);
-        affected_live.extend(plan.patch_segments());
-        plan.retire_segments(&affected_live);
+        let affected_live =
+            plan.retire_normalized_segments(&source_snapshot.min_key, &source_snapshot.max_key);
 
         let mut cursors = Vec::with_capacity(affected_live.len() + source_snapshot.segments.len());
         push_segment_cursors(
@@ -179,8 +175,8 @@ impl Store {
         for record in cursor {
             let (key, value) = record?;
             batch.push_owned(key, value)?;
-            if batch.len() >= options.flush_threshold_records
-                || batch.bytes >= options.flush_threshold_bytes
+            if batch.len() >= options.flush_threshold_records()
+                || batch.bytes >= options.flush_threshold_bytes()
             {
                 merged_records +=
                     self.flush_cursor_batch(&mut batch, &mut written, plan, options)?;

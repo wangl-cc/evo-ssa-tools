@@ -24,7 +24,7 @@ pub(crate) const SEGMENT_HEADER_LEN: usize = 28;
 pub(crate) const SEGMENT_FOOTER_TRAILER_LEN: usize = 8;
 const HEADER_MAGIC: &[u8; 4] = b"SCSG";
 
-// ─── SegmentHeader ────────────────────────────────────────────────────────────
+// Segment header.
 
 /// Parsed fixed-size segment header.
 #[derive(Clone, Copy, Debug)]
@@ -106,7 +106,7 @@ impl SegmentHeader {
     }
 }
 
-// ─── SegmentFooter ────────────────────────────────────────────────────────────
+// Segment footer.
 
 /// Parsed segment footer.
 ///
@@ -185,7 +185,7 @@ impl SegmentFooter {
     }
 }
 
-// ─── BlockIndexEntry + BlockIndexCodec ────────────────────────────────────────
+// Block index entry and codec.
 
 /// Sparse index entry for one data block in a segment file.
 #[derive(Clone, Debug)]
@@ -297,7 +297,7 @@ impl BlockIndexCodec {
     }
 }
 
-// ─── SegmentWriter ────────────────────────────────────────────────────────────
+// Segment writer.
 
 /// Deterministic encoder for one sorted immutable segment.
 ///

@@ -95,12 +95,8 @@ impl WriteBatch {
         Ok(())
     }
 
-    /// Marks the batch as already sorted by key.
-    ///
-    /// The store still validates the sorted claim and sorts if needed, but
-    /// this avoids the unconditional sort in the common case.
     #[must_use]
-    pub fn mark_sorted(mut self) -> Self {
+    pub(crate) fn mark_sorted(mut self) -> Self {
         self.sorted = true;
         self
     }

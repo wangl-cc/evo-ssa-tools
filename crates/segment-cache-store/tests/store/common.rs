@@ -93,11 +93,14 @@ pub(crate) fn commit_entries(
     sorted: bool,
 ) -> Result<CommitStats> {
     let mut batch = store.begin_batch();
+    if !sorted {
+        assert!(
+            entries_have_key_inversion(entries),
+            "test helper sorted flag must match unsorted input"
+        );
+    }
     for (key, value) in entries {
         batch.push(key, value)?;
-    }
-    if sorted {
-        batch = batch.mark_sorted();
     }
     store.commit_batch_with_options(batch, &commit_options())
 }
@@ -109,13 +112,20 @@ pub(crate) fn commit_entries_with_options(
     options: &CommitOptions,
 ) -> Result<CommitStats> {
     let mut batch = store.begin_batch();
+    if !sorted {
+        assert!(
+            entries_have_key_inversion(entries),
+            "test helper sorted flag must match unsorted input"
+        );
+    }
     for (key, value) in entries {
         batch.push(key, value)?;
     }
-    if sorted {
-        batch = batch.mark_sorted();
-    }
     store.commit_batch_with_options(batch, options)
+}
+
+fn entries_have_key_inversion(entries: &[(Vec<u8>, Vec<u8>)]) -> bool {
+    entries.windows(2).any(|window| window[0].0 > window[1].0)
 }
 
 pub(crate) fn first_segment_path(root: &Path) -> Result<PathBuf> {

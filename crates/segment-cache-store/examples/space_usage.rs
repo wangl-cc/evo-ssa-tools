@@ -189,7 +189,7 @@ fn default_segment_create_options() -> CreateOptions {
 }
 
 fn write_entries_to_segment_store(store: &Store, entries: &[(Vec<u8>, Vec<u8>)]) {
-    let mut batch = store.begin_batch().mark_sorted();
+    let mut batch = store.begin_batch();
     for (key, value) in entries {
         batch.push(key, value).expect("push should succeed");
     }

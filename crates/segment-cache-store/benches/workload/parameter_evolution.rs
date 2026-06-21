@@ -72,7 +72,7 @@ fn bench_middle_insert_then_read(
             |(_tempdir, store)| {
                 let mut score = 0usize;
                 for chunk in dataset.inserted_entries.chunks(MIDDLE_INSERT_CHUNK) {
-                    let mut batch = store.begin_batch().mark_sorted();
+                    let mut batch = store.begin_batch();
                     for (key, value) in chunk {
                         batch.push(key, value).expect("push should succeed");
                         score = score.wrapping_add(touch_bytes(value));

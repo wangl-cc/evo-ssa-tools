@@ -290,7 +290,7 @@ impl OverlayStore {
         fill_segment_store_with_options(&store, &dataset.main_entries, options);
 
         for chunk in chunk_by_count(&dataset.patch_entries, patch_count) {
-            let mut batch = store.begin_batch().mark_sorted();
+            let mut batch = store.begin_batch();
             for (key, value) in chunk {
                 batch.push(key, value).expect("push should succeed");
             }

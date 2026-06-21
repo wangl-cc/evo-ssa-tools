@@ -26,15 +26,15 @@ use crate::{
 #[derive(Clone, Debug)]
 pub struct CreateOptions {
     /// Fixed key length in bytes.
-    pub key_len: usize,
+    key_len: usize,
     /// Value layout shared by all visible segments.
-    pub value_layout: ValueLayout,
+    value_layout: ValueLayout,
     /// Block checksum kind persisted for all visible segments.
-    pub block_checksum: BlockChecksumKind,
+    block_checksum: BlockChecksumKind,
     /// Value-payload compression policy persisted for all visible segments.
-    pub value_payload_compression: ValuePayloadCompressionKind,
+    value_payload_compression: ValuePayloadCompressionKind,
     /// Opaque caller compatibility metadata for this namespace.
-    pub metadata: StoreMetadata,
+    metadata: StoreMetadata,
 }
 
 impl CreateOptions {

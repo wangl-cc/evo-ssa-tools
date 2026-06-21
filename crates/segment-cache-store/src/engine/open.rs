@@ -30,14 +30,14 @@ use crate::{
 #[derive(Clone, Debug)]
 pub struct OpenOptions {
     /// Required caller metadata for this namespace.
-    pub expected_metadata: StoreMetadata,
+    expected_metadata: StoreMetadata,
     /// Whether data-block checksums are verified on read.
-    pub verify_block_checksums: bool,
+    verify_block_checksums: bool,
     /// Whether this open is read-only.
     ///
     /// A read-only open takes no writer lock and runs no garbage collection, so
     /// multiple read-only opens of one root can coexist with a writer.
-    pub read_only: bool,
+    read_only: bool,
 }
 
 /// Persistent store identity read from a root's `STORE` descriptor.

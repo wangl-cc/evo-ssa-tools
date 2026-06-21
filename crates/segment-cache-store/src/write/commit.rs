@@ -34,17 +34,17 @@ const DEFAULT_PATCH_DIRECT_RECORD_LIMIT: usize = 4_096;
 #[derive(Clone, Debug)]
 pub struct CommitOptions {
     /// Target logical block split size for newly written segments.
-    pub target_block_size: usize,
+    target_block_size: usize,
     /// Writer-side policy for deciding whether value payloads are worth compressing.
-    pub value_payload_compression_policy: ValuePayloadCompressionPolicy,
+    value_payload_compression_policy: ValuePayloadCompressionPolicy,
     /// Maximum records per newly published segment chunk.
-    pub flush_threshold_records: usize,
+    flush_threshold_records: usize,
     /// Maximum approximate key/value bytes per newly published segment chunk.
-    pub flush_threshold_bytes: usize,
+    flush_threshold_bytes: usize,
     /// Maximum live patch segments allowed before the next overlapping commit normalizes.
-    pub patch_segment_limit: usize,
+    patch_segment_limit: usize,
     /// Maximum input records eligible for direct patch publication.
-    pub patch_direct_record_limit: usize,
+    patch_direct_record_limit: usize,
 }
 
 impl Default for CommitOptions {
@@ -128,6 +128,14 @@ impl CommitOptions {
         }
         Ok(())
     }
+
+    pub(super) fn flush_threshold_records(&self) -> usize {
+        self.flush_threshold_records
+    }
+
+    pub(super) fn flush_threshold_bytes(&self) -> usize {
+        self.flush_threshold_bytes
+    }
 }
 
 /// Summary returned after a successful batch commit.
@@ -208,18 +216,18 @@ impl CommitPlan {
         }
     }
 
-    pub(super) fn affected_main_range(&self, batch_min: &[u8], batch_max: &[u8]) -> Range<usize> {
+    fn affected_main_range(&self, batch_min: &[u8], batch_max: &[u8]) -> Range<usize> {
         affected_range(self.main_entries(), batch_min, batch_max)
     }
 
-    pub(super) fn affected_main_segments(&self, range: Range<usize>) -> Vec<Arc<SegmentState>> {
+    fn affected_main_segments(&self, range: Range<usize>) -> Vec<Arc<SegmentState>> {
         self.main_entries()[range]
             .iter()
             .filter_map(|entry| find_live_segment(&self.main_segments, entry.segment_id))
             .collect()
     }
 
-    pub(super) fn patch_segments(&self) -> Vec<Arc<SegmentState>> {
+    fn patch_segments(&self) -> Vec<Arc<SegmentState>> {
         self.patch_segments.iter().map(Arc::clone).collect()
     }
 
@@ -234,11 +242,7 @@ impl CommitPlan {
                 <= options.patch_segment_limit
     }
 
-    pub(super) fn normalization_bounds(
-        &self,
-        batch_min: &[u8],
-        batch_max: &[u8],
-    ) -> (Vec<u8>, Vec<u8>) {
+    fn normalization_bounds(&self, batch_min: &[u8], batch_max: &[u8]) -> (Vec<u8>, Vec<u8>) {
         let mut min_key = batch_min.to_vec();
         let mut max_key = batch_max.to_vec();
         for segment in &self.patch_segments {
@@ -267,7 +271,33 @@ impl CommitPlan {
         Some((min_key, max_key))
     }
 
-    pub(super) fn retire_segments(&mut self, segments: &[Arc<SegmentState>]) {
+    pub(super) fn retire_normalized_segments(
+        &mut self,
+        region_min: &[u8],
+        region_max: &[u8],
+    ) -> Vec<Arc<SegmentState>> {
+        let (normalize_min, normalize_max) = self.normalization_bounds(region_min, region_max);
+        self.retire_live_segments_in_range(&normalize_min, &normalize_max)
+    }
+
+    fn retire_patch_normalization_segments(&mut self) -> Option<Vec<Arc<SegmentState>>> {
+        let (normalize_min, normalize_max) = self.patch_bounds()?;
+        Some(self.retire_live_segments_in_range(&normalize_min, &normalize_max))
+    }
+
+    fn retire_live_segments_in_range(
+        &mut self,
+        normalize_min: &[u8],
+        normalize_max: &[u8],
+    ) -> Vec<Arc<SegmentState>> {
+        let affected_main = self.affected_main_range(normalize_min, normalize_max);
+        let mut affected_live = self.affected_main_segments(affected_main);
+        affected_live.extend(self.patch_segments());
+        self.retire_segments(&affected_live);
+        affected_live
+    }
+
+    fn retire_segments(&mut self, segments: &[Arc<SegmentState>]) {
         self.removed_ids
             .extend(segments.iter().map(|segment| segment.segment_id));
     }
@@ -474,22 +504,14 @@ impl Store {
         options: &CommitOptions,
     ) -> Result<(Vec<WrittenSegment>, usize)> {
         let affected_live = if let Some((batch_min, batch_max)) = batch_bounds {
-            let (normalize_min, normalize_max) = plan.normalization_bounds(batch_min, batch_max);
-            let affected_main = plan.affected_main_range(&normalize_min, &normalize_max);
-            let mut affected_live = plan.affected_main_segments(affected_main);
-            affected_live.extend(plan.patch_segments());
-            affected_live
+            plan.retire_normalized_segments(batch_min, batch_max)
         } else {
-            let Some((normalize_min, normalize_max)) = plan.patch_bounds() else {
+            let Some(affected_live) = plan.retire_patch_normalization_segments() else {
                 return Ok((Vec::new(), 0));
             };
-            let affected_main = plan.affected_main_range(&normalize_min, &normalize_max);
-            let mut affected_live = plan.affected_main_segments(affected_main);
-            affected_live.extend(plan.patch_segments());
             affected_live
         };
 
-        plan.retire_segments(&affected_live);
         let merged = self.merge_region(batch, &affected_live)?;
         let ranges = merged.flush_ranges(
             self.inner.geometry.key_len,
