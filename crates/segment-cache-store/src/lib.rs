@@ -29,7 +29,7 @@ mod read;
 mod store;
 mod write;
 
-pub use engine::{CreateOptions, OpenOptions, StoreInfo};
+pub use engine::{CreateOptions, OpenOptions, StoreInfo, StoreStorageStats};
 pub use error::{Error, InputError, OptionsError, Result};
 pub use format::{
     BlockChecksumKind, CatalogError, CatalogMismatch, CorruptionError, FormatError,

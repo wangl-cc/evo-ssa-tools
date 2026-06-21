@@ -10,7 +10,10 @@
 use std::sync::Arc;
 
 use crate::{
-    engine::{gc::garbage_collect_unreferenced, runtime::StoreInner},
+    engine::{
+        StoreStorageStats, gc::garbage_collect_unreferenced, runtime::StoreInner,
+        storage::collect_storage_stats,
+    },
     error::{InputError, Result},
     format::{BlockChecksumKind, StoreMetadata, ValueLayout, ValuePayloadCompressionKind},
     read::{
@@ -57,6 +60,15 @@ impl Store {
     #[must_use]
     pub fn value_payload_compression(&self) -> ValuePayloadCompressionKind {
         self.inner.geometry.value_payload_compression
+    }
+
+    /// Returns physical file usage for this store root.
+    ///
+    /// This is an operational convenience for tools and diagnostics. It reports
+    /// files under the opened root; visible logical record statistics are
+    /// intentionally left to read APIs such as [`Store::iter_all`].
+    pub fn storage_stats(&self) -> Result<StoreStorageStats> {
+        collect_storage_stats(&self.inner.paths)
     }
 
     // Write path.

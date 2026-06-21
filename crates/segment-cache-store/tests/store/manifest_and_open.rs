@@ -108,6 +108,21 @@ fn inspect_reads_store_identity() -> Result<()> {
 }
 
 #[test]
+fn storage_stats_report_root_file_usage() -> Result<()> {
+    let tempdir = tempfile::tempdir()?;
+    let store = create_store(&tempdir)?;
+    commit_entries(&store, &[(make_key(1, 0, 0), make_value(1, 8))], true)?;
+
+    let stats = store.storage_stats()?;
+
+    assert_eq!(stats.segment_files, 1);
+    assert!(stats.segment_bytes > 0);
+    assert!(stats.total_files >= stats.segment_files);
+    assert!(stats.total_bytes >= stats.segment_bytes);
+    Ok(())
+}
+
+#[test]
 fn unsupported_store_block_checksum_is_rejected() -> Result<()> {
     let tempdir = tempfile::tempdir()?;
     let store = create_store(&tempdir)?;

@@ -45,6 +45,10 @@ impl StorePaths {
         &self.lock_file
     }
 
+    pub(crate) fn root(&self) -> &Path {
+        &self.root
+    }
+
     pub(crate) fn store_file(&self) -> &Path {
         &self.store_file
     }
@@ -123,7 +127,7 @@ fn publish_for(path: &Path) -> AtomicFilePublish<'_> {
     publish
 }
 
-// ─── Catalog IO ───────────────────────────────────────────────────────────────
+// Catalog IO.
 
 pub(super) fn load_descriptor(paths: &StorePaths) -> Result<Option<StoreDescriptor>> {
     let path = paths.store_file();

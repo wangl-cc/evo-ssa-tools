@@ -27,6 +27,8 @@ mod open;
 pub(crate) mod paths;
 pub(crate) mod runtime;
 pub(crate) mod segment_file;
+pub(crate) mod storage;
 
 pub use create::CreateOptions;
 pub use open::{OpenOptions, StoreInfo};
+pub use storage::StoreStorageStats;

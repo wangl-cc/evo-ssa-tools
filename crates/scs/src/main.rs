@@ -1,12 +1,10 @@
-use std::{
-    fmt, fs,
-    path::{Path, PathBuf},
-    process,
-};
+use std::{fmt, path::PathBuf, process};
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use segment_cache_store::{CommitStats, OpenOptions, Result as StoreResult, Store, StoreMetadata};
+use segment_cache_store::{
+    CommitStats, OpenOptions, Result as StoreResult, Store, StoreMetadata, StoreStorageStats,
+};
 
 mod hex;
 
@@ -112,17 +110,14 @@ impl StoreRoot {
         let logical = LogicalStats::collect(opened.store()).with_context(|| {
             format!("collect logical stats from store `{}`", self.path.display())
         })?;
-        let files = FileStats::collect(self).with_context(|| {
-            format!(
-                "collect file stats from store root `{}`",
-                self.path.display()
-            )
+        let storage = opened.store().storage_stats().with_context(|| {
+            format!("collect storage stats from store `{}`", self.path.display())
         })?;
 
         println!("root: {}", self.path.display());
         opened.print_identity();
         logical.print();
-        files.print(logical.total_bytes());
+        StorageStatsView(storage).print(logical.total_bytes());
         if let Some(key) = logical.min_key.as_deref() {
             println!("min_key_hex: {}", key.preview(key.len()));
         }
@@ -333,66 +328,21 @@ impl LogicalStats {
     }
 }
 
-#[derive(Default)]
-struct FileStats {
-    files: usize,
-    bytes: u64,
-    segment_files: usize,
-    segment_bytes: u64,
-}
+struct StorageStatsView(StoreStorageStats);
 
-impl FileStats {
-    fn collect(root: &StoreRoot) -> std::io::Result<Self> {
-        let mut stats = Self::default();
-        stats.collect_recurse(&root.path, &root.path)?;
-        Ok(stats)
-    }
-
-    fn collect_recurse(&mut self, root: &Path, path: &Path) -> std::io::Result<()> {
-        let metadata = fs::symlink_metadata(path)?;
-        if metadata.is_file() {
-            self.files += 1;
-            self.bytes += metadata.len();
-            if Self::is_segment_file(root, path) {
-                self.segment_files += 1;
-                self.segment_bytes += metadata.len();
-            }
-            return Ok(());
-        }
-        if metadata.is_dir() {
-            for entry in fs::read_dir(path)? {
-                self.collect_recurse(root, &entry?.path())?;
-            }
-        }
-        Ok(())
-    }
-
-    fn is_segment_file(root: &Path, path: &Path) -> bool {
-        let Ok(relative) = path.strip_prefix(root) else {
-            return false;
-        };
-        let mut components = relative.components();
-        let Some(first) = components.next() else {
-            return false;
-        };
-        if first.as_os_str() != "segments" || components.next().is_none() {
-            return false;
-        }
-        path.extension().is_some_and(|extension| extension == "seg")
-    }
-
+impl StorageStatsView {
     fn print(&self, logical_bytes: usize) {
-        println!("segment_files: {}", self.segment_files);
-        println!("segment_file_bytes: {}", ByteCount(self.segment_bytes));
-        println!("all_files: {}", self.files);
-        println!("all_file_bytes: {}", ByteCount(self.bytes));
+        println!("segment_files: {}", self.0.segment_files);
+        println!("segment_file_bytes: {}", ByteCount(self.0.segment_bytes));
+        println!("all_files: {}", self.0.total_files);
+        println!("all_file_bytes: {}", ByteCount(self.0.total_bytes));
         println!(
             "segment_space_amplification: {}",
-            SpaceRatio::new(self.segment_bytes, logical_bytes)
+            SpaceRatio::new(self.0.segment_bytes, logical_bytes)
         );
         println!(
             "total_space_amplification: {}",
-            SpaceRatio::new(self.bytes, logical_bytes)
+            SpaceRatio::new(self.0.total_bytes, logical_bytes)
         );
     }
 }
