@@ -345,6 +345,7 @@ pub(crate) enum DecodedPayload<'a> {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct ValuePayloadFrame {
     encoding: ValuePayloadEncoding,
+    #[cfg(any(feature = "value-compression-lz4", feature = "value-compression-zstd"))]
     raw_len: usize,
     encoded_len: usize,
     header_len: usize,
@@ -355,6 +356,7 @@ impl ValuePayloadFrame {
         let raw_len = format_u32(raw_len, "block value payload length")? as usize;
         Ok(Self {
             encoding: ValuePayloadEncoding::Raw,
+            #[cfg(any(feature = "value-compression-lz4", feature = "value-compression-zstd"))]
             raw_len,
             encoded_len: raw_len,
             header_len: 0,
@@ -366,6 +368,7 @@ impl ValuePayloadFrame {
         let raw_len = format_u32(raw_len, "block value payload length")? as usize;
         Ok(Self {
             encoding: ValuePayloadEncoding::Raw,
+            #[cfg(any(feature = "value-compression-lz4", feature = "value-compression-zstd"))]
             raw_len,
             encoded_len: raw_len,
             header_len: VALUE_PAYLOAD_FRAME_HEADER_LEN,
@@ -379,6 +382,7 @@ impl ValuePayloadFrame {
             format_u32(encoded_len, "compressed block value payload length")? as usize;
         Ok(Self {
             encoding: ValuePayloadEncoding::Lz4,
+            #[cfg(any(feature = "value-compression-lz4", feature = "value-compression-zstd"))]
             raw_len,
             encoded_len,
             header_len: VALUE_PAYLOAD_FRAME_HEADER_LEN,
@@ -392,6 +396,7 @@ impl ValuePayloadFrame {
             format_u32(encoded_len, "compressed block value payload length")? as usize;
         Ok(Self {
             encoding: ValuePayloadEncoding::Zstd,
+            #[cfg(any(feature = "value-compression-lz4", feature = "value-compression-zstd"))]
             raw_len,
             encoded_len,
             header_len: VALUE_PAYLOAD_FRAME_HEADER_LEN,
@@ -422,6 +427,7 @@ impl ValuePayloadFrame {
         }
         Ok(Self {
             encoding,
+            #[cfg(any(feature = "value-compression-lz4", feature = "value-compression-zstd"))]
             raw_len,
             encoded_len,
             header_len: VALUE_PAYLOAD_FRAME_HEADER_LEN,
