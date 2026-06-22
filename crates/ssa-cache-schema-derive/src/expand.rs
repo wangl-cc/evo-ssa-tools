@@ -104,18 +104,18 @@ fn expand_empty_product_style(
     writer: &Ident,
 ) -> TokenStream2 {
     let style = match fields {
-        Fields::Unit => Some(quote! { #schema_path::ProductStyle::Unit }),
+        Fields::Unit => Some(quote! { #schema_path::EmptyProductStyle::Unit }),
         Fields::Unnamed(fields) if fields.unnamed.is_empty() => {
-            Some(quote! { #schema_path::ProductStyle::Tuple })
+            Some(quote! { #schema_path::EmptyProductStyle::Tuple })
         }
         Fields::Named(fields) if fields.named.is_empty() => {
-            Some(quote! { #schema_path::ProductStyle::Named })
+            Some(quote! { #schema_path::EmptyProductStyle::Named })
         }
         Fields::Named(_) | Fields::Unnamed(_) => None,
     };
 
     match style {
-        Some(style) => quote! { #writer.product_style(#style); },
+        Some(style) => quote! { #writer.empty_product_style(#style); },
         None => TokenStream2::new(),
     }
 }

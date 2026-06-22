@@ -4,36 +4,38 @@ use syn::{
     Attribute, Error, Field, Ident, LitStr, Path, Result, meta::ParseNestedMeta, spanned::Spanned,
 };
 
-#[derive(Default)]
 pub(crate) struct TypeAttrs {
-    rename: Option<LitStr>,
+    name: LitStr,
     version: Option<LitStr>,
     schema_crate: Option<Path>,
 }
 
 impl TypeAttrs {
     pub(crate) fn parse(attrs: &[Attribute], ident: &Ident) -> Result<Self> {
-        let mut parsed = Self::default();
+        let mut rename = None;
+        let mut version = None;
+        let mut schema_crate = None;
         for attr in attrs {
             if !attr.path().is_ident("cache_schema") {
                 continue;
             }
             attr.parse_nested_meta(|meta| {
                 if meta.path.is_ident("rename") {
-                    parse_lit_str_value(&mut parsed.rename, meta, "rename")
+                    parse_lit_str_value(&mut rename, meta, "rename")
                 } else if meta.path.is_ident("version") {
-                    parse_lit_str_value(&mut parsed.version, meta, "version")
+                    parse_lit_str_value(&mut version, meta, "version")
                 } else if is_crate_attr(&meta.path) {
-                    parse_path_value(&mut parsed.schema_crate, meta, "crate")
+                    parse_path_value(&mut schema_crate, meta, "crate")
                 } else {
                     Err(meta.error("unsupported cache_schema type attribute"))
                 }
             })?;
         }
-        if parsed.rename.is_none() {
-            parsed.rename = Some(default_ident_name(ident));
-        }
-        Ok(parsed)
+        Ok(Self {
+            name: rename.unwrap_or_else(|| default_ident_name(ident)),
+            version,
+            schema_crate,
+        })
     }
 
     pub(crate) fn schema_path_tokens(&self) -> TokenStream2 {
@@ -44,11 +46,8 @@ impl TypeAttrs {
     }
 
     pub(crate) fn name_tokens(&self) -> TokenStream2 {
-        let rename = self
-            .rename
-            .as_ref()
-            .expect("TypeAttrs::parse always fills rename");
-        quote! { #rename }
+        let name = &self.name;
+        quote! { #name }
     }
 
     pub(crate) fn version_tokens(&self, writer: &ProcIdent) -> TokenStream2 {
@@ -59,38 +58,33 @@ impl TypeAttrs {
     }
 }
 
-#[derive(Default)]
 pub(crate) struct VariantAttrs {
-    rename: Option<LitStr>,
+    name: LitStr,
 }
 
 impl VariantAttrs {
     pub(crate) fn parse(attrs: &[Attribute], ident: &Ident) -> Result<Self> {
-        let mut parsed = Self::default();
+        let mut rename = None;
         for attr in attrs {
             if !attr.path().is_ident("cache_schema") {
                 continue;
             }
             attr.parse_nested_meta(|meta| {
                 if meta.path.is_ident("rename") {
-                    parse_lit_str_value(&mut parsed.rename, meta, "rename")
+                    parse_lit_str_value(&mut rename, meta, "rename")
                 } else {
                     Err(meta.error("unsupported cache_schema variant attribute"))
                 }
             })?;
         }
-        if parsed.rename.is_none() {
-            parsed.rename = Some(default_ident_name(ident));
-        }
-        Ok(parsed)
+        Ok(Self {
+            name: rename.unwrap_or_else(|| default_ident_name(ident)),
+        })
     }
 
     pub(crate) fn name_tokens(&self) -> TokenStream2 {
-        let rename = self
-            .rename
-            .as_ref()
-            .expect("VariantAttrs::parse always fills rename");
-        quote! { #rename }
+        let name = &self.name;
+        quote! { #name }
     }
 }
 

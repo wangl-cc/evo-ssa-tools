@@ -5,7 +5,7 @@ macro_rules! impl_scalar_schema {
         $(
             impl CacheSchema for $name {
                 fn write_schema(w: &mut SchemaWriter) {
-                    w.primitive(stringify!($name));
+                    w.leaf(stringify!($name));
                 }
             }
         )+
@@ -35,7 +35,7 @@ macro_rules! impl_nonzero_schema {
         $(
             impl CacheSchema for std::num::$name {
                 fn write_schema(w: &mut SchemaWriter) {
-                    w.primitive(stringify!($name));
+                    w.leaf(stringify!($name));
                 }
             }
         )+
@@ -76,7 +76,7 @@ macro_rules! impl_atomic_schema {
                 #[cfg(target_has_atomic = $width)]
                 impl CacheSchema for std::sync::atomic::$name {
                     fn write_schema(w: &mut SchemaWriter) {
-                        w.primitive(stringify!($name));
+                        w.leaf(stringify!($name));
                     }
                 }
             )+
@@ -107,7 +107,7 @@ macro_rules! impl_pointer_width_atomic_schema {
 impl_pointer_width_atomic_schema!(AtomicUsize, AtomicIsize);
 
 fn write_pointer_width_schema(w: &mut SchemaWriter, name: &str) {
-    w.primitive(name);
+    w.leaf(name);
     w.type_version(POINTER_WIDTH_SCHEMA);
 }
 
@@ -169,7 +169,7 @@ mod tests {
 
         impl CacheSchema for BareUsize {
             fn write_schema(w: &mut SchemaWriter) {
-                w.primitive("usize");
+                w.leaf("usize");
             }
         }
 
@@ -177,7 +177,7 @@ mod tests {
 
         impl CacheSchema for ExpectedUsize {
             fn write_schema(w: &mut SchemaWriter) {
-                w.primitive("usize");
+                w.leaf("usize");
                 w.type_version(super::POINTER_WIDTH_SCHEMA);
             }
         }
@@ -198,7 +198,7 @@ mod tests {
 
         impl CacheSchema for BareNonZeroUsize {
             fn write_schema(w: &mut SchemaWriter) {
-                w.primitive("NonZeroUsize");
+                w.leaf("NonZeroUsize");
             }
         }
 
@@ -215,7 +215,7 @@ mod tests {
 
         impl CacheSchema for BareAtomicUsize {
             fn write_schema(w: &mut SchemaWriter) {
-                w.primitive("AtomicUsize");
+                w.leaf("AtomicUsize");
             }
         }
 

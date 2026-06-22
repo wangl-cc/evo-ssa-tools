@@ -36,14 +36,16 @@
 //!
 //! ```rust
 //! # #[cfg(feature = "derive")]
+//! # mod example {
+//! # #[cfg(feature = "derive")]
 //! use ssa_cache_schema::CacheSchema;
 //!
-//! # #[cfg(feature = "derive")]
 //! #[derive(CacheSchema)]
 //! struct WithSerdeAttr {
 //!     #[serde(skip)]
 //!     value: u32,
 //! }
+//! # }
 //! ```
 //!
 //! Unsupported `cache_schema` attributes are rejected instead of being ignored:
@@ -57,13 +59,17 @@
 //!     value: u32,
 //! }
 //! ```
+//!
+//! Recursive schemas are not expanded automatically. Derive does not try to reject every recursive
+//! type shape, so recursive cache schemas need a manual implementation or an explicit reference
+//! scheme.
 
 mod impls;
 mod writer;
 
 #[cfg(feature = "derive")]
 pub use ssa_cache_schema_derive::CacheSchema;
-pub use writer::{ProductStyle, SchemaWriter};
+pub use writer::{EmptyProductStyle, SchemaWriter};
 
 /// A 128-bit schema fingerprint.
 pub type SchemaFingerprint = [u8; 16];

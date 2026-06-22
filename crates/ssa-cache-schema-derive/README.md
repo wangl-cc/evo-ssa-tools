@@ -10,7 +10,7 @@ Derived enum schemas use variant order, schema names, and fields. Explicit Rust 
 
 Generic implementations add `CacheSchema` bounds for the field types that are actually written. This allows marker-only parameters such as `PhantomData<T>` without requiring `T: CacheSchema`.
 
-Recursive types are not expanded automatically in this first version. Deriving `CacheSchema` for a recursive type can recurse indefinitely when its fingerprint is computed; use a manual implementation or wait for an explicit definition/reference scheme before using recursive schemas.
+Recursive types are not expanded automatically in this first version, and the derive macro does not try to reject every recursive type shape. Deriving `CacheSchema` for a recursive type can recurse indefinitely when its fingerprint is computed; use a manual implementation or wait for an explicit definition/reference scheme before using recursive schemas.
 
 ## Attributes
 

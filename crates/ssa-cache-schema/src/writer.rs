@@ -11,10 +11,10 @@ const DOMAIN_VERSION: &[u8] = b"ssa-cache-schema:v1";
 pub struct SchemaWriter {
     hasher: blake3::Hasher,
 }
-/// Field style for product schemas whose wire shape distinguishes empty product forms.
+/// Zero-field product form whose wire shape would otherwise have no fields to distinguish it.
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub enum ProductStyle {
+pub enum EmptyProductStyle {
     /// Unit form, such as `struct Name;` or `Variant`.
     Unit = 1,
     /// Tuple form, such as `struct Name();` or `Variant()`.
@@ -35,9 +35,9 @@ impl SchemaWriter {
 
 // Type identity tokens.
 impl SchemaWriter {
-    /// Write a primitive type name.
-    pub fn primitive(&mut self, name: &str) {
-        self.tagged_str(Tag::Primitive, name);
+    /// Write an indivisible schema leaf by name.
+    pub fn leaf(&mut self, name: &str) {
+        self.tagged_str(Tag::Leaf, name);
     }
 
     /// Write an explicit type schema version salt.
@@ -54,9 +54,9 @@ impl SchemaWriter {
         self.str(name);
     }
 
-    /// Write a product field style token.
-    pub fn product_style(&mut self, style: ProductStyle) {
-        self.tag(Tag::ProductStyle);
+    /// Write the zero-field product form for an otherwise empty product schema.
+    pub fn empty_product_style(&mut self, style: EmptyProductStyle) {
+        self.tag(Tag::EmptyProductStyle);
         self.write(&[style as u8]);
     }
 
@@ -211,7 +211,7 @@ impl std::fmt::Debug for SchemaWriter {
 #[repr(u8)]
 #[derive(Clone, Copy)]
 enum Tag {
-    Primitive = 1,
+    Leaf = 1,
     StructBegin = 2,
     StructEnd = 3,
     EnumBegin = 4,
@@ -231,7 +231,7 @@ enum Tag {
     None = 18,
     ArrayBegin = 19,
     ArrayEnd = 20,
-    ProductStyle = 21,
+    EmptyProductStyle = 21,
 }
 
 #[cfg(test)]
@@ -249,12 +249,12 @@ mod tests {
     #[test]
     fn writer_seeds_fingerprint_with_domain_version() {
         let mut writer = SchemaWriter::new();
-        writer.primitive("u32");
+        writer.leaf("u32");
         let actual = writer.finish_fingerprint();
 
         let mut expected = blake3::Hasher::new();
         expected.update(DOMAIN_VERSION);
-        expected.update(&[Tag::Primitive as u8]);
+        expected.update(&[Tag::Leaf as u8]);
         expected.update(&3_u64.to_le_bytes());
         expected.update(b"u32");
 
@@ -265,13 +265,13 @@ mod tests {
     fn writer_uses_length_prefixes_for_strings() {
         let mut first = SchemaWriter::new();
         first.seq_begin("ab");
-        first.primitive("c");
+        first.leaf("c");
         first.seq_end();
         let first = first.finish_fingerprint();
 
         let mut second = SchemaWriter::new();
         second.seq_begin("a");
-        second.primitive("bc");
+        second.leaf("bc");
         second.seq_end();
         let second = second.finish_fingerprint();
 
@@ -281,39 +281,39 @@ mod tests {
     #[test]
     fn writer_token_boundaries_are_unambiguous() {
         let mut first = SchemaWriter::new();
-        first.primitive("a");
-        first.primitive("bc");
+        first.leaf("a");
+        first.leaf("bc");
         let first = first.finish_fingerprint();
 
         let mut second = SchemaWriter::new();
-        second.primitive("ab");
-        second.primitive("c");
+        second.leaf("ab");
+        second.leaf("c");
         let second = second.finish_fingerprint();
 
         assert_ne!(first, second);
     }
 
     #[test]
-    fn product_style_token_is_part_of_fingerprint() {
-        fn fingerprint(style: ProductStyle) -> SchemaFingerprint {
+    fn empty_product_style_token_is_part_of_fingerprint() {
+        fn fingerprint(style: EmptyProductStyle) -> SchemaFingerprint {
             let mut writer = SchemaWriter::new();
             writer.struct_begin("Empty");
-            writer.product_style(style);
+            writer.empty_product_style(style);
             writer.struct_end();
             writer.finish_fingerprint()
         }
 
         assert_ne!(
-            fingerprint(ProductStyle::Unit),
-            fingerprint(ProductStyle::Tuple)
+            fingerprint(EmptyProductStyle::Unit),
+            fingerprint(EmptyProductStyle::Tuple)
         );
         assert_ne!(
-            fingerprint(ProductStyle::Unit),
-            fingerprint(ProductStyle::Named)
+            fingerprint(EmptyProductStyle::Unit),
+            fingerprint(EmptyProductStyle::Named)
         );
         assert_ne!(
-            fingerprint(ProductStyle::Tuple),
-            fingerprint(ProductStyle::Named)
+            fingerprint(EmptyProductStyle::Tuple),
+            fingerprint(EmptyProductStyle::Named)
         );
     }
 
@@ -321,15 +321,15 @@ mod tests {
     fn map_schema_tokens_are_part_of_fingerprint() {
         let mut map = SchemaWriter::new();
         map.map_begin("Map");
-        map.primitive("u32");
-        map.primitive("u64");
+        map.leaf("u32");
+        map.leaf("u64");
         map.map_end();
         let map = map.finish_fingerprint();
 
         let mut seq = SchemaWriter::new();
         seq.seq_begin("Map");
-        seq.primitive("u32");
-        seq.primitive("u64");
+        seq.leaf("u32");
+        seq.leaf("u64");
         seq.seq_end();
         let seq = seq.finish_fingerprint();
 
@@ -339,10 +339,10 @@ mod tests {
     #[test]
     fn default_writer_matches_new_writer() {
         let mut from_default = SchemaWriter::default();
-        from_default.primitive("u32");
+        from_default.leaf("u32");
 
         let mut from_new = SchemaWriter::new();
-        from_new.primitive("u32");
+        from_new.leaf("u32");
 
         assert_eq!(
             from_default.finish_fingerprint(),
