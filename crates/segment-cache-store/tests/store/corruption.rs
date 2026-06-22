@@ -486,6 +486,48 @@ fn variable_value_index_must_start_at_zero_without_block_checksums() -> Result<(
     Ok(())
 }
 
+#[test]
+fn block_last_key_must_stay_within_segment_bounds_without_block_checksums() -> Result<()> {
+    let tempdir = tempfile::tempdir()?;
+    let store = create_store_with(
+        &tempdir,
+        create_options().with_block_checksum(BlockChecksumKind::None),
+    )?;
+    let entries = vec![
+        (make_key(1, 1, 0), make_value(1, 16)),
+        (make_key(1, 1, 1), make_value(2, 16)),
+    ];
+    commit_entries(&store, &entries, true)?;
+    let path = first_segment_path(tempdir.path())?;
+    let key_len = entries[0].0.len();
+    let replacement_key = make_key(1, 1, 2);
+    mutate_block_metadata(&path, 0, |metadata| {
+        let prefix_len = u32::from_le_bytes(
+            metadata[..4]
+                .try_into()
+                .expect("prefix length field should exist"),
+        ) as usize;
+        let suffix_len = key_len - prefix_len;
+        let last_suffix_offset = 4 + prefix_len + suffix_len;
+        metadata[last_suffix_offset..last_suffix_offset + suffix_len]
+            .copy_from_slice(&replacement_key[prefix_len..]);
+    })?;
+
+    let key_refs = entries
+        .iter()
+        .map(|(key, _)| key.as_slice())
+        .collect::<Vec<_>>();
+    assert_eq!(store.fetch_many_ordered(key_refs.iter().copied())?, vec![
+        None, None
+    ]);
+    assert_eq!(
+        store.contains_many_ordered(key_refs.iter().copied())?,
+        vec![false, false]
+    );
+    assert!(store.iter_all()?.collect::<Result<Vec<_>>>()?.is_empty());
+    Ok(())
+}
+
 #[cfg(any(feature = "checksum-crc32c", feature = "checksum-rapidhash"))]
 #[test]
 fn corrupted_middle_block_only_loses_that_block_for_open_handle() -> Result<()> {

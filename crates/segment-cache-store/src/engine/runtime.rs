@@ -16,8 +16,11 @@ use crate::{
     error::Result,
     format::{
         BlockChecksumKind, StoreMetadata, ValueLayout, ValuePayloadCompressionKind,
-        ValuePayloadDecoder, block::DecodedBlock, manifest::StoreManifest,
-        segment::BlockIndexEntry, store_file::StoreDescriptor,
+        ValuePayloadDecoder,
+        block::{BlockKeyUpperBound, DecodedBlock},
+        manifest::StoreManifest,
+        segment::BlockIndexEntry,
+        store_file::StoreDescriptor,
     },
 };
 
@@ -96,13 +99,18 @@ impl StoreGeometry {
         }
     }
 
-    fn block_read_options(self, verify_checksum: bool) -> BlockReadOptions {
+    fn block_read_options<'a>(
+        self,
+        verify_checksum: bool,
+        upper_key_bound: BlockKeyUpperBound<'a>,
+    ) -> BlockReadOptions<'a> {
         BlockReadOptions {
             key_len: self.key_len,
             value_layout: self.value_layout,
             block_checksum: self.block_checksum,
             value_payload_compression: self.value_payload_compression,
             verify_checksum,
+            upper_key_bound,
         }
     }
 }
@@ -189,10 +197,11 @@ impl SegmentState {
     ) -> Result<DecodedBlock> {
         let entry = &self.block_index[block_index];
         let verify = self.needs_verification(block_index, VerifiedBlockPart::Full, verify_checksum);
+        let upper_key_bound = self.block_upper_key_bound(block_index);
         let block = read_block(
             &self.file,
             entry,
-            geometry.block_read_options(verify),
+            geometry.block_read_options(verify, upper_key_bound),
             payload_decoder,
         )?;
         if verify_checksum {
@@ -212,10 +221,11 @@ impl SegmentState {
     ) -> Result<DecodedBlock> {
         let entry = &self.block_index[block_index];
         let verify = self.needs_verification(block_index, VerifiedBlockPart::Full, verify_checksum);
+        let upper_key_bound = self.block_upper_key_bound(block_index);
         let block = read_block_reusing(
             &self.file,
             entry,
-            geometry.block_read_options(verify),
+            geometry.block_read_options(verify, upper_key_bound),
             buffer,
             payload_decoder,
         )?;
@@ -236,10 +246,11 @@ impl SegmentState {
         let entry = &self.block_index[block_index];
         let verify =
             self.needs_verification(block_index, VerifiedBlockPart::Metadata, verify_checksum);
+        let upper_key_bound = self.block_upper_key_bound(block_index);
         let block = read_block_metadata_reusing(
             &self.file,
             entry,
-            geometry.block_read_options(verify),
+            geometry.block_read_options(verify, upper_key_bound),
             buffer,
         )?;
         if verify_checksum {
@@ -273,6 +284,13 @@ impl SegmentState {
         requested: bool,
     ) -> bool {
         requested && !self.verified_blocks.lock().is_verified(block_index, part)
+    }
+
+    fn block_upper_key_bound(&self, block_index: usize) -> BlockKeyUpperBound<'_> {
+        match self.block_index.get(block_index + 1) {
+            Some(next) => BlockKeyUpperBound::Exclusive(next.first_key.as_slice()),
+            None => BlockKeyUpperBound::Inclusive(self.max_key.as_slice()),
+        }
     }
 
     fn mark_verified(&self, block_index: usize, part: VerifiedBlockPart) {

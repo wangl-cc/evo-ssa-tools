@@ -12,7 +12,10 @@ use crate::{
     error::Result,
     format::{
         BlockChecksumKind, ValueLayout, ValuePayloadCompressionKind, ValuePayloadDecoder,
-        block::{BlockDecodeOptions, BlockLookupLayout, DecodedBlock, KEY_PREFIX_LEN_LEN},
+        block::{
+            BlockDecodeOptions, BlockKeyUpperBound, BlockLookupLayout, DecodedBlock,
+            KEY_PREFIX_LEN_LEN,
+        },
         manifest::SegmentFileFingerprint,
         segment::{
             BlockIndexEntry, SEGMENT_FOOTER_TRAILER_LEN, SEGMENT_HEADER_LEN, SegmentFooter,
@@ -35,12 +38,13 @@ pub(super) struct SegmentOpenOptions {
 }
 
 #[derive(Clone, Copy)]
-pub(super) struct BlockReadOptions {
+pub(super) struct BlockReadOptions<'a> {
     pub(super) key_len: usize,
     pub(super) value_layout: ValueLayout,
     pub(super) block_checksum: BlockChecksumKind,
     pub(super) value_payload_compression: ValuePayloadCompressionKind,
     pub(super) verify_checksum: bool,
+    pub(super) upper_key_bound: BlockKeyUpperBound<'a>,
 }
 
 /// Open segment handle with its sparse block index loaded into memory.
@@ -169,7 +173,7 @@ fn read_footer(file: &File, key_len: usize) -> Result<SegmentFooter> {
 pub(super) fn read_block(
     file: &File,
     entry: &BlockIndexEntry,
-    options: BlockReadOptions,
+    options: BlockReadOptions<'_>,
     payload_decoder: &mut ValuePayloadDecoder,
 ) -> Result<DecodedBlock> {
     read_block_reusing(file, entry, options, Vec::new(), payload_decoder)
@@ -179,7 +183,7 @@ pub(super) fn read_block(
 pub(super) fn read_block_reusing(
     file: &File,
     entry: &BlockIndexEntry,
-    options: BlockReadOptions,
+    options: BlockReadOptions<'_>,
     mut bytes: Vec<u8>,
     payload_decoder: &mut ValuePayloadDecoder,
 ) -> Result<DecodedBlock> {
@@ -199,6 +203,7 @@ pub(super) fn read_block_reusing(
             block_checksum: options.block_checksum,
             value_payload_compression: options.value_payload_compression,
             verify_checksum: options.verify_checksum,
+            upper_key_bound: options.upper_key_bound,
         },
         payload_decoder,
     )?)
@@ -208,7 +213,7 @@ pub(super) fn read_block_reusing(
 pub(super) fn read_block_metadata_reusing(
     file: &File,
     entry: &BlockIndexEntry,
-    options: BlockReadOptions,
+    options: BlockReadOptions<'_>,
     mut metadata: Vec<u8>,
 ) -> Result<DecodedBlock> {
     use crate::format::CorruptionError;
@@ -244,6 +249,7 @@ pub(super) fn read_block_metadata_reusing(
             block_checksum: options.block_checksum,
             value_payload_compression: options.value_payload_compression,
             verify_checksum: options.verify_checksum,
+            upper_key_bound: options.upper_key_bound,
         },
     )?)
 }

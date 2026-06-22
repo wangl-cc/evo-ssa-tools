@@ -61,12 +61,21 @@ pub(crate) struct ParsedRecord<'a> {
 }
 
 #[derive(Clone, Copy)]
-pub(crate) struct BlockDecodeOptions {
+pub(crate) enum BlockKeyUpperBound<'a> {
+    /// Non-final blocks must end before the next block's first key.
+    Exclusive(&'a [u8]),
+    /// The final block may end at the segment max key.
+    Inclusive(&'a [u8]),
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct BlockDecodeOptions<'a> {
     pub(crate) key_len: usize,
     pub(crate) value_layout: ValueLayout,
     pub(crate) block_checksum: BlockChecksumKind,
     pub(crate) value_payload_compression: ValuePayloadCompressionKind,
     pub(crate) verify_checksum: bool,
+    pub(crate) upper_key_bound: BlockKeyUpperBound<'a>,
 }
 
 pub(crate) struct ReusableBlockBuffers {
@@ -78,7 +87,7 @@ impl DecodedBlock {
     pub(crate) fn decode(
         bytes: Vec<u8>,
         entry: &BlockIndexEntry,
-        options: BlockDecodeOptions,
+        options: BlockDecodeOptions<'_>,
         payload_decoder: &mut ValuePayloadDecoder,
     ) -> Result<Self, CorruptionError> {
         let layout = BlockLayout::from_block_bytes(
@@ -101,13 +110,14 @@ impl DecodedBlock {
             },
             layout,
             entry,
+            options.upper_key_bound,
         )
     }
 
     pub(crate) fn decode_metadata(
         mut metadata: Vec<u8>,
         entry: &BlockIndexEntry,
-        options: BlockDecodeOptions,
+        options: BlockDecodeOptions<'_>,
     ) -> Result<Self, CorruptionError> {
         let layout = BlockLayout::from_metadata_bytes(
             &metadata,
@@ -128,6 +138,7 @@ impl DecodedBlock {
             },
             layout,
             entry,
+            options.upper_key_bound,
         )
     }
 
@@ -135,6 +146,7 @@ impl DecodedBlock {
         storage: BlockStorage,
         layout: BlockLayout,
         entry: &BlockIndexEntry,
+        upper_key_bound: BlockKeyUpperBound<'_>,
     ) -> Result<Self, CorruptionError> {
         layout.validate_key_section(storage.metadata())?;
         let last_key = layout.materialize_last_key_if_needed(storage.metadata())?;
@@ -157,7 +169,7 @@ impl DecodedBlock {
             storage,
         };
         block.value_region.validate(block.metadata())?;
-        block.validate_key_ordering(entry)?;
+        block.validate_key_ordering(entry, upper_key_bound)?;
         Ok(block)
     }
 
@@ -458,7 +470,11 @@ impl DecodedBlock {
         })
     }
 
-    fn validate_key_ordering(&self, entry: &BlockIndexEntry) -> Result<(), CorruptionError> {
+    fn validate_key_ordering(
+        &self,
+        entry: &BlockIndexEntry,
+        upper_key_bound: BlockKeyUpperBound<'_>,
+    ) -> Result<(), CorruptionError> {
         if self.compare_key(0, entry.first_key.as_slice())? != Ordering::Equal {
             return Err(CorruptionError::Block);
         }
@@ -470,7 +486,27 @@ impl DecodedBlock {
             }
             previous = current;
         }
+        let last_key = self.last_key();
+        let upper_key = upper_key_bound.key();
+        if upper_key.len() != self.key_len {
+            return Err(CorruptionError::Block);
+        }
+        let in_bounds = match upper_key_bound {
+            BlockKeyUpperBound::Exclusive(_) => last_key < upper_key,
+            BlockKeyUpperBound::Inclusive(_) => last_key <= upper_key,
+        };
+        if !in_bounds {
+            return Err(CorruptionError::Block);
+        }
         Ok(())
+    }
+}
+
+impl<'a> BlockKeyUpperBound<'a> {
+    fn key(self) -> &'a [u8] {
+        match self {
+            Self::Exclusive(key) | Self::Inclusive(key) => key,
+        }
     }
 }
 
@@ -790,6 +826,7 @@ mod tests {
                     block_checksum: checksum,
                     value_payload_compression: compression,
                     verify_checksum: true,
+                    upper_key_bound: BlockKeyUpperBound::Inclusive(b"aa02"),
                 },
                 &mut decoder,
             )
@@ -854,6 +891,7 @@ mod tests {
                     block_checksum: checksum,
                     value_payload_compression: compression,
                     verify_checksum: true,
+                    upper_key_bound: BlockKeyUpperBound::Inclusive(b"aa01"),
                 },
                 &mut decoder,
             )
@@ -863,6 +901,67 @@ mod tests {
             assert_eq!(decoded.first_key(), b"aa01");
             assert_eq!(decoded.last_key(), b"aa01");
             assert_eq!(decoded.find_value(b"aa01"), Some(b"only".to_vec()));
+        }
+
+        #[test]
+        fn rejects_keys_outside_block_upper_bound() {
+            let entries = Entries {
+                entries: &[(b"aa01", b"first"), (b"aa02", b"second")],
+            };
+            let checksum = BlockChecksumKind::None;
+            let compression = ValuePayloadCompressionKind::None;
+            let mut encoder = ValuePayloadEncoder::new(compression);
+            let block = BlockBuilder::new(
+                &entries,
+                4,
+                ValueLayout::VARIABLE,
+                checksum,
+                compression,
+                ValuePayloadCompressionPolicy::DEFAULT,
+            )
+            .encode(&mut encoder)
+            .expect("block should encode");
+            let entry = BlockIndexEntry {
+                first_key: b"aa01".to_vec(),
+                block_offset: 0,
+                block_len: u32::try_from(block.len()).expect("block len"),
+                record_count: 2,
+            };
+            let mut decoder = ValuePayloadDecoder::new(compression);
+
+            assert!(matches!(
+                DecodedBlock::decode(
+                    block.clone(),
+                    &entry,
+                    BlockDecodeOptions {
+                        key_len: 4,
+                        value_layout: ValueLayout::VARIABLE,
+                        block_checksum: checksum,
+                        value_payload_compression: compression,
+                        verify_checksum: true,
+                        upper_key_bound: BlockKeyUpperBound::Exclusive(b"aa02"),
+                    },
+                    &mut decoder,
+                ),
+                Err(CorruptionError::Block)
+            ));
+
+            assert!(matches!(
+                DecodedBlock::decode(
+                    block,
+                    &entry,
+                    BlockDecodeOptions {
+                        key_len: 4,
+                        value_layout: ValueLayout::VARIABLE,
+                        block_checksum: checksum,
+                        value_payload_compression: compression,
+                        verify_checksum: true,
+                        upper_key_bound: BlockKeyUpperBound::Inclusive(b"aa01"),
+                    },
+                    &mut decoder,
+                ),
+                Err(CorruptionError::Block)
+            ));
         }
     }
 }
