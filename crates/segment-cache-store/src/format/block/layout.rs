@@ -269,6 +269,9 @@ impl ValueIndex {
         let mut previous = 0usize;
         for index in 0..self.count {
             let offset = self.read(bytes, index)?;
+            if index == 0 && offset != 0 {
+                return Err(CorruptionError::Block);
+            }
             if offset < previous || offset > payload_len {
                 return Err(CorruptionError::Block);
             }
@@ -335,6 +338,21 @@ mod tests {
             region
                 .validate(&bytes)
                 .expect("variable value index should be valid");
+        }
+
+        #[test]
+        fn variable_value_offsets_must_start_at_zero() {
+            let region = BlockValueRegion::for_write(ValueLayout::VARIABLE, 2, 16, 32, 5)
+                .expect("layout should fit");
+            let mut bytes = vec![0; 16];
+            bytes.extend_from_slice(&1u32.to_le_bytes());
+            bytes.extend_from_slice(&2u32.to_le_bytes());
+            bytes.extend_from_slice(&5u32.to_le_bytes());
+
+            assert!(matches!(
+                region.validate(&bytes),
+                Err(CorruptionError::Block)
+            ));
         }
 
         #[test]
