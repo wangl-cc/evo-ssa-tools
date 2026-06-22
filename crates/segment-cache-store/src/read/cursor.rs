@@ -145,28 +145,32 @@ impl RangeCursor {
     ) -> Result<Option<usize>> {
         duplicate_indices.clear();
         let mut winner_index = None;
-        for index in 0..self.cursors.len() {
-            let Some(record) = self.cursors[index].current_record()? else {
+        let mut winner_key = None;
+        let mut winner_value = None;
+        for (index, cursor) in self.cursors.iter().enumerate() {
+            let Some(record) = cursor.current_record()? else {
                 continue;
             };
-            let Some(winner) = winner_index else {
+            let Some(key) = winner_key else {
                 winner_index = Some(index);
+                winner_key = Some(record.key);
+                winner_value = Some(record.value);
                 duplicate_indices.push(index);
                 continue;
             };
-            let winner_record = self.cursors[winner]
-                .current_record()?
-                .expect("winner cursor has a current record");
-            match record.key.cmp(winner_record.key) {
+            match record.key.cmp(key) {
                 std::cmp::Ordering::Less => {
                     winner_index = Some(index);
+                    winner_key = Some(record.key);
+                    winner_value = Some(record.value);
                     duplicate_indices.clear();
                     duplicate_indices.push(index);
                 }
                 std::cmp::Ordering::Equal => {
                     duplicate_indices.push(index);
-                    if record.value < winner_record.value {
+                    if record.value < winner_value.expect("winner value is set with winner key") {
                         winner_index = Some(index);
+                        winner_value = Some(record.value);
                     }
                 }
                 std::cmp::Ordering::Greater => {}

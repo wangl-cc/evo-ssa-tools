@@ -47,7 +47,7 @@ One store root has one fixed key length, one value layout, one block checksum im
 
 ## Feature Flags
 
-The default feature set enables `checksum-rapidhash`, which exposes `BlockChecksumKind::RapidHashV3_64` and makes `CreateOptions::new` use it as the default block checksum. `BlockChecksumKind::None` is always available. `checksum-crc32c` exposes `BlockChecksumKind::Crc32c` as an optional block checksum implementation; CRC32C is still used internally for fixed catalog and segment structural checks. `value-compression-lz4` and `value-compression-zstd` expose optional block-level value-payload compression algorithms. If default features are disabled, use `CreateOptions::new_with_block_checksum(key_len, metadata, kind)` so the checksum choice remains explicit.
+The default feature set enables `checksum-rapidhash`, which exposes `BlockChecksumKind::RapidHashV3_64` and makes `CreateOptions::new` use it as the default block checksum. `BlockChecksumKind::None` is always available; it stores no per-block checksum bytes, but catalog metadata and manifest-to-segment identity checks still use internal integrity checks when a store is opened. `checksum-crc32c` exposes `BlockChecksumKind::Crc32c` as an optional block checksum implementation; CRC32C is still used internally for fixed catalog and segment structural checks. `value-compression-lz4` and `value-compression-zstd` expose optional block-level value-payload compression algorithms. If default features are disabled, use `CreateOptions::new_with_block_checksum(key_len, metadata, kind)` so the checksum choice remains explicit.
 
 Internal design and evaluation notes live in:
 

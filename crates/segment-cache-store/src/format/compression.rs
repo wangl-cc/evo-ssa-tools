@@ -417,6 +417,9 @@ impl ValuePayloadFrame {
             VALUE_PAYLOAD_ENCODING_ZSTD => ValuePayloadEncoding::Zstd,
             _ => return Err(CorruptionError::Block),
         };
+        if encoding == ValuePayloadEncoding::Raw && encoded_len != raw_len {
+            return Err(CorruptionError::Block);
+        }
         Ok(Self {
             encoding,
             raw_len,
@@ -577,6 +580,41 @@ mod tests {
                     .as_slice(),
                 b"abc"
             );
+        }
+    }
+
+    #[cfg(any(feature = "value-compression-lz4", feature = "value-compression-zstd"))]
+    mod framed {
+        use super::*;
+
+        #[test]
+        fn rejects_raw_frame_whose_encoded_len_differs_from_raw_len() {
+            let compression = framed_compression_kind();
+            let mut frame = Vec::new();
+            frame.extend_from_slice(&VALUE_PAYLOAD_ENCODING_RAW.to_le_bytes());
+            frame.extend_from_slice(&4u32.to_le_bytes());
+            frame.extend_from_slice(&3u32.to_le_bytes());
+            frame.extend_from_slice(b"abc");
+
+            let mut decoder = ValuePayloadDecoder::new(compression);
+            assert!(matches!(
+                compression.decode_frame(&mut decoder, &frame, 4),
+                Err(CorruptionError::Block)
+            ));
+        }
+
+        fn framed_compression_kind() -> ValuePayloadCompressionKind {
+            #[cfg(feature = "value-compression-lz4")]
+            {
+                ValuePayloadCompressionKind::Lz4
+            }
+            #[cfg(all(
+                not(feature = "value-compression-lz4"),
+                feature = "value-compression-zstd"
+            ))]
+            {
+                ValuePayloadCompressionKind::ZstdLevel1
+            }
         }
     }
 

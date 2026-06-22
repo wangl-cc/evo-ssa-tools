@@ -13,6 +13,7 @@ use crate::{
     format::{
         BlockChecksumKind, ValueLayout, ValuePayloadCompressionKind, ValuePayloadDecoder,
         block::{BlockDecodeOptions, BlockLookupLayout, DecodedBlock, KEY_PREFIX_LEN_LEN},
+        manifest::SegmentFileFingerprint,
         segment::{
             BlockIndexEntry, SEGMENT_FOOTER_TRAILER_LEN, SEGMENT_HEADER_LEN, SegmentFooter,
             SegmentHeader,
@@ -20,12 +21,17 @@ use crate::{
     },
 };
 
+const FINGERPRINT_READ_CHUNK_LEN: usize = 64 * 1024;
+const FINGERPRINT_HASH_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+const FINGERPRINT_HASH_PRIME: u64 = 0x0000_0100_0000_01b3;
+
 #[derive(Clone, Copy)]
 pub(super) struct SegmentOpenOptions {
     pub(super) expected_key_len: usize,
     pub(super) expected_value_layout: ValueLayout,
     pub(super) expected_block_checksum: BlockChecksumKind,
     pub(super) expected_value_payload_compression: ValuePayloadCompressionKind,
+    pub(super) expected_fingerprint: SegmentFileFingerprint,
 }
 
 #[derive(Clone, Copy)]
@@ -43,6 +49,7 @@ pub(super) struct OpenedSegment {
     pub(super) file: File,
     pub(super) min_key: Vec<u8>,
     pub(super) max_key: Vec<u8>,
+    pub(super) fingerprint: SegmentFileFingerprint,
     pub(super) block_index: Vec<BlockIndexEntry>,
 }
 
@@ -76,13 +83,54 @@ impl OpenedSegment {
             Err(error) if error.is_cache_miss_corruption() => return Ok(None),
             Err(error) => return Err(error),
         };
+        let fingerprint = match segment_file_fingerprint(&file) {
+            Ok(fingerprint) => fingerprint,
+            Err(error) if error.is_cache_miss_corruption() => return Ok(None),
+            Err(error) => return Err(error),
+        };
+        if fingerprint != options.expected_fingerprint {
+            return Ok(None);
+        }
         Ok(Some(Self {
             file,
             min_key: footer.min_key,
             max_key: footer.max_key,
+            fingerprint,
             block_index: footer.block_index,
         }))
     }
+}
+
+pub(crate) fn segment_file_fingerprint(file: &File) -> Result<SegmentFileFingerprint> {
+    use crate::format::CorruptionError;
+
+    let len = file.metadata()?.len();
+    let mut hash = FINGERPRINT_HASH_OFFSET;
+    let mut offset = 0;
+    let mut buffer = vec![0u8; FINGERPRINT_READ_CHUNK_LEN];
+    while offset < len {
+        let remaining = usize::try_from(len - offset).unwrap_or(usize::MAX);
+        let read_len = remaining.min(buffer.len());
+        let chunk = &mut buffer[..read_len];
+        match read_exact_at(file, offset, chunk) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => {
+                return Err(CorruptionError::SegmentFormat.into());
+            }
+            Err(error) => return Err(error.into()),
+        }
+        hash = fingerprint_hash_append(hash, chunk);
+        offset += read_len as u64;
+    }
+    Ok(SegmentFileFingerprint { len, hash })
+}
+
+fn fingerprint_hash_append(mut hash: u64, bytes: &[u8]) -> u64 {
+    for &byte in bytes {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(FINGERPRINT_HASH_PRIME);
+    }
+    hash
 }
 
 fn read_header(file: &File) -> Result<SegmentHeader> {

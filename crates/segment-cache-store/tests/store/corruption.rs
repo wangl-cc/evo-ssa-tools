@@ -242,7 +242,7 @@ fn sparse_zstd_frame_header_corruption_becomes_miss() -> Result<()> {
 }
 
 #[test]
-fn no_checksum_store_does_not_detect_payload_corruption() -> Result<()> {
+fn no_checksum_open_handle_does_not_detect_payload_corruption() -> Result<()> {
     let tempdir = tempfile::tempdir()?;
     let store = create_store_with(
         &tempdir,
@@ -253,13 +253,15 @@ fn no_checksum_store_does_not_detect_payload_corruption() -> Result<()> {
     commit_entries(&store, &[(key.clone(), value.clone())], true)?;
     let path = first_segment_path(tempdir.path())?;
     corrupt_block_value_payload(&path, 0)?;
+
+    let corrupted = store
+        .fetch_one(&key)?
+        .expect("open no-checksum handle cannot detect corruption");
+    assert_ne!(corrupted, value);
     drop(store);
 
     let reopened = reopen_store_read_only(&tempdir)?;
-    let corrupted = reopened
-        .fetch_one(&key)?
-        .expect("no-checksum store cannot detect corruption");
-    assert_ne!(corrupted, value);
+    assert_eq!(reopened.fetch_one(&key)?, None);
     Ok(())
 }
 
@@ -272,21 +274,21 @@ fn block_checksum_verification_can_be_disabled_for_benchmarks() -> Result<()> {
     let value = make_value(9, 16);
     commit_entries(&store, &[(key.clone(), value.clone())], true)?;
     let path = first_segment_path(tempdir.path())?;
-    corrupt_block_value_payload(&path, 0)?;
-
-    let checked = reopen_store_read_only(&tempdir)?;
-    assert_eq!(checked.fetch_one(&key)?, None);
-
     let unchecked = Store::open(
         tempdir.path(),
         StoreOpenOptions::new(metadata())
             .with_block_checksum_verification(false)
             .with_read_only(true),
     )?;
+    corrupt_block_value_payload(&path, 0)?;
+
     let unchecked_value = unchecked
         .fetch_one(&key)?
         .expect("unchecked read should return corrupted bytes");
     assert_ne!(unchecked_value, value);
+
+    let checked = reopen_store_read_only(&tempdir)?;
+    assert_eq!(checked.fetch_one(&key)?, None);
     Ok(())
 }
 
@@ -301,6 +303,29 @@ fn store_round_trips_with_global_segments() -> Result<()> {
     commit_entries(&store, &entries, true)?;
 
     assert_eq!(store.iter_all()?.collect::<Result<Vec<_>>>()?, entries);
+    Ok(())
+}
+
+#[test]
+fn manifest_fingerprint_rejects_same_range_replacement_segment() -> Result<()> {
+    let tempdir = tempfile::tempdir()?;
+    let store = create_store(&tempdir)?;
+    let key = make_key(1, 1, 0);
+    commit_entries(&store, &[(key.clone(), make_value(1, 16))], true)?;
+    let original_path = first_segment_path(tempdir.path())?;
+
+    let replacement_dir = tempfile::tempdir()?;
+    let replacement = create_store(&replacement_dir)?;
+    commit_entries(&replacement, &[(key.clone(), make_value(2, 16))], true)?;
+    let replacement_path = first_segment_path(replacement_dir.path())?;
+    drop(store);
+    drop(replacement);
+
+    fs::copy(replacement_path, original_path)?;
+
+    let reopened = reopen_store_read_only(&tempdir)?;
+    assert_eq!(reopened.fetch_one(&key)?, None);
+    assert_eq!(reopened.iter_all()?.count(), 0);
     Ok(())
 }
 
@@ -422,7 +447,7 @@ fn malformed_block_becomes_miss_in_all_read_paths() -> Result<()> {
 
 #[cfg(any(feature = "checksum-crc32c", feature = "checksum-rapidhash"))]
 #[test]
-fn corrupted_middle_block_only_loses_that_block() -> Result<()> {
+fn corrupted_middle_block_only_loses_that_block_for_open_handle() -> Result<()> {
     let tempdir = tempfile::tempdir()?;
     let store = create_store(&tempdir)?;
     let entries: Vec<_> = (0..3u64)
@@ -435,21 +460,29 @@ fn corrupted_middle_block_only_loses_that_block() -> Result<()> {
         &CommitOptions::default().with_target_block_size(96),
     )?;
     let path = first_segment_path(tempdir.path())?;
+    let live_reader = reopen_store_read_only(&tempdir)?;
     corrupt_block_value_payload(&path, 1)?;
 
-    let reopened = reopen_store_read_only(&tempdir)?;
     let key_refs = entries
         .iter()
         .map(|(key, _)| key.as_slice())
         .collect::<Vec<_>>();
     assert_eq!(
-        reopened.fetch_many_ordered(key_refs.iter().copied())?,
+        live_reader.fetch_many_ordered(key_refs.iter().copied())?,
         vec![Some(entries[0].1.clone()), None, Some(entries[2].1.clone())]
     );
-    assert_eq!(reopened.iter_all()?.collect::<Result<Vec<_>>>()?, vec![
+    assert_eq!(live_reader.iter_all()?.collect::<Result<Vec<_>>>()?, vec![
         entries[0].clone(),
         entries[2].clone()
     ]);
+    drop(live_reader);
+
+    let reopened = reopen_store_read_only(&tempdir)?;
+    assert_eq!(
+        reopened.fetch_many_ordered(key_refs.iter().copied())?,
+        vec![None, None, None]
+    );
+    assert!(reopened.iter_all()?.collect::<Result<Vec<_>>>()?.is_empty());
     Ok(())
 }
 

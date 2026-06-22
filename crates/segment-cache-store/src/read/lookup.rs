@@ -83,6 +83,79 @@ pub(crate) struct LookupReadOptions {
     pub(crate) verify_block_checksums: bool,
 }
 
+#[derive(Clone, Copy)]
+struct LookupHit<'a> {
+    value: &'a [u8],
+    segment_index: usize,
+    block_index: usize,
+    record_index: usize,
+}
+
+#[derive(Clone, Copy)]
+struct PatchWinner {
+    segment_index: usize,
+    block_index: usize,
+    record_index: usize,
+}
+
+impl PatchWinner {
+    fn from_hit(hit: LookupHit<'_>) -> Self {
+        Self {
+            segment_index: hit.segment_index,
+            block_index: hit.block_index,
+            record_index: hit.record_index,
+        }
+    }
+}
+
+struct PatchWinnerReader<'a> {
+    segments: &'a [Arc<SegmentState>],
+    states: Vec<LookupState>,
+    options: LookupReadOptions,
+}
+
+impl<'a> PatchWinnerReader<'a> {
+    fn new(segments: &'a [Arc<SegmentState>], options: LookupReadOptions) -> Self {
+        let states = segments
+            .iter()
+            .map(|_| LookupState::new(options.geometry.value_payload_compression))
+            .collect();
+        Self {
+            segments,
+            states,
+            options,
+        }
+    }
+
+    fn should_replace(&mut self, current: Option<PatchWinner>, candidate: &[u8]) -> Result<bool> {
+        let Some(current) = current else {
+            return Ok(true);
+        };
+        Ok(self.value(current)?.is_none_or(|winner| candidate < winner))
+    }
+
+    fn value(&mut self, winner: PatchWinner) -> Result<Option<&[u8]>> {
+        let Some(segment) = self.segments.get(winner.segment_index) else {
+            return Err(CorruptionError::Block.into());
+        };
+        let Some(state) = self.states.get_mut(winner.segment_index) else {
+            return Err(CorruptionError::Block.into());
+        };
+        state.current_segment_index = Some(winner.segment_index);
+        let block = match state.ensure_loaded_block(
+            segment,
+            winner.block_index,
+            self.options,
+            BlockLoadMode::Full,
+        ) {
+            Ok(block) => block,
+            Err(error) if error.is_cache_miss_corruption() => return Ok(None),
+            Err(error) => return Err(error),
+        };
+        Ok(Some(block.record_at_index(winner.record_index)?.value))
+    }
+}
+
 impl OrderedLookup {
     pub(crate) fn new(store: Store) -> Self {
         let value_payload_compression = store.inner.geometry.value_payload_compression;
@@ -146,13 +219,18 @@ impl OrderedLookup {
         };
         if patch_segments.is_empty() {
             self.state.bind_snapshot(&main_segments);
+            let mut visit_value = |index: usize, hit: Option<LookupHit<'_>>| {
+                visitor(index, hit.map(|hit| hit.value));
+                Ok(())
+            };
             OrderedSegmentSweep::new(
                 main_segments.as_ref(),
                 &mut self.state,
                 keys,
                 0,
+                0,
                 options,
-                &mut visitor,
+                &mut visit_value,
             )
             .run()
         } else {
@@ -172,15 +250,17 @@ impl OrderedLookup {
         let mut results = vec![false; keys.len()];
         self.state.bind_snapshot(&main_segments);
         {
-            let mut collect_hit = |index: usize, value: Option<&[u8]>| {
-                if value.is_some() {
+            let mut collect_hit = |index: usize, hit: Option<LookupHit<'_>>| {
+                if hit.is_some() {
                     results[index] = true;
                 }
+                Ok(())
             };
             OrderedSegmentSweep::new(
                 main_segments.as_ref(),
                 &mut self.state,
                 keys,
+                0,
                 0,
                 options,
                 &mut collect_hit,
@@ -194,16 +274,18 @@ impl OrderedLookup {
                 continue;
             }
             let mut patch_state = LookupState::new(options.geometry.value_payload_compression);
-            let mut collect_hit = |index: usize, value: Option<&[u8]>| {
-                if value.is_some() {
+            let mut collect_hit = |index: usize, hit: Option<LookupHit<'_>>| {
+                if hit.is_some() {
                     results[index] = true;
                 }
+                Ok(())
             };
             OrderedSegmentSweep::new(
                 std::slice::from_ref(segment),
                 &mut patch_state,
                 &keys[key_range.clone()],
                 key_range.start,
+                0,
                 options,
                 &mut collect_hit,
             )
@@ -226,23 +308,29 @@ impl OrderedLookup {
         F: FnMut(usize, Option<&[u8]>),
     {
         let mut patch_winners = vec![None; keys.len()];
+        let mut patch_reader = PatchWinnerReader::new(patch_segments.as_ref(), options);
 
-        for segment in patch_segments.iter() {
+        for (patch_segment_index, segment) in patch_segments.iter().enumerate() {
             let key_range = key_range_for_segment(keys, segment);
             if key_range.is_empty() {
                 continue;
             }
             let mut patch_state = LookupState::new(options.geometry.value_payload_compression);
-            let mut collect_hit = |index: usize, value: Option<&[u8]>| {
-                if let Some(value) = value {
-                    keep_winner(&mut patch_winners[index], value);
+            let mut collect_hit = |index: usize, hit: Option<LookupHit<'_>>| {
+                if let Some(hit) = hit {
+                    let winner = PatchWinner::from_hit(hit);
+                    if patch_reader.should_replace(patch_winners[index], hit.value)? {
+                        patch_winners[index] = Some(winner);
+                    }
                 }
+                Ok(())
             };
             OrderedSegmentSweep::new(
                 std::slice::from_ref(segment),
                 &mut patch_state,
                 &keys[key_range.clone()],
                 key_range.start,
+                patch_segment_index,
                 options,
                 &mut collect_hit,
             )
@@ -250,8 +338,12 @@ impl OrderedLookup {
         }
 
         self.state.bind_snapshot(main_segments);
-        let mut emit_winner = |index: usize, main_value: Option<&[u8]>| {
-            let patch_value = patch_winners[index].as_deref();
+        let mut emit_winner = |index: usize, main_hit: Option<LookupHit<'_>>| {
+            let main_value = main_hit.map(|hit| hit.value);
+            let patch_value = match patch_winners[index] {
+                Some(winner) => patch_reader.value(winner)?,
+                None => None,
+            };
             let winner = match (main_value, patch_value) {
                 (Some(main_value), Some(patch_value)) => Some(main_value.min(patch_value)),
                 (Some(main_value), None) => Some(main_value),
@@ -259,11 +351,13 @@ impl OrderedLookup {
                 (None, None) => None,
             };
             visitor(index, winner);
+            Ok(())
         };
         OrderedSegmentSweep::new(
             main_segments.as_ref(),
             &mut self.state,
             keys,
+            0,
             0,
             options,
             &mut emit_winner,
@@ -304,12 +398,6 @@ where
         return Err(InputError::UnsortedLookupKeys.into());
     }
     Ok(())
-}
-
-fn keep_winner(slot: &mut Option<Vec<u8>>, value: &[u8]) {
-    if slot.as_ref().is_none_or(|winner| value < winner.as_slice()) {
-        *slot = Some(value.to_vec());
-    }
 }
 
 fn key_range_for_segment<K>(keys: &[K], segment: &SegmentState) -> std::ops::Range<usize>
@@ -390,12 +478,13 @@ impl<'a> SegmentSetReader<'a> {
 struct OrderedSegmentSweep<'a, K, F>
 where
     K: AsRef<[u8]>,
-    F: FnMut(usize, Option<&[u8]>),
+    F: FnMut(usize, Option<LookupHit<'_>>) -> Result<()>,
 {
     segments: &'a [Arc<SegmentState>],
     lookup_state: &'a mut LookupState,
     keys: &'a [K],
     base_index: usize,
+    segment_index_base: usize,
     options: LookupReadOptions,
     visitor: &'a mut F,
     key_index: usize,
@@ -411,13 +500,14 @@ enum BlockLoadMode {
 impl<'a, K, F> OrderedSegmentSweep<'a, K, F>
 where
     K: AsRef<[u8]>,
-    F: FnMut(usize, Option<&[u8]>),
+    F: FnMut(usize, Option<LookupHit<'_>>) -> Result<()>,
 {
     fn new(
         segments: &'a [Arc<SegmentState>],
         lookup_state: &'a mut LookupState,
         keys: &'a [K],
         base_index: usize,
+        segment_index_base: usize,
         options: LookupReadOptions,
         visitor: &'a mut F,
     ) -> Self {
@@ -430,6 +520,7 @@ where
             lookup_state,
             keys,
             base_index,
+            segment_index_base,
             options,
             visitor,
             key_index: 0,
@@ -442,7 +533,7 @@ where
             let key = self.keys[self.key_index].as_ref();
 
             if self.segment_index >= self.segments.len() {
-                self.visit_remaining_misses();
+                self.visit_remaining_misses()?;
                 break;
             }
 
@@ -455,7 +546,7 @@ where
             }
 
             if key < segment.min_key.as_slice() {
-                self.visit_misses_before(segment.min_key.as_slice());
+                self.visit_misses_before(segment.min_key.as_slice())?;
                 continue;
             }
 
@@ -466,7 +557,7 @@ where
                     self.lookup_state.current_block_index = block_index.checked_add(1);
                     self.lookup_state.loaded_block = None;
                 } else {
-                    (self.visitor)(self.base_index + self.key_index, None);
+                    (self.visitor)(self.base_index + self.key_index, None)?;
                     self.key_index += 1;
                 }
                 continue;
@@ -489,7 +580,7 @@ where
             ) {
                 Ok(block) => block,
                 Err(error) if error.is_cache_miss_corruption() => {
-                    self.visit_corrupt_block_misses(segment, block_index);
+                    self.visit_corrupt_block_misses(segment, block_index)?;
                     continue;
                 }
                 Err(error) => return Err(error),
@@ -498,7 +589,7 @@ where
                 && !BlockKeySweep::new(block, &self.keys[self.key_index..block_end]).has_any_hit()
             {
                 for offset in self.key_index..block_end {
-                    (self.visitor)(self.base_index + offset, None);
+                    (self.visitor)(self.base_index + offset, None)?;
                 }
                 self.key_index = block_end;
                 continue;
@@ -510,42 +601,53 @@ where
             ) {
                 Ok(block) => block,
                 Err(error) if error.is_cache_miss_corruption() => {
-                    self.visit_corrupt_block_misses(segment, block_index);
+                    self.visit_corrupt_block_misses(segment, block_index)?;
                     continue;
                 }
                 Err(error) => return Err(error),
             };
 
-            BlockKeySweep::new(block, &self.keys[self.key_index..block_end])
-                .visit(self.base_index + self.key_index, self.visitor);
+            BlockKeySweep::new(block, &self.keys[self.key_index..block_end]).visit(
+                self.base_index + self.key_index,
+                self.segment_index_base + self.segment_index,
+                block_index,
+                self.visitor,
+            )?;
             self.key_index = block_end;
         }
 
         Ok(())
     }
 
-    fn visit_remaining_misses(&mut self) {
+    fn visit_remaining_misses(&mut self) -> Result<()> {
         while self.key_index < self.keys.len() {
-            (self.visitor)(self.base_index + self.key_index, None);
+            (self.visitor)(self.base_index + self.key_index, None)?;
             self.key_index += 1;
         }
+        Ok(())
     }
 
-    fn visit_misses_before(&mut self, min_key: &[u8]) {
+    fn visit_misses_before(&mut self, min_key: &[u8]) -> Result<()> {
         while self.key_index < self.keys.len() && self.keys[self.key_index].as_ref() < min_key {
-            (self.visitor)(self.base_index + self.key_index, None);
+            (self.visitor)(self.base_index + self.key_index, None)?;
             self.key_index += 1;
         }
+        Ok(())
     }
 
-    fn visit_corrupt_block_misses(&mut self, segment: &SegmentState, block_index: usize) {
+    fn visit_corrupt_block_misses(
+        &mut self,
+        segment: &SegmentState,
+        block_index: usize,
+    ) -> Result<()> {
         let block_end = block_end_from_index(segment, block_index, self.keys, self.key_index);
         for offset in self.key_index..block_end {
-            (self.visitor)(self.base_index + offset, None);
+            (self.visitor)(self.base_index + offset, None)?;
         }
         self.key_index = block_end;
         self.lookup_state.current_block_index = block_index.checked_add(1);
         self.lookup_state.recycle_loaded_block();
+        Ok(())
     }
 }
 
@@ -699,13 +801,28 @@ where
         false
     }
 
-    fn visit<F>(mut self, base_index: usize, visitor: &mut F)
+    fn visit<F>(
+        mut self,
+        base_index: usize,
+        segment_index: usize,
+        block_index: usize,
+        visitor: &mut F,
+    ) -> Result<()>
     where
-        F: FnMut(usize, Option<&[u8]>),
+        F: FnMut(usize, Option<LookupHit<'_>>) -> Result<()>,
     {
         for (offset, key) in self.keys.iter().enumerate() {
-            visitor(base_index + offset, self.value_for(key.as_ref()));
+            let hit = self
+                .value_for(key.as_ref())
+                .map(|(record_index, value)| LookupHit {
+                    value,
+                    segment_index,
+                    block_index,
+                    record_index,
+                });
+            visitor(base_index + offset, hit)?;
         }
+        Ok(())
     }
 
     fn key_matches(&mut self, key: &[u8]) -> bool {
@@ -713,9 +830,12 @@ where
         self.block.key_matches_at_index(self.record_index, key)
     }
 
-    fn value_for(&mut self, key: &[u8]) -> Option<&'a [u8]> {
+    fn value_for(&mut self, key: &[u8]) -> Option<(usize, &'a [u8])> {
         self.advance_to(key);
-        self.block.value_at_if_key(self.record_index, key)
+        let record_index = self.record_index;
+        self.block
+            .value_at_if_key(record_index, key)
+            .map(|value| (record_index, value))
     }
 
     fn advance_to(&mut self, key: &[u8]) {

@@ -11,7 +11,7 @@ use crc32c::crc32c;
 
 use crate::format::{CatalogError, CatalogMismatch, binary::BinaryCursor};
 
-const MANIFEST_VERSION: u32 = 1;
+const MANIFEST_VERSION: u32 = 2;
 
 const MANIFEST_MAGIC: &[u8; 4] = b"SCSM";
 const MANIFEST_HEADER_LEN: usize = 20;
@@ -69,8 +69,15 @@ pub enum ManifestParseError {
 pub(crate) struct SegmentManifestEntry {
     pub(crate) segment_id: u32,
     pub(crate) tier: SegmentTier,
+    pub(crate) fingerprint: SegmentFileFingerprint,
     pub(crate) min_key: Vec<u8>,
     pub(crate) max_key: Vec<u8>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct SegmentFileFingerprint {
+    pub(crate) len: u64,
+    pub(crate) hash: u64,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -83,19 +90,26 @@ impl SegmentManifestEntry {
     pub(crate) fn new(
         segment_id: u32,
         tier: SegmentTier,
+        fingerprint: SegmentFileFingerprint,
         min_key: Vec<u8>,
         max_key: Vec<u8>,
     ) -> Self {
         Self {
             segment_id,
             tier,
+            fingerprint,
             min_key,
             max_key,
         }
     }
 
-    pub(crate) fn matches_segment_footer(&self, min_key: &[u8], max_key: &[u8]) -> bool {
-        self.min_key == min_key && self.max_key == max_key
+    pub(crate) fn matches_segment(
+        &self,
+        min_key: &[u8],
+        max_key: &[u8],
+        fingerprint: SegmentFileFingerprint,
+    ) -> bool {
+        self.min_key == min_key && self.max_key == max_key && self.fingerprint == fingerprint
     }
 
     pub(crate) fn is_main(&self) -> bool {
@@ -140,7 +154,8 @@ impl StoreManifest {
     }
 
     pub(crate) fn encode(&self) -> std::result::Result<Vec<u8>, ManifestEncodeError> {
-        let entry_len = manifest_entry_len(self.key_len).ok_or(ManifestEncodeError::EntryLength)?;
+        let entry_len = manifest_entry_len(self.version, self.key_len)
+            .ok_or(ManifestEncodeError::EntryLength)?;
         let capacity = MANIFEST_HEADER_LEN
             .checked_add(
                 self.segments
@@ -167,6 +182,8 @@ impl StoreManifest {
         for entry in &self.segments {
             out.extend_from_slice(&entry.segment_id.to_le_bytes());
             out.push(entry.tier.to_u8());
+            out.extend_from_slice(&entry.fingerprint.len.to_le_bytes());
+            out.extend_from_slice(&entry.fingerprint.hash.to_le_bytes());
             out.extend_from_slice(&entry.min_key);
             out.extend_from_slice(&entry.max_key);
         }
@@ -243,8 +260,12 @@ pub(crate) fn validate_segment_entry_shape(
     Ok(())
 }
 
-fn manifest_entry_len(key_len: usize) -> Option<usize> {
-    5usize.checked_add(key_len.checked_mul(2)?)
+fn manifest_entry_len(version: u32, key_len: usize) -> Option<usize> {
+    let fixed_len: usize = match version {
+        1 => 5,
+        _ => 21,
+    };
+    fixed_len.checked_add(key_len.checked_mul(2)?)
 }
 
 struct ManifestParser<'a> {
@@ -282,7 +303,7 @@ impl<'a> ManifestParser<'a> {
         let next_segment_id = self.read_u32("next_segment_id")?;
         let segment_count = self.read_u32("segment_count")? as usize;
         let entry_len =
-            manifest_entry_len(key_len).ok_or(ManifestParseError::EntryLengthOverflow)?;
+            manifest_entry_len(version, key_len).ok_or(ManifestParseError::EntryLengthOverflow)?;
         let expected_len = MANIFEST_HEADER_LEN
             .checked_add(
                 segment_count
@@ -300,10 +321,22 @@ impl<'a> ManifestParser<'a> {
             let segment_id = self.read_u32("segment_id")?;
             let tier = SegmentTier::from_u8(self.read_u8("tier")?)
                 .ok_or(ManifestParseError::UnsupportedSegmentTier)?;
+            let fingerprint = if version == 1 {
+                SegmentFileFingerprint { len: 0, hash: 0 }
+            } else {
+                SegmentFileFingerprint {
+                    len: self.read_u64("segment_len")?,
+                    hash: self.read_u64("segment_hash")?,
+                }
+            };
             let min_key = self.read_vec("min_key", key_len)?;
             let max_key = self.read_vec("max_key", key_len)?;
             segments.push(SegmentManifestEntry::new(
-                segment_id, tier, min_key, max_key,
+                segment_id,
+                tier,
+                fingerprint,
+                min_key,
+                max_key,
             ));
         }
         if self.cursor.position() != checksum_offset {
@@ -320,6 +353,12 @@ impl<'a> ManifestParser<'a> {
     fn read_u32(&mut self, field: &'static str) -> std::result::Result<u32, ManifestParseError> {
         self.cursor
             .read::<u32>()
+            .ok_or(ManifestParseError::TruncatedField { field })
+    }
+
+    fn read_u64(&mut self, field: &'static str) -> std::result::Result<u64, ManifestParseError> {
+        self.cursor
+            .read::<u64>()
             .ok_or(ManifestParseError::TruncatedField { field })
     }
 
@@ -363,11 +402,30 @@ mod tests {
     }
 
     fn entry(segment_id: u32, min: u8, max: u8) -> SegmentManifestEntry {
-        SegmentManifestEntry::new(segment_id, SegmentTier::Main, key(min), key(max))
+        SegmentManifestEntry::new(
+            segment_id,
+            SegmentTier::Main,
+            fingerprint(segment_id),
+            key(min),
+            key(max),
+        )
     }
 
     fn patch_entry(segment_id: u32, min: u8, max: u8) -> SegmentManifestEntry {
-        SegmentManifestEntry::new(segment_id, SegmentTier::Patch, key(min), key(max))
+        SegmentManifestEntry::new(
+            segment_id,
+            SegmentTier::Patch,
+            fingerprint(segment_id),
+            key(min),
+            key(max),
+        )
+    }
+
+    fn fingerprint(seed: u32) -> SegmentFileFingerprint {
+        SegmentFileFingerprint {
+            len: 1024 + u64::from(seed),
+            hash: u64::from(seed),
+        }
     }
 
     mod manifest_format {

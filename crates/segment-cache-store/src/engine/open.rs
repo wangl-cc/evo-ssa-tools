@@ -65,11 +65,12 @@ impl OpenOptions {
         }
     }
 
-    /// Enables or disables block checksum verification on reads.
+    /// Enables or disables per-block checksum verification on reads.
     ///
     /// Disabling verification is only accepted for read-only opens; writable
     /// handles must keep verification enabled so corrupt bytes cannot be merged
-    /// into freshly checksummed replacement segments.
+    /// into freshly checksummed replacement segments. Open-time catalog,
+    /// segment-structure, and manifest fingerprint checks still run either way.
     pub fn with_block_checksum_verification(mut self, verify: bool) -> Self {
         self.verify_block_checksums = verify;
         self
@@ -201,8 +202,15 @@ fn build_store(
             expected_value_layout: geometry.value_layout,
             expected_block_checksum: geometry.block_checksum,
             expected_value_payload_compression: geometry.value_payload_compression,
+            expected_fingerprint: entry.fingerprint,
         })? {
-            Some(segment) if entry.matches_segment_footer(&segment.min_key, &segment.max_key) => {
+            Some(segment)
+                if entry.matches_segment(
+                    &segment.min_key,
+                    &segment.max_key,
+                    segment.fingerprint,
+                ) =>
+            {
                 segment
             }
             _ => continue,

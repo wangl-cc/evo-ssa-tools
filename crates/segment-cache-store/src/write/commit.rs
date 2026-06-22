@@ -9,7 +9,7 @@ use std::{
 };
 
 use crate::{
-    engine::{paths, runtime::SegmentState},
+    engine::{paths, runtime::SegmentState, segment_file::segment_file_fingerprint},
     error::{InputError, OptionsError, Result},
     format::{
         CatalogMismatch, ValuePayloadCompressionPolicy,
@@ -663,6 +663,7 @@ impl Store {
         let max_key = footer.max_key;
         let block_index = footer.block_index;
         let file = fs::File::open(segment_paths.final_path())?;
+        let fingerprint = segment_file_fingerprint(&file)?;
         let runtime = Arc::new(SegmentState::from_written(
             segment_id,
             file,
@@ -670,7 +671,7 @@ impl Store {
             max_key.clone(),
             block_index,
         ));
-        let entry = SegmentManifestEntry::new(segment_id, tier, min_key, max_key);
+        let entry = SegmentManifestEntry::new(segment_id, tier, fingerprint, min_key, max_key);
         Ok(WrittenSegment { entry, runtime })
     }
 }

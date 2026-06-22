@@ -48,7 +48,7 @@ fn target_block_size_does_not_pad_physical_blocks() -> Result<()> {
 }
 
 #[test]
-fn manifest_is_binary_v1_snapshot() -> Result<()> {
+fn manifest_is_binary_v2_snapshot() -> Result<()> {
     let tempdir = tempfile::tempdir()?;
     let store = create_store(&tempdir)?;
     commit_entries(&store, &[(make_key(1, 0, 0), make_value(1, 8))], true)?;
@@ -71,7 +71,7 @@ fn manifest_is_binary_v1_snapshot() -> Result<()> {
     assert_eq!(&manifest[..4], b"SCSM");
     assert_eq!(
         u32::from_le_bytes(manifest[4..8].try_into().expect("version")),
-        1
+        2
     );
     assert_eq!(
         u32::from_le_bytes(manifest[8..12].try_into().expect("key len")),
@@ -85,7 +85,7 @@ fn manifest_is_binary_v1_snapshot() -> Result<()> {
         u32::from_le_bytes(manifest[16..20].try_into().expect("segment count")),
         1
     );
-    assert_eq!(manifest.len(), 20 + 4 + 1 + 16 + 16 + 4);
+    assert_eq!(manifest.len(), 20 + 4 + 1 + 8 + 8 + 16 + 16 + 4);
     Ok(())
 }
 
