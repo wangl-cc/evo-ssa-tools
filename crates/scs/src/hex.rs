@@ -108,6 +108,16 @@ mod tests {
                 .expect("hex should parse"),
             vec![1, 2, 3, 4, 5]
         );
+        assert_eq!(
+            "0X0a 0B-0c_0D".parse_hex_bytes().expect("hex should parse"),
+            vec![0x0a, 0x0b, 0x0c, 0x0d]
+        );
+    }
+
+    #[test]
+    fn hex_rejects_invalid_digits_and_odd_lengths() {
+        assert!("0xabc".parse_hex_bytes().is_err());
+        assert!("0xzz".parse_hex_bytes().is_err());
     }
 
     #[test]

@@ -1,10 +1,12 @@
+use std::num::NonZeroU32;
+
 #[cfg(any(feature = "checksum-crc32c", feature = "checksum-rapidhash"))]
 use segment_cache_store::CommitStats;
 use segment_cache_store::{CreateOptions, Error, InputError, Result, Store, StoreMetadata};
 
 use crate::support::api::{
-    commit_entries, commit_options, create_store, make_key, make_value, reopen_store_read_only,
-    test_block_checksum,
+    commit_entries, commit_options, create_options, create_options_with_key_len, create_store,
+    create_store_with, make_key, make_value, reopen_store_read_only, test_block_checksum,
 };
 #[cfg(any(feature = "checksum-crc32c", feature = "checksum-rapidhash"))]
 use crate::support::{
@@ -94,6 +96,45 @@ fn merge_from_resolves_duplicate_keys_by_smallest_value() -> Result<()> {
 }
 
 #[test]
+fn merge_from_imports_source_patch_winners() -> Result<()> {
+    let destination_dir = tempfile::tempdir()?;
+    let source_dir = tempfile::tempdir()?;
+    let destination = create_store(&destination_dir)?;
+    let source = create_store(&source_dir)?;
+    let overwritten = make_key(3, 0, 0);
+    let patch_only = make_key(3, 0, 1);
+    let main_only = make_key(3, 0, 2);
+
+    commit_entries(
+        &source,
+        &[
+            (overwritten.clone(), make_value(9, 8)),
+            (main_only.clone(), make_value(2, 8)),
+        ],
+        true,
+    )?;
+    commit_entries(
+        &source,
+        &[
+            (overwritten.clone(), make_value(1, 8)),
+            (patch_only.clone(), make_value(3, 8)),
+        ],
+        true,
+    )?;
+
+    let stats = destination.merge_from_with_options(&source, &commit_options())?;
+
+    assert_eq!(stats.records, 3);
+    assert_eq!(stats.bytes, 72);
+    assert_eq!(destination.iter_all()?.collect::<Result<Vec<_>>>()?, vec![
+        (overwritten, make_value(1, 8)),
+        (patch_only, make_value(3, 8)),
+        (main_only, make_value(2, 8)),
+    ]);
+    Ok(())
+}
+
+#[test]
 fn merge_from_rejects_incompatible_source_metadata() -> Result<()> {
     let destination_dir = tempfile::tempdir()?;
     let source_dir = tempfile::tempdir()?;
@@ -114,6 +155,40 @@ fn merge_from_rejects_incompatible_source_metadata() -> Result<()> {
     assert!(matches!(
         error,
         Error::Input(InputError::SourceMetadataMismatch)
+    ));
+    Ok(())
+}
+
+#[test]
+fn merge_from_rejects_incompatible_source_geometry() -> Result<()> {
+    let destination_dir = tempfile::tempdir()?;
+    let short_key_source_dir = tempfile::tempdir()?;
+    let fixed_value_source_dir = tempfile::tempdir()?;
+    let destination = create_store(&destination_dir)?;
+    let short_key_source =
+        create_store_with(&short_key_source_dir, create_options_with_key_len(8))?;
+    let fixed_value_source = create_store_with(
+        &fixed_value_source_dir,
+        create_options().with_fixed_value_len(NonZeroU32::new(8).expect("non-zero")),
+    )?;
+
+    let error = destination
+        .merge_from(&short_key_source)
+        .expect_err("merge rejects key length mismatch");
+    assert!(matches!(
+        error,
+        Error::Input(InputError::SourceKeyLengthMismatch {
+            expected: 16,
+            actual: 8
+        })
+    ));
+
+    let error = destination
+        .merge_from(&fixed_value_source)
+        .expect_err("merge rejects value layout mismatch");
+    assert!(matches!(
+        error,
+        Error::Input(InputError::SourceValueLayoutMismatch)
     ));
     Ok(())
 }
