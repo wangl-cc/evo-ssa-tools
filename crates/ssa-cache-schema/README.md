@@ -1,0 +1,62 @@
+# SSA Cache Schema
+
+`ssa-cache-schema` provides stable schema fingerprints for cache wire formats. It describes the logical shape of a type, writes that schema into a deterministic token stream, and hashes it with BLAKE3 truncated to 128 bits.
+
+The crate is intentionally separate from `ssa-workflow` cache storage. It can be used to evolve schema fingerprinting independently before deciding how persistent caches should consume the fingerprint.
+
+## Basic Usage
+
+Derive `CacheSchema` for ordinary structs and enums, then call `schema_fingerprint::<T>()` when a stable schema fingerprint is needed.
+
+```rust
+use ssa_cache_schema::{schema_fingerprint, CacheSchema};
+
+#[derive(CacheSchema)]
+struct Params {
+    width: u32,
+    height: u32,
+}
+
+let first = schema_fingerprint::<Params>();
+let second = schema_fingerprint::<Params>();
+assert_eq!(first, second);
+```
+
+The default `derive` feature re-exports the derive macro from `ssa-cache-schema-derive`. Disable default features if you only need the runtime trait and want to provide manual implementations.
+
+## Compatibility Attributes
+
+Use `#[cache_schema(rename = "...")]` when a Rust field, variant, or type is renamed but should keep its previous schema name.
+
+```rust
+use ssa_cache_schema::CacheSchema;
+
+#[derive(CacheSchema)]
+struct Resized {
+    #[cache_schema(rename = "width")]
+    w: u32,
+    height: u32,
+}
+```
+
+Rust module paths are not included, so moving a type between modules does not change its fingerprint. Use `#[cache_schema(version = "...")]` to intentionally change the fingerprint when a semantic format version changes or when a same-shaped type should not remain cache-compatible.
+
+Serde attributes are ignored by `CacheSchema`. For example, `#[serde(skip)]` does not remove a field from the cache schema and `#[serde(rename = "...")]` does not rename it for fingerprinting. Use `cache_schema` attributes or a manual implementation when serde behavior should affect cache compatibility.
+
+Field reorder, field add/remove, field type changes, enum variant reorder, and enum variant add/remove change the fingerprint by default. Derived enum schemas are based on variant order, schema names, and fields; explicit Rust discriminants and `repr` attributes are ignored. Use `#[cache_schema(version = "...")]` or a manual implementation when discriminants are part of the cache wire format.
+
+## Provided Standard Schemas
+
+The runtime crate provides schemas for scalar numeric types, `bool`, `char`, `()`, tuples up to arity 12, arrays, `String`, `str`, slices, `Vec<T>`, `Option<T>`, `Result<T, E>`, `Box<T>`, references, `Cow<'_, T>`, `PhantomData<T>`, common map/set collections, numeric wrappers in `std::num`, and value-carrying atomic types in `std::sync::atomic`.
+
+Borrow and ownership wrappers are transparent: `&T`, `&mut T`, `Box<T>`, and `Cow<'_, T>` use `T`'s schema. `String` and `str` share the `String` text schema, and `Vec<T>`, `[T]`, and `Box<[T]>` share the `Sequence` schema.
+
+`HashMap<K, V>` and `BTreeMap<K, V>` share the same logical map schema. `HashSet<T>` and `BTreeSet<T>` share the same logical set schema. This schema only describes the cache value shape; deterministic value encoding still needs to handle map/set iteration order at the serialization layer.
+
+`Wrapping<T>` and `Saturating<T>` use the same schema as their inner numeric representation. `NonZero*` integer wrappers use distinct schemas because they reject zero values; changing between `u32` and `NonZeroU32` is treated as a cache-incompatible schema change. Pointer-sized scalar, `NonZero`, and atomic schemas include the target pointer width, so `usize` on a 32-bit target is not cache-compatible with `usize` on a 64-bit target. Atomic integer and bool types also use distinct schemas, so `AtomicU32` is not cache-compatible with `u32`; `AtomicPtr<T>` is not implemented because pointer addresses are not stable cache data.
+
+## Writer Contract
+
+`SchemaWriter` streams canonical schema tokens directly into BLAKE3 rather than storing schema bytes. Every fingerprint is seeded with the fixed `ssa-cache-schema:v1` domain/version header before type-specific tokens are written. Each token uses an explicit tag plus fixed-width integers or length-prefixed strings, so adjacent values cannot be misread as a different schema tree. Derived schemas also write an explicit empty-product-style token for zero-field structs and enum variants, so unit, tuple, and named empty forms do not collide.
+
+`CacheSchema` implementations should describe the serialized cache format, not Rust memory layout. Recursive schemas are not expanded automatically in this first version, and derive does not try to reject every recursive type shape. Computing a derived fingerprint for a recursive schema can recurse indefinitely; write a manual implementation or introduce an explicit reference scheme before using recursive types.

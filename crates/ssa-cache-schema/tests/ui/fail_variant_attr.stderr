@@ -1,0 +1,5 @@
+error: unsupported cache_schema variant attribute
+ --> tests/ui/fail_variant_attr.rs:5:20
+  |
+5 |     #[cache_schema(version = "v1")]
+  |                    ^^^^^^^

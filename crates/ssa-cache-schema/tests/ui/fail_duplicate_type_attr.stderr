@@ -1,0 +1,5 @@
+error: duplicate cache_schema rename attribute
+ --> tests/ui/fail_duplicate_type_attr.rs:4:34
+  |
+4 | #[cache_schema(rename = "First", rename = "Second")]
+  |                                  ^^^^^^
