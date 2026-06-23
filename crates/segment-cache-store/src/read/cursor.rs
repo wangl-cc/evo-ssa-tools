@@ -1,0 +1,384 @@
+//! Streaming ordered range cursors.
+
+use std::sync::Arc;
+
+use crate::{
+    engine::runtime::{SegmentState, StoreGeometry},
+    error::Result,
+    format::{
+        ValuePayloadDecoder,
+        block::{DecodedBlock, ParsedRecord},
+    },
+};
+
+/// Streaming cursor over records in key order.
+pub struct RangeCursor {
+    pub(crate) cursors: Vec<SegmentRangeCursor>,
+    mode: RangeCursorMode,
+    merge_duplicate_indices: Vec<usize>,
+}
+
+enum RangeCursorMode {
+    Concatenate { active_cursor_index: usize },
+    Merge,
+}
+
+impl RangeCursor {
+    pub(crate) fn new(cursors: Vec<SegmentRangeCursor>) -> Self {
+        Self {
+            cursors,
+            mode: RangeCursorMode::Concatenate {
+                active_cursor_index: 0,
+            },
+            merge_duplicate_indices: Vec::new(),
+        }
+    }
+
+    pub(crate) fn merge(cursors: Vec<SegmentRangeCursor>) -> Self {
+        let merge_duplicate_indices = Vec::with_capacity(cursors.len());
+        Self {
+            cursors,
+            mode: RangeCursorMode::Merge,
+            merge_duplicate_indices,
+        }
+    }
+
+    pub(crate) fn current_record(&mut self) -> Result<Option<ParsedRecord<'_, '_>>> {
+        match self.mode {
+            RangeCursorMode::Concatenate { .. } => {
+                let Some(cursor_index) = self.next_concat_cursor_index()? else {
+                    return Ok(None);
+                };
+                self.cursors[cursor_index].current_record()
+            }
+            RangeCursorMode::Merge => {
+                let Some(winner_index) = self.refresh_merge_winner_indices()? else {
+                    return Ok(None);
+                };
+                self.cursors[winner_index].current_record()
+            }
+        }
+    }
+
+    pub(crate) fn advance_record(&mut self) -> Result<()> {
+        match self.mode {
+            RangeCursorMode::Concatenate { .. } => {
+                let Some(cursor_index) = self.next_concat_cursor_index()? else {
+                    return Ok(());
+                };
+                self.cursors[cursor_index].advance()?;
+                self.advance_concat_cursor(cursor_index)?;
+            }
+            RangeCursorMode::Merge => {
+                if self.merge_duplicate_indices.is_empty()
+                    && self.refresh_merge_winner_indices()?.is_none()
+                {
+                    return Ok(());
+                }
+                let mut duplicate_indices = std::mem::take(&mut self.merge_duplicate_indices);
+                for index in duplicate_indices.drain(..) {
+                    self.cursors[index].advance()?;
+                }
+                self.merge_duplicate_indices = duplicate_indices;
+            }
+        }
+        Ok(())
+    }
+
+    fn consume_next_record<F>(&mut self, visitor: F) -> Result<bool>
+    where
+        F: FnOnce(&[u8], &[u8]) -> Result<()>,
+    {
+        match self.mode {
+            RangeCursorMode::Concatenate { .. } => {
+                let Some(cursor_index) = self.next_concat_cursor_index()? else {
+                    return Ok(false);
+                };
+                {
+                    let record = self.cursors[cursor_index]
+                        .current_record()?
+                        .expect("active cursor has a current record");
+                    visitor(record.key, record.value)?;
+                }
+                self.cursors[cursor_index].advance()?;
+                self.advance_concat_cursor(cursor_index)?;
+            }
+            RangeCursorMode::Merge => {
+                let mut duplicate_indices = std::mem::take(&mut self.merge_duplicate_indices);
+                let Some(winner_index) = self.next_merged_indices_into(&mut duplicate_indices)?
+                else {
+                    self.merge_duplicate_indices = duplicate_indices;
+                    return Ok(false);
+                };
+                {
+                    let record = self.cursors[winner_index]
+                        .current_record()?
+                        .expect("winner cursor has a current record");
+                    visitor(record.key, record.value)?;
+                }
+                for index in duplicate_indices.drain(..) {
+                    self.cursors[index].advance()?;
+                }
+                self.merge_duplicate_indices = duplicate_indices;
+            }
+        }
+        Ok(true)
+    }
+
+    /// Visits all records without allocating owned key/value pairs.
+    pub fn visit_all<F>(mut self, mut visitor: F) -> Result<()>
+    where
+        F: FnMut(&[u8], &[u8]),
+    {
+        while self.consume_next_record(|key, value| {
+            visitor(key, value);
+            Ok(())
+        })? {
+            // Work is done by `consume_next_record`.
+        }
+        Ok(())
+    }
+
+    fn next_concat_cursor_index(&mut self) -> Result<Option<usize>> {
+        let RangeCursorMode::Concatenate {
+            active_cursor_index,
+        } = &mut self.mode
+        else {
+            return Ok(None);
+        };
+        while *active_cursor_index < self.cursors.len() {
+            if self.cursors[*active_cursor_index]
+                .current_record()?
+                .is_some()
+            {
+                return Ok(Some(*active_cursor_index));
+            }
+            *active_cursor_index += 1;
+        }
+        Ok(None)
+    }
+
+    fn advance_concat_cursor(&mut self, cursor_index: usize) -> Result<()> {
+        if let RangeCursorMode::Concatenate {
+            active_cursor_index,
+        } = &mut self.mode
+            && *active_cursor_index == cursor_index
+            && self.cursors[cursor_index].current_record()?.is_none()
+        {
+            *active_cursor_index += 1;
+        }
+        Ok(())
+    }
+
+    fn refresh_merge_winner_indices(&mut self) -> Result<Option<usize>> {
+        let mut duplicate_indices = std::mem::take(&mut self.merge_duplicate_indices);
+        let winner_index = self.next_merged_indices_into(&mut duplicate_indices)?;
+        self.merge_duplicate_indices = duplicate_indices;
+        Ok(winner_index)
+    }
+
+    fn next_merged_indices_into(
+        &self,
+        duplicate_indices: &mut Vec<usize>,
+    ) -> Result<Option<usize>> {
+        duplicate_indices.clear();
+        let mut winner_index = None;
+        let mut winner_key = None;
+        let mut winner_value = None;
+        for (index, cursor) in self.cursors.iter().enumerate() {
+            let Some(record) = cursor.current_record()? else {
+                continue;
+            };
+            let Some(key) = winner_key else {
+                winner_index = Some(index);
+                winner_key = Some(record.key);
+                winner_value = Some(record.value);
+                duplicate_indices.push(index);
+                continue;
+            };
+            match record.key.cmp(key) {
+                std::cmp::Ordering::Less => {
+                    winner_index = Some(index);
+                    winner_key = Some(record.key);
+                    winner_value = Some(record.value);
+                    duplicate_indices.clear();
+                    duplicate_indices.push(index);
+                }
+                std::cmp::Ordering::Equal => {
+                    duplicate_indices.push(index);
+                    if record.value < winner_value.expect("winner value is set with winner key") {
+                        winner_index = Some(index);
+                        winner_value = Some(record.value);
+                    }
+                }
+                std::cmp::Ordering::Greater => {}
+            }
+        }
+        Ok(winner_index)
+    }
+}
+
+impl Iterator for RangeCursor {
+    type Item = Result<(Vec<u8>, Vec<u8>)>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let mut item = None;
+        match self.consume_next_record(|key, value| {
+            item = Some((key.to_vec(), value.to_vec()));
+            Ok(())
+        }) {
+            Ok(true) => Some(Ok(item.expect("visitor stored an item"))),
+            Ok(false) => None,
+            Err(error) => Some(Err(error)),
+        }
+    }
+}
+
+pub(crate) struct SegmentRangeCursor {
+    segment: Arc<SegmentState>,
+    geometry: StoreGeometry,
+    verify_block_checksums: bool,
+    start: Option<Vec<u8>>,
+    end: Option<Vec<u8>>,
+    block_index: usize,
+    current_block: Option<DecodedBlock>,
+    spare_block_bytes: Vec<u8>,
+    payload_decoder: ValuePayloadDecoder,
+    decoded_payload: Option<Vec<u8>>,
+    record_index: usize,
+    exhausted: bool,
+}
+
+impl SegmentRangeCursor {
+    pub(crate) fn new(
+        segment: Arc<SegmentState>,
+        geometry: StoreGeometry,
+        verify_block_checksums: bool,
+        start: Option<Vec<u8>>,
+        end: Option<Vec<u8>>,
+    ) -> Result<Self> {
+        let block_index = start
+            .as_deref()
+            .map_or(0, |start| segment.find_block_index(start));
+        let mut cursor = Self {
+            segment,
+            geometry,
+            verify_block_checksums,
+            start,
+            end,
+            block_index,
+            current_block: None,
+            spare_block_bytes: Vec::new(),
+            payload_decoder: ValuePayloadDecoder::new(geometry.value_payload_compression),
+            decoded_payload: None,
+            record_index: 0,
+            exhausted: false,
+        };
+        cursor.load_next_valid_record()?;
+        Ok(cursor)
+    }
+
+    fn current_record(&self) -> Result<Option<ParsedRecord<'_, '_>>> {
+        if self.exhausted {
+            return Ok(None);
+        }
+        let Some(block) = self.current_block.as_ref() else {
+            return Ok(None);
+        };
+        let payload = block.payload_bytes(self.decoded_payload.as_deref())?;
+        Ok(Some(block.record_at_index_with_payload(
+            self.record_index,
+            payload,
+        )?))
+    }
+
+    fn advance(&mut self) -> Result<()> {
+        self.record_index += 1;
+        if let Some(block) = self.current_block.as_ref()
+            && self.record_index < block.record_count()
+        {
+            if self.record_is_before_end(block, self.record_index)? {
+                return Ok(());
+            }
+            self.exhausted = true;
+            self.recycle_current_block();
+            return Ok(());
+        }
+
+        self.load_next_valid_record()
+    }
+
+    fn load_next_valid_record(&mut self) -> Result<()> {
+        self.recycle_current_block();
+        self.record_index = 0;
+
+        while self.block_index < self.segment.block_index.len() {
+            let block_index = self.block_index;
+            self.block_index += 1;
+            let buffer = std::mem::take(&mut self.spare_block_bytes);
+            let block = match self.segment.load_block_reusing(
+                block_index,
+                self.geometry,
+                self.verify_block_checksums,
+                buffer,
+            ) {
+                Ok(block) => block,
+                Err(error) if error.is_cache_miss_corruption() => continue,
+                Err(error) => return Err(error),
+            };
+
+            if let Some(end) = self.end.as_deref()
+                && block.first_key() >= end
+            {
+                self.exhausted = true;
+                return Ok(());
+            }
+            if let Some(start) = self.start.as_deref()
+                && block.last_key() < start
+            {
+                self.spare_block_bytes = block.into_bytes();
+                continue;
+            }
+
+            let record_index = self
+                .start
+                .as_deref()
+                .map_or(0, |start| block.lower_bound_index(start));
+            if record_index < block.record_count()
+                && self.record_is_before_end(&block, record_index)?
+            {
+                let decoded_payload =
+                    match block.decode_payload_if_needed(&mut self.payload_decoder) {
+                        Ok(decoded_payload) => decoded_payload,
+                        Err(_) => {
+                            self.spare_block_bytes = block.into_bytes();
+                            continue;
+                        }
+                    };
+                self.decoded_payload = decoded_payload;
+                self.current_block = Some(block);
+                self.record_index = record_index;
+                return Ok(());
+            }
+            self.spare_block_bytes = block.into_bytes();
+        }
+
+        self.exhausted = true;
+        Ok(())
+    }
+
+    fn record_is_before_end(&self, block: &DecodedBlock, record_index: usize) -> Result<bool> {
+        if let Some(end) = self.end.as_deref() {
+            return Ok(block.key_at_index(record_index)? < end);
+        }
+        Ok(true)
+    }
+
+    fn recycle_current_block(&mut self) {
+        if let Some(block) = self.current_block.take() {
+            self.spare_block_bytes = block.into_bytes();
+        }
+        self.payload_decoder
+            .reclaim_payload_buffer(self.decoded_payload.take());
+    }
+}

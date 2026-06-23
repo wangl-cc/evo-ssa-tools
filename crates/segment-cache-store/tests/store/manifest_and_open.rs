@@ -1,0 +1,317 @@
+use std::fs;
+
+use crc32c::crc32c;
+use segment_cache_store::{
+    CatalogError, CatalogMismatch, CommitOptions, Error, OpenOptions as StoreOpenOptions, Result,
+    Store, StoreMetadata, ValueLayout,
+};
+
+use crate::support::{
+    api::{
+        commit_entries, commit_entries_with_options, create_store, make_key, make_value, metadata,
+        open_options, reopen_store, test_block_checksum,
+    },
+    segment_file::first_segment_path,
+};
+
+#[test]
+fn changing_target_block_size_can_reopen_existing_segments() -> Result<()> {
+    let tempdir = tempfile::tempdir()?;
+    let store = create_store(&tempdir)?;
+    let first_key = make_key(1, 0, 0);
+    commit_entries_with_options(
+        &store,
+        &[(first_key.clone(), make_value(1, 32))],
+        true,
+        &CommitOptions::default().with_target_block_size(128),
+    )?;
+    drop(store);
+
+    let reopened = reopen_store(&tempdir)?;
+    commit_entries_with_options(
+        &reopened,
+        &[(make_key(9, 0, 0), make_value(2, 32))],
+        true,
+        &CommitOptions::default().with_target_block_size(512),
+    )?;
+
+    assert_eq!(reopened.fetch_one(&first_key)?, Some(make_value(1, 32)));
+    Ok(())
+}
+
+#[test]
+fn target_block_size_does_not_pad_physical_blocks() -> Result<()> {
+    let tempdir = tempfile::tempdir()?;
+    let store = create_store(&tempdir)?;
+    let target_block_size = 1024 * 1024;
+    commit_entries_with_options(
+        &store,
+        &[(make_key(1, 0, 0), make_value(1, 32))],
+        true,
+        &CommitOptions::default().with_target_block_size(target_block_size),
+    )?;
+
+    let segment_len = fs::metadata(first_segment_path(tempdir.path())?)?.len();
+    assert!(
+        segment_len < target_block_size as u64,
+        "target_block_size is a logical split target, not physical padding"
+    );
+    Ok(())
+}
+
+#[test]
+fn manifest_is_binary_v1_snapshot() -> Result<()> {
+    let tempdir = tempfile::tempdir()?;
+    let store = create_store(&tempdir)?;
+    commit_entries(&store, &[(make_key(1, 0, 0), make_value(1, 8))], true)?;
+
+    let store_file = fs::read_to_string(tempdir.path().join("STORE"))?;
+    let manifest = fs::read(tempdir.path().join("MANIFEST"))?;
+
+    assert!(store_file.starts_with("segment-cache-store store v1\n"));
+    assert!(store_file.contains("version=1\n"));
+    assert!(store_file.contains("metadata=7365676d656e742d63616368652d73746f72652d74657374\n"));
+    assert!(store_file.contains("key_len=16\n"));
+    assert!(store_file.contains("value_len=0\n"));
+    assert!(store_file.contains(&format!(
+        "block_checksum_id={}\n",
+        test_block_checksum().format_id()
+    )));
+    assert!(store_file.contains("value_payload_compression_id=0\n"));
+    assert!(!store_file.contains('{'));
+
+    assert_eq!(&manifest[..4], b"SCSM");
+    assert_eq!(
+        u32::from_le_bytes(manifest[4..8].try_into().expect("version")),
+        1
+    );
+    assert_eq!(
+        u32::from_le_bytes(manifest[8..12].try_into().expect("key len")),
+        16
+    );
+    assert_eq!(
+        u32::from_le_bytes(manifest[12..16].try_into().expect("next segment id")),
+        1
+    );
+    assert_eq!(
+        u32::from_le_bytes(manifest[16..20].try_into().expect("segment count")),
+        1
+    );
+    assert_eq!(manifest.len(), 20 + 4 + 1 + 8 + 8 + 16 + 16 + 4);
+    Ok(())
+}
+
+#[test]
+fn inspect_reads_store_identity() -> Result<()> {
+    let tempdir = tempfile::tempdir()?;
+    let _store = create_store(&tempdir)?;
+
+    let info = Store::inspect(tempdir.path())?;
+
+    assert_eq!(info.metadata, metadata());
+    assert_eq!(info.key_len, 16);
+    assert_eq!(info.value_layout, ValueLayout::VARIABLE);
+    assert_eq!(info.block_checksum, test_block_checksum());
+    assert_eq!(
+        info.value_payload_compression,
+        segment_cache_store::ValuePayloadCompressionKind::None
+    );
+    Ok(())
+}
+
+#[test]
+fn storage_stats_report_root_file_usage() -> Result<()> {
+    let tempdir = tempfile::tempdir()?;
+    let store = create_store(&tempdir)?;
+    commit_entries(&store, &[(make_key(1, 0, 0), make_value(1, 8))], true)?;
+
+    let stats = store.storage_stats()?;
+
+    assert_eq!(stats.segment_files, 1);
+    assert!(stats.segment_bytes > 0);
+    assert!(stats.total_files >= stats.segment_files);
+    assert!(stats.total_bytes >= stats.segment_bytes);
+    Ok(())
+}
+
+#[test]
+fn unsupported_store_block_checksum_is_rejected() -> Result<()> {
+    let tempdir = tempfile::tempdir()?;
+    let store = create_store(&tempdir)?;
+    drop(store);
+
+    let store_path = tempdir.path().join("STORE");
+    let mut store_file = fs::read_to_string(&store_path)?;
+    store_file = store_file.replace(
+        &format!("block_checksum_id={}\n", test_block_checksum().format_id()),
+        "block_checksum_id=999\n",
+    );
+    fs::write(store_path, store_file)?;
+
+    let error = match Store::open(tempdir.path(), open_options()) {
+        Ok(_) => panic!("unsupported checksum id should reject open"),
+        Err(error) => error,
+    };
+    assert!(matches!(
+        error,
+        Error::Catalog(CatalogError::Mismatch(
+            CatalogMismatch::UnsupportedBlockChecksum { format_id: 999 }
+        ))
+    ));
+    Ok(())
+}
+
+#[test]
+fn unsupported_store_value_payload_compression_is_rejected() -> Result<()> {
+    let tempdir = tempfile::tempdir()?;
+    let store = create_store(&tempdir)?;
+    drop(store);
+
+    let store_path = tempdir.path().join("STORE");
+    let mut store_file = fs::read_to_string(&store_path)?;
+    store_file = store_file.replace(
+        "value_payload_compression_id=0\n",
+        "value_payload_compression_id=999\n",
+    );
+    fs::write(store_path, store_file)?;
+
+    let error = match Store::open(tempdir.path(), open_options()) {
+        Ok(_) => panic!("unsupported value payload compression id should reject open"),
+        Err(error) => error,
+    };
+    assert!(matches!(
+        error,
+        Error::Catalog(CatalogError::Mismatch(
+            CatalogMismatch::UnsupportedValuePayloadCompression { format_id: 999 }
+        ))
+    ));
+    Ok(())
+}
+
+#[test]
+fn missing_store_file_is_rejected() -> Result<()> {
+    let tempdir = tempfile::tempdir()?;
+    fs::write(tempdir.path().join("MANIFEST"), "not enough\n")?;
+
+    let error = match Store::open(tempdir.path(), open_options()) {
+        Ok(_) => panic!("missing store file should be rejected"),
+        Err(error) => error,
+    };
+
+    assert!(matches!(
+        error,
+        Error::Catalog(CatalogError::Mismatch(CatalogMismatch::MissingStore))
+    ));
+    Ok(())
+}
+
+#[test]
+fn malformed_store_file_is_rejected() -> Result<()> {
+    let tempdir = tempfile::tempdir()?;
+    let store = create_store(&tempdir)?;
+    drop(store);
+
+    fs::write(tempdir.path().join("STORE"), "not a segment-cache store\n")?;
+
+    let error = match Store::open(tempdir.path(), open_options()) {
+        Ok(_) => panic!("malformed store should be rejected"),
+        Err(error) => error,
+    };
+
+    assert!(matches!(error, Error::Catalog(CatalogError::StoreParse(_))));
+    Ok(())
+}
+
+#[test]
+fn malformed_manifest_is_rejected() -> Result<()> {
+    let tempdir = tempfile::tempdir()?;
+    let store = create_store(&tempdir)?;
+    drop(store);
+
+    fs::write(
+        tempdir.path().join("MANIFEST"),
+        "not a segment-cache manifest\n",
+    )?;
+
+    let error = match Store::open(tempdir.path(), open_options()) {
+        Ok(_) => panic!("malformed manifest should be rejected"),
+        Err(error) => error,
+    };
+
+    assert!(matches!(
+        error,
+        Error::Catalog(CatalogError::ManifestParse(_))
+    ));
+    Ok(())
+}
+
+#[test]
+fn manifest_metadata_mismatch_is_rejected() -> Result<()> {
+    let tempdir = tempfile::tempdir()?;
+    let store = create_store(&tempdir)?;
+    commit_entries(&store, &[(make_key(1, 0, 0), make_value(1, 8))], true)?;
+    drop(store);
+
+    let error = match Store::open(
+        tempdir.path(),
+        StoreOpenOptions::new(StoreMetadata::from_text("different")),
+    ) {
+        Ok(_) => panic!("mismatched manifest metadata should be rejected"),
+        Err(error) => error,
+    };
+    assert!(matches!(
+        error,
+        Error::Catalog(CatalogError::Mismatch(CatalogMismatch::Metadata))
+    ));
+
+    assert_eq!(reopen_store(&tempdir)?.iter_all()?.count(), 1);
+    Ok(())
+}
+
+#[test]
+fn manifest_rejects_reused_next_segment_id() -> Result<()> {
+    let tempdir = tempfile::tempdir()?;
+    let store = create_store(&tempdir)?;
+    commit_entries(&store, &[(make_key(1, 0, 0), make_value(1, 8))], true)?;
+    drop(store);
+
+    let manifest_path = tempdir.path().join("MANIFEST");
+    let mut manifest = fs::read(&manifest_path)?;
+    manifest[12..16].copy_from_slice(&0u32.to_le_bytes());
+    let crc_offset = manifest.len() - 4;
+    let crc = crc32c(&manifest[..crc_offset]);
+    manifest[crc_offset..].copy_from_slice(&crc.to_le_bytes());
+    fs::write(&manifest_path, manifest)?;
+
+    let error = match Store::open(tempdir.path(), open_options()) {
+        Ok(_) => panic!("manifest should reject reused next_segment_id"),
+        Err(error) => error,
+    };
+    assert!(matches!(
+        error,
+        Error::Catalog(CatalogError::Mismatch(CatalogMismatch::NextSegmentId))
+    ));
+    Ok(())
+}
+
+#[test]
+fn manifest_footer_mismatch_hides_wrong_segment_file() -> Result<()> {
+    let tempdir_a = tempfile::tempdir()?;
+    let tempdir_b = tempfile::tempdir()?;
+    let store_a = create_store(&tempdir_a)?;
+    let store_b = create_store(&tempdir_b)?;
+    let key_a = make_key(1, 0, 0);
+    let key_b = make_key(9, 0, 0);
+    commit_entries(&store_a, &[(key_a.clone(), make_value(1, 8))], true)?;
+    commit_entries(&store_b, &[(key_b.clone(), make_value(2, 8))], true)?;
+
+    let path_a = first_segment_path(tempdir_a.path())?;
+    let path_b = first_segment_path(tempdir_b.path())?;
+    drop(store_a);
+    fs::copy(path_b, path_a)?;
+
+    let reopened = reopen_store(&tempdir_a)?;
+    assert_eq!(reopened.fetch_one(&key_a)?, None);
+    assert_eq!(reopened.fetch_one(&key_b)?, None);
+    Ok(())
+}

@@ -1,0 +1,52 @@
+[package]
+name = "segment-cache-store"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[features]
+default = ["checksum-rapidhash"]
+checksum-crc32c = []
+checksum-rapidhash = ["dep:rapidhash"]
+value-compression-lz4 = ["dep:lz4_flex"]
+value-compression-zstd = ["dep:zstd"]
+
+[[bench]]
+harness = false
+name = "comparison"
+
+[[bench]]
+harness = false
+name = "ordered_lookup"
+
+[[bench]]
+harness = false
+name = "append_publish"
+
+[[bench]]
+harness = false
+name = "parameter_evolution"
+
+[[bench]]
+harness = false
+name = "compression"
+required-features = ["value-compression-lz4", "value-compression-zstd"]
+
+[dependencies]
+crc32c = { workspace = true }
+lz4_flex = { workspace = true, optional = true }
+parking_lot = { workspace = true }
+rapidhash = { workspace = true, optional = true }
+thiserror = { workspace = true }
+zstd = { workspace = true, optional = true }
+
+[dev-dependencies]
+criterion = { workspace = true }
+fjall3 = { package = "fjall", version = "3.1.4", default-features = false }
+rand = { workspace = true, features = ["std", "std_rng"] }
+redb = "3"
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

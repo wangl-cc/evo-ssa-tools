@@ -5,19 +5,27 @@ on:
     branches: ["main"]
     paths:
       - "crates/*/src/**"
+      - "crates/*/tests/**"
+      - "crates/*/benches/**"
+      - "crates/*/examples/**"
       - "crates/*/Cargo.toml"
       - "crates/*/build.rs"
       - "Cargo.lock"
       - ".cargo/config.toml"
+      - "codecov.yml"
       - ".github/workflows/ci.yml"
   pull_request:
     branches: ["main"]
     paths:
       - "crates/*/src/**"
+      - "crates/*/tests/**"
+      - "crates/*/benches/**"
+      - "crates/*/examples/**"
       - "crates/*/Cargo.toml"
       - "crates/*/build.rs"
       - "Cargo.lock"
       - ".cargo/config.toml"
+      - "codecov.yml"
       - ".github/workflows/ci.yml"
 
 permissions:
@@ -67,6 +75,9 @@ jobs:
       - name: Build
         run: |
           cargo build --locked --all-features --workspace
+      - name: Check examples and benches
+        run: |
+          cargo check --locked --all-features --workspace --examples --benches
       - name: Lint (clippy)
         run: |
           cargo clippy --all-features --workspace -- -D warnings
@@ -74,9 +85,34 @@ jobs:
         run: |
           cargo test --all-features --workspace -- --include-ignored
 
+  segment-cache-store-features:
+    name: Feature Matrix (segment-cache-store, ${{ matrix.variant }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - variant: no-default
+            feature_flags: --no-default-features
+          - variant: checksum-crc32c
+            feature_flags: --no-default-features --features checksum-crc32c
+          - variant: value-compression-lz4
+            feature_flags: --no-default-features --features value-compression-lz4
+          - variant: value-compression-zstd
+            feature_flags: --no-default-features --features value-compression-zstd
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: Test
+        run: |
+          cargo test -p segment-cache-store --locked ${{ matrix.feature_flags }}
+      - name: Lint (clippy)
+        run: |
+          cargo clippy -p segment-cache-store --locked ${{ matrix.feature_flags }} --all-targets -- -D warnings
+
   coverage:
     name: Coverage
-    needs: [build]
+    needs: [build, segment-cache-store-features]
     runs-on: ${{ matrix.os }}
     env:
       CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
