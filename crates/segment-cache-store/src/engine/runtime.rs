@@ -8,15 +8,11 @@ use crate::{
     engine::{
         io::WriterLock,
         paths::StorePaths,
-        segment_file::{
-            BlockReadOptions, OpenedSegment, read_block, read_block_metadata_reusing,
-            read_block_payload, read_block_reusing,
-        },
+        segment_file::{BlockReadOptions, OpenedSegment, read_block, read_block_reusing},
     },
     error::Result,
     format::{
         BlockChecksumKind, StoreMetadata, ValueLayout, ValuePayloadCompressionKind,
-        ValuePayloadDecoder,
         block::{BlockKeyUpperBound, DecodedBlock},
         manifest::StoreManifest,
         segment::BlockIndexEntry,
@@ -69,20 +65,7 @@ pub(crate) struct SegmentState {
 /// dropping the [`SegmentState`].
 #[derive(Debug)]
 struct VerifiedBlocks {
-    blocks: Vec<VerifiedBlock>,
-}
-
-#[derive(Clone, Copy, Debug)]
-enum VerifiedBlockPart {
-    Metadata,
-    Payload,
-    Full,
-}
-
-#[derive(Clone, Copy, Debug, Default)]
-struct VerifiedBlock {
-    metadata: bool,
-    payload: bool,
+    blocks: Vec<bool>,
 }
 
 impl StoreGeometry {
@@ -193,19 +176,17 @@ impl SegmentState {
         block_index: usize,
         geometry: StoreGeometry,
         verify_checksum: bool,
-        payload_decoder: &mut ValuePayloadDecoder,
     ) -> Result<DecodedBlock> {
         let entry = &self.block_index[block_index];
-        let verify = self.needs_verification(block_index, VerifiedBlockPart::Full, verify_checksum);
+        let verify = self.needs_verification(block_index, verify_checksum);
         let upper_key_bound = self.block_upper_key_bound(block_index);
         let block = read_block(
             &self.file,
             entry,
             geometry.block_read_options(verify, upper_key_bound),
-            payload_decoder,
         )?;
         if verify_checksum {
-            self.mark_verified(block_index, VerifiedBlockPart::Full);
+            self.mark_verified(block_index);
         }
         Ok(block)
     }
@@ -217,73 +198,24 @@ impl SegmentState {
         geometry: StoreGeometry,
         verify_checksum: bool,
         buffer: Vec<u8>,
-        payload_decoder: &mut ValuePayloadDecoder,
     ) -> Result<DecodedBlock> {
         let entry = &self.block_index[block_index];
-        let verify = self.needs_verification(block_index, VerifiedBlockPart::Full, verify_checksum);
+        let verify = self.needs_verification(block_index, verify_checksum);
         let upper_key_bound = self.block_upper_key_bound(block_index);
         let block = read_block_reusing(
             &self.file,
             entry,
             geometry.block_read_options(verify, upper_key_bound),
             buffer,
-            payload_decoder,
         )?;
         if verify_checksum {
-            self.mark_verified(block_index, VerifiedBlockPart::Full);
+            self.mark_verified(block_index);
         }
         Ok(block)
     }
 
-    /// Reads and decodes only the key/index metadata for a block.
-    pub(crate) fn load_block_metadata_reusing(
-        &self,
-        block_index: usize,
-        geometry: StoreGeometry,
-        verify_checksum: bool,
-        buffer: Vec<u8>,
-    ) -> Result<DecodedBlock> {
-        let entry = &self.block_index[block_index];
-        let verify =
-            self.needs_verification(block_index, VerifiedBlockPart::Metadata, verify_checksum);
-        let upper_key_bound = self.block_upper_key_bound(block_index);
-        let block = read_block_metadata_reusing(
-            &self.file,
-            entry,
-            geometry.block_read_options(verify, upper_key_bound),
-            buffer,
-        )?;
-        if verify_checksum {
-            self.mark_verified(block_index, VerifiedBlockPart::Metadata);
-        }
-        Ok(block)
-    }
-
-    /// Loads the value payload for a metadata-only decoded block.
-    pub(crate) fn load_block_payload(
-        &self,
-        block_index: usize,
-        block: &mut DecodedBlock,
-        verify_checksum: bool,
-        payload_decoder: &mut ValuePayloadDecoder,
-    ) -> Result<()> {
-        let entry = &self.block_index[block_index];
-        let verify =
-            self.needs_verification(block_index, VerifiedBlockPart::Payload, verify_checksum);
-        read_block_payload(&self.file, entry, block, verify, payload_decoder)?;
-        if verify_checksum {
-            self.mark_verified(block_index, VerifiedBlockPart::Payload);
-        }
-        Ok(())
-    }
-
-    fn needs_verification(
-        &self,
-        block_index: usize,
-        part: VerifiedBlockPart,
-        requested: bool,
-    ) -> bool {
-        requested && !self.verified_blocks.lock().is_verified(block_index, part)
+    fn needs_verification(&self, block_index: usize, requested: bool) -> bool {
+        requested && !self.verified_blocks.lock().is_verified(block_index)
     }
 
     fn block_upper_key_bound(&self, block_index: usize) -> BlockKeyUpperBound<'_> {
@@ -293,38 +225,25 @@ impl SegmentState {
         }
     }
 
-    fn mark_verified(&self, block_index: usize, part: VerifiedBlockPart) {
-        self.verified_blocks.lock().mark(block_index, part);
+    fn mark_verified(&self, block_index: usize) {
+        self.verified_blocks.lock().mark(block_index);
     }
 }
 
 impl VerifiedBlocks {
     fn new(block_count: usize) -> Self {
         Self {
-            blocks: vec![VerifiedBlock::default(); block_count],
+            blocks: vec![false; block_count],
         }
     }
 
-    fn is_verified(&self, block_index: usize, part: VerifiedBlockPart) -> bool {
-        self.blocks
-            .get(block_index)
-            .is_some_and(|block| match part {
-                VerifiedBlockPart::Metadata => block.metadata,
-                VerifiedBlockPart::Payload => block.payload,
-                VerifiedBlockPart::Full => block.metadata && block.payload,
-            })
+    fn is_verified(&self, block_index: usize) -> bool {
+        self.blocks.get(block_index).copied().unwrap_or(false)
     }
 
-    fn mark(&mut self, block_index: usize, part: VerifiedBlockPart) {
+    fn mark(&mut self, block_index: usize) {
         if let Some(block) = self.blocks.get_mut(block_index) {
-            match part {
-                VerifiedBlockPart::Metadata => block.metadata = true,
-                VerifiedBlockPart::Payload => block.payload = true,
-                VerifiedBlockPart::Full => {
-                    block.metadata = true;
-                    block.payload = true;
-                }
-            }
+            *block = true;
         }
     }
 }
@@ -337,28 +256,23 @@ mod tests {
         use super::*;
 
         #[test]
-        fn metadata_and_payload_are_tracked_independently() {
+        fn full_block_verification_is_tracked_per_block() {
             let mut blocks = VerifiedBlocks::new(2);
 
-            assert!(!blocks.is_verified(0, VerifiedBlockPart::Full));
-            blocks.mark(0, VerifiedBlockPart::Metadata);
-            assert!(blocks.is_verified(0, VerifiedBlockPart::Metadata));
-            assert!(!blocks.is_verified(0, VerifiedBlockPart::Payload));
-            assert!(!blocks.is_verified(0, VerifiedBlockPart::Full));
-
-            blocks.mark(0, VerifiedBlockPart::Payload);
-            assert!(blocks.is_verified(0, VerifiedBlockPart::Full));
-            assert!(!blocks.is_verified(1, VerifiedBlockPart::Metadata));
+            assert!(!blocks.is_verified(0));
+            blocks.mark(0);
+            assert!(blocks.is_verified(0));
+            assert!(!blocks.is_verified(1));
         }
 
         #[test]
         fn out_of_range_marks_are_ignored() {
             let mut blocks = VerifiedBlocks::new(1);
 
-            blocks.mark(9, VerifiedBlockPart::Full);
+            blocks.mark(9);
 
-            assert!(!blocks.is_verified(0, VerifiedBlockPart::Full));
-            assert!(!blocks.is_verified(9, VerifiedBlockPart::Full));
+            assert!(!blocks.is_verified(0));
+            assert!(!blocks.is_verified(9));
         }
     }
 }

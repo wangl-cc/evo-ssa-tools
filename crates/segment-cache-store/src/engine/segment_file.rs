@@ -11,11 +11,8 @@ use crate::{
     engine::io::read_exact_at,
     error::Result,
     format::{
-        BlockChecksumKind, ValueLayout, ValuePayloadCompressionKind, ValuePayloadDecoder,
-        block::{
-            BlockDecodeOptions, BlockKeyUpperBound, BlockLookupLayout, DecodedBlock,
-            KEY_PREFIX_LEN_LEN,
-        },
+        BlockChecksumKind, ValueLayout, ValuePayloadCompressionKind,
+        block::{BlockDecodeOptions, BlockKeyUpperBound, DecodedBlock},
         manifest::SegmentFileFingerprint,
         segment::{
             BlockIndexEntry, SEGMENT_FOOTER_TRAILER_LEN, SEGMENT_HEADER_LEN, SegmentFooter,
@@ -174,9 +171,8 @@ pub(super) fn read_block(
     file: &File,
     entry: &BlockIndexEntry,
     options: BlockReadOptions<'_>,
-    payload_decoder: &mut ValuePayloadDecoder,
 ) -> Result<DecodedBlock> {
-    read_block_reusing(file, entry, options, Vec::new(), payload_decoder)
+    read_block_reusing(file, entry, options, Vec::new())
 }
 
 /// Reads and decodes one block while reusing a caller-owned backing buffer.
@@ -185,7 +181,6 @@ pub(super) fn read_block_reusing(
     entry: &BlockIndexEntry,
     options: BlockReadOptions<'_>,
     mut bytes: Vec<u8>,
-    payload_decoder: &mut ValuePayloadDecoder,
 ) -> Result<DecodedBlock> {
     let block_len = entry.block_len as usize;
     if bytes.len() < block_len {
@@ -194,98 +189,12 @@ pub(super) fn read_block_reusing(
         bytes.truncate(block_len);
     }
     read_exact_at(file, entry.block_offset, &mut bytes)?;
-    Ok(DecodedBlock::decode(
-        bytes,
-        entry,
-        BlockDecodeOptions {
-            key_len: options.key_len,
-            value_layout: options.value_layout,
-            block_checksum: options.block_checksum,
-            value_payload_compression: options.value_payload_compression,
-            verify_checksum: options.verify_checksum,
-            upper_key_bound: options.upper_key_bound,
-        },
-        payload_decoder,
-    )?)
-}
-
-/// Reads and decodes only the key/index metadata for one block.
-pub(super) fn read_block_metadata_reusing(
-    file: &File,
-    entry: &BlockIndexEntry,
-    options: BlockReadOptions<'_>,
-    mut metadata: Vec<u8>,
-) -> Result<DecodedBlock> {
-    use crate::format::CorruptionError;
-
-    if entry.block_len < KEY_PREFIX_LEN_LEN as u32 {
-        return Err(CorruptionError::Block.into());
-    }
-    let mut prefix_len_bytes = [0u8; KEY_PREFIX_LEN_LEN];
-    read_exact_at(file, entry.block_offset, &mut prefix_len_bytes)?;
-    let prefix_len = u32::from_le_bytes(prefix_len_bytes) as usize;
-    let lookup_layout = BlockLookupLayout::new(
-        entry.record_count as usize,
-        options.key_len,
-        options.value_layout,
-        prefix_len,
-    )?;
-    let metadata_len = lookup_layout.metadata_with_checksum_len(options.block_checksum)?;
-    if metadata_len > entry.block_len as usize {
-        return Err(CorruptionError::Block.into());
-    }
-    if metadata.len() < metadata_len {
-        metadata.resize(metadata_len, 0);
-    } else {
-        metadata.truncate(metadata_len);
-    }
-    read_exact_at(file, entry.block_offset, &mut metadata)?;
-    Ok(DecodedBlock::decode_metadata(
-        metadata,
-        entry,
-        BlockDecodeOptions {
-            key_len: options.key_len,
-            value_layout: options.value_layout,
-            block_checksum: options.block_checksum,
-            value_payload_compression: options.value_payload_compression,
-            verify_checksum: options.verify_checksum,
-            upper_key_bound: options.upper_key_bound,
-        },
-    )?)
-}
-
-/// Loads and verifies the value payload for a metadata-only decoded block.
-pub(super) fn read_block_payload(
-    file: &File,
-    entry: &BlockIndexEntry,
-    block: &mut DecodedBlock,
-    verify_checksum: bool,
-    payload_decoder: &mut ValuePayloadDecoder,
-) -> Result<()> {
-    if block.has_payload() {
-        return Ok(());
-    }
-    let payload_offset = block.payload_offset();
-    let header_len = block.payload_frame_header_len();
-    let mut payload = vec![0u8; header_len];
-    if header_len > 0 {
-        read_exact_at(
-            file,
-            entry.block_offset + payload_offset as u64,
-            &mut payload,
-        )?;
-    }
-    let read_len = block.payload_read_len_from_header(&payload, verify_checksum)?;
-    if payload.len() < read_len {
-        let already_read = payload.len();
-        payload.resize(read_len, 0);
-        read_exact_at(
-            file,
-            entry.block_offset + payload_offset as u64 + already_read as u64,
-            &mut payload[already_read..],
-        )?;
-    } else if payload.len() > read_len {
-        payload.truncate(read_len);
-    }
-    Ok(block.attach_payload(payload, verify_checksum, payload_decoder)?)
+    Ok(DecodedBlock::decode(bytes, entry, BlockDecodeOptions {
+        key_len: options.key_len,
+        value_layout: options.value_layout,
+        block_checksum: options.block_checksum,
+        value_payload_compression: options.value_payload_compression,
+        verify_checksum: options.verify_checksum,
+        upper_key_bound: options.upper_key_bound,
+    })?)
 }

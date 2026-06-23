@@ -30,6 +30,7 @@ struct LookupState {
     current_segment_index: Option<usize>,
     current_block_index: Option<usize>,
     loaded_block: Option<DecodedBlock>,
+    decoded_payload: Option<Vec<u8>>,
     payload_decoder: ValuePayloadDecoder,
 }
 
@@ -40,6 +41,7 @@ impl LookupState {
             current_segment_index: None,
             current_block_index: None,
             loaded_block: None,
+            decoded_payload: None,
             payload_decoder: ValuePayloadDecoder::new(value_payload_compression),
         }
     }
@@ -60,13 +62,12 @@ impl LookupState {
     }
 
     fn recycle_loaded_block(&mut self) -> Vec<u8> {
+        self.payload_decoder
+            .reclaim_payload_buffer(self.decoded_payload.take());
         let Some(block) = self.loaded_block.take() else {
             return Vec::new();
         };
-        let buffers = block.into_reusable_buffers();
-        self.payload_decoder
-            .reclaim_payload_buffer(buffers.decoded_payload);
-        buffers.bytes
+        block.into_bytes()
     }
 }
 
@@ -142,17 +143,16 @@ impl<'a> PatchWinnerReader<'a> {
             return Err(CorruptionError::Block.into());
         };
         state.current_segment_index = Some(winner.segment_index);
-        let block = match state.ensure_loaded_block(
+        match state.value_at_index(
             segment,
             winner.block_index,
+            winner.record_index,
             self.options,
-            BlockLoadMode::Full,
         ) {
-            Ok(block) => block,
-            Err(error) if error.is_cache_miss_corruption() => return Ok(None),
-            Err(error) => return Err(error),
-        };
-        Ok(Some(block.record_at_index(winner.record_index)?.value))
+            Ok(value) => Ok(Some(value)),
+            Err(error) if error.is_cache_miss_corruption() => Ok(None),
+            Err(error) => Err(error),
+        }
     }
 }
 
@@ -465,13 +465,22 @@ impl<'a> SegmentSetReader<'a> {
             block_index,
             self.options.geometry,
             self.options.verify_block_checksums,
-            &mut payload_decoder,
         ) {
             Ok(block) => block,
             Err(error) if error.is_cache_miss_corruption() => return Ok(None),
             Err(error) => return Err(error),
         };
-        Ok(block.find_value(key))
+        let record_index = block.lower_bound_index(key);
+        if !block.key_matches_at_index(record_index, key) {
+            return Ok(None);
+        }
+        let decoded_payload = match block.decode_payload_if_needed(&mut payload_decoder) {
+            Ok(decoded_payload) => decoded_payload,
+            Err(_) => return Ok(None),
+        };
+        Ok(block
+            .value_at_index(record_index, decoded_payload.as_deref())
+            .map(|value| Some(value.to_vec()))?)
     }
 }
 
@@ -489,12 +498,6 @@ where
     visitor: &'a mut F,
     key_index: usize,
     segment_index: usize,
-}
-
-#[derive(Clone, Copy, Eq, PartialEq)]
-enum BlockLoadMode {
-    Full,
-    Metadata,
 }
 
 impl<'a, K, F> OrderedSegmentSweep<'a, K, F>
@@ -555,7 +558,7 @@ where
             if block_end == self.key_index {
                 if should_advance_past_empty_block(segment, block_index, key) {
                     self.lookup_state.current_block_index = block_index.checked_add(1);
-                    self.lookup_state.loaded_block = None;
+                    self.lookup_state.recycle_loaded_block();
                 } else {
                     (self.visitor)(self.base_index + self.key_index, None)?;
                     self.key_index += 1;
@@ -563,43 +566,34 @@ where
                 continue;
             }
 
-            self.lookup_state.current_segment_index = Some(self.segment_index);
-            let block_record_count = segment.block_index[block_index].record_count as usize;
-            let query_count = block_end - self.key_index;
-            let load_mode = if query_count < block_record_count {
-                BlockLoadMode::Metadata
-            } else {
-                BlockLoadMode::Full
-            };
-
-            let block = match self.lookup_state.ensure_loaded_block(
-                segment,
-                block_index,
-                self.options,
-                load_mode,
-            ) {
-                Ok(block) => block,
-                Err(error) if error.is_cache_miss_corruption() => {
-                    self.visit_corrupt_block_misses(segment, block_index)?;
-                    continue;
-                }
-                Err(error) => return Err(error),
-            };
-            if load_mode == BlockLoadMode::Metadata
-                && !BlockKeySweep::new(block, &self.keys[self.key_index..block_end]).has_any_hit()
-            {
+            let block =
+                match self
+                    .lookup_state
+                    .ensure_loaded_block(segment, block_index, self.options)
+                {
+                    Ok(block) => block,
+                    Err(error) if error.is_cache_miss_corruption() => {
+                        self.visit_corrupt_block_misses(segment, block_index)?;
+                        continue;
+                    }
+                    Err(error) => return Err(error),
+                };
+            if !BlockKeySweep::new(block, &self.keys[self.key_index..block_end]).has_any_hit() {
                 for offset in self.key_index..block_end {
                     (self.visitor)(self.base_index + offset, None)?;
                 }
                 self.key_index = block_end;
                 continue;
             }
-            let block = match self.lookup_state.ensure_loaded_payload(
-                segment,
-                block_index,
-                self.options.verify_block_checksums,
-            ) {
-                Ok(block) => block,
+            if let Err(error) = self.lookup_state.ensure_decoded_payload() {
+                if error.is_cache_miss_corruption() {
+                    self.visit_corrupt_block_misses(segment, block_index)?;
+                    continue;
+                }
+                return Err(error);
+            }
+            let (block, payload) = match self.lookup_state.loaded_block_and_payload() {
+                Ok(loaded) => loaded,
                 Err(error) if error.is_cache_miss_corruption() => {
                     self.visit_corrupt_block_misses(segment, block_index)?;
                     continue;
@@ -611,6 +605,7 @@ where
                 self.base_index + self.key_index,
                 self.segment_index_base + self.segment_index,
                 block_index,
+                payload,
                 self.visitor,
             )?;
             self.key_index = block_end;
@@ -705,20 +700,8 @@ impl LookupState {
         segment: &SegmentState,
         block_index: usize,
         options: LookupReadOptions,
-        load_mode: BlockLoadMode,
     ) -> Result<&DecodedBlock> {
         if self.current_block_index == Some(block_index) && self.loaded_block.is_some() {
-            if load_mode == BlockLoadMode::Full
-                && let Some(block) = self.loaded_block.as_mut()
-                && !block.has_payload()
-            {
-                segment.load_block_payload(
-                    block_index,
-                    block,
-                    options.verify_block_checksums,
-                    &mut self.payload_decoder,
-                )?;
-            }
             return self
                 .loaded_block
                 .as_ref()
@@ -727,43 +710,42 @@ impl LookupState {
         }
 
         let buffer = self.recycle_loaded_block();
-        let block = match load_mode {
-            BlockLoadMode::Full => segment.load_block_reusing(
-                block_index,
-                options.geometry,
-                options.verify_block_checksums,
-                buffer,
-                &mut self.payload_decoder,
-            )?,
-            BlockLoadMode::Metadata => segment.load_block_metadata_reusing(
-                block_index,
-                options.geometry,
-                options.verify_block_checksums,
-                buffer,
-            )?,
-        };
+        let block = segment.load_block_reusing(
+            block_index,
+            options.geometry,
+            options.verify_block_checksums,
+            buffer,
+        )?;
         self.current_block_index = Some(block_index);
         Ok(self.loaded_block.insert(block))
     }
 
-    fn ensure_loaded_payload(
+    fn ensure_decoded_payload(&mut self) -> Result<()> {
+        let block = self.loaded_block.as_ref().ok_or(CorruptionError::Block)?;
+        if self.decoded_payload.is_none() {
+            self.decoded_payload = block.decode_payload_if_needed(&mut self.payload_decoder)?;
+        }
+        Ok(())
+    }
+
+    fn loaded_block_and_payload(&self) -> Result<(&DecodedBlock, &[u8])> {
+        let block = self.loaded_block.as_ref().ok_or(CorruptionError::Block)?;
+        let payload = block.payload_bytes(self.decoded_payload.as_deref())?;
+        Ok((block, payload))
+    }
+
+    fn value_at_index(
         &mut self,
         segment: &SegmentState,
         block_index: usize,
-        verify_checksum: bool,
-    ) -> Result<&DecodedBlock> {
-        let block = self.loaded_block.as_mut().ok_or(CorruptionError::Block)?;
-        if !block.has_payload() {
-            segment.load_block_payload(
-                block_index,
-                block,
-                verify_checksum,
-                &mut self.payload_decoder,
-            )?;
-        }
-        self.loaded_block
-            .as_ref()
-            .ok_or(CorruptionError::Block)
+        record_index: usize,
+        options: LookupReadOptions,
+    ) -> Result<&[u8]> {
+        self.ensure_loaded_block(segment, block_index, options)?;
+        self.ensure_decoded_payload()?;
+        let (block, payload) = self.loaded_block_and_payload()?;
+        block
+            .value_at_index_with_payload(record_index, payload)
             .map_err(Into::into)
     }
 }
@@ -806,6 +788,7 @@ where
         base_index: usize,
         segment_index: usize,
         block_index: usize,
+        payload: &'a [u8],
         visitor: &mut F,
     ) -> Result<()>
     where
@@ -813,7 +796,7 @@ where
     {
         for (offset, key) in self.keys.iter().enumerate() {
             let hit = self
-                .value_for(key.as_ref())
+                .value_for(key.as_ref(), payload)
                 .map(|(record_index, value)| LookupHit {
                     value,
                     segment_index,
@@ -830,11 +813,11 @@ where
         self.block.key_matches_at_index(self.record_index, key)
     }
 
-    fn value_for(&mut self, key: &[u8]) -> Option<(usize, &'a [u8])> {
+    fn value_for(&mut self, key: &[u8], payload: &'a [u8]) -> Option<(usize, &'a [u8])> {
         self.advance_to(key);
         let record_index = self.record_index;
         self.block
-            .value_at_if_key(record_index, key)
+            .value_at_if_key_with_payload(record_index, key, payload)
             .map(|value| (record_index, value))
     }
 

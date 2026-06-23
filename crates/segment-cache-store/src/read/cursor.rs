@@ -236,6 +236,7 @@ pub(crate) struct SegmentRangeCursor {
     current_block: Option<DecodedBlock>,
     spare_block_bytes: Vec<u8>,
     payload_decoder: ValuePayloadDecoder,
+    decoded_payload: Option<Vec<u8>>,
     record_index: usize,
     exhausted: bool,
 }
@@ -261,6 +262,7 @@ impl SegmentRangeCursor {
             current_block: None,
             spare_block_bytes: Vec::new(),
             payload_decoder: ValuePayloadDecoder::new(geometry.value_payload_compression),
+            decoded_payload: None,
             record_index: 0,
             exhausted: false,
         };
@@ -268,14 +270,18 @@ impl SegmentRangeCursor {
         Ok(cursor)
     }
 
-    fn current_record(&self) -> Result<Option<ParsedRecord<'_>>> {
+    fn current_record(&self) -> Result<Option<ParsedRecord<'_, '_>>> {
         if self.exhausted {
             return Ok(None);
         }
         let Some(block) = self.current_block.as_ref() else {
             return Ok(None);
         };
-        Ok(Some(block.record_at_index(self.record_index)?))
+        let payload = block.payload_bytes(self.decoded_payload.as_deref())?;
+        Ok(Some(block.record_at_index_with_payload(
+            self.record_index,
+            payload,
+        )?))
     }
 
     fn advance(&mut self) -> Result<()> {
@@ -287,7 +293,7 @@ impl SegmentRangeCursor {
                 return Ok(());
             }
             self.exhausted = true;
-            self.current_block = None;
+            self.recycle_current_block();
             return Ok(());
         }
 
@@ -295,12 +301,7 @@ impl SegmentRangeCursor {
     }
 
     fn load_next_valid_record(&mut self) -> Result<()> {
-        if let Some(block) = self.current_block.take() {
-            let buffers = block.into_reusable_buffers();
-            self.spare_block_bytes = buffers.bytes;
-            self.payload_decoder
-                .reclaim_payload_buffer(buffers.decoded_payload);
-        }
+        self.recycle_current_block();
         self.record_index = 0;
 
         while self.block_index < self.segment.block_index.len() {
@@ -312,7 +313,6 @@ impl SegmentRangeCursor {
                 self.geometry,
                 self.verify_block_checksums,
                 buffer,
-                &mut self.payload_decoder,
             ) {
                 Ok(block) => block,
                 Err(error) if error.is_cache_miss_corruption() => continue,
@@ -328,6 +328,7 @@ impl SegmentRangeCursor {
             if let Some(start) = self.start.as_deref()
                 && block.last_key() < start
             {
+                self.spare_block_bytes = block.into_bytes();
                 continue;
             }
 
@@ -338,10 +339,20 @@ impl SegmentRangeCursor {
             if record_index < block.record_count()
                 && self.record_is_before_end(&block, record_index)?
             {
+                let decoded_payload =
+                    match block.decode_payload_if_needed(&mut self.payload_decoder) {
+                        Ok(decoded_payload) => decoded_payload,
+                        Err(_) => {
+                            self.spare_block_bytes = block.into_bytes();
+                            continue;
+                        }
+                    };
+                self.decoded_payload = decoded_payload;
                 self.current_block = Some(block);
                 self.record_index = record_index;
                 return Ok(());
             }
+            self.spare_block_bytes = block.into_bytes();
         }
 
         self.exhausted = true;
@@ -353,5 +364,13 @@ impl SegmentRangeCursor {
             return Ok(block.key_at_index(record_index)? < end);
         }
         Ok(true)
+    }
+
+    fn recycle_current_block(&mut self) {
+        if let Some(block) = self.current_block.take() {
+            self.spare_block_bytes = block.into_bytes();
+        }
+        self.payload_decoder
+            .reclaim_payload_buffer(self.decoded_payload.take());
     }
 }

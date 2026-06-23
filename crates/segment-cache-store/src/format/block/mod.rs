@@ -18,4 +18,4 @@ mod layout;
 
 pub(crate) use decode::{BlockDecodeOptions, BlockKeyUpperBound, DecodedBlock, ParsedRecord};
 pub(super) use encode::BlockBuilder;
-pub(crate) use layout::{BlockLookupLayout, KEY_PREFIX_LEN_LEN};
+pub(crate) use layout::KEY_PREFIX_LEN_LEN;

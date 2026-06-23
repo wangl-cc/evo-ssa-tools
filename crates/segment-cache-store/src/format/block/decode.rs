@@ -14,9 +14,10 @@ use crate::format::{
     ValuePayloadDecoder, segment::BlockIndexEntry,
 };
 
-/// Decoded block bytes plus derived offsets needed for zero-copy record access.
+/// Raw block bytes plus derived offsets needed for zero-copy record access.
 #[derive(Debug)]
 pub(crate) struct DecodedBlock {
+    bytes: Vec<u8>,
     record_count: usize,
     key_len: usize,
     key_prefix_len: usize,
@@ -25,39 +26,22 @@ pub(crate) struct DecodedBlock {
     payload_offset: usize,
     payload_len: usize,
     payload_data_offset: usize,
+    value_checksum_offset: usize,
     payload_is_borrowable: bool,
-    block_checksum: BlockChecksumKind,
     value_payload_compression: ValuePayloadCompressionKind,
     value_region: BlockValueRegion,
-    block_len: usize,
     /// Materialized only when the block strips a shared key prefix and the last
     /// key is therefore not contiguous in the on-disk key section.
     last_key: Option<Vec<u8>>,
     /// Materialized lazily for scan-style APIs that must return borrowed full
     /// keys. Ordered lookup compares prefix/suffix bytes directly.
     full_keys: OnceCell<Vec<u8>>,
-    storage: BlockStorage,
-}
-
-/// Backing bytes for a decoded block.
-#[derive(Debug)]
-enum BlockStorage {
-    /// Full block bytes, used by dense reads and scans.
-    Full {
-        bytes: Vec<u8>,
-        decoded_payload: Option<Vec<u8>>,
-    },
-    /// Lookup metadata with value payload loaded lazily.
-    Split {
-        metadata: Vec<u8>,
-        payload: Option<Vec<u8>>,
-    },
 }
 
 /// Borrowed key/value record decoded from stored bytes.
-pub(crate) struct ParsedRecord<'a> {
-    pub(crate) key: &'a [u8],
-    pub(crate) value: &'a [u8],
+pub(crate) struct ParsedRecord<'key, 'value> {
+    pub(crate) key: &'key [u8],
+    pub(crate) value: &'value [u8],
 }
 
 #[derive(Clone, Copy)]
@@ -78,17 +62,11 @@ pub(crate) struct BlockDecodeOptions<'a> {
     pub(crate) upper_key_bound: BlockKeyUpperBound<'a>,
 }
 
-pub(crate) struct ReusableBlockBuffers {
-    pub(crate) bytes: Vec<u8>,
-    pub(crate) decoded_payload: Option<Vec<u8>>,
-}
-
 impl DecodedBlock {
     pub(crate) fn decode(
         bytes: Vec<u8>,
         entry: &BlockIndexEntry,
         options: BlockDecodeOptions<'_>,
-        payload_decoder: &mut ValuePayloadDecoder,
     ) -> Result<Self, CorruptionError> {
         let layout = BlockLayout::from_block_bytes(
             &bytes,
@@ -102,55 +80,19 @@ impl DecodedBlock {
             layout.verify_lookup_checksum(&bytes)?;
             layout.verify_payload_checksum(&bytes)?;
         }
-        let decoded_payload = layout.decode_payload_if_needed(&bytes, payload_decoder)?;
-        Self::from_storage(
-            BlockStorage::Full {
-                bytes,
-                decoded_payload,
-            },
-            layout,
-            entry,
-            options.upper_key_bound,
-        )
+        Self::from_bytes(bytes, layout, entry, options.upper_key_bound)
     }
 
-    pub(crate) fn decode_metadata(
-        mut metadata: Vec<u8>,
-        entry: &BlockIndexEntry,
-        options: BlockDecodeOptions<'_>,
-    ) -> Result<Self, CorruptionError> {
-        let layout = BlockLayout::from_metadata_bytes(
-            &metadata,
-            entry,
-            options.key_len,
-            options.value_layout,
-            options.block_checksum,
-            options.value_payload_compression,
-        )?;
-        if options.verify_checksum {
-            layout.verify_lookup_checksum(&metadata)?;
-        }
-        metadata.truncate(layout.lookup_metadata_len);
-        Self::from_storage(
-            BlockStorage::Split {
-                metadata,
-                payload: None,
-            },
-            layout,
-            entry,
-            options.upper_key_bound,
-        )
-    }
-
-    fn from_storage(
-        storage: BlockStorage,
+    fn from_bytes(
+        bytes: Vec<u8>,
         layout: BlockLayout,
         entry: &BlockIndexEntry,
         upper_key_bound: BlockKeyUpperBound<'_>,
     ) -> Result<Self, CorruptionError> {
-        layout.validate_key_section(storage.metadata())?;
-        let last_key = layout.materialize_last_key_if_needed(storage.metadata())?;
+        layout.validate_key_section(&bytes)?;
+        let last_key = layout.materialize_last_key_if_needed(&bytes)?;
         let block = Self {
+            bytes,
             record_count: layout.record_count,
             key_len: layout.key_len,
             key_prefix_len: layout.lookup.key_prefix_len,
@@ -159,105 +101,49 @@ impl DecodedBlock {
             payload_offset: layout.payload_offset,
             payload_len: layout.payload_len,
             payload_data_offset: layout.payload_data_offset,
+            value_checksum_offset: layout.value_checksum_offset,
             payload_is_borrowable: layout.payload_is_borrowable,
-            block_checksum: layout.block_checksum,
             value_payload_compression: layout.value_payload_compression,
             value_region: layout.value_region,
-            block_len: layout.block_len,
             last_key,
             full_keys: OnceCell::new(),
-            storage,
         };
         block.value_region.validate(block.metadata())?;
         block.validate_key_ordering(entry, upper_key_bound)?;
         Ok(block)
     }
 
-    pub(crate) fn attach_payload(
-        &mut self,
-        payload_frame: Vec<u8>,
-        verify_checksum: bool,
+    pub(crate) fn decode_payload_if_needed(
+        &self,
         payload_decoder: &mut ValuePayloadDecoder,
-    ) -> Result<(), CorruptionError> {
-        let frame_len = self.payload_frame_len_from_header(&payload_frame)?;
-        if verify_checksum {
-            let expected_len = frame_len
-                .checked_add(self.block_checksum.digest_len())
-                .ok_or(CorruptionError::Block)?;
-            if payload_frame.len() != expected_len {
-                return Err(CorruptionError::Block);
-            }
-            let stored_checksum =
-                read_stored_checksum(&payload_frame, frame_len, self.block_checksum)?;
-            if !self
-                .block_checksum
-                .verify(&payload_frame[..frame_len], stored_checksum)
-            {
-                return Err(CorruptionError::Block);
-            }
-        } else if payload_frame.len() != frame_len {
-            return Err(CorruptionError::Block);
+    ) -> Result<Option<Vec<u8>>, CorruptionError> {
+        if self.payload_is_borrowable {
+            return Ok(None);
         }
-        let payload = match self.value_payload_compression.decode_frame(
+        match self.value_payload_compression.decode_frame(
             payload_decoder,
-            &payload_frame[..frame_len],
+            self.payload_frame()?,
             self.payload_len,
         )? {
-            DecodedPayload::Borrowed(bytes) => bytes.to_vec(),
-            #[cfg(any(feature = "value-compression-lz4", feature = "value-compression-zstd"))]
-            DecodedPayload::Owned(bytes) => bytes,
-        };
-        match &mut self.storage {
-            BlockStorage::Full { .. } => Ok(()),
-            BlockStorage::Split {
-                payload: current, ..
-            } => {
-                *current = Some(payload);
-                Ok(())
+            DecodedPayload::Borrowed(bytes) => {
+                if bytes.len() != self.payload_len {
+                    return Err(CorruptionError::Block);
+                }
+                Ok(None)
             }
+            #[cfg(any(feature = "value-compression-lz4", feature = "value-compression-zstd"))]
+            DecodedPayload::Owned(bytes) => Ok(Some(bytes)),
         }
     }
 
-    pub(crate) fn into_reusable_buffers(self) -> ReusableBlockBuffers {
-        self.storage.into_reusable_buffers()
+    pub(crate) fn into_bytes(self) -> Vec<u8> {
+        self.bytes
     }
 
-    pub(crate) fn payload_offset(&self) -> usize {
-        self.payload_offset
-    }
-
-    pub(crate) fn payload_frame_header_len(&self) -> usize {
-        self.value_payload_compression.frame_header_len()
-    }
-
-    pub(crate) fn payload_read_len_from_header(
-        &self,
-        header: &[u8],
-        verify_checksum: bool,
-    ) -> Result<usize, CorruptionError> {
-        let frame = self
-            .value_payload_compression
-            .parse_frame_header(header, self.payload_len)?;
-        let read_len = frame
-            .frame_len()
-            .checked_add(if verify_checksum {
-                self.block_checksum.digest_len()
-            } else {
-                0
-            })
-            .ok_or(CorruptionError::Block)?;
-        let read_end = self
-            .payload_offset
-            .checked_add(read_len)
-            .ok_or(CorruptionError::Block)?;
-        if read_end > self.block_len {
-            return Err(CorruptionError::Block);
-        }
-        Ok(read_len)
-    }
-
-    pub(crate) fn has_payload(&self) -> bool {
-        self.payload().is_some()
+    pub(crate) fn payload_frame(&self) -> Result<&[u8], CorruptionError> {
+        self.bytes
+            .get(self.payload_offset..self.value_checksum_offset)
+            .ok_or(CorruptionError::Block)
     }
 
     pub(crate) fn first_key(&self) -> &[u8] {
@@ -274,11 +160,6 @@ impl DecodedBlock {
         &self.metadata()[start..start + self.key_len]
     }
 
-    pub(crate) fn find_value(&self, key: &[u8]) -> Option<Vec<u8>> {
-        let index = self.partition_point_by_key(key);
-        self.value_at_if_key(index, key).map(ToOwned::to_owned)
-    }
-
     pub(crate) fn record_count(&self) -> usize {
         self.record_count
     }
@@ -287,11 +168,14 @@ impl DecodedBlock {
         self.key_at(index)
     }
 
-    pub(crate) fn record_at_index(
-        &self,
+    pub(crate) fn record_at_index_with_payload<'key, 'value>(
+        &'key self,
         index: usize,
-    ) -> Result<ParsedRecord<'_>, CorruptionError> {
-        self.record_at(index)
+        payload: &'value [u8],
+    ) -> Result<ParsedRecord<'key, 'value>, CorruptionError> {
+        let key = self.key_at(index)?;
+        let value = self.value_at_index_with_payload(index, payload)?;
+        Ok(ParsedRecord { key, value })
     }
 
     pub(crate) fn lower_bound_index(&self, key: &[u8]) -> usize {
@@ -302,12 +186,34 @@ impl DecodedBlock {
         self.compare_key(index, key).unwrap_or(Ordering::Greater)
     }
 
-    pub(crate) fn value_at_if_key(&self, index: usize, key: &[u8]) -> Option<&[u8]> {
+    pub(crate) fn value_at_if_key_with_payload<'value>(
+        &self,
+        index: usize,
+        key: &[u8],
+        payload: &'value [u8],
+    ) -> Option<&'value [u8]> {
         if !self.key_matches_at_index(index, key) {
             return None;
         }
-        let range = self.value_region.range(self.metadata(), index).ok()?;
-        self.payload().and_then(|payload| payload.get(range))
+        self.value_at_index_with_payload(index, payload).ok()
+    }
+
+    pub(crate) fn value_at_index<'a>(
+        &'a self,
+        index: usize,
+        decoded_payload: Option<&'a [u8]>,
+    ) -> Result<&'a [u8], CorruptionError> {
+        let payload = self.payload_bytes(decoded_payload)?;
+        self.value_at_index_with_payload(index, payload)
+    }
+
+    pub(crate) fn value_at_index_with_payload<'value>(
+        &self,
+        index: usize,
+        payload: &'value [u8],
+    ) -> Result<&'value [u8], CorruptionError> {
+        let range = self.value_region.range(self.metadata(), index)?;
+        payload.get(range).ok_or(CorruptionError::Block)
     }
 
     pub(crate) fn key_matches_at_index(&self, index: usize, key: &[u8]) -> bool {
@@ -362,40 +268,27 @@ impl DecodedBlock {
     }
 
     fn metadata(&self) -> &[u8] {
-        self.storage.metadata()
+        &self.bytes
     }
 
-    fn payload(&self) -> Option<&[u8]> {
-        match &self.storage {
-            BlockStorage::Full {
-                bytes,
-                decoded_payload,
-            } => {
-                if let Some(decoded_payload) = decoded_payload {
-                    return Some(decoded_payload);
-                }
-                if !self.payload_is_borrowable {
-                    return None;
-                }
-                bytes.get(self.payload_data_offset..self.payload_data_offset + self.payload_len)
+    pub(crate) fn payload_bytes<'a>(
+        &'a self,
+        decoded_payload: Option<&'a [u8]>,
+    ) -> Result<&'a [u8], CorruptionError> {
+        if !self.payload_is_borrowable {
+            let payload = decoded_payload.ok_or(CorruptionError::Block)?;
+            if payload.len() != self.payload_len {
+                return Err(CorruptionError::Block);
             }
-            BlockStorage::Split { payload, .. } => payload.as_deref(),
+            return Ok(payload);
         }
-    }
-
-    fn payload_frame_len_from_header(&self, header: &[u8]) -> Result<usize, CorruptionError> {
-        let frame = self
-            .value_payload_compression
-            .parse_frame_header(header, self.payload_len)?;
-        let read_end = self
-            .payload_offset
-            .checked_add(frame.frame_len())
-            .and_then(|end| end.checked_add(self.block_checksum.digest_len()))
+        let payload_end = self
+            .payload_data_offset
+            .checked_add(self.payload_len)
             .ok_or(CorruptionError::Block)?;
-        if read_end > self.block_len {
-            return Err(CorruptionError::Block);
-        }
-        Ok(frame.frame_len())
+        self.bytes
+            .get(self.payload_data_offset..payload_end)
+            .ok_or(CorruptionError::Block)
     }
 
     fn compare_key(&self, index: usize, key: &[u8]) -> Result<Ordering, CorruptionError> {
@@ -460,16 +353,6 @@ impl DecodedBlock {
         full_keys
     }
 
-    fn record_at(&self, index: usize) -> Result<ParsedRecord<'_>, CorruptionError> {
-        let key = self.key_at(index)?;
-        let range = self.value_region.range(self.metadata(), index)?;
-        let payload = self.payload().ok_or(CorruptionError::Block)?;
-        Ok(ParsedRecord {
-            key,
-            value: &payload[range],
-        })
-    }
-
     fn validate_key_ordering(
         &self,
         entry: &BlockIndexEntry,
@@ -506,31 +389,6 @@ impl<'a> BlockKeyUpperBound<'a> {
     fn key(self) -> &'a [u8] {
         match self {
             Self::Exclusive(key) | Self::Inclusive(key) => key,
-        }
-    }
-}
-
-impl BlockStorage {
-    fn metadata(&self) -> &[u8] {
-        match self {
-            Self::Full { bytes, .. } => bytes,
-            Self::Split { metadata, .. } => metadata,
-        }
-    }
-
-    fn into_reusable_buffers(self) -> ReusableBlockBuffers {
-        match self {
-            Self::Full {
-                bytes,
-                decoded_payload,
-            } => ReusableBlockBuffers {
-                bytes,
-                decoded_payload,
-            },
-            Self::Split { metadata, payload } => ReusableBlockBuffers {
-                bytes: metadata,
-                decoded_payload: payload,
-            },
         }
     }
 }
@@ -575,24 +433,6 @@ impl BlockLayout {
         )?;
         layout.read_payload_frame(bytes)?;
         Ok(layout)
-    }
-
-    fn from_metadata_bytes(
-        bytes: &[u8],
-        entry: &BlockIndexEntry,
-        key_len: usize,
-        value_layout: ValueLayout,
-        block_checksum: BlockChecksumKind,
-        value_payload_compression: ValuePayloadCompressionKind,
-    ) -> Result<Self, CorruptionError> {
-        Self::from_metadata_prefix(
-            bytes,
-            entry,
-            key_len,
-            value_layout,
-            block_checksum,
-            value_payload_compression,
-        )
     }
 
     fn from_metadata_prefix(
@@ -696,28 +536,6 @@ impl BlockLayout {
         Ok(())
     }
 
-    fn decode_payload_if_needed(
-        &self,
-        bytes: &[u8],
-        payload_decoder: &mut ValuePayloadDecoder,
-    ) -> Result<Option<Vec<u8>>, CorruptionError> {
-        if self.payload_is_borrowable {
-            return Ok(None);
-        }
-        let frame = bytes
-            .get(self.payload_offset..self.value_checksum_offset)
-            .ok_or(CorruptionError::Block)?;
-        match self.value_payload_compression.decode_frame(
-            payload_decoder,
-            frame,
-            self.payload_len,
-        )? {
-            DecodedPayload::Borrowed(_) => Ok(None),
-            #[cfg(any(feature = "value-compression-lz4", feature = "value-compression-zstd"))]
-            DecodedPayload::Owned(bytes) => Ok(Some(bytes)),
-        }
-    }
-
     fn validate_key_section(&self, bytes: &[u8]) -> Result<(), CorruptionError> {
         if self.lookup.key_section_len > bytes.len() {
             return Err(CorruptionError::Block);
@@ -760,13 +578,13 @@ impl BlockLayout {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[cfg(any(feature = "value-compression-lz4", feature = "value-compression-zstd"))]
-    use crate::format::ValuePayloadCompressionPolicy;
     use crate::format::{
-        BlockChecksumKind, ValuePayloadDecoder, ValuePayloadEncoder,
+        BlockChecksumKind, ValuePayloadEncoder,
         block::BlockBuilder,
         record::{EntryRef, EntrySource},
     };
+    #[cfg(any(feature = "value-compression-lz4", feature = "value-compression-zstd"))]
+    use crate::format::{ValuePayloadCompressionPolicy, ValuePayloadDecoder};
 
     struct Entries<'a> {
         entries: &'a [(&'a [u8], &'a [u8])],
@@ -840,20 +658,14 @@ mod tests {
             assert_eq!(&block[4..7], b"aa0");
             assert_eq!(&block[7..9], b"12");
 
-            let mut decoder = ValuePayloadDecoder::new(compression);
-            let decoded = DecodedBlock::decode(
-                block,
-                &entry,
-                BlockDecodeOptions {
-                    key_len: 4,
-                    value_layout: ValueLayout::VARIABLE,
-                    block_checksum: checksum,
-                    value_payload_compression: compression,
-                    verify_checksum: true,
-                    upper_key_bound: BlockKeyUpperBound::Inclusive(b"aa02"),
-                },
-                &mut decoder,
-            )
+            let decoded = DecodedBlock::decode(block, &entry, BlockDecodeOptions {
+                key_len: 4,
+                value_layout: ValueLayout::VARIABLE,
+                block_checksum: checksum,
+                value_payload_compression: compression,
+                verify_checksum: true,
+                upper_key_bound: BlockKeyUpperBound::Inclusive(b"aa02"),
+            })
             .expect("block should decode");
 
             assert!(
@@ -862,14 +674,21 @@ mod tests {
             );
             assert_eq!(decoded.first_key(), b"aa01");
             assert_eq!(decoded.last_key(), b"aa02");
-            assert_eq!(decoded.find_value(b"aa02"), Some(b"second".to_vec()));
+            let payload = decoded
+                .payload_bytes(None)
+                .expect("raw payload should be borrowable");
+            let index = decoded.lower_bound_index(b"aa02");
+            assert_eq!(
+                decoded.value_at_if_key_with_payload(index, b"aa02", payload),
+                Some(&b"second"[..])
+            );
             assert!(
                 decoded.full_keys.get().is_none(),
-                "find_value should compare prefix-stripped keys without materialization"
+                "key lookup should compare prefix-stripped keys without materialization"
             );
             assert_eq!(
                 decoded
-                    .record_at_index(1)
+                    .record_at_index_with_payload(1, payload)
                     .expect("record should decode")
                     .key,
                 b"aa02"
@@ -898,26 +717,27 @@ mod tests {
                 record_count: 1,
             };
 
-            let mut decoder = ValuePayloadDecoder::new(compression);
-            let decoded = DecodedBlock::decode(
-                block,
-                &entry,
-                BlockDecodeOptions {
-                    key_len: 4,
-                    value_layout: ValueLayout::VARIABLE,
-                    block_checksum: checksum,
-                    value_payload_compression: compression,
-                    verify_checksum: true,
-                    upper_key_bound: BlockKeyUpperBound::Inclusive(b"aa01"),
-                },
-                &mut decoder,
-            )
+            let decoded = DecodedBlock::decode(block, &entry, BlockDecodeOptions {
+                key_len: 4,
+                value_layout: ValueLayout::VARIABLE,
+                block_checksum: checksum,
+                value_payload_compression: compression,
+                verify_checksum: true,
+                upper_key_bound: BlockKeyUpperBound::Inclusive(b"aa01"),
+            })
             .expect("block should decode");
 
             assert!(decoded.full_keys.get().is_none());
             assert_eq!(decoded.first_key(), b"aa01");
             assert_eq!(decoded.last_key(), b"aa01");
-            assert_eq!(decoded.find_value(b"aa01"), Some(b"only".to_vec()));
+            let payload = decoded
+                .payload_bytes(None)
+                .expect("raw payload should be borrowable");
+            let index = decoded.lower_bound_index(b"aa01");
+            assert_eq!(
+                decoded.value_at_if_key_with_payload(index, b"aa01", payload),
+                Some(&b"only"[..])
+            );
         }
 
         #[test]
@@ -937,41 +757,95 @@ mod tests {
                 block_len: u32::try_from(block.len()).expect("block len"),
                 record_count: 2,
             };
+            let exclusive_upper = DecodedBlock::decode(block.clone(), &entry, BlockDecodeOptions {
+                key_len: 4,
+                value_layout: ValueLayout::VARIABLE,
+                block_checksum: checksum,
+                value_payload_compression: compression,
+                verify_checksum: true,
+                upper_key_bound: BlockKeyUpperBound::Exclusive(b"aa02"),
+            });
+            assert!(matches!(exclusive_upper, Err(CorruptionError::Block)));
+
+            let inclusive_upper = DecodedBlock::decode(block, &entry, BlockDecodeOptions {
+                key_len: 4,
+                value_layout: ValueLayout::VARIABLE,
+                block_checksum: checksum,
+                value_payload_compression: compression,
+                verify_checksum: true,
+                upper_key_bound: BlockKeyUpperBound::Inclusive(b"aa01"),
+            });
+            assert!(matches!(inclusive_upper, Err(CorruptionError::Block)));
+        }
+    }
+
+    #[cfg(any(feature = "value-compression-lz4", feature = "value-compression-zstd"))]
+    mod payload_materialization {
+        use super::*;
+
+        #[cfg(feature = "value-compression-lz4")]
+        #[test]
+        fn lz4_payload_is_decoded_only_for_value_access() {
+            assert_compressed_payload_decodes_lazily(ValuePayloadCompressionKind::Lz4);
+        }
+
+        #[cfg(feature = "value-compression-zstd")]
+        #[test]
+        fn zstd_payload_is_decoded_only_for_value_access() {
+            assert_compressed_payload_decodes_lazily(ValuePayloadCompressionKind::ZstdLevel1);
+        }
+
+        fn assert_compressed_payload_decodes_lazily(compression: ValuePayloadCompressionKind) {
+            let value = vec![7u8; 128 * 1024];
+            let entries_data = [(b"aa01".as_slice(), value.as_slice())];
+            let entries = Entries {
+                entries: &entries_data,
+            };
+            let checksum = BlockChecksumKind::None;
+            let policy = ValuePayloadCompressionPolicy::new(0, 1);
+            let mut encoder = ValuePayloadEncoder::new(compression);
+            let block = BlockBuilder::new(
+                &entries,
+                4,
+                ValueLayout::VARIABLE,
+                checksum,
+                compression,
+                policy,
+            )
+            .encode(&mut encoder)
+            .expect("block should encode");
+            let entry = BlockIndexEntry {
+                first_key: b"aa01".to_vec(),
+                block_offset: 0,
+                block_len: u32::try_from(block.len()).expect("block len"),
+                record_count: 1,
+            };
+
+            let decoded = DecodedBlock::decode(block, &entry, BlockDecodeOptions {
+                key_len: 4,
+                value_layout: ValueLayout::VARIABLE,
+                block_checksum: checksum,
+                value_payload_compression: compression,
+                verify_checksum: true,
+                upper_key_bound: BlockKeyUpperBound::Inclusive(b"aa01"),
+            })
+            .expect("block metadata should decode without materializing payload");
+            assert!(
+                matches!(decoded.value_at_index(0, None), Err(CorruptionError::Block)),
+                "compressed values require caller-owned decoded payload scratch"
+            );
+
             let mut decoder = ValuePayloadDecoder::new(compression);
-
-            assert!(matches!(
-                DecodedBlock::decode(
-                    block.clone(),
-                    &entry,
-                    BlockDecodeOptions {
-                        key_len: 4,
-                        value_layout: ValueLayout::VARIABLE,
-                        block_checksum: checksum,
-                        value_payload_compression: compression,
-                        verify_checksum: true,
-                        upper_key_bound: BlockKeyUpperBound::Exclusive(b"aa02"),
-                    },
-                    &mut decoder,
-                ),
-                Err(CorruptionError::Block)
-            ));
-
-            assert!(matches!(
-                DecodedBlock::decode(
-                    block,
-                    &entry,
-                    BlockDecodeOptions {
-                        key_len: 4,
-                        value_layout: ValueLayout::VARIABLE,
-                        block_checksum: checksum,
-                        value_payload_compression: compression,
-                        verify_checksum: true,
-                        upper_key_bound: BlockKeyUpperBound::Inclusive(b"aa01"),
-                    },
-                    &mut decoder,
-                ),
-                Err(CorruptionError::Block)
-            ));
+            let decoded_payload = decoded
+                .decode_payload_if_needed(&mut decoder)
+                .expect("payload should decode")
+                .expect("payload should be stored compressed");
+            assert_eq!(
+                decoded
+                    .value_at_index(0, Some(decoded_payload.as_slice()))
+                    .expect("value should borrow from decoded payload"),
+                value.as_slice()
+            );
         }
     }
 }

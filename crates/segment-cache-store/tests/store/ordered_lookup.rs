@@ -80,7 +80,7 @@ fn visit_many_matches_owned_fetch() -> Result<()> {
 }
 
 #[test]
-fn sparse_ordered_lookup_loads_payload_after_metadata_hit() -> Result<()> {
+fn ordered_lookup_returns_value_after_key_hit() -> Result<()> {
     let tempdir = tempfile::tempdir()?;
     let store = create_store(&tempdir)?;
     let entries: Vec<_> = (0..8u64)
@@ -103,7 +103,7 @@ fn sparse_ordered_lookup_loads_payload_after_metadata_hit() -> Result<()> {
 }
 
 #[test]
-fn sparse_ordered_lookup_skips_payload_when_metadata_misses() -> Result<()> {
+fn ordered_lookup_returns_miss_for_key_between_records() -> Result<()> {
     let tempdir = tempfile::tempdir()?;
     let store = create_store(&tempdir)?;
     let entries = vec![
