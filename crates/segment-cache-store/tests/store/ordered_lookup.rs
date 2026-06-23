@@ -1,4 +1,8 @@
-use crate::common::*;
+use segment_cache_store::{CommitOptions, Error, InputError, Result};
+
+use crate::support::api::{
+    commit_entries, commit_entries_with_options, create_store, make_key, make_value,
+};
 
 #[test]
 fn contains_matches_fetch_hit_pattern() -> Result<()> {

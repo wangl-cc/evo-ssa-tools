@@ -22,7 +22,7 @@ The implementation intentionally does not provide:
 - update-in-place
 - concurrent writers
 - WAL recovery
-- background compaction unrelated to new writes
+- background compaction of cold ranges
 - query features beyond point lookup, ordered batch lookup, and ordered range iteration
 
 ## Status And Scope
@@ -213,11 +213,13 @@ Each manifest entry is:
 ```text
 segment_id:u32
 tier:u8               # 0 = main, 1 = patch
+segment_len:u64
+segment_hash:u64      # whole-segment non-adversarial fingerprint
 min_key[key_len]
 max_key[key_len]
 ```
 
-`segment_id` derives the opaque file name `segments/segment-<id>.seg`. File names do not define key order.
+`segment_id` derives the opaque file name `segments/segment-<id>.seg`. File names do not define key order. `segment_len` and `segment_hash` bind the manifest entry to the exact segment bytes that were published. This is a non-adversarial fingerprint for accidental replacement or corruption detection, not a cryptographic authentication tag.
 
 Manifest entry order is canonical:
 

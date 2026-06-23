@@ -1,4 +1,6 @@
-use crate::common::*;
+use segment_cache_store::Result;
+
+use crate::support::api::{commit_entries, create_store, make_key, make_value};
 
 #[test]
 fn range_iteration_returns_globally_sorted_records() -> Result<()> {

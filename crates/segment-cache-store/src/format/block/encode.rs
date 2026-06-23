@@ -1,10 +1,11 @@
 //! Block encoder: sorted entries in, on-disk block bytes out.
 
 use super::layout::{BlockLookupLayout, BlockValueRegion};
+#[cfg(any(feature = "value-compression-lz4", feature = "value-compression-zstd"))]
+use crate::format::ValuePayloadCompressionPolicy;
 use crate::format::{
     BlockChecksumKind, FormatError, MAX_BLOCK_CHECKSUM_LEN, ValueLayout,
-    ValuePayloadCompressionKind, ValuePayloadCompressionPolicy, ValuePayloadEncoder,
-    common_prefix_len, record::EntrySource,
+    ValuePayloadCompressionKind, ValuePayloadEncoder, common_prefix_len, record::EntrySource,
 };
 
 /// Encodes one sorted run of key/value entries into the on-disk block layout.
@@ -14,17 +15,12 @@ pub(crate) struct BlockBuilder<'a, S: EntrySource + ?Sized> {
     value_layout: ValueLayout,
     block_checksum: BlockChecksumKind,
     value_payload_compression: ValuePayloadCompressionKind,
-    #[cfg_attr(
-        not(any(feature = "value-compression-lz4", feature = "value-compression-zstd")),
-        expect(
-            dead_code,
-            reason = "policy is only read when value payload compression is enabled"
-        )
-    )]
+    #[cfg(any(feature = "value-compression-lz4", feature = "value-compression-zstd"))]
     value_payload_compression_policy: ValuePayloadCompressionPolicy,
 }
 
 impl<'a, S: EntrySource + ?Sized> BlockBuilder<'a, S> {
+    #[cfg(any(feature = "value-compression-lz4", feature = "value-compression-zstd"))]
     pub(crate) fn new(
         entries: &'a S,
         key_len: usize,
@@ -40,6 +36,23 @@ impl<'a, S: EntrySource + ?Sized> BlockBuilder<'a, S> {
             block_checksum,
             value_payload_compression,
             value_payload_compression_policy,
+        }
+    }
+
+    #[cfg(not(any(feature = "value-compression-lz4", feature = "value-compression-zstd")))]
+    pub(crate) fn new(
+        entries: &'a S,
+        key_len: usize,
+        value_layout: ValueLayout,
+        block_checksum: BlockChecksumKind,
+        value_payload_compression: ValuePayloadCompressionKind,
+    ) -> Self {
+        Self {
+            entries,
+            key_len,
+            value_layout,
+            block_checksum,
+            value_payload_compression,
         }
     }
 

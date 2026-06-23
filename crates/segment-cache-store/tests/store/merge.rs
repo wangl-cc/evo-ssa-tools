@@ -1,4 +1,16 @@
-use crate::common::*;
+#[cfg(any(feature = "checksum-crc32c", feature = "checksum-rapidhash"))]
+use segment_cache_store::CommitStats;
+use segment_cache_store::{CreateOptions, Error, InputError, Result, Store, StoreMetadata};
+
+use crate::support::api::{
+    commit_entries, commit_options, create_store, make_key, make_value, reopen_store_read_only,
+    test_block_checksum,
+};
+#[cfg(any(feature = "checksum-crc32c", feature = "checksum-rapidhash"))]
+use crate::support::{
+    api::open_options,
+    segment_file::{corrupt_block_value_payload, first_segment_path},
+};
 
 #[test]
 fn merge_from_imports_disjoint_source_records() -> Result<()> {
@@ -130,7 +142,14 @@ fn merge_from_skips_corrupt_source_blocks_when_forcing_verification() -> Result<
     let source_dir = tempfile::tempdir()?;
     let destination = create_store(&destination_dir)?;
     let source = create_store(&source_dir)?;
-    commit_entries(&source, &[(make_key(3, 0, 0), make_value(7, 32))], true)?;
+    let key = make_key(3, 0, 0);
+    let destination_value = make_value(1, 32);
+    commit_entries(
+        &destination,
+        &[(key.clone(), destination_value.clone())],
+        true,
+    )?;
+    commit_entries(&source, &[(key.clone(), make_value(7, 32))], true)?;
     corrupt_block_value_payload(&first_segment_path(source_dir.path())?, 0)?;
     drop(source);
     let source = Store::open(
@@ -143,6 +162,6 @@ fn merge_from_skips_corrupt_source_blocks_when_forcing_verification() -> Result<
     let stats = destination.merge_from(&source)?;
 
     assert_eq!(stats, CommitStats::default());
-    assert_eq!(destination.iter_all()?.count(), 0);
+    assert_eq!(destination.fetch_one(&key)?, Some(destination_value));
     Ok(())
 }

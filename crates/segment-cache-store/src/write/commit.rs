@@ -645,20 +645,12 @@ impl Store {
         tier: SegmentTier,
         options: &CommitOptions,
     ) -> Result<WrittenSegment> {
-        let geometry = self.inner.geometry;
         let segment_entries = batch.view(range);
         let segment_paths = self.inner.paths.segment_publish_path(segment_id);
-        let footer = segment_paths.publish().write_with(|file| {
-            Ok(SegmentWriter::new(
-                geometry.key_len,
-                geometry.value_layout,
-                geometry.block_checksum,
-                geometry.value_payload_compression,
-                options.value_payload_compression_policy,
-                options.target_block_size,
-            )
-            .write(file, &segment_entries)?)
-        })?;
+        let writer = self.segment_writer(options);
+        let footer = segment_paths
+            .publish()
+            .write_with(|file| Ok(writer.write(file, &segment_entries)?))?;
         let min_key = footer.min_key;
         let max_key = footer.max_key;
         let block_index = footer.block_index;
@@ -673,6 +665,31 @@ impl Store {
         ));
         let entry = SegmentManifestEntry::new(segment_id, tier, fingerprint, min_key, max_key);
         Ok(WrittenSegment { entry, runtime })
+    }
+
+    #[cfg(any(feature = "value-compression-lz4", feature = "value-compression-zstd"))]
+    fn segment_writer(&self, options: &CommitOptions) -> SegmentWriter {
+        let geometry = self.inner.geometry;
+        SegmentWriter::new(
+            geometry.key_len,
+            geometry.value_layout,
+            geometry.block_checksum,
+            geometry.value_payload_compression,
+            options.value_payload_compression_policy,
+            options.target_block_size,
+        )
+    }
+
+    #[cfg(not(any(feature = "value-compression-lz4", feature = "value-compression-zstd")))]
+    fn segment_writer(&self, options: &CommitOptions) -> SegmentWriter {
+        let geometry = self.inner.geometry;
+        SegmentWriter::new(
+            geometry.key_len,
+            geometry.value_layout,
+            geometry.block_checksum,
+            geometry.value_payload_compression,
+            options.target_block_size,
+        )
     }
 }
 

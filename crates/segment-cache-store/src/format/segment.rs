@@ -10,9 +10,11 @@ use std::io::Write;
 
 use crc32c::crc32c;
 
+#[cfg(any(feature = "value-compression-lz4", feature = "value-compression-zstd"))]
+use crate::format::ValuePayloadCompressionPolicy;
 use crate::format::{
     BlockChecksumKind, CorruptionError, FormatError, SegmentWriteError, ValueLayout,
-    ValuePayloadCompressionKind, ValuePayloadCompressionPolicy, ValuePayloadEncoder,
+    ValuePayloadCompressionKind, ValuePayloadEncoder,
     binary::BinaryCursor,
     block::{BlockBuilder, KEY_PREFIX_LEN_LEN},
     common_prefix_len, format_u32,
@@ -309,12 +311,14 @@ pub(crate) struct SegmentWriter {
     value_layout: ValueLayout,
     block_checksum: BlockChecksumKind,
     value_payload_compression: ValuePayloadCompressionKind,
+    #[cfg(any(feature = "value-compression-lz4", feature = "value-compression-zstd"))]
     value_payload_compression_policy: ValuePayloadCompressionPolicy,
     target_block_size: usize,
 }
 
 impl SegmentWriter {
     /// Creates a writer for one sorted immutable segment.
+    #[cfg(any(feature = "value-compression-lz4", feature = "value-compression-zstd"))]
     pub(crate) fn new(
         key_len: usize,
         value_layout: ValueLayout,
@@ -329,6 +333,24 @@ impl SegmentWriter {
             block_checksum,
             value_payload_compression,
             value_payload_compression_policy,
+            target_block_size,
+        }
+    }
+
+    /// Creates a writer for one sorted immutable segment.
+    #[cfg(not(any(feature = "value-compression-lz4", feature = "value-compression-zstd")))]
+    pub(crate) fn new(
+        key_len: usize,
+        value_layout: ValueLayout,
+        block_checksum: BlockChecksumKind,
+        value_payload_compression: ValuePayloadCompressionKind,
+        target_block_size: usize,
+    ) -> Self {
+        Self {
+            key_len,
+            value_layout,
+            block_checksum,
+            value_payload_compression,
             target_block_size,
         }
     }
@@ -385,15 +407,9 @@ impl SegmentWriter {
         while start < entries.len() {
             let end = self.next_block_end(entries, start);
             let block_entries = EntryView::new(entries, start..end);
-            let block_bytes = BlockBuilder::new(
-                &block_entries,
-                self.key_len,
-                self.value_layout,
-                self.block_checksum,
-                self.value_payload_compression,
-                self.value_payload_compression_policy,
-            )
-            .encode(&mut payload_encoder)?;
+            let block_bytes = self
+                .block_builder(&block_entries)
+                .encode(&mut payload_encoder)?;
             let block_len = format_u32(block_bytes.len(), "block length")?;
             let block_record_count = format_u32(block_entries.len(), "block record count")?;
             block_index.push(BlockIndexEntry {
@@ -409,6 +425,29 @@ impl SegmentWriter {
         }
 
         Ok((record_count, block_index))
+    }
+
+    #[cfg(any(feature = "value-compression-lz4", feature = "value-compression-zstd"))]
+    fn block_builder<'a, S: EntrySource + ?Sized>(&self, entries: &'a S) -> BlockBuilder<'a, S> {
+        BlockBuilder::new(
+            entries,
+            self.key_len,
+            self.value_layout,
+            self.block_checksum,
+            self.value_payload_compression,
+            self.value_payload_compression_policy,
+        )
+    }
+
+    #[cfg(not(any(feature = "value-compression-lz4", feature = "value-compression-zstd")))]
+    fn block_builder<'a, S: EntrySource + ?Sized>(&self, entries: &'a S) -> BlockBuilder<'a, S> {
+        BlockBuilder::new(
+            entries,
+            self.key_len,
+            self.value_layout,
+            self.block_checksum,
+            self.value_payload_compression,
+        )
     }
 
     fn next_block_end<S: EntrySource + ?Sized>(&self, entries: &S, start: usize) -> usize {

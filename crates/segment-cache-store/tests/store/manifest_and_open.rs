@@ -1,6 +1,18 @@
-use crc32c::crc32c;
+use std::fs;
 
-use crate::common::*;
+use crc32c::crc32c;
+use segment_cache_store::{
+    CatalogError, CatalogMismatch, CommitOptions, Error, OpenOptions as StoreOpenOptions, Result,
+    Store, StoreMetadata, ValueLayout,
+};
+
+use crate::support::{
+    api::{
+        commit_entries, commit_entries_with_options, create_store, make_key, make_value, metadata,
+        open_options, reopen_store, test_block_checksum,
+    },
+    segment_file::first_segment_path,
+};
 
 #[test]
 fn changing_target_block_size_can_reopen_existing_segments() -> Result<()> {
@@ -48,7 +60,7 @@ fn target_block_size_does_not_pad_physical_blocks() -> Result<()> {
 }
 
 #[test]
-fn manifest_is_binary_v2_snapshot() -> Result<()> {
+fn manifest_is_binary_v1_snapshot() -> Result<()> {
     let tempdir = tempfile::tempdir()?;
     let store = create_store(&tempdir)?;
     commit_entries(&store, &[(make_key(1, 0, 0), make_value(1, 8))], true)?;
@@ -71,7 +83,7 @@ fn manifest_is_binary_v2_snapshot() -> Result<()> {
     assert_eq!(&manifest[..4], b"SCSM");
     assert_eq!(
         u32::from_le_bytes(manifest[4..8].try_into().expect("version")),
-        2
+        1
     );
     assert_eq!(
         u32::from_le_bytes(manifest[8..12].try_into().expect("key len")),

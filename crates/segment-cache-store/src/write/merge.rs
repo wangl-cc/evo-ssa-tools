@@ -16,8 +16,24 @@ use crate::{
 
 struct MergeSourceSnapshot {
     segments: Vec<Arc<SegmentState>>,
+    has_patches: bool,
     min_key: Vec<u8>,
     max_key: Vec<u8>,
+}
+
+struct RecordCursor {
+    cursor: RangeCursor,
+    pending: Option<(Vec<u8>, Vec<u8>)>,
+}
+
+struct SourceRecordCursor {
+    inner: RecordCursor,
+    stats: MergeInputStats,
+}
+
+struct StoreMergeRecords {
+    destination: RecordCursor,
+    source: SourceRecordCursor,
 }
 
 struct MergeInputStats {
@@ -28,6 +44,7 @@ struct MergeInputStats {
 impl MergeSourceSnapshot {
     fn from_store(store: &Store) -> Option<Self> {
         let state = store.inner.state.read();
+        let has_patches = !state.patch_segments.is_empty();
         let mut segments =
             Vec::with_capacity(state.main_segments.len() + state.patch_segments.len());
         segments.extend(state.main_segments.iter().cloned());
@@ -35,6 +52,7 @@ impl MergeSourceSnapshot {
         let (min_key, max_key) = segment_bounds(&segments)?;
         Some(Self {
             segments,
+            has_patches,
             min_key,
             max_key,
         })
@@ -43,7 +61,11 @@ impl MergeSourceSnapshot {
     fn cursor(&self, geometry: StoreGeometry, verify_block_checksums: bool) -> Result<RangeCursor> {
         let mut cursors = Vec::with_capacity(self.segments.len());
         self.push_cursors(&mut cursors, geometry, verify_block_checksums)?;
-        Ok(RangeCursor::merge(cursors))
+        if self.has_patches {
+            Ok(RangeCursor::merge(cursors))
+        } else {
+            Ok(RangeCursor::new(cursors))
+        }
     }
 
     fn push_cursors(
@@ -57,31 +79,138 @@ impl MergeSourceSnapshot {
 }
 
 impl MergeInputStats {
-    fn collect(cursor: RangeCursor) -> Result<Self> {
-        let mut stats = Self {
+    fn new() -> Self {
+        Self {
             records: 0,
             bytes: 0,
-        };
-        for record in cursor {
-            let (key, value) = record?;
-            stats.records = stats
-                .records
-                .checked_add(1)
-                .ok_or(FormatError::limit("merge record count"))?;
-            let record_bytes = key
-                .len()
-                .checked_add(value.len())
-                .ok_or(FormatError::limit("merge byte length"))?;
-            stats.bytes = stats
-                .bytes
-                .checked_add(record_bytes)
-                .ok_or(FormatError::limit("merge byte length"))?;
         }
-        Ok(stats)
+    }
+
+    fn add_record(&mut self, key: &[u8], value: &[u8]) -> Result<()> {
+        self.records = self
+            .records
+            .checked_add(1)
+            .ok_or(FormatError::limit("merge record count"))?;
+        let record_bytes = key
+            .len()
+            .checked_add(value.len())
+            .ok_or(FormatError::limit("merge byte length"))?;
+        self.bytes = self
+            .bytes
+            .checked_add(record_bytes)
+            .ok_or(FormatError::limit("merge byte length"))?;
+        Ok(())
+    }
+}
+
+impl RecordCursor {
+    fn new(cursor: RangeCursor) -> Result<Self> {
+        let mut cursor = cursor;
+        let pending = cursor.next().transpose()?;
+        Ok(Self { cursor, pending })
     }
 
     fn is_empty(&self) -> bool {
-        self.records == 0
+        self.pending.is_none()
+    }
+
+    fn peek(&self) -> Option<(&[u8], &[u8])> {
+        self.pending
+            .as_ref()
+            .map(|(key, value)| (key.as_slice(), value.as_slice()))
+    }
+
+    fn take(&mut self) -> Result<Option<(Vec<u8>, Vec<u8>)>> {
+        let Some(record) = self.pending.take() else {
+            return Ok(None);
+        };
+        self.pending = self.cursor.next().transpose()?;
+        Ok(Some(record))
+    }
+}
+
+impl SourceRecordCursor {
+    fn new(cursor: RangeCursor) -> Result<Self> {
+        Ok(Self {
+            inner: RecordCursor::new(cursor)?,
+            stats: MergeInputStats::new(),
+        })
+    }
+
+    fn is_empty(&self) -> bool {
+        self.inner.is_empty()
+    }
+
+    fn peek(&self) -> Option<(&[u8], &[u8])> {
+        self.inner.peek()
+    }
+
+    fn take(&mut self) -> Result<Option<(Vec<u8>, Vec<u8>)>> {
+        let Some(record) = self.inner.take()? else {
+            return Ok(None);
+        };
+        self.stats.add_record(&record.0, &record.1)?;
+        Ok(Some(record))
+    }
+
+    fn into_stats(self) -> MergeInputStats {
+        self.stats
+    }
+}
+
+impl StoreMergeRecords {
+    fn new(destination: RecordCursor, source: SourceRecordCursor) -> Self {
+        Self {
+            destination,
+            source,
+        }
+    }
+
+    fn into_source_stats(self) -> MergeInputStats {
+        self.source.into_stats()
+    }
+}
+
+impl Iterator for StoreMergeRecords {
+    type Item = Result<(Vec<u8>, Vec<u8>)>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        Some(match (self.destination.peek(), self.source.peek()) {
+            (Some((destination_key, _)), Some((source_key, _))) => {
+                match destination_key.cmp(source_key) {
+                    std::cmp::Ordering::Less => self
+                        .destination
+                        .take()
+                        .map(|record| record.expect("destination was pending")),
+                    std::cmp::Ordering::Greater => self
+                        .source
+                        .take()
+                        .map(|record| record.expect("source was pending")),
+                    std::cmp::Ordering::Equal => self.next_duplicate_key(),
+                }
+            }
+            (Some(_), None) => self
+                .destination
+                .take()
+                .map(|record| record.expect("destination was pending")),
+            (None, Some(_)) => self
+                .source
+                .take()
+                .map(|record| record.expect("source was pending")),
+            (None, None) => return None,
+        })
+    }
+}
+
+impl StoreMergeRecords {
+    fn next_duplicate_key(&mut self) -> Result<(Vec<u8>, Vec<u8>)> {
+        let destination = self.destination.take()?.expect("destination was pending");
+        let source = self.source.take()?.expect("source was pending");
+        if source.1 < destination.1 {
+            Ok(source)
+        } else {
+            Ok(destination)
+        }
     }
 }
 
@@ -104,9 +233,9 @@ impl Store {
         let Some(source_snapshot) = MergeSourceSnapshot::from_store(source) else {
             return Ok(CommitStats::default());
         };
-        let source_stats =
-            MergeInputStats::collect(source_snapshot.cursor(source.inner.geometry, true)?)?;
-        if source_stats.is_empty() {
+        let source_cursor = source_snapshot.cursor(source.inner.geometry, true)?;
+        let source_records = SourceRecordCursor::new(source_cursor)?;
+        if source_records.is_empty() {
             return Ok(CommitStats::default());
         }
 
@@ -125,16 +254,18 @@ impl Store {
         let affected_live =
             plan.retire_normalized_segments(&source_snapshot.min_key, &source_snapshot.max_key);
 
-        let mut cursors = Vec::with_capacity(affected_live.len() + source_snapshot.segments.len());
+        let mut cursors = Vec::with_capacity(affected_live.len());
         push_segment_cursors(
             &mut cursors,
             &affected_live,
             geometry,
             self.inner.verify_block_checksums,
         )?;
-        source_snapshot.push_cursors(&mut cursors, source.inner.geometry, true)?;
+        let destination_records = RecordCursor::new(RangeCursor::merge(cursors))?;
+        let mut records = StoreMergeRecords::new(destination_records, source_records);
         let (written, merged_records) =
-            self.write_cursor_segments(RangeCursor::merge(cursors), &mut plan, options)?;
+            self.write_cursor_segments(&mut records, &mut plan, options)?;
+        let source_stats = records.into_source_stats();
         let publication_stats = self.publish_plan(plan, written, key_len)?;
 
         Ok(CommitStats {
@@ -165,14 +296,14 @@ impl Store {
 
     fn write_cursor_segments(
         &self,
-        cursor: RangeCursor,
+        records: impl Iterator<Item = Result<(Vec<u8>, Vec<u8>)>>,
         plan: &mut CommitPlan,
         options: &CommitOptions,
     ) -> Result<(Vec<WrittenSegment>, usize)> {
         let mut written = Vec::new();
         let mut merged_records = 0usize;
         let mut batch = WriteBatch::default();
-        for record in cursor {
+        for record in records {
             let (key, value) = record?;
             batch.push_owned(key, value)?;
             if batch.len() >= options.flush_threshold_records()

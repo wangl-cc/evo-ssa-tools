@@ -760,8 +760,10 @@ impl BlockLayout {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(any(feature = "value-compression-lz4", feature = "value-compression-zstd"))]
+    use crate::format::ValuePayloadCompressionPolicy;
     use crate::format::{
-        BlockChecksumKind, ValuePayloadCompressionPolicy, ValuePayloadDecoder, ValuePayloadEncoder,
+        BlockChecksumKind, ValuePayloadDecoder, ValuePayloadEncoder,
         block::BlockBuilder,
         record::{EntryRef, EntrySource},
     };
@@ -781,6 +783,35 @@ mod tests {
         }
     }
 
+    #[cfg(any(feature = "value-compression-lz4", feature = "value-compression-zstd"))]
+    fn block_builder<'a>(
+        entries: &'a Entries<'a>,
+        key_len: usize,
+        value_layout: ValueLayout,
+        checksum: BlockChecksumKind,
+        compression: ValuePayloadCompressionKind,
+    ) -> BlockBuilder<'a, Entries<'a>> {
+        BlockBuilder::new(
+            entries,
+            key_len,
+            value_layout,
+            checksum,
+            compression,
+            ValuePayloadCompressionPolicy::DEFAULT,
+        )
+    }
+
+    #[cfg(not(any(feature = "value-compression-lz4", feature = "value-compression-zstd")))]
+    fn block_builder<'a>(
+        entries: &'a Entries<'a>,
+        key_len: usize,
+        value_layout: ValueLayout,
+        checksum: BlockChecksumKind,
+        compression: ValuePayloadCompressionKind,
+    ) -> BlockBuilder<'a, Entries<'a>> {
+        BlockBuilder::new(entries, key_len, value_layout, checksum, compression)
+    }
+
     mod prefix_stripping {
         use super::*;
 
@@ -792,16 +823,9 @@ mod tests {
             let checksum = BlockChecksumKind::None;
             let compression = ValuePayloadCompressionKind::None;
             let mut encoder = ValuePayloadEncoder::new(compression);
-            let block = BlockBuilder::new(
-                &entries,
-                4,
-                ValueLayout::VARIABLE,
-                checksum,
-                compression,
-                ValuePayloadCompressionPolicy::DEFAULT,
-            )
-            .encode(&mut encoder)
-            .expect("block should encode");
+            let block = block_builder(&entries, 4, ValueLayout::VARIABLE, checksum, compression)
+                .encode(&mut encoder)
+                .expect("block should encode");
             let entry = BlockIndexEntry {
                 first_key: b"aa01".to_vec(),
                 block_offset: 0,
@@ -864,16 +888,9 @@ mod tests {
             let checksum = BlockChecksumKind::None;
             let compression = ValuePayloadCompressionKind::None;
             let mut encoder = ValuePayloadEncoder::new(compression);
-            let block = BlockBuilder::new(
-                &entries,
-                4,
-                ValueLayout::VARIABLE,
-                checksum,
-                compression,
-                ValuePayloadCompressionPolicy::DEFAULT,
-            )
-            .encode(&mut encoder)
-            .expect("block should encode");
+            let block = block_builder(&entries, 4, ValueLayout::VARIABLE, checksum, compression)
+                .encode(&mut encoder)
+                .expect("block should encode");
             let entry = BlockIndexEntry {
                 first_key: b"aa01".to_vec(),
                 block_offset: 0,
@@ -911,16 +928,9 @@ mod tests {
             let checksum = BlockChecksumKind::None;
             let compression = ValuePayloadCompressionKind::None;
             let mut encoder = ValuePayloadEncoder::new(compression);
-            let block = BlockBuilder::new(
-                &entries,
-                4,
-                ValueLayout::VARIABLE,
-                checksum,
-                compression,
-                ValuePayloadCompressionPolicy::DEFAULT,
-            )
-            .encode(&mut encoder)
-            .expect("block should encode");
+            let block = block_builder(&entries, 4, ValueLayout::VARIABLE, checksum, compression)
+                .encode(&mut encoder)
+                .expect("block should encode");
             let entry = BlockIndexEntry {
                 first_key: b"aa01".to_vec(),
                 block_offset: 0,

@@ -1,4 +1,6 @@
-use crate::common::*;
+use segment_cache_store::{CommitStats, Result};
+
+use crate::support::api::{commit_entries, create_store, make_key, make_value};
 
 #[test]
 fn round_trip_batch_commit_then_fetch() -> Result<()> {

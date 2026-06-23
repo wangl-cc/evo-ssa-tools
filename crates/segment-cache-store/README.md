@@ -10,7 +10,7 @@ It is optimized for:
 - full ordered iteration
 - corruption-as-miss semantics
 
-This crate is intentionally narrower than a general-purpose database. It does not provide transactions, deletes, compaction, or WAL recovery. Values for one key are expected to be deterministic and semantically immutable: if duplicate visible copies exist, reads, normalization, and store merges keep the lexicographically smallest value bytes rather than applying last-writer-wins updates.
+This crate is intentionally narrower than a general-purpose database. It does not provide transactions, deletes, WAL recovery, or background compaction of cold ranges. The foreground maintenance operations are explicit: normalization folds live patch segments into the main tier, and garbage collection removes unreferenced segment files. Values for one key are expected to be deterministic and semantically immutable: if duplicate visible copies exist, reads, normalization, and store merges keep the lexicographically smallest value bytes rather than applying last-writer-wins updates.
 
 ## Basic Use
 

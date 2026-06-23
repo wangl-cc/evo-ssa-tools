@@ -11,7 +11,7 @@ use crc32c::crc32c;
 
 use crate::format::{CatalogError, CatalogMismatch, binary::BinaryCursor};
 
-const MANIFEST_VERSION: u32 = 2;
+const MANIFEST_VERSION: u32 = 1;
 
 const MANIFEST_MAGIC: &[u8; 4] = b"SCSM";
 const MANIFEST_HEADER_LEN: usize = 20;
@@ -19,6 +19,7 @@ const MANIFEST_TRAILER_LEN: usize = 4;
 
 /// Encoding would exceed the v1 binary `MANIFEST` envelope.
 #[derive(thiserror::Error, Debug, Eq, PartialEq)]
+#[non_exhaustive]
 pub enum ManifestEncodeError {
     #[error("MANIFEST exceeds v1 format limits: entry length overflow")]
     EntryLength,
@@ -35,6 +36,7 @@ pub enum ManifestEncodeError {
 
 /// Malformed or corrupt binary `MANIFEST` bytes.
 #[derive(thiserror::Error, Debug, Eq, PartialEq)]
+#[non_exhaustive]
 pub enum ManifestParseError {
     #[error("malformed MANIFEST file: too short")]
     TooShort,
@@ -154,8 +156,7 @@ impl StoreManifest {
     }
 
     pub(crate) fn encode(&self) -> std::result::Result<Vec<u8>, ManifestEncodeError> {
-        let entry_len = manifest_entry_len(self.version, self.key_len)
-            .ok_or(ManifestEncodeError::EntryLength)?;
+        let entry_len = manifest_entry_len(self.key_len).ok_or(ManifestEncodeError::EntryLength)?;
         let capacity = MANIFEST_HEADER_LEN
             .checked_add(
                 self.segments
@@ -260,12 +261,8 @@ pub(crate) fn validate_segment_entry_shape(
     Ok(())
 }
 
-fn manifest_entry_len(version: u32, key_len: usize) -> Option<usize> {
-    let fixed_len: usize = match version {
-        1 => 5,
-        _ => 21,
-    };
-    fixed_len.checked_add(key_len.checked_mul(2)?)
+fn manifest_entry_len(key_len: usize) -> Option<usize> {
+    21usize.checked_add(key_len.checked_mul(2)?)
 }
 
 struct ManifestParser<'a> {
@@ -303,7 +300,7 @@ impl<'a> ManifestParser<'a> {
         let next_segment_id = self.read_u32("next_segment_id")?;
         let segment_count = self.read_u32("segment_count")? as usize;
         let entry_len =
-            manifest_entry_len(version, key_len).ok_or(ManifestParseError::EntryLengthOverflow)?;
+            manifest_entry_len(key_len).ok_or(ManifestParseError::EntryLengthOverflow)?;
         let expected_len = MANIFEST_HEADER_LEN
             .checked_add(
                 segment_count
@@ -321,13 +318,9 @@ impl<'a> ManifestParser<'a> {
             let segment_id = self.read_u32("segment_id")?;
             let tier = SegmentTier::from_u8(self.read_u8("tier")?)
                 .ok_or(ManifestParseError::UnsupportedSegmentTier)?;
-            let fingerprint = if version == 1 {
-                SegmentFileFingerprint { len: 0, hash: 0 }
-            } else {
-                SegmentFileFingerprint {
-                    len: self.read_u64("segment_len")?,
-                    hash: self.read_u64("segment_hash")?,
-                }
+            let fingerprint = SegmentFileFingerprint {
+                len: self.read_u64("segment_len")?,
+                hash: self.read_u64("segment_hash")?,
             };
             let min_key = self.read_vec("min_key", key_len)?;
             let max_key = self.read_vec("max_key", key_len)?;

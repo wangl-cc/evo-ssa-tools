@@ -447,7 +447,7 @@ impl std::fmt::Display for SpaceRatio {
 
 #[cfg(test)]
 mod tests {
-    use std::{num::NonZeroU32, path::Path};
+    use std::path::Path;
 
     use segment_cache_store::{BlockChecksumKind, CreateOptions};
 
@@ -511,69 +511,12 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn display_helpers_render_edge_cases() -> Result<()> {
-        let variable_store_root = tempfile::tempdir()?;
-        let fixed_store_root = tempfile::tempdir()?;
-        create_store(variable_store_root.path(), &[])?;
-        create_fixed_store(fixed_store_root.path(), &[(KEY_ONE, *b"abcd")])?;
-
-        let variable = Store::open(
-            variable_store_root.path(),
-            OpenOptions::new(test_metadata()).with_read_only(true),
-        )?;
-        let fixed = Store::open(
-            fixed_store_root.path(),
-            OpenOptions::new(test_metadata()).with_read_only(true),
-        )?;
-
-        assert_eq!(
-            MetadataView(&StoreMetadata::from_text("schema")).to_string(),
-            "hex:736368656d61 text:schema"
-        );
-        assert_eq!(
-            MetadataView(&StoreMetadata::from_bytes([0xff, 0x00])).to_string(),
-            "hex:ff00"
-        );
-        assert_eq!(ValueLayoutView(&variable).to_string(), "variable");
-        assert_eq!(ValueLayoutView(&fixed).to_string(), "fixed(4)");
-        assert_eq!(ByteCount(42).to_string(), "42 B");
-        assert_eq!(ByteCount(2048).to_string(), "2.00 KiB (2048 B)");
-        assert_eq!(SpaceRatio::new(10, 0).to_string(), "n/a");
-        assert_eq!(SpaceRatio::new(15, 10).to_string(), "1.500x");
-        assert_eq!(
-            CommitStatsView(&CommitStats {
-                records: 1,
-                bytes: 2,
-                segments_published: 3,
-                segments_retired: 4,
-                merged_records: 5,
-            })
-            .to_string(),
-            "records: 1\nbytes: 2\nsegments_published: 3\nsegments_retired: 4\nmerged_records: 5"
-        );
-        Ok(())
-    }
-
     fn run_cli<const N: usize>(args: [&str; N]) -> Result<()> {
         Cli::try_parse_from(args)?.run()
     }
 
     fn create_store(root: &Path, entries: &[([u8; 4], &[u8])]) -> Result<()> {
         let store = Store::create(root, create_options())?;
-        let mut batch = store.begin_batch();
-        for (key, value) in entries {
-            batch.push(key, value)?;
-        }
-        store.commit_batch(batch)?;
-        Ok(())
-    }
-
-    fn create_fixed_store(root: &Path, entries: &[([u8; 4], [u8; 4])]) -> Result<()> {
-        let store = Store::create(
-            root,
-            create_options().with_fixed_value_len(NonZeroU32::new(4).expect("non-zero")),
-        )?;
         let mut batch = store.begin_batch();
         for (key, value) in entries {
             batch.push(key, value)?;

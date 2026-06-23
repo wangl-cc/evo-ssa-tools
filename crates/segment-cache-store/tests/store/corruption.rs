@@ -1,4 +1,33 @@
-use crate::common::*;
+use std::{
+    fs,
+    fs::OpenOptions as FsOpenOptions,
+    io::{Seek, SeekFrom, Write},
+};
+
+#[cfg(any(feature = "value-compression-lz4", feature = "value-compression-zstd"))]
+use segment_cache_store::ValuePayloadCompressionPolicy;
+use segment_cache_store::{
+    BlockChecksumKind, CatalogError, CatalogMismatch, CommitOptions, Error,
+    OpenOptions as StoreOpenOptions, Result, Store, StoreMetadata,
+};
+
+#[cfg(any(feature = "checksum-crc32c", feature = "checksum-rapidhash"))]
+use crate::support::api::metadata;
+#[cfg(feature = "checksum-rapidhash")]
+use crate::support::api::reopen_store;
+#[cfg(any(feature = "value-compression-lz4", feature = "value-compression-zstd"))]
+use crate::support::segment_file::corrupt_block_value_frame_start;
+use crate::support::{
+    api::{
+        commit_entries, commit_entries_with_options, create_options, create_store,
+        create_store_with, make_key, make_value, reopen_store_read_only,
+    },
+    segment_file::{
+        FOOTER_TRAILER_LEN, block_index_offset, block_offset, corrupt_block_value_payload,
+        first_segment_path, mutate_block_metadata, mutate_footer_payload,
+        truncate_first_block_to_declared_len,
+    },
+};
 
 #[cfg(any(feature = "checksum-crc32c", feature = "checksum-rapidhash"))]
 #[test]

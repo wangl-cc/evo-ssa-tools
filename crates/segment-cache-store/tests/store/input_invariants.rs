@@ -1,6 +1,14 @@
 use std::num::NonZeroU32;
 
-use crate::common::*;
+use segment_cache_store::{
+    CommitOptions, Error, InputError, OptionsError, Result, Store, ValueLayout,
+    ValuePayloadCompressionPolicy,
+};
+
+use crate::support::api::{
+    commit_entries, create_options, create_options_with_key_len, create_store, create_store_with,
+    make_key, make_value, open_options, reopen_store,
+};
 
 #[test]
 fn wrong_length_keys_are_rejected() -> Result<()> {

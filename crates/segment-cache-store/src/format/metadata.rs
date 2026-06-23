@@ -2,6 +2,7 @@
 
 /// Malformed `metadata=<hex>` value in `STORE`.
 #[derive(thiserror::Error, Debug, Eq, PartialEq)]
+#[non_exhaustive]
 pub enum MetadataParseError {
     #[error("metadata hex value has odd length")]
     OddLengthHex,

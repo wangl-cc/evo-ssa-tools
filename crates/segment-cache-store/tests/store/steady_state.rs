@@ -1,7 +1,19 @@
 //! Steady-state write design: replacing commits, dead-entry dropping, the
 //! advisory writer lock, explicit GC, and the lookup-across-commit fix.
 
-use crate::common::*;
+use std::fs;
+
+use segment_cache_store::{
+    CatalogError, CatalogMismatch, CommitStats, Error, InputError, Result, Store,
+};
+
+use crate::support::{
+    api::{
+        commit_entries, commit_entries_with_options, commit_options, create_options, create_store,
+        make_key, make_value, reopen_store, reopen_store_read_only,
+    },
+    segment_file::first_segment_path,
+};
 
 #[test]
 fn second_writer_open_fails_fast_while_writer_is_alive() -> Result<()> {

@@ -15,6 +15,7 @@ const STORE_MAGIC: &str = "segment-cache-store store v1";
 
 /// Malformed `STORE` descriptor bytes.
 #[derive(thiserror::Error, Debug, Eq, PartialEq)]
+#[non_exhaustive]
 pub enum StoreFileParseError {
     #[error("malformed STORE file: empty file")]
     Empty,
