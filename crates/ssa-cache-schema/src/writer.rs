@@ -11,6 +11,7 @@ const DOMAIN_VERSION: &[u8] = b"ssa-cache-schema:v1";
 pub struct SchemaWriter {
     hasher: blake3::Hasher,
 }
+
 /// Zero-field product form whose wire shape would otherwise have no fields to distinguish it.
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
