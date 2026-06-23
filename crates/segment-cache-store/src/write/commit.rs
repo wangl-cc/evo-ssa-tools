@@ -573,47 +573,66 @@ impl Store {
         let mut existing = RangeCursor::merge(cursors);
 
         let mut merged = WriteBatch::default();
-        let mut pending = next_existing(&mut existing)?;
         let mut index = 0usize;
         let len = batch.len();
+        enum Advance {
+            Batch,
+            Existing,
+            Both,
+            Done,
+        }
+
         loop {
-            match (index < len, pending.as_ref()) {
-                (true, Some((existing_key, _))) => {
-                    let entry = batch.entry(index);
-                    match entry.key().cmp(existing_key.as_slice()) {
-                        Ordering::Less => {
-                            merged.push(entry.key(), entry.value())?;
-                            index += 1;
-                        }
-                        Ordering::Greater => {
-                            let (key, value) = pending.take().expect("pending was Some");
-                            merged.push_owned(key, value)?;
-                            pending = next_existing(&mut existing)?;
-                        }
-                        Ordering::Equal => {
-                            let (key, existing_value) = pending.take().expect("pending was Some");
-                            let winner = if entry.value() <= existing_value.as_slice() {
-                                entry.value().to_vec()
-                            } else {
-                                existing_value
-                            };
-                            merged.push_owned(key, winner)?;
-                            index += 1;
-                            pending = next_existing(&mut existing)?;
+            let advance = {
+                let existing_record = existing.current_record()?;
+                match (index < len, existing_record) {
+                    (true, Some(existing_record)) => {
+                        let entry = batch.entry(index);
+                        match entry.key().cmp(existing_record.key) {
+                            Ordering::Less => {
+                                merged.push(entry.key(), entry.value())?;
+                                Advance::Batch
+                            }
+                            Ordering::Greater => {
+                                merged.push(existing_record.key, existing_record.value)?;
+                                Advance::Existing
+                            }
+                            Ordering::Equal => {
+                                let winner = if entry.value() <= existing_record.value {
+                                    entry.value()
+                                } else {
+                                    existing_record.value
+                                };
+                                merged.push(entry.key(), winner)?;
+                                Advance::Both
+                            }
                         }
                     }
+                    (true, None) => {
+                        let entry = batch.entry(index);
+                        merged.push(entry.key(), entry.value())?;
+                        Advance::Batch
+                    }
+                    (false, Some(existing_record)) => {
+                        merged.push(existing_record.key, existing_record.value)?;
+                        Advance::Existing
+                    }
+                    (false, None) => Advance::Done,
                 }
-                (true, None) => {
-                    let entry = batch.entry(index);
-                    merged.push(entry.key(), entry.value())?;
+            };
+
+            match advance {
+                Advance::Batch => {
                     index += 1;
                 }
-                (false, Some(_)) => {
-                    let (key, value) = pending.take().expect("pending was Some");
-                    merged.push_owned(key, value)?;
-                    pending = next_existing(&mut existing)?;
+                Advance::Existing => {
+                    existing.advance_record()?;
                 }
-                (false, None) => break,
+                Advance::Both => {
+                    index += 1;
+                    existing.advance_record()?;
+                }
+                Advance::Done => break,
             }
         }
         Ok(merged.mark_sorted())
@@ -737,8 +756,4 @@ fn find_live_segment(
         .iter()
         .find(|segment| segment.segment_id == segment_id)
         .map(Arc::clone)
-}
-
-fn next_existing(cursor: &mut RangeCursor) -> Result<Option<(Vec<u8>, Vec<u8>)>> {
-    cursor.next().transpose()
 }

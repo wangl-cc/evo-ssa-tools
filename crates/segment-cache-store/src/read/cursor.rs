@@ -15,6 +15,7 @@ use crate::{
 pub struct RangeCursor {
     pub(crate) cursors: Vec<SegmentRangeCursor>,
     mode: RangeCursorMode,
+    merge_duplicate_indices: Vec<usize>,
 }
 
 enum RangeCursorMode {
@@ -29,14 +30,99 @@ impl RangeCursor {
             mode: RangeCursorMode::Concatenate {
                 active_cursor_index: 0,
             },
+            merge_duplicate_indices: Vec::new(),
         }
     }
 
     pub(crate) fn merge(cursors: Vec<SegmentRangeCursor>) -> Self {
+        let merge_duplicate_indices = Vec::with_capacity(cursors.len());
         Self {
             cursors,
             mode: RangeCursorMode::Merge,
+            merge_duplicate_indices,
         }
+    }
+
+    pub(crate) fn current_record(&mut self) -> Result<Option<ParsedRecord<'_, '_>>> {
+        match self.mode {
+            RangeCursorMode::Concatenate { .. } => {
+                let Some(cursor_index) = self.next_concat_cursor_index()? else {
+                    return Ok(None);
+                };
+                self.cursors[cursor_index].current_record()
+            }
+            RangeCursorMode::Merge => {
+                let Some(winner_index) = self.refresh_merge_winner_indices()? else {
+                    return Ok(None);
+                };
+                self.cursors[winner_index].current_record()
+            }
+        }
+    }
+
+    pub(crate) fn advance_record(&mut self) -> Result<()> {
+        match self.mode {
+            RangeCursorMode::Concatenate { .. } => {
+                let Some(cursor_index) = self.next_concat_cursor_index()? else {
+                    return Ok(());
+                };
+                self.cursors[cursor_index].advance()?;
+                self.advance_concat_cursor(cursor_index)?;
+            }
+            RangeCursorMode::Merge => {
+                if self.merge_duplicate_indices.is_empty()
+                    && self.refresh_merge_winner_indices()?.is_none()
+                {
+                    return Ok(());
+                }
+                let mut duplicate_indices = std::mem::take(&mut self.merge_duplicate_indices);
+                for index in duplicate_indices.drain(..) {
+                    self.cursors[index].advance()?;
+                }
+                self.merge_duplicate_indices = duplicate_indices;
+            }
+        }
+        Ok(())
+    }
+
+    fn consume_next_record<F>(&mut self, visitor: F) -> Result<bool>
+    where
+        F: FnOnce(&[u8], &[u8]) -> Result<()>,
+    {
+        match self.mode {
+            RangeCursorMode::Concatenate { .. } => {
+                let Some(cursor_index) = self.next_concat_cursor_index()? else {
+                    return Ok(false);
+                };
+                {
+                    let record = self.cursors[cursor_index]
+                        .current_record()?
+                        .expect("active cursor has a current record");
+                    visitor(record.key, record.value)?;
+                }
+                self.cursors[cursor_index].advance()?;
+                self.advance_concat_cursor(cursor_index)?;
+            }
+            RangeCursorMode::Merge => {
+                let mut duplicate_indices = std::mem::take(&mut self.merge_duplicate_indices);
+                let Some(winner_index) = self.next_merged_indices_into(&mut duplicate_indices)?
+                else {
+                    self.merge_duplicate_indices = duplicate_indices;
+                    return Ok(false);
+                };
+                {
+                    let record = self.cursors[winner_index]
+                        .current_record()?
+                        .expect("winner cursor has a current record");
+                    visitor(record.key, record.value)?;
+                }
+                for index in duplicate_indices.drain(..) {
+                    self.cursors[index].advance()?;
+                }
+                self.merge_duplicate_indices = duplicate_indices;
+            }
+        }
+        Ok(true)
     }
 
     /// Visits all records without allocating owned key/value pairs.
@@ -44,36 +130,11 @@ impl RangeCursor {
     where
         F: FnMut(&[u8], &[u8]),
     {
-        match self.mode {
-            RangeCursorMode::Concatenate { .. } => {
-                while let Some(cursor_index) = self.next_concat_cursor_index()? {
-                    {
-                        let Some(record) = self.cursors[cursor_index].current_record()? else {
-                            self.advance_empty_concat_cursor(cursor_index);
-                            continue;
-                        };
-                        visitor(record.key, record.value);
-                    }
-                    self.cursors[cursor_index].advance()?;
-                    self.advance_concat_cursor(cursor_index)?;
-                }
-            }
-            RangeCursorMode::Merge => {
-                let mut duplicate_indices = Vec::with_capacity(self.cursors.len());
-                while let Some(winner_index) =
-                    self.next_merged_indices_into(&mut duplicate_indices)?
-                {
-                    {
-                        let record = self.cursors[winner_index]
-                            .current_record()?
-                            .expect("winner cursor has a current record");
-                        visitor(record.key, record.value);
-                    }
-                    for index in duplicate_indices.drain(..) {
-                        self.cursors[index].advance()?;
-                    }
-                }
-            }
+        while self.consume_next_record(|key, value| {
+            visitor(key, value);
+            Ok(())
+        })? {
+            // Work is done by `consume_next_record`.
         }
         Ok(())
     }
@@ -97,16 +158,6 @@ impl RangeCursor {
         Ok(None)
     }
 
-    fn advance_empty_concat_cursor(&mut self, cursor_index: usize) {
-        if let RangeCursorMode::Concatenate {
-            active_cursor_index,
-        } = &mut self.mode
-            && *active_cursor_index == cursor_index
-        {
-            *active_cursor_index += 1;
-        }
-    }
-
     fn advance_concat_cursor(&mut self, cursor_index: usize) -> Result<()> {
         if let RangeCursorMode::Concatenate {
             active_cursor_index,
@@ -119,24 +170,11 @@ impl RangeCursor {
         Ok(())
     }
 
-    fn next_merged_record(&mut self) -> Result<Option<OwnedRecord>> {
-        let mut duplicate_indices = Vec::with_capacity(self.cursors.len());
-        let Some(winner_index) = self.next_merged_indices_into(&mut duplicate_indices)? else {
-            return Ok(None);
-        };
-        let record = {
-            let record = self.cursors[winner_index]
-                .current_record()?
-                .expect("winner cursor has a current record");
-            OwnedRecord {
-                key: record.key.to_vec(),
-                value: record.value.to_vec(),
-            }
-        };
-        for index in duplicate_indices {
-            self.cursors[index].advance()?;
-        }
-        Ok(Some(record))
+    fn refresh_merge_winner_indices(&mut self) -> Result<Option<usize>> {
+        let mut duplicate_indices = std::mem::take(&mut self.merge_duplicate_indices);
+        let winner_index = self.next_merged_indices_into(&mut duplicate_indices)?;
+        self.merge_duplicate_indices = duplicate_indices;
+        Ok(winner_index)
     }
 
     fn next_merged_indices_into(
@@ -180,48 +218,18 @@ impl RangeCursor {
     }
 }
 
-struct OwnedRecord {
-    key: Vec<u8>,
-    value: Vec<u8>,
-}
-
 impl Iterator for RangeCursor {
     type Item = Result<(Vec<u8>, Vec<u8>)>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        loop {
-            match self.mode {
-                RangeCursorMode::Concatenate { .. } => {
-                    let cursor_index = match self.next_concat_cursor_index() {
-                        Ok(Some(cursor_index)) => cursor_index,
-                        Ok(None) => return None,
-                        Err(error) => return Some(Err(error)),
-                    };
-                    let record = match self.cursors[cursor_index].current_record() {
-                        Ok(Some(record)) => record,
-                        Ok(None) => {
-                            self.advance_empty_concat_cursor(cursor_index);
-                            continue;
-                        }
-                        Err(error) => return Some(Err(error)),
-                    };
-                    let item = Ok((record.key.to_vec(), record.value.to_vec()));
-                    if let Err(error) = self.cursors[cursor_index].advance() {
-                        return Some(Err(error));
-                    }
-                    if let Err(error) = self.advance_concat_cursor(cursor_index) {
-                        return Some(Err(error));
-                    }
-                    return Some(item);
-                }
-                RangeCursorMode::Merge => {
-                    return match self.next_merged_record() {
-                        Ok(Some(record)) => Some(Ok((record.key, record.value))),
-                        Ok(None) => None,
-                        Err(error) => Some(Err(error)),
-                    };
-                }
-            }
+        let mut item = None;
+        match self.consume_next_record(|key, value| {
+            item = Some((key.to_vec(), value.to_vec()));
+            Ok(())
+        }) {
+            Ok(true) => Some(Ok(item.expect("visitor stored an item"))),
+            Ok(false) => None,
+            Err(error) => Some(Err(error)),
         }
     }
 }
