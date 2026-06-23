@@ -104,9 +104,6 @@ pub enum InputError {
     #[error("duplicate key found inside one commit batch")]
     DuplicateKeyInBatch,
 
-    #[error("new segment key range overlaps already-published data")]
-    SegmentOverlap,
-
     #[error("store already exists")]
     StoreAlreadyExists,
 

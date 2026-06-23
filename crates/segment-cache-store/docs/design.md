@@ -507,24 +507,22 @@ flowchart TD
 
   MainSweep --> SegmentSweep["advance through sorted segment ranges"]
   SegmentSweep --> BlockRange["consume all query keys<br/>belonging to one block"]
-  BlockRange --> SparseChoice{"query_count < block_record_count?"}
-
-  SparseChoice -->|yes| MetadataOnly["read footer + metadata<br/>verify metadata checksum"]
-  SparseChoice -->|no| FullBlock["read full block<br/>verify metadata + payload checksums"]
-  MetadataOnly --> HitCheck{"any matching key?"}
+  BlockRange --> FullBlock["read full raw block<br/>verify metadata + payload checksums"]
+  FullBlock --> HitCheck{"any matching key?"}
   HitCheck -->|no| Misses["emit misses"]
-  HitCheck -->|yes| PayloadRead["read ValuePayloadFrame<br/>verify payload checksum"]
-  FullBlock --> Emit["visit borrowed value slices<br/>or copy for owned fetch"]
-  PayloadRead --> Emit
+  HitCheck -->|yes| PayloadReady{"payload compressed?"}
+  PayloadReady -->|no| Emit["visit borrowed value slices<br/>or copy for owned fetch"]
+  PayloadReady -->|yes| DecodePayload["decode ValuePayloadFrame<br/>into cursor scratch"]
+  DecodePayload --> Emit
   Emit --> Output["results in input order"]
   Misses --> Output
 ```
 
 When the patch tier is empty, ordered lookup sweeps the main tier directly. When patches exist, it first sweeps each patch segment over its overlapping key subrange and records patch winners, then sweeps the main tier and emits the final winner.
 
-Within one segment, ordered lookup reuses cursor state and the last loaded block. It consumes all keys that fall before the next block's first key before loading another block.
+Within one segment, ordered lookup reuses cursor state and the last loaded raw block. It consumes all keys that fall before the next block's first key before loading another block.
 
-Sparse lookup can read only block metadata first. If none of the searched keys exist in that block, the reader emits misses without loading or verifying value payload bytes. If any searched key matches, the value payload frame must be loaded, verified, and decoded before returning a hit.
+Lookup reads a complete raw block and interprets metadata, keys, and value ranges by offset. If none of the searched keys exist in that block, the reader emits misses without decompressing value payload bytes. If any searched key matches a compressed block, the value payload frame is decoded into cursor-owned scratch before returning a hit. Raw payload frames are borrowed directly from the loaded block bytes.
 
 With default checksum verification and a non-zero-width checksum algorithm, `contains_many_ordered` is cache-safe, not index-only. A key counts as present only if the value payload needed to prove that hit is successfully loaded and verified. If read-only checksum verification is explicitly disabled for benchmarking, or if the store was created with `BlockChecksumKind::None`, this guarantee is intentionally weakened for that open handle or namespace.
 

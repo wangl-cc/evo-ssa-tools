@@ -32,6 +32,7 @@ pub(crate) mod segment;
 pub(crate) mod store_file;
 mod value;
 
+pub(crate) use binary::BinaryCursor;
 pub use checksum::BlockChecksumKind;
 pub(crate) use checksum::MAX_BLOCK_CHECKSUM_LEN;
 pub(crate) use compression::{DecodedPayload, ValuePayloadDecoder, ValuePayloadEncoder};

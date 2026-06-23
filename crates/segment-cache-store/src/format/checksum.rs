@@ -84,10 +84,7 @@ impl BlockChecksumKind {
         }
     }
 
-    /// Writes the checksum digest for `bytes` into `out`.
-    ///
-    /// Callers must provide a buffer with exactly [`Self::digest_len`] bytes.
-    pub fn digest_into(self, bytes: &[u8], out: &mut [u8]) {
+    pub(crate) fn digest_into(self, bytes: &[u8], out: &mut [u8]) {
         debug_assert_eq!(out.len(), self.digest_len());
         #[cfg(not(any(feature = "checksum-crc32c", feature = "checksum-rapidhash")))]
         let _ = bytes;

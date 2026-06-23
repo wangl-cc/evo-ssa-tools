@@ -111,16 +111,13 @@ impl PatchWinner {
 
 struct PatchWinnerReader<'a> {
     segments: &'a [Arc<SegmentState>],
-    states: Vec<LookupState>,
+    states: Vec<Option<LookupState>>,
     options: LookupReadOptions,
 }
 
 impl<'a> PatchWinnerReader<'a> {
     fn new(segments: &'a [Arc<SegmentState>], options: LookupReadOptions) -> Self {
-        let states = segments
-            .iter()
-            .map(|_| LookupState::new(options.geometry.value_payload_compression))
-            .collect();
+        let states = segments.iter().map(|_| None).collect();
         Self {
             segments,
             states,
@@ -139,7 +136,11 @@ impl<'a> PatchWinnerReader<'a> {
         let Some(segment) = self.segments.get(winner.segment_index) else {
             return Err(CorruptionError::Block.into());
         };
-        let Some(state) = self.states.get_mut(winner.segment_index) else {
+        let Some(state) = self
+            .states
+            .get_mut(winner.segment_index)
+            .and_then(Option::as_mut)
+        else {
             return Err(CorruptionError::Block.into());
         };
         state.current_segment_index = Some(winner.segment_index);
@@ -152,6 +153,12 @@ impl<'a> PatchWinnerReader<'a> {
             Ok(value) => Ok(Some(value)),
             Err(error) if error.is_cache_miss_corruption() => Ok(None),
             Err(error) => Err(error),
+        }
+    }
+
+    fn keep_state(&mut self, segment_index: usize, state: LookupState) {
+        if let Some(slot) = self.states.get_mut(segment_index) {
+            *slot = Some(state);
         }
     }
 }
@@ -316,8 +323,10 @@ impl OrderedLookup {
                 continue;
             }
             let mut patch_state = LookupState::new(options.geometry.value_payload_compression);
+            let mut saw_hit = false;
             let mut collect_hit = |index: usize, hit: Option<LookupHit<'_>>| {
                 if let Some(hit) = hit {
+                    saw_hit = true;
                     let winner = PatchWinner::from_hit(hit);
                     if patch_reader.should_replace(patch_winners[index], hit.value)? {
                         patch_winners[index] = Some(winner);
@@ -335,6 +344,9 @@ impl OrderedLookup {
                 &mut collect_hit,
             )
             .run()?;
+            if saw_hit {
+                patch_reader.keep_state(patch_segment_index, patch_state);
+            }
         }
 
         self.state.bind_snapshot(main_segments);

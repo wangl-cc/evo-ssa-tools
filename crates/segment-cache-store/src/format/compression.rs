@@ -4,6 +4,8 @@
 //! uncompressed so ordered lookup can validate and search metadata before
 //! deciding whether the value payload needs to be read.
 
+#[cfg(any(feature = "value-compression-lz4", feature = "value-compression-zstd"))]
+use crate::format::BinaryCursor;
 use crate::format::{CorruptionError, FormatError, format_u32};
 
 /// Default raw payload length before the writer attempts value-payload compression.
@@ -13,6 +15,8 @@ pub const DEFAULT_VALUE_PAYLOAD_COMPRESSION_MIN_SAVED_PERCENT: u8 = 20;
 
 #[cfg(any(feature = "value-compression-lz4", feature = "value-compression-zstd"))]
 pub(crate) const VALUE_PAYLOAD_FRAME_HEADER_LEN: usize = 12;
+#[cfg(any(feature = "value-compression-lz4", feature = "value-compression-zstd"))]
+const MAX_DECODED_COMPRESSED_PAYLOAD_LEN: usize = 64 * 1024 * 1024;
 
 #[cfg(any(feature = "value-compression-lz4", feature = "value-compression-zstd"))]
 const VALUE_PAYLOAD_ENCODING_RAW: u32 = 0;
@@ -425,6 +429,9 @@ impl ValuePayloadFrame {
         if encoding == ValuePayloadEncoding::Raw && encoded_len != raw_len {
             return Err(CorruptionError::Block);
         }
+        if encoding != ValuePayloadEncoding::Raw && raw_len > MAX_DECODED_COMPRESSED_PAYLOAD_LEN {
+            return Err(CorruptionError::Block);
+        }
         Ok(Self {
             encoding,
             #[cfg(any(feature = "value-compression-lz4", feature = "value-compression-zstd"))]
@@ -493,7 +500,9 @@ fn encode_lz4_frame(
     policy: ValuePayloadCompressionPolicy,
     out: &mut Vec<u8>,
 ) -> Result<ValuePayloadFrame, FormatError> {
-    if !policy.should_try(raw_payload.len()) {
+    if raw_payload.len() > MAX_DECODED_COMPRESSED_PAYLOAD_LEN
+        || !policy.should_try(raw_payload.len())
+    {
         let frame = ValuePayloadFrame::raw_with_header(raw_payload.len())?;
         frame.write_header(out);
         out.extend_from_slice(raw_payload);
@@ -522,7 +531,9 @@ fn encode_zstd_frame(
     compressor: Option<&mut zstd::bulk::Compressor<'static>>,
     scratch: &mut Vec<u8>,
 ) -> Result<ValuePayloadFrame, FormatError> {
-    if !policy.should_try(raw_payload.len()) {
+    if raw_payload.len() > MAX_DECODED_COMPRESSED_PAYLOAD_LEN
+        || !policy.should_try(raw_payload.len())
+    {
         let frame = ValuePayloadFrame::raw_with_header(raw_payload.len())?;
         frame.write_header(out);
         out.extend_from_slice(raw_payload);
@@ -554,11 +565,8 @@ fn encode_zstd_frame(
 
 #[cfg(any(feature = "value-compression-lz4", feature = "value-compression-zstd"))]
 fn read_u32(bytes: &[u8], offset: usize) -> Result<u32, CorruptionError> {
-    let chunk = bytes
-        .get(offset..offset + 4)
-        .and_then(<[u8]>::first_chunk::<4>)
-        .ok_or(CorruptionError::Block)?;
-    Ok(u32::from_le_bytes(*chunk))
+    let mut cursor = BinaryCursor::at(bytes, offset);
+    cursor.read::<u32>().ok_or(CorruptionError::Block)
 }
 
 #[cfg(test)]
@@ -662,6 +670,20 @@ mod tests {
         }
 
         #[test]
+        fn oversized_compressed_payload_is_rejected_before_allocation() {
+            let compression = ValuePayloadCompressionKind::Lz4;
+            let raw_len = MAX_DECODED_COMPRESSED_PAYLOAD_LEN + 1;
+            let frame = compressed_frame_header(VALUE_PAYLOAD_ENCODING_LZ4, raw_len);
+            let mut decoder = ValuePayloadDecoder::new(compression);
+
+            assert!(matches!(
+                compression.decode_frame(&mut decoder, &frame, raw_len),
+                Err(CorruptionError::Block)
+            ));
+            assert_eq!(decoder.buffer.capacity(), 0);
+        }
+
+        #[test]
         fn high_saved_threshold_keeps_raw_frame() {
             let raw = vec![7u8; DEFAULT_VALUE_PAYLOAD_COMPRESSION_MIN_TRY_LEN * 2];
             let policy = ValuePayloadCompressionPolicy::DEFAULT.with_min_saved_percent(100);
@@ -732,6 +754,30 @@ mod tests {
                 .expect("frame should decode");
             assert_eq!(decoded.as_slice(), raw);
         }
+
+        #[test]
+        fn oversized_compressed_payload_is_rejected_before_allocation() {
+            let compression = ValuePayloadCompressionKind::ZstdLevel1;
+            let raw_len = MAX_DECODED_COMPRESSED_PAYLOAD_LEN + 1;
+            let frame = compressed_frame_header(VALUE_PAYLOAD_ENCODING_ZSTD, raw_len);
+            let mut decoder = ValuePayloadDecoder::new(compression);
+
+            assert!(matches!(
+                compression.decode_frame(&mut decoder, &frame, raw_len),
+                Err(CorruptionError::Block)
+            ));
+            assert_eq!(decoder.buffer.capacity(), 0);
+        }
+    }
+
+    #[cfg(any(feature = "value-compression-lz4", feature = "value-compression-zstd"))]
+    fn compressed_frame_header(encoding_id: u32, raw_len: usize) -> Vec<u8> {
+        let raw_len = u32::try_from(raw_len).expect("test raw length fits u32");
+        let mut frame = Vec::new();
+        frame.extend_from_slice(&encoding_id.to_le_bytes());
+        frame.extend_from_slice(&raw_len.to_le_bytes());
+        frame.extend_from_slice(&0u32.to_le_bytes());
+        frame
     }
 
     impl DecodedPayload<'_> {

@@ -5,13 +5,17 @@
 //! byte ranges from disk and applies the open-time validation policy (a
 //! segment that fails any check is treated as absent, never as an error).
 
-use std::{fs::File, path::PathBuf};
+use std::{
+    fs::File,
+    io::{self, Write},
+    path::PathBuf,
+};
 
 use crate::{
     engine::io::read_exact_at,
     error::Result,
     format::{
-        BlockChecksumKind, ValueLayout, ValuePayloadCompressionKind,
+        BinaryCursor, BlockChecksumKind, ValueLayout, ValuePayloadCompressionKind,
         block::{BlockDecodeOptions, BlockKeyUpperBound, DecodedBlock},
         manifest::SegmentFileFingerprint,
         segment::{
@@ -126,6 +130,48 @@ pub(crate) fn segment_file_fingerprint(file: &File) -> Result<SegmentFileFingerp
     Ok(SegmentFileFingerprint { len, hash })
 }
 
+/// `Write` adapter that fingerprints exactly the bytes accepted by the inner writer.
+pub(crate) struct SegmentFingerprintWriter<'a, W> {
+    inner: &'a mut W,
+    len: u64,
+    hash: u64,
+}
+
+impl<'a, W> SegmentFingerprintWriter<'a, W> {
+    pub(crate) fn new(inner: &'a mut W) -> Self {
+        Self {
+            inner,
+            len: 0,
+            hash: FINGERPRINT_HASH_OFFSET,
+        }
+    }
+
+    pub(crate) fn fingerprint(&self) -> SegmentFileFingerprint {
+        SegmentFileFingerprint {
+            len: self.len,
+            hash: self.hash,
+        }
+    }
+}
+
+impl<W: Write> Write for SegmentFingerprintWriter<'_, W> {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        let written = self.inner.write(bytes)?;
+        let written_len = u64::try_from(written)
+            .map_err(|_| io::Error::other("segment fingerprint length overflow"))?;
+        self.len = self
+            .len
+            .checked_add(written_len)
+            .ok_or_else(|| io::Error::other("segment fingerprint length overflow"))?;
+        self.hash = fingerprint_hash_append(self.hash, &bytes[..written]);
+        Ok(written)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.inner.flush()
+    }
+}
+
 fn fingerprint_hash_append(mut hash: u64, bytes: &[u8]) -> u64 {
     for &byte in bytes {
         hash ^= u64::from(byte);
@@ -150,9 +196,11 @@ fn read_footer(file: &File, key_len: usize) -> Result<SegmentFooter> {
     }
     let mut trailer = [0u8; SEGMENT_FOOTER_TRAILER_LEN];
     read_exact_at(file, file_len - trailer_len, &mut trailer)?;
-    let footer_body_len = u64::from(u32::from_le_bytes(
-        *trailer.first_chunk::<4>().expect("trailer is 8 bytes"),
-    ));
+    let footer_body_len = u64::from(
+        BinaryCursor::new(&trailer)
+            .read::<u32>()
+            .ok_or(CorruptionError::SegmentFormat)?,
+    );
     let footer_len = footer_body_len
         .checked_add(trailer_len)
         .ok_or(CorruptionError::SegmentFormat)?;
@@ -197,4 +245,43 @@ pub(super) fn read_block_reusing(
         verify_checksum: options.verify_checksum,
         upper_key_bound: options.upper_key_bound,
     })?)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        fs,
+        io::{Seek, Write},
+    };
+
+    use super::{SegmentFingerprintWriter, segment_file_fingerprint};
+
+    #[test]
+    fn write_time_fingerprint_matches_file_scan() {
+        let tempdir = tempfile::tempdir().expect("tempdir should be created");
+        let path = tempdir.path().join("segment");
+        let mut file = fs::File::options()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .expect("segment file should be created");
+        let write_time_fingerprint = {
+            let mut writer = SegmentFingerprintWriter::new(&mut file);
+            writer
+                .write_all(b"header")
+                .expect("first write should succeed");
+            writer
+                .write_all(&[0, 1, 2, 3, 4])
+                .expect("second write should succeed");
+            writer.fingerprint()
+        };
+        file.flush().expect("segment file should flush");
+        file.rewind().expect("segment file should rewind");
+
+        assert_eq!(
+            write_time_fingerprint,
+            segment_file_fingerprint(&file).expect("file scan should fingerprint segment")
+        );
+    }
 }

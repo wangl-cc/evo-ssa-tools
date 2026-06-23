@@ -5,6 +5,9 @@ on:
     branches: ["main"]
     paths:
       - "crates/*/src/**"
+      - "crates/*/tests/**"
+      - "crates/*/benches/**"
+      - "crates/*/examples/**"
       - "crates/*/Cargo.toml"
       - "crates/*/build.rs"
       - "Cargo.lock"
@@ -15,6 +18,9 @@ on:
     branches: ["main"]
     paths:
       - "crates/*/src/**"
+      - "crates/*/tests/**"
+      - "crates/*/benches/**"
+      - "crates/*/examples/**"
       - "crates/*/Cargo.toml"
       - "crates/*/build.rs"
       - "Cargo.lock"
@@ -69,6 +75,9 @@ jobs:
       - name: Build
         run: |
           cargo build --locked --all-features --workspace
+      - name: Check examples and benches
+        run: |
+          cargo check --locked --all-features --workspace --examples --benches
       - name: Lint (clippy)
         run: |
           cargo clippy --all-features --workspace -- -D warnings
@@ -87,6 +96,10 @@ jobs:
             feature_flags: --no-default-features
           - variant: checksum-crc32c
             feature_flags: --no-default-features --features checksum-crc32c
+          - variant: value-compression-lz4
+            feature_flags: --no-default-features --features value-compression-lz4
+          - variant: value-compression-zstd
+            feature_flags: --no-default-features --features value-compression-zstd
     steps:
       - name: Checkout
         uses: actions/checkout@v6

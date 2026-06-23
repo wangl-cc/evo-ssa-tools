@@ -328,7 +328,16 @@ fn block_value_payload_len(
 }
 
 fn block_checksum_digest(checksum: BlockChecksumKind, bytes: &[u8]) -> Vec<u8> {
-    let mut digest = vec![0u8; checksum.digest_len()];
-    checksum.digest_into(bytes, &mut digest);
-    digest
+    #[cfg(not(any(feature = "checksum-crc32c", feature = "checksum-rapidhash")))]
+    let _ = bytes;
+
+    match checksum {
+        BlockChecksumKind::None => Vec::new(),
+        #[cfg(feature = "checksum-crc32c")]
+        BlockChecksumKind::Crc32c => crc32c::crc32c(bytes).to_le_bytes().to_vec(),
+        #[cfg(feature = "checksum-rapidhash")]
+        BlockChecksumKind::RapidHashV3_64 => {
+            rapidhash::v3::rapidhash_v3(bytes).to_le_bytes().to_vec()
+        }
+    }
 }

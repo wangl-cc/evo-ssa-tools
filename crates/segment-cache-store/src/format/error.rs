@@ -84,9 +84,6 @@ pub enum CatalogMismatch {
     #[error("MANIFEST segment range is invalid")]
     SegmentKeyRange,
 
-    #[error("segment footer key range does not match MANIFEST")]
-    SegmentFooterMismatch,
-
     #[error("segment id space is exhausted")]
     SegmentIdExhausted,
 }

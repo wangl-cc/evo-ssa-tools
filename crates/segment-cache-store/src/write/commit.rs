@@ -9,7 +9,7 @@ use std::{
 };
 
 use crate::{
-    engine::{paths, runtime::SegmentState, segment_file::segment_file_fingerprint},
+    engine::{paths, runtime::SegmentState, segment_file::SegmentFingerprintWriter},
     error::{InputError, OptionsError, Result},
     format::{
         CatalogMismatch, ValuePayloadCompressionPolicy,
@@ -667,14 +667,15 @@ impl Store {
         let segment_entries = batch.view(range);
         let segment_paths = self.inner.paths.segment_publish_path(segment_id);
         let writer = self.segment_writer(options);
-        let footer = segment_paths
-            .publish()
-            .write_with(|file| Ok(writer.write(file, &segment_entries)?))?;
+        let (footer, fingerprint) = segment_paths.publish().write_with(|file| {
+            let mut file = SegmentFingerprintWriter::new(file);
+            let footer = writer.write(&mut file, &segment_entries)?;
+            Ok((footer, file.fingerprint()))
+        })?;
         let min_key = footer.min_key;
         let max_key = footer.max_key;
         let block_index = footer.block_index;
         let file = fs::File::open(segment_paths.final_path())?;
-        let fingerprint = segment_file_fingerprint(&file)?;
         let runtime = Arc::new(SegmentState::from_written(
             segment_id,
             file,
