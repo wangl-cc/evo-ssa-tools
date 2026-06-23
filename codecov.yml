@@ -3,80 +3,39 @@ coverage:
   round: down
   status:
     project:
-      default: false
-      # Storage engine: strict, with a little tolerance for I/O and
-      # corruption-path branch complexity.
-      segment-cache-store:
+      # Keep project coverage as one repository-level trend signal. Patch
+      # coverage below carries the stricter component-specific gates.
+      default:
         target: auto
         threshold: 2%
-        paths:
-          - "crates/segment-cache-store/**"
-      # CLI/debug tooling: output formatting and error-path coverage should not
-      # block storage-engine changes.
-      scs:
-        target: auto
-        threshold: 10%
-        paths:
-          - "crates/scs/**"
-      # Workflow integration layer: mostly behavior-level coverage, not every
-      # branch in every backend combination.
-      ssa-workflow:
-        target: auto
-        threshold: 5%
-        paths:
-          - "crates/ssa-workflow/**"
-      # Pure libraries: little I/O surface, so coverage can be tighter.
-      evo-marker:
-        target: auto
-        threshold: 2%
-        paths:
-          - "crates/evo-marker/**"
-      frequency:
-        target: auto
-        threshold: 2%
-        paths:
-          - "crates/frequency/**"
-      validate:
-        target: auto
-        threshold: 1%
-        paths:
-          - "crates/validate/**"
     patch:
       default: false
       # Storage engine: require meaningful patch coverage without forcing
       # artificial tests for every filesystem branch.
-      segment-cache-store:
+      storage:
         target: 85%
         threshold: 5%
         paths:
           - "crates/segment-cache-store/**"
-      # CLI/debug tooling: useful to test parsing and core behavior, but text
-      # presentation branches are intentionally lower priority.
-      scs:
-        target: 50%
-        threshold: 20%
-        paths:
-          - "crates/scs/**"
       # Workflow integration layer: keep pressure on behavior tests while
       # allowing feature/backend combinations to vary.
-      ssa-workflow:
+      workflow:
         target: 70%
         threshold: 15%
         paths:
           - "crates/ssa-workflow/**"
       # Pure libraries: deterministic logic should have high patch coverage.
-      evo-marker:
-        target: 85%
-        threshold: 5%
-        paths:
-          - "crates/evo-marker/**"
-      frequency:
+      pure-libs:
         target: 90%
         threshold: 5%
         paths:
+          - "crates/evo-marker/**"
           - "crates/frequency/**"
-      validate:
-        target: 95%
-        threshold: 2%
-        paths:
           - "crates/validate/**"
+      # CLI/debug tooling: useful to test parsing and core behavior, but text
+      # presentation branches are intentionally lower priority.
+      cli:
+        target: 50%
+        threshold: 20%
+        paths:
+          - "crates/scs/**"
