@@ -12,7 +12,7 @@ fn round_trip_batch_commit_then_fetch() -> Result<()> {
         (make_key(2, 1, 0), make_value(3, 2048)),
     ];
     let stats = commit_entries(&store, &entries, true)?;
-    assert_eq!(stats.records, entries.len());
+    assert_eq!(stats.input_records, entries.len());
 
     for (key, value) in &entries {
         assert_eq!(store.fetch_one(key)?, Some(value.clone()));

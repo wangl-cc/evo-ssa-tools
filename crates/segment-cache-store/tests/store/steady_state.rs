@@ -86,8 +86,8 @@ fn interleaving_commit_spans_two_segments_and_a_tail_as_patch() -> Result<()> {
         ],
         true,
     )?;
-    assert_eq!(stats.records, 3);
-    assert_eq!(stats.merged_records, 3);
+    assert_eq!(stats.input_records, 3);
+    assert_eq!(stats.output_records, 3);
     assert_eq!(stats.segments_retired, 0);
     assert_eq!(stats.segments_published, 1);
 
@@ -128,13 +128,13 @@ fn patch_segments_normalize_after_limit() -> Result<()> {
             &[(make_key(1, 0, rep), make_value(rep as u8, 8))],
             true,
         )?;
-        assert_eq!(stats.merged_records, 1);
+        assert_eq!(stats.output_records, 1);
         assert_eq!(stats.segments_retired, 0);
     }
 
     let stats = commit_entries(&store, &[(make_key(1, 0, 9), make_value(9, 8))], true)?;
-    assert_eq!(stats.records, 1);
-    assert_eq!(stats.merged_records, 11);
+    assert_eq!(stats.input_records, 1);
+    assert_eq!(stats.output_records, 11);
     assert_eq!(stats.segments_retired, 9);
     assert_eq!(stats.segments_published, 1);
 
@@ -171,7 +171,7 @@ fn patch_segment_limit_is_configurable() -> Result<()> {
         true,
         &options,
     )?;
-    assert_eq!(stats.merged_records, 1);
+    assert_eq!(stats.output_records, 1);
     assert_eq!(stats.segments_retired, 0);
 
     let stats = commit_entries_with_options(
@@ -180,8 +180,8 @@ fn patch_segment_limit_is_configurable() -> Result<()> {
         true,
         &options,
     )?;
-    assert_eq!(stats.records, 1);
-    assert_eq!(stats.merged_records, 4);
+    assert_eq!(stats.input_records, 1);
+    assert_eq!(stats.output_records, 4);
     assert_eq!(stats.segments_retired, 2);
     assert_eq!(stats.segments_published, 1);
     Ok(())
@@ -208,8 +208,8 @@ fn patch_direct_record_limit_can_force_immediate_normalization() -> Result<()> {
         true,
         &options,
     )?;
-    assert_eq!(stats.records, 1);
-    assert_eq!(stats.merged_records, 3);
+    assert_eq!(stats.input_records, 1);
+    assert_eq!(stats.output_records, 3);
     assert_eq!(stats.segments_retired, 1);
     assert_eq!(stats.segments_published, 1);
     Ok(())
@@ -231,9 +231,9 @@ fn explicit_normalize_folds_patch_segments_into_main() -> Result<()> {
     commit_entries(&store, &[(make_key(1, 0, 2), make_value(2, 8))], true)?;
 
     let stats = store.normalize_with_options(&commit_options())?;
-    assert_eq!(stats.records, 0);
-    assert_eq!(stats.bytes, 0);
-    assert_eq!(stats.merged_records, 4);
+    assert_eq!(stats.input_records, 0);
+    assert_eq!(stats.input_bytes, 0);
+    assert_eq!(stats.output_records, 4);
     assert_eq!(stats.segments_retired, 3);
     assert_eq!(stats.segments_published, 1);
 

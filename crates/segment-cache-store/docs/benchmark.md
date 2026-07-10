@@ -109,7 +109,7 @@ Segment-only parameter-space insertion benchmark. `rebuild_new_store_then_read` 
 
 ### `axis_change_rounds`
 
-Segment-only repeated parameter-evolution benchmark. It prints the dry-run rewrite amplification (`merged_records / inserted`) so L0 normalization behavior can be tracked without comparing against unrelated database internals.
+Segment-only repeated parameter-evolution benchmark. It prints the dry-run rewrite amplification (`output_records / inserted`) so L0 normalization behavior can be tracked without comparing against unrelated database internals.
 
 ## Commands
 

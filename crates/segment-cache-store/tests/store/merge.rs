@@ -34,8 +34,8 @@ fn merge_from_imports_disjoint_source_records() -> Result<()> {
 
     let stats = destination.merge_from_with_options(&source, &commit_options())?;
 
-    assert_eq!(stats.records, 2);
-    assert_eq!(stats.bytes, 48);
+    assert_eq!(stats.input_records, 2);
+    assert_eq!(stats.input_bytes, 48);
     assert_eq!(destination.iter_all()?.collect::<Result<Vec<_>>>()?, {
         let mut expected = destination_entries;
         expected.extend(source_entries);
@@ -80,8 +80,8 @@ fn merge_from_resolves_duplicate_keys_by_smallest_value() -> Result<()> {
             .with_flush_threshold_records(64),
     )?;
 
-    assert_eq!(stats.records, 3);
-    assert_eq!(stats.merged_records, 3);
+    assert_eq!(stats.input_records, 3);
+    assert_eq!(stats.output_records, 3);
     assert_eq!(stats.segments_retired, 1);
     assert_eq!(
         destination.fetch_one(&smaller_from_source)?,
@@ -124,8 +124,8 @@ fn merge_from_imports_source_patch_winners() -> Result<()> {
 
     let stats = destination.merge_from_with_options(&source, &commit_options())?;
 
-    assert_eq!(stats.records, 3);
-    assert_eq!(stats.bytes, 72);
+    assert_eq!(stats.input_records, 3);
+    assert_eq!(stats.input_bytes, 72);
     assert_eq!(destination.iter_all()?.collect::<Result<Vec<_>>>()?, vec![
         (overwritten, make_value(1, 8)),
         (patch_only, make_value(3, 8)),

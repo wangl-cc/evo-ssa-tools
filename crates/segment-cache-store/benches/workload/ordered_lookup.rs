@@ -297,8 +297,8 @@ impl OverlayStore {
             let stats = store
                 .commit_batch_with_options(batch, options)
                 .expect("patch commit should succeed");
-            assert_eq!(stats.records, chunk.len());
-            assert_eq!(stats.merged_records, chunk.len());
+            assert_eq!(stats.input_records, chunk.len());
+            assert_eq!(stats.output_records, chunk.len());
             assert_eq!(stats.segments_retired, 0);
         }
 

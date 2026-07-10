@@ -220,17 +220,17 @@ impl Store {
         )?;
         let destination_cursor = RangeCursor::merge(cursors);
         let mut records = StoreMergeRecords::new(destination_cursor, source_cursor);
-        let (written, merged_records) =
+        let (written, output_records) =
             self.write_cursor_segments(&mut records, &mut plan, options)?;
         let source_stats = records.into_source_stats();
         let publication_stats = self.publish_plan(plan, written, key_len)?;
 
         Ok(CommitStats {
-            records: source_stats.records,
-            bytes: source_stats.bytes,
+            input_records: source_stats.records,
+            input_bytes: source_stats.bytes,
             segments_published: publication_stats.segments_published,
             segments_retired: publication_stats.segments_retired,
-            merged_records,
+            output_records,
         })
     }
 
@@ -258,10 +258,10 @@ impl Store {
         options: &CommitOptions,
     ) -> Result<(Vec<WrittenSegment>, usize)> {
         let mut written = Vec::new();
-        let mut merged_records = 0usize;
+        let mut output_records = 0usize;
         let mut batch = WriteBatch::default();
         while records.push_next_into(&mut batch)? {
-            merged_records += 1;
+            output_records += 1;
             if batch.len() >= options.flush_threshold_records()
                 || batch.bytes >= options.flush_threshold_bytes()
             {
@@ -269,7 +269,7 @@ impl Store {
             }
         }
         self.flush_cursor_batch(&mut batch, &mut written, plan, options)?;
-        Ok((written, merged_records))
+        Ok((written, output_records))
     }
 
     fn flush_cursor_batch(

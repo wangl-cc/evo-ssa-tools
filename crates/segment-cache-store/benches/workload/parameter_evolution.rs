@@ -79,8 +79,8 @@ fn bench_middle_insert_then_read(
                     }
                     let stats = store.commit_batch(batch).expect("commit should succeed");
                     score = score
-                        .wrapping_add(stats.records)
-                        .wrapping_add(stats.merged_records)
+                        .wrapping_add(stats.input_records)
+                        .wrapping_add(stats.output_records)
                         .wrapping_add(stats.segments_published)
                         .wrapping_add(stats.segments_retired);
                 }
@@ -112,13 +112,13 @@ fn bench_axis_change_rounds(c: &mut Criterion, profile: ValueProfile, dataset: &
     group.finish();
 
     eprintln!(
-        "{}/axis_change_rounds dry-run: queries={} hits={} misses={} inserted={} merged_records={} rewrite_amp={:.2} retired={} published={}",
+        "{}/axis_change_rounds dry-run: queries={} hits={} misses={} inserted={} output_records={} rewrite_amp={:.2} retired={} published={}",
         profile.name(),
         report.queries,
         report.hits,
         report.misses,
         report.inserted,
-        report.merged_records,
+        report.output_records,
         report.rewrite_amplification(),
         report.segments_retired,
         report.segments_published

@@ -240,13 +240,13 @@ fn validate_axis_change_rounds(profile: ValueProfile, dataset: &AxisChangeDatase
     assert_eq!(segment.checksum, redb.checksum);
 
     eprintln!(
-        "{}/comparison_axis_change_rounds dry-run: queries={} hits={} misses={} inserted={} merged_records={} rewrite_amp={:.2} retired={} published={}",
+        "{}/comparison_axis_change_rounds dry-run: queries={} hits={} misses={} inserted={} output_records={} rewrite_amp={:.2} retired={} published={}",
         profile.name(),
         segment.queries,
         segment.hits,
         segment.misses,
         segment.inserted,
-        segment.merged_records,
+        segment.output_records,
         segment.rewrite_amplification(),
         segment.segments_retired,
         segment.segments_published

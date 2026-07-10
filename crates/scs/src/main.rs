@@ -391,15 +391,15 @@ struct CommitStatsView<'a>(&'a CommitStats);
 
 impl fmt::Display for CommitStatsView<'_> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        writeln!(formatter, "records: {}", self.0.records)?;
-        writeln!(formatter, "bytes: {}", self.0.bytes)?;
+        writeln!(formatter, "input_records: {}", self.0.input_records)?;
+        writeln!(formatter, "input_bytes: {}", self.0.input_bytes)?;
         writeln!(
             formatter,
             "segments_published: {}",
             self.0.segments_published
         )?;
         writeln!(formatter, "segments_retired: {}", self.0.segments_retired)?;
-        write!(formatter, "merged_records: {}", self.0.merged_records)
+        write!(formatter, "output_records: {}", self.0.output_records)
     }
 }
 

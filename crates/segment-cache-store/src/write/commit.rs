@@ -142,18 +142,18 @@ impl CommitOptions {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct CommitStats {
     /// Records accepted from the caller's batch.
-    pub records: usize,
+    pub input_records: usize,
     /// Sum of key and value bytes accepted from the caller.
-    pub bytes: usize,
+    pub input_bytes: usize,
     /// Segment files made visible by the manifest update.
     pub segments_published: usize,
     /// Manifest entries removed by this publication: the rebuilt run that the
     /// batch normalized with, plus any dead entries dropped along the way.
     pub segments_retired: usize,
-    /// Logical records written into newly published segments. Equals `records`
-    /// for direct main and patch publishes; exceeds `records` when the commit
-    /// normalized patch/main overlap into replacement main segments.
-    pub merged_records: usize,
+    /// Logical records written into newly published segments. Equals
+    /// `input_records` for direct main and patch publishes; exceeds it when the
+    /// commit normalizes patch/main overlap into replacement main segments.
+    pub output_records: usize,
 }
 
 /// A segment written during this commit, ready to be published.
@@ -419,7 +419,7 @@ impl Store {
             options.flush_threshold_bytes,
         );
 
-        let (written, merged_records) = if affected_main.is_empty() {
+        let (written, output_records) = if affected_main.is_empty() {
             let written = self.write_batch_segments(
                 &batch,
                 direct_ranges,
@@ -450,11 +450,11 @@ impl Store {
         let publication_stats = self.publish_plan(plan, written, key_len)?;
 
         Ok(CommitStats {
-            records: input_records,
-            bytes: input_bytes,
+            input_records,
+            input_bytes,
             segments_published: publication_stats.segments_published,
             segments_retired: publication_stats.segments_retired,
-            merged_records,
+            output_records,
         })
     }
 
@@ -484,15 +484,15 @@ impl Store {
             return Ok(CommitStats::default());
         }
 
-        let (written, merged_records) =
+        let (written, output_records) =
             self.write_normalized_segments(&mut plan, &WriteBatch::default(), None, options)?;
         let publication_stats = self.publish_plan(plan, written, key_len)?;
         Ok(CommitStats {
-            records: 0,
-            bytes: 0,
+            input_records: 0,
+            input_bytes: 0,
             segments_published: publication_stats.segments_published,
             segments_retired: publication_stats.segments_retired,
-            merged_records,
+            output_records,
         })
     }
 

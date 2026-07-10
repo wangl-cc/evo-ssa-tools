@@ -98,7 +98,7 @@ impl Store {
     /// Direct main publishes and patch publishes write only the caller's batch.
     /// Normalization rewrites the touched main range plus every live patch
     /// segment, so its cost is driven by key spread and patch-tier occupancy;
-    /// [`CommitStats::merged_records`] reports the amplification actually paid.
+    /// [`CommitStats::output_records`] reports the amplification actually paid.
     ///
     /// Returns [`InputError::ReadOnlyStore`] on a read-only handle.
     pub fn commit_batch_with_options(

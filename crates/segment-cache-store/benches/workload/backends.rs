@@ -146,7 +146,7 @@ pub(crate) fn rebuild_segment_store_into(
     let stats = new_store
         .commit_batch(batch)
         .expect("rebuild commit should succeed");
-    (new_store, checksum.wrapping_add(stats.records))
+    (new_store, checksum.wrapping_add(stats.input_records))
 }
 
 pub(crate) fn sum_segment_fetches(store: &Store, keys: &[Vec<u8>]) -> usize {
@@ -187,7 +187,7 @@ pub(crate) struct AxisChangeReport {
     pub(crate) hits: usize,
     pub(crate) misses: usize,
     pub(crate) inserted: usize,
-    pub(crate) merged_records: usize,
+    pub(crate) output_records: usize,
     pub(crate) segments_published: usize,
     pub(crate) segments_retired: usize,
     pub(crate) checksum: usize,
@@ -200,7 +200,7 @@ impl AxisChangeReport {
             .wrapping_add(self.hits)
             .wrapping_add(self.misses)
             .wrapping_add(self.inserted)
-            .wrapping_add(self.merged_records)
+            .wrapping_add(self.output_records)
             .wrapping_add(self.segments_published)
             .wrapping_add(self.segments_retired)
     }
@@ -209,7 +209,7 @@ impl AxisChangeReport {
         if self.inserted == 0 {
             0.0
         } else {
-            self.merged_records as f64 / self.inserted as f64
+            self.output_records as f64 / self.inserted as f64
         }
     }
 }
@@ -247,8 +247,8 @@ pub(crate) fn run_segment_axis_changes(
             batch.push(key, value).expect("push should succeed");
         }
         let stats = store.commit_batch(batch).expect("commit should succeed");
-        report.inserted += stats.records;
-        report.merged_records += stats.merged_records;
+        report.inserted += stats.input_records;
+        report.output_records += stats.output_records;
         report.segments_published += stats.segments_published;
         report.segments_retired += stats.segments_retired;
     }
