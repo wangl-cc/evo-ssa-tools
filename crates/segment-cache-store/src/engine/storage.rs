@@ -11,6 +11,7 @@ use crate::{Result, engine::paths::StorePaths};
 /// under the root, including catalog files, lock files, temporary files,
 /// retired segments, and orphan files.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[non_exhaustive]
 pub struct StoreStorageStats {
     /// Segment files under the store's segment-file area.
     pub segment_files: usize,

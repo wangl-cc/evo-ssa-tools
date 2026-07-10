@@ -9,6 +9,8 @@ use std::{
 use crc32c::crc32c;
 use segment_cache_store::{BlockChecksumKind, CorruptionError, Result};
 
+use crate::support::api::{block_checksum_digest_len, block_checksum_from_format_id};
+
 pub(crate) const FOOTER_TRAILER_LEN: u64 = 8;
 const KEY_PREFIX_LEN_LEN: usize = 4;
 const VALUE_OFFSET_LEN: usize = 4;
@@ -140,7 +142,7 @@ pub(crate) fn corrupt_block_value_frame_start(path: &Path, block_index: usize) -
     let metadata_len =
         block_lookup_metadata_len(&block, record_count, key_len, value_len, block_checksum)?;
     let frame_offset = metadata_len
-        .checked_add(block_checksum.digest_len())
+        .checked_add(block_checksum_digest_len(block_checksum))
         .ok_or(CorruptionError::Block)?;
     let byte = block.get_mut(frame_offset).ok_or(CorruptionError::Block)?;
     *byte ^= 0xFF;
@@ -197,7 +199,7 @@ fn read_value_len(file: &mut fs::File) -> Result<u32> {
 
 fn read_block_checksum(file: &mut fs::File) -> Result<BlockChecksumKind> {
     let format_id = read_u32_at(file, SEGMENT_BLOCK_CHECKSUM_ID_OFFSET)?;
-    BlockChecksumKind::from_format_id(format_id).ok_or(CorruptionError::SegmentFormat.into())
+    block_checksum_from_format_id(format_id).ok_or(CorruptionError::SegmentFormat.into())
 }
 
 fn read_u32_at(file: &mut fs::File, offset: u64) -> Result<u32> {
@@ -235,7 +237,7 @@ fn block_value_payload_range(
     let metadata_len =
         block_lookup_metadata_len(block, record_count, key_len, value_len, block_checksum)?;
     let payload_offset = metadata_len
-        .checked_add(block_checksum.digest_len())
+        .checked_add(block_checksum_digest_len(block_checksum))
         .ok_or(CorruptionError::Block)?;
     let payload_len =
         block_value_payload_len(block, record_count, key_len, value_len, block_checksum)?;
@@ -243,7 +245,7 @@ fn block_value_payload_range(
         .checked_add(payload_len)
         .ok_or(CorruptionError::Block)?;
     if payload_end
-        .checked_add(block_checksum.digest_len())
+        .checked_add(block_checksum_digest_len(block_checksum))
         .ok_or(CorruptionError::Block)?
         > block.len()
         || payload_offset > payload_end
@@ -289,7 +291,7 @@ fn block_lookup_metadata_len(
         .checked_add(value_index_len)
         .ok_or(CorruptionError::Block)?;
     if metadata_len
-        .checked_add(block_checksum.digest_len())
+        .checked_add(block_checksum_digest_len(block_checksum))
         .ok_or(CorruptionError::Block)?
         > block.len()
     {
@@ -339,5 +341,6 @@ fn block_checksum_digest(checksum: BlockChecksumKind, bytes: &[u8]) -> Vec<u8> {
         BlockChecksumKind::RapidHashV3_64 => {
             rapidhash::v3::rapidhash_v3(bytes).to_le_bytes().to_vec()
         }
+        _ => unreachable!("test fixture does not know this checksum kind"),
     }
 }

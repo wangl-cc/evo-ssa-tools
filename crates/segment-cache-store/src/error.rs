@@ -17,6 +17,7 @@ use crate::format::{
 
 /// Top-level error returned by the segment cache store.
 #[derive(thiserror::Error, Debug)]
+#[non_exhaustive]
 pub enum Error {
     #[error(transparent)]
     Io(#[from] std::io::Error),
@@ -88,6 +89,7 @@ pub type Result<T, E = Error> = std::result::Result<T, E>;
 
 /// Caller input or API contract violation.
 #[derive(thiserror::Error, Debug, Eq, PartialEq)]
+#[non_exhaustive]
 pub enum InputError {
     #[error("key length mismatch: expected {expected}, got {actual}")]
     WrongKeyLength { expected: usize, actual: usize },
@@ -125,6 +127,7 @@ pub enum InputError {
 
 /// Invalid creation or commit options.
 #[derive(thiserror::Error, Debug, Eq, PartialEq)]
+#[non_exhaustive]
 pub enum OptionsError {
     #[error("key_len must be greater than zero")]
     KeyLenZero,

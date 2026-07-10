@@ -22,6 +22,39 @@ pub(crate) fn test_block_checksum() -> BlockChecksumKind {
     }
 }
 
+pub(crate) fn block_checksum_format_id(checksum: BlockChecksumKind) -> u32 {
+    match checksum {
+        BlockChecksumKind::None => 0,
+        #[cfg(feature = "checksum-crc32c")]
+        BlockChecksumKind::Crc32c => 1,
+        #[cfg(feature = "checksum-rapidhash")]
+        BlockChecksumKind::RapidHashV3_64 => 2,
+        _ => unreachable!("test fixture does not know this checksum kind"),
+    }
+}
+
+pub(crate) fn block_checksum_digest_len(checksum: BlockChecksumKind) -> usize {
+    match checksum {
+        BlockChecksumKind::None => 0,
+        #[cfg(feature = "checksum-crc32c")]
+        BlockChecksumKind::Crc32c => 4,
+        #[cfg(feature = "checksum-rapidhash")]
+        BlockChecksumKind::RapidHashV3_64 => 8,
+        _ => unreachable!("test fixture does not know this checksum kind"),
+    }
+}
+
+pub(crate) fn block_checksum_from_format_id(format_id: u32) -> Option<BlockChecksumKind> {
+    match format_id {
+        0 => Some(BlockChecksumKind::None),
+        #[cfg(feature = "checksum-crc32c")]
+        1 => Some(BlockChecksumKind::Crc32c),
+        #[cfg(feature = "checksum-rapidhash")]
+        2 => Some(BlockChecksumKind::RapidHashV3_64),
+        _ => None,
+    }
+}
+
 pub(crate) fn create_options_with_key_len(key_len: usize) -> CreateOptions {
     CreateOptions::new_with_block_checksum(key_len, metadata(), test_block_checksum())
 }

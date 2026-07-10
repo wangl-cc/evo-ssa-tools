@@ -9,9 +9,9 @@ use crate::format::BinaryCursor;
 use crate::format::{CorruptionError, FormatError, format_u32};
 
 /// Default raw payload length before the writer attempts value-payload compression.
-pub const DEFAULT_VALUE_PAYLOAD_COMPRESSION_MIN_TRY_LEN: usize = 64 * 1024;
+pub(crate) const DEFAULT_VALUE_PAYLOAD_COMPRESSION_MIN_TRY_LEN: usize = 64 * 1024;
 /// Default minimum saved percentage before a compressed frame is kept.
-pub const DEFAULT_VALUE_PAYLOAD_COMPRESSION_MIN_SAVED_PERCENT: u8 = 20;
+pub(crate) const DEFAULT_VALUE_PAYLOAD_COMPRESSION_MIN_SAVED_PERCENT: u8 = 20;
 
 #[cfg(any(feature = "value-compression-lz4", feature = "value-compression-zstd"))]
 pub(crate) const VALUE_PAYLOAD_FRAME_HEADER_LEN: usize = 12;
@@ -32,6 +32,7 @@ const VALUE_PAYLOAD_ENCODING_ZSTD: u32 = 2;
 /// payload was stored raw or compressed; payloads that are too small or do not
 /// compress well stay raw.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
 pub enum ValuePayloadCompressionKind {
     /// Store value payload bytes exactly as provided.
     None,
@@ -142,7 +143,7 @@ impl ValuePayloadCompressionKind {
     pub const DEFAULT: Self = Self::None;
 
     /// Resolves a persisted compression id to a built-in policy.
-    pub const fn from_format_id(format_id: u32) -> Option<Self> {
+    pub(crate) const fn from_format_id(format_id: u32) -> Option<Self> {
         match format_id {
             0 => Some(Self::None),
             #[cfg(feature = "value-compression-lz4")]
@@ -165,7 +166,7 @@ impl ValuePayloadCompressionKind {
     }
 
     /// Stable persisted compression identifier.
-    pub const fn format_id(self) -> u32 {
+    pub(crate) const fn format_id(self) -> u32 {
         match self {
             Self::None => 0,
             #[cfg(feature = "value-compression-lz4")]
@@ -176,7 +177,7 @@ impl ValuePayloadCompressionKind {
     }
 
     /// Bytes stored before the encoded payload for this policy.
-    pub const fn frame_header_len(self) -> usize {
+    pub(crate) const fn frame_header_len(self) -> usize {
         match self {
             Self::None => 0,
             #[cfg(feature = "value-compression-lz4")]

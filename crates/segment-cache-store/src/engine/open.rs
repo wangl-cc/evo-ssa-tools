@@ -42,6 +42,7 @@ pub struct OpenOptions {
 
 /// Persistent store identity read from a root's `STORE` descriptor.
 #[derive(Clone, Debug, Eq, PartialEq)]
+#[non_exhaustive]
 pub struct StoreInfo {
     /// Caller-defined compatibility metadata for this namespace.
     pub metadata: StoreMetadata,

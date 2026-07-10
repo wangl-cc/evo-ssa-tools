@@ -8,8 +8,8 @@ use segment_cache_store::{
 
 use crate::support::{
     api::{
-        commit_entries, commit_entries_with_options, create_store, make_key, make_value, metadata,
-        open_options, reopen_store, test_block_checksum,
+        block_checksum_format_id, commit_entries, commit_entries_with_options, create_store,
+        make_key, make_value, metadata, open_options, reopen_store, test_block_checksum,
     },
     segment_file::first_segment_path,
 };
@@ -75,7 +75,7 @@ fn manifest_is_binary_v1_snapshot() -> Result<()> {
     assert!(store_file.contains("value_len=0\n"));
     assert!(store_file.contains(&format!(
         "block_checksum_id={}\n",
-        test_block_checksum().format_id()
+        block_checksum_format_id(test_block_checksum())
     )));
     assert!(store_file.contains("value_payload_compression_id=0\n"));
     assert!(!store_file.contains('{'));
@@ -143,7 +143,10 @@ fn unsupported_store_block_checksum_is_rejected() -> Result<()> {
     let store_path = tempdir.path().join("STORE");
     let mut store_file = fs::read_to_string(&store_path)?;
     store_file = store_file.replace(
-        &format!("block_checksum_id={}\n", test_block_checksum().format_id()),
+        &format!(
+            "block_checksum_id={}\n",
+            block_checksum_format_id(test_block_checksum())
+        ),
         "block_checksum_id=999\n",
     );
     fs::write(store_path, store_file)?;

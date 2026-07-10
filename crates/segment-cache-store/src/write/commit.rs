@@ -140,6 +140,7 @@ impl CommitOptions {
 
 /// Summary returned after a successful batch commit.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct CommitStats {
     /// Records accepted from the caller's batch.
     pub input_records: usize,

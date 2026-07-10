@@ -10,7 +10,7 @@
 ///
 /// This keeps verification allocation-free on the hot path while leaving room
 /// for wider checksums such as 128-bit hashes.
-pub const MAX_BLOCK_CHECKSUM_LEN: usize = 32;
+pub(crate) const MAX_BLOCK_CHECKSUM_LEN: usize = 32;
 
 /// Built-in checksum used for data-block metadata and payload sections.
 ///
@@ -18,6 +18,7 @@ pub const MAX_BLOCK_CHECKSUM_LEN: usize = 32;
 /// Changing a checksum's bytes, seed, output width, or collision semantics
 /// requires assigning a new variant and id.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
 pub enum BlockChecksumKind {
     /// Store no block checksum bytes.
     ///
@@ -40,7 +41,7 @@ impl BlockChecksumKind {
     pub const DEFAULT: Self = Self::RapidHashV3_64;
 
     /// Resolves a persisted checksum id to a built-in checksum.
-    pub const fn from_format_id(format_id: u32) -> Option<Self> {
+    pub(crate) const fn from_format_id(format_id: u32) -> Option<Self> {
         match format_id {
             0 => Some(Self::None),
             #[cfg(feature = "checksum-crc32c")]
@@ -63,7 +64,7 @@ impl BlockChecksumKind {
     }
 
     /// Stable persisted checksum identifier.
-    pub const fn format_id(self) -> u32 {
+    pub(crate) const fn format_id(self) -> u32 {
         match self {
             Self::None => 0,
             #[cfg(feature = "checksum-crc32c")]
@@ -74,7 +75,7 @@ impl BlockChecksumKind {
     }
 
     /// Persisted digest width in bytes.
-    pub const fn digest_len(self) -> usize {
+    pub(crate) const fn digest_len(self) -> usize {
         match self {
             Self::None => 0,
             #[cfg(feature = "checksum-crc32c")]
@@ -100,7 +101,7 @@ impl BlockChecksumKind {
     }
 
     /// Returns whether `stored` is the checksum digest for `bytes`.
-    pub fn verify(self, bytes: &[u8], stored: &[u8]) -> bool {
+    pub(crate) fn verify(self, bytes: &[u8], stored: &[u8]) -> bool {
         let digest_len = self.digest_len();
         if stored.len() != digest_len {
             return false;

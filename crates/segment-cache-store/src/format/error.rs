@@ -17,6 +17,7 @@ use crate::format::{
 /// Catalog errors reject an open or commit outright; they are never degraded
 /// to cache misses.
 #[derive(thiserror::Error, Debug, Eq, PartialEq)]
+#[non_exhaustive]
 pub enum CatalogError {
     /// `STORE` bytes are malformed.
     #[error(transparent)]
@@ -41,6 +42,7 @@ pub enum CatalogError {
 
 /// Parsed catalog content does not match store invariants or caller metadata.
 #[derive(thiserror::Error, Debug, Eq, PartialEq)]
+#[non_exhaustive]
 pub enum CatalogMismatch {
     #[error("missing STORE file")]
     MissingStore,
@@ -113,6 +115,7 @@ impl FormatError {
 
 /// Published cache data is malformed or corrupt and should degrade to miss.
 #[derive(thiserror::Error, Debug, Eq, PartialEq)]
+#[non_exhaustive]
 pub enum CorruptionError {
     #[error("corrupt or malformed block")]
     Block,
