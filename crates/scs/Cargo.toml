@@ -14,7 +14,12 @@ segment-cache-store = { path = "../segment-cache-store", default-features = fals
 tempfile = { workspace = true }
 
 [features]
-default = ["segment-cache-store/default"]
+default = [
+    "checksum-crc32c",
+    "checksum-rapidhash",
+    "value-compression-lz4",
+    "value-compression-zstd",
+]
 checksum-crc32c = ["segment-cache-store/checksum-crc32c"]
 checksum-rapidhash = ["segment-cache-store/checksum-rapidhash"]
 value-compression-lz4 = ["segment-cache-store/value-compression-lz4"]
