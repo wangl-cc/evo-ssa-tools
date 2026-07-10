@@ -177,8 +177,7 @@ impl Store {
             let state = self.inner.state.read();
             state.manifest.clone()
         };
-        garbage_collect_unreferenced(&self.inner.paths, &manifest);
-        Ok(())
+        garbage_collect_unreferenced(&self.inner.paths, &manifest)
     }
 
     // Read path.

@@ -379,6 +379,21 @@ fn explicit_gc_deletes_unreferenced_files() -> Result<()> {
 }
 
 #[test]
+fn explicit_gc_reports_failed_deletion() -> Result<()> {
+    let tempdir = tempfile::tempdir()?;
+    let store = create_store(&tempdir)?;
+    let orphan_dir = tempdir.path().join("segments/orphan");
+    fs::create_dir(&orphan_dir)?;
+
+    let error = store
+        .garbage_collect()
+        .expect_err("a directory cannot be deleted as a segment file");
+    assert!(matches!(error, Error::Io(_)));
+    assert!(orphan_dir.is_dir());
+    Ok(())
+}
+
+#[test]
 fn read_only_handle_rejects_mutating_operations() -> Result<()> {
     let tempdir = tempfile::tempdir()?;
     let store = create_store(&tempdir)?;
