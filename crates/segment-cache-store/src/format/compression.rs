@@ -2,7 +2,7 @@
 //!
 //! Compression is a physical block-level concern. Keys and value indexes stay
 //! uncompressed so ordered lookup can validate and search metadata before
-//! deciding whether the value payload needs to be read.
+//! deciding whether the value payload needs to be decoded.
 
 #[cfg(any(feature = "value-compression-lz4", feature = "value-compression-zstd"))]
 use crate::format::BinaryCursor;

@@ -595,8 +595,9 @@ flowchart TD
   RepeatedReads["repeated reads in one process"] --> VerifyCache["process-local verified-block state"]
   LargeValues["large values"] --> OversizedBlocks["natural-size oversized blocks"]
   LargeValues --> PayloadCompression["optional value-payload compression"]
-  SparseReads["sparse ordered reads"] --> MetadataFirst["metadata-first block loading"]
-  MetadataFirst --> SplitChecksums["split metadata/payload checksums"]
+  SparseReads["sparse ordered reads"] --> RawBlockRead["single full raw-block read"]
+  RawBlockRead --> MetadataProbe["metadata probe before payload decode"]
+  MetadataProbe --> SplitChecksums["split metadata/payload checksums"]
   FixedValues["fixed-size values"] --> FixedLayout["fixed-value payload arithmetic"]
   Scans["range / iter_all"] --> StreamingCursor["streaming block cursor"]
 ```
@@ -611,21 +612,21 @@ Ordered lookup processes all query keys that fall inside the current block befor
 
 ### Borrowed Block Parsing
 
-Blocks are decoded as raw bytes plus layout metadata. Lookup and scan APIs can borrow key/value slices from the decoded block. For compressed value frames, the decoded block owns a temporary decoded payload buffer and still exposes borrowed value slices from that buffer. Values are copied only by APIs that return owned vectors.
+Blocks are decoded as one owned raw-byte buffer plus derived layout metadata. Raw value frames and contiguous key bytes are borrowed directly from that buffer. Prefix-stripped full keys are materialized lazily only for scan-style APIs. Compressed value frames are decoded into a buffer owned by the lookup session or range cursor, and visitor APIs borrow value slices from that buffer. Values are copied only by APIs that return owned vectors.
 
-### Metadata-First Sparse Lookup
+### Raw Block Views And Lazy Payload Decode
 
-Sparse ordered lookup may read only `LookupMetadata` and `lookup_checksum` first. The reader gets `prefix_len` from the first four block bytes, derives the lookup metadata length, then validates keys and value offsets before touching value bytes. Blocks with no matching key do not require value payload IO.
+Every accessed block is read from its segment in one contiguous positioned read. The decoder derives and validates key, value-index, payload-frame, and checksum ranges over those raw bytes without materializing values. Ordered lookup probes the uncompressed key metadata first, so a block with no matching key does not decompress a compressed payload. This keeps one backing representation for raw, compressed, lookup, and scan paths while leaving room for a future mmap-backed block buffer.
 
 ### Split Block Checksums
 
-Block checksum state is split into lookup metadata and value payload checksums. Metadata verification protects key lookup and, for variable values, the offset table used to locate value slices. Payload verification protects returned value bytes and any value-payload frame header. For fixed-value blocks this is effectively a `KeySection` checksum plus a value-payload-frame checksum; for variable-value blocks it is key-plus-offset metadata versus value payload frame.
+Block checksum state is split into lookup metadata and value payload checksums. Metadata verification protects key lookup and, for variable values, the offset table used to locate value slices. Payload verification protects returned value bytes and any value-payload frame header. For fixed-value blocks this is effectively a `KeySection` checksum plus a value-payload-frame checksum; for variable-value blocks it is key-plus-offset metadata versus value payload frame. The current reader verifies both regions on the first checked load of a full raw block, then records that block as verified for the lifetime of the immutable segment handle.
 
 ### Optional Value-Payload Compression
 
-Compression is deliberately below the caller codec and above the raw block payload bytes. It never changes keys or value indexes. With a compression-capable `ValuePayloadCompressionKind`, the writer can compress the whole block value payload as one frame and stores raw fallback frames for small or incompressible payloads. `ValuePayloadCompressionPolicy` is a non-persistent commit-time tuning knob: changing it affects future blocks but does not affect the reader contract for existing segments. This centralizes checksum and decompression handling in the storage backend while preserving metadata-first sparse lookup.
+Compression is deliberately below the caller codec and above the raw block payload bytes. It never changes keys or value indexes. With a compression-capable `ValuePayloadCompressionKind`, the writer can compress the whole block value payload as one frame and stores raw fallback frames for small or incompressible payloads. `ValuePayloadCompressionPolicy` is a non-persistent commit-time tuning knob: changing it affects future blocks but does not affect the reader contract for existing segments. This centralizes checksum and decompression handling in the storage backend while letting sparse misses avoid decompression.
 
-Compression codecs have process-local contexts. Segment writing creates one value-payload encoder per segment publish and reuses it across all blocks in that segment. Ordered lookup sessions and range cursors own value-payload decoders, so zstd can reuse its decompression context instead of recreating one per block. Decoded payload buffers are moved into the current decoded block and reclaimed by the owning cursor when that block is evicted. This keeps the public read contract borrowed while avoiding repeated zstd context creation and most repeated decoded-buffer allocation in scan-like reads.
+Compression codecs have process-local contexts. Segment writing creates one value-payload encoder per segment publish and reuses it across all blocks in that segment. Ordered lookup sessions and range cursors own value-payload decoders and the current decoded payload, so zstd can reuse its decompression context instead of recreating one per block. When a cursor replaces its current block, it reclaims the decoded payload into the decoder's reusable scratch buffer. This keeps the public read contract borrowed while avoiding repeated zstd context creation and most repeated decoded-buffer allocation in scan-like reads.
 
 ### Process-Local Verification Reuse
 
@@ -656,7 +657,7 @@ If benchmarks show an IO bottleneck that the current read buffer reuse cannot ad
 - sequential scan and export paths can use `posix_fadvise(SEQUENTIAL)` or platform equivalents to improve readahead
 - sparse lookup paths can use `posix_fadvise(RANDOM)` or no hint to avoid excessive readahead
 - large one-shot scans can optionally use `posix_fadvise(DONTNEED)` after consumption to avoid polluting the process-wide page cache
-- vectored positioned reads can be evaluated if metadata-first lookup becomes syscall-bound
+- vectored positioned reads can be evaluated if positioned block reads become syscall-bound
 
 Lower-level strategies such as `O_DIRECT`, explicit block alignment, mmap-first readers, file preallocation, or platform-specific clone/reflink workflows are deliberately out of scope for the v1 backend. They add platform constraints and correctness surface area, and should only be introduced with benchmark evidence and tests for the affected operating systems.
 
