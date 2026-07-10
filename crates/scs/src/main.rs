@@ -303,17 +303,24 @@ struct LogicalStats {
 impl LogicalStats {
     fn collect(store: &Store) -> StoreResult<Self> {
         let mut stats = Self::default();
-        for record in store.iter_all()? {
-            let (key, value) = record?;
-            stats.records += 1;
-            stats.key_bytes += key.len();
-            stats.value_bytes += value.len();
-            if stats.min_key.is_none() {
-                stats.min_key = Some(key.clone());
-            }
-            stats.max_key = Some(key);
-        }
+        store.visit_all(|key, value| stats.record(key, value))?;
         Ok(stats)
+    }
+
+    fn record(&mut self, key: &[u8], value: &[u8]) {
+        self.records += 1;
+        self.key_bytes += key.len();
+        self.value_bytes += value.len();
+        if self.min_key.is_none() {
+            self.min_key = Some(key.to_vec());
+        }
+        match &mut self.max_key {
+            Some(max_key) => {
+                max_key.clear();
+                max_key.extend_from_slice(key);
+            }
+            None => self.max_key = Some(key.to_vec()),
+        }
     }
 
     fn total_bytes(&self) -> usize {
@@ -508,6 +515,25 @@ mod tests {
 
         let writer = root.open_writer()?;
         writer.store().garbage_collect()?;
+        Ok(())
+    }
+
+    #[test]
+    fn logical_stats_collect_visible_records() -> Result<()> {
+        let tempdir = tempfile::tempdir()?;
+        create_store(tempdir.path(), &[
+            (KEY_ONE, b"alpha".as_slice()),
+            (KEY_TWO, b"beta".as_slice()),
+        ])?;
+        let opened = StoreRoot::new(tempdir.path().to_path_buf()).open_read_only()?;
+
+        let stats = LogicalStats::collect(opened.store())?;
+
+        assert_eq!(stats.records, 2);
+        assert_eq!(stats.key_bytes, KEY_ONE.len() + KEY_TWO.len());
+        assert_eq!(stats.value_bytes, b"alpha".len() + b"beta".len());
+        assert_eq!(stats.min_key.as_deref(), Some(KEY_ONE.as_slice()));
+        assert_eq!(stats.max_key.as_deref(), Some(KEY_TWO.as_slice()));
         Ok(())
     }
 
