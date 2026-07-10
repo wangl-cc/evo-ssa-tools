@@ -1,8 +1,8 @@
 //! Buffered segment entries used by the store commit path.
 //!
-//! A `WriteBatch` is not a general write subsystem. It is an in-memory arena of
-//! logical segment entries that can be sorted, split into immutable segment
-//! chunks, and exposed to the segment encoder without per-entry allocations.
+//! A [`WriteBatch`] is the caller-facing, unvalidated arena. A
+//! [`PreparedBatch`] has been checked against store geometry and has strictly
+//! increasing keys, so only that representation can reach segment encoders.
 
 use std::ops::Range;
 
@@ -20,8 +20,13 @@ pub struct WriteBatch {
     entries: Vec<BufferedEntry>,
     key_bytes: Vec<u8>,
     value_bytes: Vec<u8>,
-    pub(crate) bytes: usize,
-    sorted: bool,
+    bytes: usize,
+}
+
+/// Batch validated against store geometry, sorted, and known to have unique keys.
+#[derive(Debug, Default)]
+pub(super) struct PreparedBatch {
+    batch: WriteBatch,
 }
 
 /// Per-entry metadata for data stored in the batch arenas.
@@ -95,12 +100,6 @@ impl WriteBatch {
         Ok(())
     }
 
-    #[must_use]
-    pub(crate) fn mark_sorted(mut self) -> Self {
-        self.sorted = true;
-        self
-    }
-
     /// Number of records currently buffered.
     #[must_use]
     pub fn len(&self) -> usize {
@@ -113,7 +112,26 @@ impl WriteBatch {
         self.entries.is_empty()
     }
 
-    pub(crate) fn validate_lengths(&self, key_len: usize, value_layout: ValueLayout) -> Result<()> {
+    pub(super) fn byte_len(&self) -> usize {
+        self.bytes
+    }
+
+    pub(super) fn prepare_for(
+        mut self,
+        key_len: usize,
+        value_layout: ValueLayout,
+    ) -> Result<PreparedBatch> {
+        self.validate_lengths(key_len, value_layout)?;
+        let key_bytes = &self.key_bytes;
+        self.entries
+            .sort_by(|left, right| left.key.get(key_bytes).cmp(right.key.get(key_bytes)));
+        if self.has_duplicate_keys() {
+            return Err(InputError::DuplicateKeyInBatch.into());
+        }
+        Ok(PreparedBatch { batch: self })
+    }
+
+    fn validate_lengths(&self, key_len: usize, value_layout: ValueLayout) -> Result<()> {
         for entry in &self.entries {
             if entry.key.len != key_len {
                 return Err(InputError::WrongKeyLength {
@@ -135,28 +153,49 @@ impl WriteBatch {
         Ok(())
     }
 
-    pub(crate) fn sort_and_check_duplicate_keys(&mut self) -> bool {
-        if self.sorted {
-            match self.sorted_key_status() {
-                SortedKeyStatus::Unique => return false,
-                SortedKeyStatus::Duplicate => return true,
-                SortedKeyStatus::Unsorted => {}
-            }
-        }
-        let key_bytes = &self.key_bytes;
-        self.entries
-            .sort_by(|left, right| left.key.get(key_bytes).cmp(right.key.get(key_bytes)));
-        self.sorted = true;
-        self.has_duplicate_keys()
-    }
-
-    pub(crate) fn has_duplicate_keys(&self) -> bool {
+    fn has_duplicate_keys(&self) -> bool {
         self.entries
             .windows(2)
             .any(|window| self.key_for(window[0]) == self.key_for(window[1]))
     }
 
-    pub(crate) fn flush_ranges(
+    fn has_strictly_increasing_keys(&self) -> bool {
+        self.entries
+            .windows(2)
+            .all(|window| self.key_for(window[0]) < self.key_for(window[1]))
+    }
+
+    fn key_for(&self, entry: BufferedEntry) -> &[u8] {
+        entry.key.get(&self.key_bytes)
+    }
+
+    fn value_for(&self, entry: BufferedEntry) -> &[u8] {
+        entry.value.get(&self.value_bytes)
+    }
+}
+
+impl PreparedBatch {
+    /// Trust boundary for merge algorithms that emit compatible records in
+    /// strictly increasing key order.
+    pub(super) fn from_sorted_unique(
+        batch: WriteBatch,
+        key_len: usize,
+        value_layout: ValueLayout,
+    ) -> Self {
+        debug_assert!(batch.validate_lengths(key_len, value_layout).is_ok());
+        debug_assert!(batch.has_strictly_increasing_keys());
+        Self { batch }
+    }
+
+    pub(super) fn len(&self) -> usize {
+        self.batch.len()
+    }
+
+    pub(super) fn byte_len(&self) -> usize {
+        self.batch.byte_len()
+    }
+
+    pub(super) fn flush_ranges(
         &self,
         key_len: usize,
         max_records: usize,
@@ -164,11 +203,11 @@ impl WriteBatch {
     ) -> Vec<Range<usize>> {
         let mut ranges = Vec::new();
         let mut start = 0usize;
-        while start < self.entries.len() {
+        while start < self.batch.entries.len() {
             let mut end = start;
             let mut bytes = 0usize;
-            while end < self.entries.len() {
-                let entry_bytes = key_len + self.entries[end].value.len;
+            while end < self.batch.entries.len() {
+                let entry_bytes = key_len + self.batch.entries[end].value.len;
                 let would_exceed_records = end > start && end - start + 1 > max_records;
                 let would_exceed_bytes =
                     end > start && (bytes > max_bytes || entry_bytes > max_bytes - bytes);
@@ -184,50 +223,23 @@ impl WriteBatch {
         ranges
     }
 
-    pub(crate) fn view(&self, range: Range<usize>) -> EntryView<'_, Self> {
+    pub(super) fn view(&self, range: Range<usize>) -> EntryView<'_, Self> {
         EntryView::new(self, range)
     }
 
-    pub(crate) fn key_at(&self, index: usize) -> &[u8] {
-        self.key_for(self.entries[index])
-    }
-
-    fn sorted_key_status(&self) -> SortedKeyStatus {
-        let mut status = SortedKeyStatus::Unique;
-        for window in self.entries.windows(2) {
-            match self.key_for(window[0]).cmp(self.key_for(window[1])) {
-                std::cmp::Ordering::Less => {}
-                std::cmp::Ordering::Equal => status = SortedKeyStatus::Duplicate,
-                std::cmp::Ordering::Greater => return SortedKeyStatus::Unsorted,
-            }
-        }
-        status
-    }
-
-    fn key_for(&self, entry: BufferedEntry) -> &[u8] {
-        entry.key.get(&self.key_bytes)
-    }
-
-    fn value_for(&self, entry: BufferedEntry) -> &[u8] {
-        entry.value.get(&self.value_bytes)
+    pub(super) fn key_at(&self, index: usize) -> &[u8] {
+        self.batch.key_for(self.batch.entries[index])
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum SortedKeyStatus {
-    Unique,
-    Duplicate,
-    Unsorted,
-}
-
-impl EntrySource for WriteBatch {
+impl EntrySource for PreparedBatch {
     fn len(&self) -> usize {
-        self.entries.len()
+        self.batch.entries.len()
     }
 
     fn entry(&self, index: usize) -> EntryRef<'_> {
-        let entry = self.entries[index];
-        EntryRef::new(self.key_for(entry), self.value_for(entry))
+        let entry = self.batch.entries[index];
+        EntryRef::new(self.batch.key_for(entry), self.batch.value_for(entry))
     }
 }
 
@@ -244,16 +256,14 @@ mod tests {
             batch.push(b"key-2", b"value-2").expect("push should work");
             batch.push(b"key-1", b"value-1").expect("push should work");
 
-            batch
-                .validate_lengths(5, ValueLayout::VARIABLE)
-                .expect("lengths should match");
-            assert!(!batch.sort_and_check_duplicate_keys());
+            let batch = batch
+                .prepare_for(5, ValueLayout::VARIABLE)
+                .expect("batch should prepare");
 
             assert_eq!(batch.entry(0).key(), b"key-1");
             assert_eq!(batch.entry(0).value(), b"value-1");
             assert_eq!(batch.entry(1).key(), b"key-2");
             assert_eq!(batch.entry(1).value(), b"value-2");
-            assert!(!batch.has_duplicate_keys());
         }
 
         #[test]
@@ -263,7 +273,13 @@ mod tests {
             batch.push(b"key-1", b"value-b").expect("push should work");
             batch.push(b"key-2", b"value-c").expect("push should work");
 
-            assert!(batch.sort_and_check_duplicate_keys());
+            let error = batch
+                .prepare_for(5, ValueLayout::VARIABLE)
+                .expect_err("duplicate keys must be rejected");
+            assert!(matches!(
+                error,
+                crate::Error::Input(InputError::DuplicateKeyInBatch)
+            ));
         }
     }
 
@@ -277,6 +293,9 @@ mod tests {
             batch.push(b"key-2", b"bbb").expect("push should work");
             batch.push(b"key-3", b"ccc").expect("push should work");
 
+            let batch = batch
+                .prepare_for(5, ValueLayout::VARIABLE)
+                .expect("batch should prepare");
             assert_eq!(batch.flush_ranges(5, 2, usize::MAX), vec![0..2, 2..3]);
             assert_eq!(batch.flush_ranges(5, usize::MAX, 10), vec![
                 0..1,

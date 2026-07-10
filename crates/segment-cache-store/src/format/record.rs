@@ -27,7 +27,7 @@ impl<'a> EntryRef<'a> {
     }
 }
 
-/// Indexed source of sorted or sortable segment entries.
+/// Indexed source of sorted segment entries.
 pub(crate) trait EntrySource {
     fn len(&self) -> usize;
 

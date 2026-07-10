@@ -21,7 +21,7 @@ use crate::{
     },
     read::cursor::{RangeCursor, SegmentRangeCursor},
     store::Store,
-    write::batch::WriteBatch,
+    write::batch::{PreparedBatch, WriteBatch},
 };
 
 const DEFAULT_PATCH_SEGMENT_LIMIT: usize = 8;
@@ -382,18 +382,13 @@ impl Store {
         if batch.is_empty() {
             return Ok(CommitStats::default());
         }
-        let _commit_guard = self.inner.commit_lock.lock();
-
         let geometry = self.inner.geometry;
         let key_len = geometry.key_len;
-        let mut batch = batch;
-        batch.validate_lengths(key_len, geometry.value_layout)?;
-        if batch.sort_and_check_duplicate_keys() {
-            return Err(InputError::DuplicateKeyInBatch.into());
-        }
-
+        let batch = batch.prepare_for(key_len, geometry.value_layout)?;
         let input_records = batch.len();
-        let input_bytes = batch.bytes;
+        let input_bytes = batch.byte_len();
+
+        let _commit_guard = self.inner.commit_lock.lock();
 
         let (manifest, main_segments, patch_segments) = {
             let state = self.inner.state.read();
@@ -480,7 +475,7 @@ impl Store {
         }
 
         let (written, output_records) =
-            self.write_normalized_segments(&mut plan, &WriteBatch::default(), None, options)?;
+            self.write_normalized_segments(&mut plan, &PreparedBatch::default(), None, options)?;
         let publication_stats = self.publish_plan(plan, written, key_len)?;
         Ok(CommitStats {
             input_records: 0,
@@ -494,7 +489,7 @@ impl Store {
     fn write_normalized_segments(
         &self,
         plan: &mut CommitPlan,
-        batch: &WriteBatch,
+        batch: &PreparedBatch,
         batch_bounds: Option<(&[u8], &[u8])>,
         options: &CommitOptions,
     ) -> Result<(Vec<WrittenSegment>, usize)> {
@@ -550,9 +545,9 @@ impl Store {
     /// replicas that hold the same key set converge.
     fn merge_region(
         &self,
-        batch: &WriteBatch,
+        batch: &PreparedBatch,
         affected: &[Arc<SegmentState>],
-    ) -> Result<WriteBatch> {
+    ) -> Result<PreparedBatch> {
         let geometry = self.inner.geometry;
         let verify = self.inner.verify_block_checksums;
         let mut cursors = Vec::with_capacity(affected.len());
@@ -630,13 +625,17 @@ impl Store {
                 Advance::Done => break,
             }
         }
-        Ok(merged.mark_sorted())
+        Ok(PreparedBatch::from_sorted_unique(
+            merged,
+            geometry.key_len,
+            geometry.value_layout,
+        ))
     }
 
     /// Writes one segment file from a contiguous range of a merged batch.
     fn write_batch_segments(
         &self,
-        batch: &WriteBatch,
+        batch: &PreparedBatch,
         ranges: Vec<Range<usize>>,
         tier: SegmentTier,
         plan: &mut CommitPlan,
@@ -653,7 +652,7 @@ impl Store {
     /// Writes one segment file from a contiguous range of a logical batch.
     pub(super) fn write_segment(
         &self,
-        batch: &WriteBatch,
+        batch: &PreparedBatch,
         range: Range<usize>,
         segment_id: u32,
         tier: SegmentTier,

@@ -411,7 +411,6 @@ The public write path is batch-only:
 
 - `Store::begin_batch`
 - `WriteBatch::push`
-- optional `WriteBatch::mark_sorted`
 - `Store::commit_batch`
 - `Store::commit_batch_with_options`
 - `Store::normalize`
@@ -421,10 +420,9 @@ The public write path is batch-only:
 
 ```mermaid
 flowchart TD
-  Batch["WriteBatch"] --> Validate["validate key/value lengths"]
-  Validate --> Sort["sort if needed"]
-  Sort --> Duplicates["reject duplicate keys in batch"]
-  Duplicates --> Snapshot["snapshot manifest + live segments"]
+  Batch["WriteBatch: caller input"] --> Prepare["validate geometry, sort, reject duplicate keys"]
+  Prepare --> Prepared["PreparedBatch: sorted, unique, geometry-valid"]
+  Prepared --> Snapshot["snapshot manifest + live segments"]
   Snapshot --> Affected["find affected main-tier range"]
   Affected --> Route{"commit route"}
 
@@ -443,7 +441,7 @@ flowchart TD
   Publish --> Swap["swap runtime snapshot"]
 ```
 
-A commit first validates the input batch, sorts it when needed, and rejects duplicate keys inside the batch. It then builds a plan from one manifest/runtime snapshot.
+A commit first converts the caller's `WriteBatch` into an internal `PreparedBatch` by validating key/value geometry, sorting by key, and rejecting duplicate keys. Only `PreparedBatch` implements the segment encoder's entry-source contract. Internal normalization and cross-store merge algorithms already emit geometry-compatible records in strictly increasing key order, so they enter the same representation through a private trusted constructor whose assumptions are checked in debug builds. The commit then builds a plan from one manifest/runtime snapshot.
 
 The plan chooses one route:
 

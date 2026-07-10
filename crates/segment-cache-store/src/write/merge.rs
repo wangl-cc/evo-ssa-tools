@@ -9,7 +9,7 @@ use crate::{
     read::cursor::{RangeCursor, SegmentRangeCursor},
     store::Store,
     write::{
-        WriteBatch,
+        batch::{PreparedBatch, WriteBatch},
         commit::{CommitOptions, CommitPlan, CommitStats, WrittenSegment},
     },
 };
@@ -263,7 +263,7 @@ impl Store {
         while records.push_next_into(&mut batch)? {
             output_records += 1;
             if batch.len() >= options.flush_threshold_records()
-                || batch.bytes >= options.flush_threshold_bytes()
+                || batch.byte_len() >= options.flush_threshold_bytes()
             {
                 self.flush_cursor_batch(&mut batch, &mut written, plan, options)?;
             }
@@ -282,8 +282,13 @@ impl Store {
         if batch.is_empty() {
             return Ok(());
         }
+        let geometry = self.inner.geometry;
+        let batch = PreparedBatch::from_sorted_unique(
+            mem::take(batch),
+            geometry.key_len,
+            geometry.value_layout,
+        );
         let len = batch.len();
-        let batch = mem::take(batch).mark_sorted();
         let segment_id = plan.allocate_segment_id()?;
         written.push(self.write_segment(&batch, 0..len, segment_id, SegmentTier::Main, options)?);
         Ok(())
