@@ -114,12 +114,6 @@ impl CommitOptions {
         if self.target_block_size > u32::MAX as usize {
             return Err(OptionsError::TargetBlockSizeTooLarge.into());
         }
-        if !self
-            .value_payload_compression_policy
-            .min_saved_percent_is_valid()
-        {
-            return Err(OptionsError::CompressionMinSavedPercentTooLarge.into());
-        }
         if self.flush_threshold_records == 0 {
             return Err(OptionsError::FlushThresholdRecordsZero.into());
         }

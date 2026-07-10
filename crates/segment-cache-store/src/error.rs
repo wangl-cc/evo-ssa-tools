@@ -11,8 +11,8 @@
 //! [`CorruptionError`]: crate::CorruptionError
 
 use crate::format::{
-    CatalogError, CatalogMismatch, CorruptionError, FormatError, ManifestEncodeError,
-    ManifestParseError, SegmentWriteError, StoreFileParseError,
+    CatalogError, CatalogMismatch, CompressionPolicyError, CorruptionError, FormatError,
+    ManifestEncodeError, ManifestParseError, SegmentWriteError, StoreFileParseError,
 };
 
 /// Top-level error returned by the segment cache store.
@@ -38,6 +38,12 @@ pub enum Error {
 impl From<OptionsError> for Error {
     fn from(error: OptionsError) -> Self {
         Self::Input(InputError::InvalidOptions(error))
+    }
+}
+
+impl From<CompressionPolicyError> for Error {
+    fn from(error: CompressionPolicyError) -> Self {
+        Self::Input(InputError::InvalidOptions(error.into()))
     }
 }
 
@@ -144,8 +150,8 @@ pub enum OptionsError {
     #[error("flush_threshold_bytes must be greater than zero")]
     FlushThresholdBytesZero,
 
-    #[error("value payload compression min_saved_percent must be at most 100")]
-    CompressionMinSavedPercentTooLarge,
+    #[error(transparent)]
+    CompressionPolicy(#[from] CompressionPolicyError),
 
     #[error("writable stores must keep block checksum verification enabled")]
     WritableStoreRequiresBlockChecksumVerification,

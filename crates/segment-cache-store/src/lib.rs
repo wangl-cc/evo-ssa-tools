@@ -32,8 +32,8 @@ mod write;
 pub use engine::{CreateOptions, OpenOptions, StoreInfo, StoreStorageStats};
 pub use error::{Error, InputError, OptionsError, Result};
 pub use format::{
-    BlockChecksumKind, CatalogError, CatalogMismatch, CorruptionError, FormatError,
-    ManifestEncodeError, ManifestParseError, MetadataParseError, StoreFileParseError,
+    BlockChecksumKind, CatalogError, CatalogMismatch, CompressionPolicyError, CorruptionError,
+    FormatError, ManifestEncodeError, ManifestParseError, MetadataParseError, StoreFileParseError,
     StoreMetadata, ValueLayout, ValuePayloadCompressionKind, ValuePayloadCompressionPolicy,
 };
 pub use read::{OrderedLookup, RangeCursor};

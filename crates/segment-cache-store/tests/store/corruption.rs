@@ -199,7 +199,9 @@ fn sparse_lz4_frame_header_corruption_becomes_miss() -> Result<()> {
         &CommitOptions::default()
             .with_target_block_size(256 * 1024)
             .with_flush_threshold_records(128)
-            .with_value_payload_compression_policy(ValuePayloadCompressionPolicy::new(1, 0)),
+            .with_value_payload_compression_policy(
+                ValuePayloadCompressionPolicy::new(1, 0).expect("compression policy is valid"),
+            ),
     )?;
     let path = first_segment_path(tempdir.path())?;
     corrupt_block_value_frame_start(&path, 0)?;
@@ -255,7 +257,9 @@ fn sparse_zstd_frame_header_corruption_becomes_miss() -> Result<()> {
         &CommitOptions::default()
             .with_target_block_size(256 * 1024)
             .with_flush_threshold_records(128)
-            .with_value_payload_compression_policy(ValuePayloadCompressionPolicy::new(1, 0)),
+            .with_value_payload_compression_policy(
+                ValuePayloadCompressionPolicy::new(1, 0).expect("compression policy is valid"),
+            ),
     )?;
     let path = first_segment_path(tempdir.path())?;
     corrupt_block_value_frame_start(&path, 0)?;

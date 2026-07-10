@@ -802,7 +802,8 @@ mod tests {
                 entries: &entries_data,
             };
             let checksum = BlockChecksumKind::None;
-            let policy = ValuePayloadCompressionPolicy::new(0, 1);
+            let policy =
+                ValuePayloadCompressionPolicy::new(0, 1).expect("compression policy is valid");
             let mut encoder = ValuePayloadEncoder::new(compression);
             let block = BlockBuilder::new(
                 &entries,

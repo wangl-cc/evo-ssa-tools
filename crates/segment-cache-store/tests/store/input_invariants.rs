@@ -1,8 +1,8 @@
 use std::num::NonZeroU32;
 
 use segment_cache_store::{
-    CommitOptions, Error, InputError, OptionsError, Result, Store, ValueLayout,
-    ValuePayloadCompressionPolicy,
+    CommitOptions, CompressionPolicyError, Error, InputError, OptionsError, Result, Store,
+    ValueLayout, ValuePayloadCompressionPolicy,
 };
 
 use crate::support::api::{
@@ -50,9 +50,6 @@ fn invalid_store_options_are_rejected() -> Result<()> {
     for invalid in [
         CommitOptions::default().with_flush_threshold_records(0),
         CommitOptions::default().with_flush_threshold_bytes(0),
-        CommitOptions::default().with_value_payload_compression_policy(
-            ValuePayloadCompressionPolicy::DEFAULT.with_min_saved_percent(101),
-        ),
     ] {
         let store = create_store(&tempfile::tempdir()?)?;
         let error = store
@@ -61,9 +58,7 @@ fn invalid_store_options_are_rejected() -> Result<()> {
         assert!(matches!(
             error,
             Error::Input(InputError::InvalidOptions(
-                OptionsError::FlushThresholdRecordsZero
-                    | OptionsError::FlushThresholdBytesZero
-                    | OptionsError::CompressionMinSavedPercentTooLarge
+                OptionsError::FlushThresholdRecordsZero | OptionsError::FlushThresholdBytesZero
             ))
         ));
     }
@@ -87,6 +82,28 @@ fn invalid_store_options_are_rejected() -> Result<()> {
         ));
     }
     Ok(())
+}
+
+#[test]
+fn compression_policy_rejects_invalid_saved_percentage() {
+    let error = ValuePayloadCompressionPolicy::new(64, 101)
+        .expect_err("saved percentage above 100 must be rejected");
+    assert_eq!(error, CompressionPolicyError::MinSavedPercentTooLarge);
+    assert_eq!(
+        ValuePayloadCompressionPolicy::DEFAULT.with_min_saved_percent(101),
+        Err(CompressionPolicyError::MinSavedPercentTooLarge)
+    );
+    assert!(matches!(
+        Error::from(error),
+        Error::Input(InputError::InvalidOptions(OptionsError::CompressionPolicy(
+            CompressionPolicyError::MinSavedPercentTooLarge
+        )))
+    ));
+
+    let policy =
+        ValuePayloadCompressionPolicy::new(64, 20).expect("compression policy should be valid");
+    assert_eq!(policy.min_try_len(), 64);
+    assert_eq!(policy.min_saved_percent(), 20);
 }
 
 #[test]

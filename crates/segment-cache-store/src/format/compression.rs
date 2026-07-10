@@ -81,9 +81,17 @@ pub(crate) struct ValuePayloadDecoder {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ValuePayloadCompressionPolicy {
     /// Minimum raw value-payload bytes before compression is attempted.
-    pub min_try_len: usize,
+    min_try_len: usize,
     /// Minimum saved percentage required to keep a compressed frame.
-    pub min_saved_percent: u8,
+    min_saved_percent: u8,
+}
+
+/// Invalid writer-side value-payload compression policy.
+#[derive(thiserror::Error, Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum CompressionPolicyError {
+    #[error("min_saved_percent must be at most 100")]
+    MinSavedPercentTooLarge,
 }
 
 impl Default for ValuePayloadCompressionPolicy {
@@ -100,27 +108,53 @@ impl ValuePayloadCompressionPolicy {
     };
 
     /// Creates a policy from explicit thresholds.
-    pub const fn new(min_try_len: usize, min_saved_percent: u8) -> Self {
-        Self {
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CompressionPolicyError::MinSavedPercentTooLarge`] when
+    /// `min_saved_percent` is greater than 100.
+    pub const fn new(
+        min_try_len: usize,
+        min_saved_percent: u8,
+    ) -> Result<Self, CompressionPolicyError> {
+        if min_saved_percent > 100 {
+            return Err(CompressionPolicyError::MinSavedPercentTooLarge);
+        }
+        Ok(Self {
             min_try_len,
             min_saved_percent,
-        }
+        })
     }
 
     /// Sets the minimum raw value-payload bytes before compression is attempted.
-    pub fn with_min_try_len(mut self, min_try_len: usize) -> Self {
+    pub const fn with_min_try_len(mut self, min_try_len: usize) -> Self {
         self.min_try_len = min_try_len;
         self
     }
 
     /// Sets the minimum saved percentage required to keep a compressed frame.
-    pub fn with_min_saved_percent(mut self, min_saved_percent: u8) -> Self {
-        self.min_saved_percent = min_saved_percent;
-        self
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CompressionPolicyError::MinSavedPercentTooLarge`] when
+    /// `min_saved_percent` is greater than 100.
+    pub const fn with_min_saved_percent(
+        self,
+        min_saved_percent: u8,
+    ) -> Result<Self, CompressionPolicyError> {
+        Self::new(self.min_try_len, min_saved_percent)
     }
 
-    pub(crate) fn min_saved_percent_is_valid(self) -> bool {
-        self.min_saved_percent <= 100
+    /// Returns the minimum raw value-payload bytes before compression is attempted.
+    #[must_use]
+    pub const fn min_try_len(self) -> usize {
+        self.min_try_len
+    }
+
+    /// Returns the minimum saved percentage required to keep a compressed frame.
+    #[must_use]
+    pub const fn min_saved_percent(self) -> u8 {
+        self.min_saved_percent
     }
 
     #[cfg(any(feature = "value-compression-lz4", feature = "value-compression-zstd"))]
@@ -687,7 +721,9 @@ mod tests {
         #[test]
         fn high_saved_threshold_keeps_raw_frame() {
             let raw = vec![7u8; DEFAULT_VALUE_PAYLOAD_COMPRESSION_MIN_TRY_LEN * 2];
-            let policy = ValuePayloadCompressionPolicy::DEFAULT.with_min_saved_percent(100);
+            let policy = ValuePayloadCompressionPolicy::DEFAULT
+                .with_min_saved_percent(100)
+                .expect("saved percentage is valid");
             let mut frame = Vec::new();
             let mut encoder = ValuePayloadEncoder::new(ValuePayloadCompressionKind::Lz4);
             let layout = encoder
