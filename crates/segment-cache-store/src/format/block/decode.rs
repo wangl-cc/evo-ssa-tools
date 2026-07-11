@@ -1,4 +1,4 @@
-//! Block decoder: on-disk block bytes in, zero-copy records out.
+//! Block decoder: on-disk block bytes in, borrowed record views out.
 //!
 //! Decoding validates the block lookup metadata, value layout, and key
 //! ordering before any record is returned. A block that fails validation is
@@ -14,7 +14,11 @@ use crate::format::{
     ValuePayloadDecoder, segment::BlockIndexEntry,
 };
 
-/// Raw block bytes plus derived offsets needed for zero-copy record access.
+/// Raw block bytes plus derived offsets needed for borrowed record access.
+///
+/// Prefix-compressed keys are materialized lazily for scan APIs, while
+/// compressed values borrow from a decoder-owned buffer supplied by the read
+/// session.
 #[derive(Debug)]
 pub(crate) struct DecodedBlock {
     bytes: Vec<u8>,

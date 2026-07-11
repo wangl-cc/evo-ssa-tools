@@ -164,7 +164,7 @@ root/
 
 Temporary files are sibling files created by adding a `.tmp` extension to the final path. They are part of atomic publication only. Open and read paths never discover visible data by scanning directories.
 
-`LOCK` is stable and is never atomically replaced, so cooperating writers lock the same inode. `segments/` may contain orphan files after a crash or retired files after replacement commits; they are ignored unless referenced by `MANIFEST` and are removed only by explicit best-effort garbage collection.
+`LOCK` is stable and is never atomically replaced, so cooperating writers lock the same inode. `segments/` may contain orphan files after a crash or retired files after replacement commits; they are ignored unless referenced by `MANIFEST` and are removed only by explicit garbage collection. A collection pass stops and returns an I/O error on its first failed deletion; files deleted earlier in the pass remain deleted.
 
 ## Store Creation
 
@@ -192,7 +192,7 @@ block_checksum_id=<u32, decimal>
 value_payload_compression_id=<u32, decimal>
 ```
 
-`value_len=0` means variable-length values. A non-zero value means fixed-length values of exactly that many bytes. `block_checksum_id` selects the block checksum implementation used by all segments in the store. Built-in ids are `0 = BlockChecksumKind::None`, `1 = BlockChecksumKind::Crc32c`, and `2 = BlockChecksumKind::RapidHashV3_64`; `Crc32c` is exposed by the `checksum-crc32c` feature, while `RapidHashV3_64` is exposed by the default `checksum-rapidhash` feature. Callers select the checksum explicitly through `CreateOptions::new(key_len, metadata, kind)`, whose signature is stable across feature combinations. `value_payload_compression_id` selects the store-wide value-payload compression policy. Built-in ids are `0 = ValuePayloadCompressionKind::None`, `1 = ValuePayloadCompressionKind::Lz4`, and `2 = ValuePayloadCompressionKind::ZstdLevel1`; LZ4 is exposed by the optional `value-compression-lz4` feature, Zstandard level 1 is exposed by the optional `value-compression-zstd` feature, and neither is part of the default feature set. `STORE` is authoritative for `key_len`, `value_len`, `block_checksum_id`, and `value_payload_compression_id`.
+`value_len=0` means variable-length values. A non-zero value means fixed-length values of exactly that many bytes. `block_checksum_id` selects the block checksum implementation used by all segments in the store. Built-in ids are `0 = BlockChecksumKind::None`, `1 = BlockChecksumKind::Crc32c`, and `2 = BlockChecksumKind::RapidHashV3_64`; `Crc32c` is exposed by the `checksum-crc32c` feature, while `RapidHashV3_64` is exposed by the default `checksum-rapidhash` feature. Callers select the checksum explicitly through `CreateOptions::new(key_len, metadata, kind)`, whose signature is stable across feature combinations. `value_payload_compression_id` selects the store-wide value-payload compression kind. Built-in ids are `0 = ValuePayloadCompressionKind::None`, `1 = ValuePayloadCompressionKind::Lz4`, and `2 = ValuePayloadCompressionKind::ZstdLevel1`; LZ4 is exposed by the optional `value-compression-lz4` feature, Zstandard level 1 is exposed by the optional `value-compression-zstd` feature, and neither is part of the default feature set. `STORE` is authoritative for `key_len`, `value_len`, `block_checksum_id`, and `value_payload_compression_id`.
 
 ### MANIFEST
 

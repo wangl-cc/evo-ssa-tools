@@ -31,7 +31,7 @@ pub struct CreateOptions {
     value_layout: ValueLayout,
     /// Block checksum kind persisted for all visible segments.
     block_checksum: BlockChecksumKind,
-    /// Value-payload compression policy persisted for all visible segments.
+    /// Value-payload compression kind persisted for all visible segments.
     value_payload_compression: ValuePayloadCompressionKind,
     /// Opaque caller compatibility metadata for this namespace.
     metadata: StoreMetadata,
@@ -76,7 +76,7 @@ impl CreateOptions {
         self
     }
 
-    /// Selects the block-level value-payload compression policy.
+    /// Selects the block-level value-payload compression kind.
     pub fn with_value_payload_compression(
         mut self,
         compression: ValuePayloadCompressionKind,

@@ -277,9 +277,6 @@ impl ValuePayloadEncoder {
         policy: ValuePayloadCompressionPolicy,
         out: &mut Vec<u8>,
     ) -> Result<ValuePayloadFrame, FormatError> {
-        #[cfg(not(any(feature = "value-compression-lz4", feature = "value-compression-zstd")))]
-        let _ = policy;
-
         match self.kind {
             ValuePayloadCompressionKind::None => {
                 out.extend_from_slice(raw_payload);

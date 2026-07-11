@@ -10,7 +10,7 @@
 //!
 //! - [`layout`]: byte-layout math shared by both directions
 //! - [`encode`]: sorted entries in, block bytes out
-//! - [`decode`]: block bytes in, zero-copy records out
+//! - [`decode`]: block bytes in, borrowed record views out
 
 mod decode;
 mod encode;

@@ -304,8 +304,8 @@ impl BlockIndexCodec {
 /// Deterministic encoder for one sorted immutable segment.
 ///
 /// The same sorted entries written with the same parameters produce
-/// byte-identical output; this determinism is load-bearing for
-/// content-addressed identity and sync convergence (see `docs/design.md`).
+/// byte-identical output, which keeps segment fingerprints and reproducibility
+/// tests stable.
 pub(crate) struct SegmentWriter {
     key_len: usize,
     value_layout: ValueLayout,
