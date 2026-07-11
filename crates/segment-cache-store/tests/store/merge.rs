@@ -29,8 +29,8 @@ fn merge_from_imports_disjoint_source_records() -> Result<()> {
         (make_key(1, 0, 1), make_value(11, 8)),
         (make_key(1, 0, 2), make_value(12, 8)),
     ];
-    commit_entries(&destination, &destination_entries, true)?;
-    commit_entries(&source, &source_entries, true)?;
+    commit_entries(&destination, &destination_entries)?;
+    commit_entries(&source, &source_entries)?;
 
     let stats = destination.merge_from_with_options(&source, &commit_options())?;
 
@@ -55,23 +55,15 @@ fn merge_from_resolves_duplicate_keys_by_smallest_value() -> Result<()> {
     let smaller_from_destination = make_key(2, 0, 1);
     let source_only = make_key(2, 0, 2);
 
-    commit_entries(
-        &destination,
-        &[
-            (smaller_from_source.clone(), make_value(9, 8)),
-            (smaller_from_destination.clone(), make_value(1, 8)),
-        ],
-        true,
-    )?;
-    commit_entries(
-        &source,
-        &[
-            (smaller_from_source.clone(), make_value(1, 8)),
-            (smaller_from_destination.clone(), make_value(9, 8)),
-            (source_only.clone(), make_value(5, 8)),
-        ],
-        true,
-    )?;
+    commit_entries(&destination, &[
+        (smaller_from_source.clone(), make_value(9, 8)),
+        (smaller_from_destination.clone(), make_value(1, 8)),
+    ])?;
+    commit_entries(&source, &[
+        (smaller_from_source.clone(), make_value(1, 8)),
+        (smaller_from_destination.clone(), make_value(9, 8)),
+        (source_only.clone(), make_value(5, 8)),
+    ])?;
 
     let stats = destination.merge_from_with_options(
         &source,
@@ -105,22 +97,14 @@ fn merge_from_imports_source_patch_winners() -> Result<()> {
     let patch_only = make_key(3, 0, 1);
     let main_only = make_key(3, 0, 2);
 
-    commit_entries(
-        &source,
-        &[
-            (overwritten.clone(), make_value(9, 8)),
-            (main_only.clone(), make_value(2, 8)),
-        ],
-        true,
-    )?;
-    commit_entries(
-        &source,
-        &[
-            (overwritten.clone(), make_value(1, 8)),
-            (patch_only.clone(), make_value(3, 8)),
-        ],
-        true,
-    )?;
+    commit_entries(&source, &[
+        (overwritten.clone(), make_value(9, 8)),
+        (main_only.clone(), make_value(2, 8)),
+    ])?;
+    commit_entries(&source, &[
+        (overwritten.clone(), make_value(1, 8)),
+        (patch_only.clone(), make_value(3, 8)),
+    ])?;
 
     let stats = destination.merge_from_with_options(&source, &commit_options())?;
 
@@ -219,12 +203,8 @@ fn merge_from_skips_corrupt_source_blocks_when_forcing_verification() -> Result<
     let source = create_store(&source_dir)?;
     let key = make_key(3, 0, 0);
     let destination_value = make_value(1, 32);
-    commit_entries(
-        &destination,
-        &[(key.clone(), destination_value.clone())],
-        true,
-    )?;
-    commit_entries(&source, &[(key.clone(), make_value(7, 32))], true)?;
+    commit_entries(&destination, &[(key.clone(), destination_value.clone())])?;
+    commit_entries(&source, &[(key.clone(), make_value(7, 32))])?;
     corrupt_block_value_payload(&first_segment_path(source_dir.path())?, 0)?;
     drop(source);
     let source = Store::open(

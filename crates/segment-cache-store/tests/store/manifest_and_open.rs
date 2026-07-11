@@ -22,7 +22,6 @@ fn changing_target_block_size_can_reopen_existing_segments() -> Result<()> {
     commit_entries_with_options(
         &store,
         &[(first_key.clone(), make_value(1, 32))],
-        true,
         &CommitOptions::default().with_target_block_size(128),
     )?;
     drop(store);
@@ -31,7 +30,6 @@ fn changing_target_block_size_can_reopen_existing_segments() -> Result<()> {
     commit_entries_with_options(
         &reopened,
         &[(make_key(9, 0, 0), make_value(2, 32))],
-        true,
         &CommitOptions::default().with_target_block_size(512),
     )?;
 
@@ -47,7 +45,6 @@ fn target_block_size_does_not_pad_physical_blocks() -> Result<()> {
     commit_entries_with_options(
         &store,
         &[(make_key(1, 0, 0), make_value(1, 32))],
-        true,
         &CommitOptions::default().with_target_block_size(target_block_size),
     )?;
 
@@ -63,7 +60,7 @@ fn target_block_size_does_not_pad_physical_blocks() -> Result<()> {
 fn manifest_is_binary_v1_snapshot() -> Result<()> {
     let tempdir = tempfile::tempdir()?;
     let store = create_store(&tempdir)?;
-    commit_entries(&store, &[(make_key(1, 0, 0), make_value(1, 8))], true)?;
+    commit_entries(&store, &[(make_key(1, 0, 0), make_value(1, 8))])?;
 
     let store_file = fs::read_to_string(tempdir.path().join("STORE"))?;
     let manifest = fs::read(tempdir.path().join("MANIFEST"))?;
@@ -123,7 +120,7 @@ fn inspect_reads_store_identity() -> Result<()> {
 fn storage_stats_report_root_file_usage() -> Result<()> {
     let tempdir = tempfile::tempdir()?;
     let store = create_store(&tempdir)?;
-    commit_entries(&store, &[(make_key(1, 0, 0), make_value(1, 8))], true)?;
+    commit_entries(&store, &[(make_key(1, 0, 0), make_value(1, 8))])?;
 
     let stats = store.storage_stats()?;
 
@@ -252,7 +249,7 @@ fn malformed_manifest_is_rejected() -> Result<()> {
 fn manifest_metadata_mismatch_is_rejected() -> Result<()> {
     let tempdir = tempfile::tempdir()?;
     let store = create_store(&tempdir)?;
-    commit_entries(&store, &[(make_key(1, 0, 0), make_value(1, 8))], true)?;
+    commit_entries(&store, &[(make_key(1, 0, 0), make_value(1, 8))])?;
     drop(store);
 
     let error = match Store::open(
@@ -275,7 +272,7 @@ fn manifest_metadata_mismatch_is_rejected() -> Result<()> {
 fn manifest_rejects_reused_next_segment_id() -> Result<()> {
     let tempdir = tempfile::tempdir()?;
     let store = create_store(&tempdir)?;
-    commit_entries(&store, &[(make_key(1, 0, 0), make_value(1, 8))], true)?;
+    commit_entries(&store, &[(make_key(1, 0, 0), make_value(1, 8))])?;
     drop(store);
 
     let manifest_path = tempdir.path().join("MANIFEST");
@@ -305,8 +302,8 @@ fn manifest_footer_mismatch_hides_wrong_segment_file() -> Result<()> {
     let store_b = create_store(&tempdir_b)?;
     let key_a = make_key(1, 0, 0);
     let key_b = make_key(9, 0, 0);
-    commit_entries(&store_a, &[(key_a.clone(), make_value(1, 8))], true)?;
-    commit_entries(&store_b, &[(key_b.clone(), make_value(2, 8))], true)?;
+    commit_entries(&store_a, &[(key_a.clone(), make_value(1, 8))])?;
+    commit_entries(&store_b, &[(key_b.clone(), make_value(2, 8))])?;
 
     let path_a = first_segment_path(tempdir_a.path())?;
     let path_b = first_segment_path(tempdir_b.path())?;

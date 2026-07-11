@@ -40,7 +40,7 @@ fn second_writer_open_fails_fast_while_writer_is_alive() -> Result<()> {
 
     // Once the writer drops, the lock is released for the next writer.
     let reopened = reopen_store(&tempdir)?;
-    commit_entries(&reopened, &[(make_key(1, 0, 0), make_value(1, 8))], true)?;
+    commit_entries(&reopened, &[(make_key(1, 0, 0), make_value(1, 8))])?;
     drop(reopened);
 
     let error = match Store::create(tempdir.path(), create_options()) {
@@ -58,34 +58,22 @@ fn second_writer_open_fails_fast_while_writer_is_alive() -> Result<()> {
 fn interleaving_commit_spans_two_segments_and_a_tail_as_patch() -> Result<()> {
     let tempdir = tempfile::tempdir()?;
     let store = create_store(&tempdir)?;
-    commit_entries(
-        &store,
-        &[
-            (make_key(1, 0, 0), make_value(1, 8)),
-            (make_key(1, 0, 2), make_value(2, 8)),
-        ],
-        true,
-    )?;
-    commit_entries(
-        &store,
-        &[
-            (make_key(2, 0, 0), make_value(3, 8)),
-            (make_key(2, 0, 2), make_value(4, 8)),
-        ],
-        true,
-    )?;
+    commit_entries(&store, &[
+        (make_key(1, 0, 0), make_value(1, 8)),
+        (make_key(1, 0, 2), make_value(2, 8)),
+    ])?;
+    commit_entries(&store, &[
+        (make_key(2, 0, 0), make_value(3, 8)),
+        (make_key(2, 0, 2), make_value(4, 8)),
+    ])?;
     // This batch interleaves both published main segments and extends past the
     // last. L0 publishes it as a patch first instead of immediately rebuilding
     // both main segments.
-    let stats = commit_entries(
-        &store,
-        &[
-            (make_key(1, 0, 1), make_value(5, 8)),
-            (make_key(2, 0, 1), make_value(6, 8)),
-            (make_key(3, 0, 0), make_value(7, 8)),
-        ],
-        true,
-    )?;
+    let stats = commit_entries(&store, &[
+        (make_key(1, 0, 1), make_value(5, 8)),
+        (make_key(2, 0, 1), make_value(6, 8)),
+        (make_key(3, 0, 0), make_value(7, 8)),
+    ])?;
     assert_eq!(stats.input_records, 3);
     assert_eq!(stats.output_records, 3);
     assert_eq!(stats.segments_retired, 0);
@@ -113,26 +101,18 @@ fn interleaving_commit_spans_two_segments_and_a_tail_as_patch() -> Result<()> {
 fn patch_segments_normalize_after_limit() -> Result<()> {
     let tempdir = tempfile::tempdir()?;
     let store = create_store(&tempdir)?;
-    commit_entries(
-        &store,
-        &[
-            (make_key(1, 0, 0), make_value(0, 8)),
-            (make_key(1, 0, 20), make_value(20, 8)),
-        ],
-        true,
-    )?;
+    commit_entries(&store, &[
+        (make_key(1, 0, 0), make_value(0, 8)),
+        (make_key(1, 0, 20), make_value(20, 8)),
+    ])?;
 
     for rep in 1..=8 {
-        let stats = commit_entries(
-            &store,
-            &[(make_key(1, 0, rep), make_value(rep as u8, 8))],
-            true,
-        )?;
+        let stats = commit_entries(&store, &[(make_key(1, 0, rep), make_value(rep as u8, 8))])?;
         assert_eq!(stats.output_records, 1);
         assert_eq!(stats.segments_retired, 0);
     }
 
-    let stats = commit_entries(&store, &[(make_key(1, 0, 9), make_value(9, 8))], true)?;
+    let stats = commit_entries(&store, &[(make_key(1, 0, 9), make_value(9, 8))])?;
     assert_eq!(stats.input_records, 1);
     assert_eq!(stats.output_records, 11);
     assert_eq!(stats.segments_retired, 9);
@@ -161,25 +141,16 @@ fn patch_segment_limit_is_configurable() -> Result<()> {
             (make_key(1, 0, 0), make_value(0, 8)),
             (make_key(1, 0, 20), make_value(20, 8)),
         ],
-        true,
         &options,
     )?;
 
-    let stats = commit_entries_with_options(
-        &store,
-        &[(make_key(1, 0, 1), make_value(1, 8))],
-        true,
-        &options,
-    )?;
+    let stats =
+        commit_entries_with_options(&store, &[(make_key(1, 0, 1), make_value(1, 8))], &options)?;
     assert_eq!(stats.output_records, 1);
     assert_eq!(stats.segments_retired, 0);
 
-    let stats = commit_entries_with_options(
-        &store,
-        &[(make_key(1, 0, 2), make_value(2, 8))],
-        true,
-        &options,
-    )?;
+    let stats =
+        commit_entries_with_options(&store, &[(make_key(1, 0, 2), make_value(2, 8))], &options)?;
     assert_eq!(stats.input_records, 1);
     assert_eq!(stats.output_records, 4);
     assert_eq!(stats.segments_retired, 2);
@@ -198,16 +169,11 @@ fn patch_direct_record_limit_can_force_immediate_normalization() -> Result<()> {
             (make_key(1, 0, 0), make_value(0, 8)),
             (make_key(1, 0, 20), make_value(20, 8)),
         ],
-        true,
         &options,
     )?;
 
-    let stats = commit_entries_with_options(
-        &store,
-        &[(make_key(1, 0, 1), make_value(1, 8))],
-        true,
-        &options,
-    )?;
+    let stats =
+        commit_entries_with_options(&store, &[(make_key(1, 0, 1), make_value(1, 8))], &options)?;
     assert_eq!(stats.input_records, 1);
     assert_eq!(stats.output_records, 3);
     assert_eq!(stats.segments_retired, 1);
@@ -219,16 +185,12 @@ fn patch_direct_record_limit_can_force_immediate_normalization() -> Result<()> {
 fn explicit_normalize_folds_patch_segments_into_main() -> Result<()> {
     let tempdir = tempfile::tempdir()?;
     let store = create_store(&tempdir)?;
-    commit_entries(
-        &store,
-        &[
-            (make_key(1, 0, 0), make_value(0, 8)),
-            (make_key(1, 0, 20), make_value(20, 8)),
-        ],
-        true,
-    )?;
-    commit_entries(&store, &[(make_key(1, 0, 1), make_value(1, 8))], true)?;
-    commit_entries(&store, &[(make_key(1, 0, 2), make_value(2, 8))], true)?;
+    commit_entries(&store, &[
+        (make_key(1, 0, 0), make_value(0, 8)),
+        (make_key(1, 0, 20), make_value(20, 8)),
+    ])?;
+    commit_entries(&store, &[(make_key(1, 0, 1), make_value(1, 8))])?;
+    commit_entries(&store, &[(make_key(1, 0, 2), make_value(2, 8))])?;
 
     let stats = store.normalize_with_options(&commit_options())?;
     assert_eq!(stats.input_records, 0);
@@ -269,7 +231,7 @@ fn explicit_normalize_folds_patch_segments_into_main() -> Result<()> {
 fn explicit_normalize_is_noop_without_patches() -> Result<()> {
     let tempdir = tempfile::tempdir()?;
     let store = create_store(&tempdir)?;
-    commit_entries(&store, &[(make_key(1, 0, 0), make_value(1, 8))], true)?;
+    commit_entries(&store, &[(make_key(1, 0, 0), make_value(1, 8))])?;
 
     assert_eq!(store.normalize()?, CommitStats::default());
     assert_eq!(store.fetch_one(&make_key(1, 0, 0))?, Some(make_value(1, 8)));
@@ -280,15 +242,11 @@ fn explicit_normalize_is_noop_without_patches() -> Result<()> {
 fn read_only_handle_rejects_explicit_normalize() -> Result<()> {
     let tempdir = tempfile::tempdir()?;
     let store = create_store(&tempdir)?;
-    commit_entries(
-        &store,
-        &[
-            (make_key(1, 0, 0), make_value(0, 8)),
-            (make_key(1, 0, 20), make_value(20, 8)),
-        ],
-        true,
-    )?;
-    commit_entries(&store, &[(make_key(1, 0, 1), make_value(1, 8))], true)?;
+    commit_entries(&store, &[
+        (make_key(1, 0, 0), make_value(0, 8)),
+        (make_key(1, 0, 20), make_value(20, 8)),
+    ])?;
+    commit_entries(&store, &[(make_key(1, 0, 1), make_value(1, 8))])?;
 
     let reader = reopen_store_read_only(&tempdir)?;
     let error = reader
@@ -304,12 +262,12 @@ fn duplicate_key_commit_keeps_lexicographically_smallest_value() -> Result<()> {
     let store = create_store(&tempdir)?;
     let key = make_key(1, 0, 0);
 
-    commit_entries(&store, &[(key.clone(), make_value(5, 8))], true)?;
+    commit_entries(&store, &[(key.clone(), make_value(5, 8))])?;
     // A smaller-byte copy wins.
-    commit_entries(&store, &[(key.clone(), make_value(1, 8))], true)?;
+    commit_entries(&store, &[(key.clone(), make_value(1, 8))])?;
     assert_eq!(store.fetch_one(&key)?, Some(make_value(1, 8)));
     // A larger-byte copy does not displace the existing winner.
-    commit_entries(&store, &[(key.clone(), make_value(9, 8))], true)?;
+    commit_entries(&store, &[(key.clone(), make_value(9, 8))])?;
     assert_eq!(store.fetch_one(&key)?, Some(make_value(1, 8)));
     Ok(())
 }
@@ -318,7 +276,7 @@ fn duplicate_key_commit_keeps_lexicographically_smallest_value() -> Result<()> {
 fn lookup_session_sees_data_committed_after_first_use() -> Result<()> {
     let tempdir = tempfile::tempdir()?;
     let store = create_store(&tempdir)?;
-    commit_entries(&store, &[(make_key(2, 0, 0), make_value(2, 8))], true)?;
+    commit_entries(&store, &[(make_key(2, 0, 0), make_value(2, 8))])?;
 
     let mut session = store.lookup_session();
     assert_eq!(session.fetch_many([make_key(2, 0, 0).as_slice()])?, vec![
@@ -327,7 +285,7 @@ fn lookup_session_sees_data_committed_after_first_use() -> Result<()> {
 
     // Insert a segment *before* the cached one, shifting segment indices. A
     // session that cached stale indices/blocks would now miss.
-    commit_entries(&store, &[(make_key(1, 0, 0), make_value(1, 8))], true)?;
+    commit_entries(&store, &[(make_key(1, 0, 0), make_value(1, 8))])?;
 
     assert_eq!(
         session.fetch_many([make_key(1, 0, 0).as_slice(), make_key(2, 0, 0).as_slice()])?,
@@ -340,8 +298,8 @@ fn lookup_session_sees_data_committed_after_first_use() -> Result<()> {
 fn unrelated_commit_drops_a_dead_manifest_entry() -> Result<()> {
     let tempdir = tempfile::tempdir()?;
     let store = create_store(&tempdir)?;
-    commit_entries(&store, &[(make_key(1, 0, 0), make_value(1, 8))], true)?;
-    commit_entries(&store, &[(make_key(5, 0, 0), make_value(5, 8))], true)?;
+    commit_entries(&store, &[(make_key(1, 0, 0), make_value(1, 8))])?;
+    commit_entries(&store, &[(make_key(5, 0, 0), make_value(5, 8))])?;
 
     // The lowest-id segment holds key (1, 0, 0); deleting it leaves a dead entry.
     fs::remove_file(first_segment_path(tempdir.path())?)?;
@@ -351,9 +309,9 @@ fn unrelated_commit_drops_a_dead_manifest_entry() -> Result<()> {
     assert_eq!(store.fetch_one(&make_key(1, 0, 0))?, None);
 
     // A commit far from the dead range still drops the dead entry...
-    commit_entries(&store, &[(make_key(9, 0, 0), make_value(9, 8))], true)?;
+    commit_entries(&store, &[(make_key(9, 0, 0), make_value(9, 8))])?;
     // ...so the lost range is writable again.
-    commit_entries(&store, &[(make_key(1, 0, 0), make_value(2, 8))], true)?;
+    commit_entries(&store, &[(make_key(1, 0, 0), make_value(2, 8))])?;
     assert_eq!(store.fetch_one(&make_key(1, 0, 0))?, Some(make_value(2, 8)));
     assert_eq!(store.fetch_one(&make_key(5, 0, 0))?, Some(make_value(5, 8)));
     Ok(())
@@ -363,7 +321,7 @@ fn unrelated_commit_drops_a_dead_manifest_entry() -> Result<()> {
 fn explicit_gc_deletes_unreferenced_files() -> Result<()> {
     let tempdir = tempfile::tempdir()?;
     let store = create_store(&tempdir)?;
-    commit_entries(&store, &[(make_key(1, 0, 0), make_value(1, 8))], true)?;
+    commit_entries(&store, &[(make_key(1, 0, 0), make_value(1, 8))])?;
 
     let seg_dir = tempdir.path().join("segments");
     let orphan = seg_dir.join("segment-0000000099.seg");
@@ -397,10 +355,10 @@ fn explicit_gc_reports_failed_deletion() -> Result<()> {
 fn read_only_handle_rejects_mutating_operations() -> Result<()> {
     let tempdir = tempfile::tempdir()?;
     let store = create_store(&tempdir)?;
-    commit_entries(&store, &[(make_key(1, 0, 0), make_value(1, 8))], true)?;
+    commit_entries(&store, &[(make_key(1, 0, 0), make_value(1, 8))])?;
 
     let reader = reopen_store_read_only(&tempdir)?;
-    let error = match commit_entries(&reader, &[(make_key(2, 0, 0), make_value(2, 8))], true) {
+    let error = match commit_entries(&reader, &[(make_key(2, 0, 0), make_value(2, 8))]) {
         Ok(_) => panic!("a read-only handle must not publish"),
         Err(error) => error,
     };
@@ -424,13 +382,13 @@ fn read_only_handle_rejects_mutating_operations() -> Result<()> {
 fn commit_keeps_unreferenced_files_until_explicit_gc() -> Result<()> {
     let tempdir = tempfile::tempdir()?;
     let store = create_store(&tempdir)?;
-    commit_entries(&store, &[(make_key(1, 0, 0), make_value(1, 8))], true)?;
+    commit_entries(&store, &[(make_key(1, 0, 0), make_value(1, 8))])?;
 
     let seg_dir = tempdir.path().join("segments");
     let orphan = seg_dir.join("segment-0000000099.seg");
     fs::write(&orphan, b"orphan")?;
 
-    commit_entries(&store, &[(make_key(5, 0, 0), make_value(5, 8))], true)?;
+    commit_entries(&store, &[(make_key(5, 0, 0), make_value(5, 8))])?;
     assert!(orphan.exists());
     assert_eq!(store.iter_all()?.count(), 2);
 
@@ -443,13 +401,12 @@ fn commit_keeps_unreferenced_files_until_explicit_gc() -> Result<()> {
 fn commit_keeps_retired_segments_until_explicit_gc() -> Result<()> {
     let tempdir = tempfile::tempdir()?;
     let store = create_store(&tempdir)?;
-    commit_entries(&store, &[(make_key(1, 0, 0), make_value(1, 8))], true)?;
+    commit_entries(&store, &[(make_key(1, 0, 0), make_value(1, 8))])?;
     let retired = first_segment_path(tempdir.path())?;
 
     let stats = commit_entries_with_options(
         &store,
         &[(make_key(1, 0, 0), make_value(2, 8))],
-        true,
         &commit_options().with_patch_segment_limit(0),
     )?;
     assert_eq!(stats.segments_retired, 1);
@@ -468,9 +425,8 @@ fn normalization_keeps_smaller_batch_value_for_duplicate_key() -> Result<()> {
     let key = make_key(1, 0, 0);
     let options = commit_options().with_patch_segment_limit(0);
 
-    commit_entries_with_options(&store, &[(key.clone(), make_value(9, 8))], true, &options)?;
-    let stats =
-        commit_entries_with_options(&store, &[(key.clone(), make_value(1, 8))], true, &options)?;
+    commit_entries_with_options(&store, &[(key.clone(), make_value(9, 8))], &options)?;
+    let stats = commit_entries_with_options(&store, &[(key.clone(), make_value(1, 8))], &options)?;
 
     assert_eq!(stats.segments_retired, 1);
     assert_eq!(store.fetch_one(&key)?, Some(make_value(1, 8)));
@@ -501,7 +457,7 @@ fn create_recovers_from_leftover_manifest_without_store() -> Result<()> {
     // Creation succeeds because STORE is absent; the leftover MANIFEST is
     // overwritten.
     let store = create_store(&tempdir)?;
-    commit_entries(&store, &[(make_key(1, 0, 0), make_value(1, 8))], true)?;
+    commit_entries(&store, &[(make_key(1, 0, 0), make_value(1, 8))])?;
     assert_eq!(store.fetch_one(&make_key(1, 0, 0))?, Some(make_value(1, 8)));
     Ok(())
 }

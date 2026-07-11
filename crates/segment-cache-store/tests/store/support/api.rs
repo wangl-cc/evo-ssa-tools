@@ -111,18 +111,8 @@ pub(crate) fn make_value(tag: u8, len: usize) -> Vec<u8> {
     vec![tag; len]
 }
 
-pub(crate) fn commit_entries(
-    store: &Store,
-    entries: &[(Vec<u8>, Vec<u8>)],
-    sorted: bool,
-) -> Result<CommitStats> {
+pub(crate) fn commit_entries(store: &Store, entries: &[(Vec<u8>, Vec<u8>)]) -> Result<CommitStats> {
     let mut batch = WriteBatch::new();
-    if !sorted {
-        assert!(
-            entries_have_key_inversion(entries),
-            "test helper sorted flag must match unsorted input"
-        );
-    }
     for (key, value) in entries {
         batch.push(key, value);
     }
@@ -132,22 +122,11 @@ pub(crate) fn commit_entries(
 pub(crate) fn commit_entries_with_options(
     store: &Store,
     entries: &[(Vec<u8>, Vec<u8>)],
-    sorted: bool,
     options: &CommitOptions,
 ) -> Result<CommitStats> {
     let mut batch = WriteBatch::new();
-    if !sorted {
-        assert!(
-            entries_have_key_inversion(entries),
-            "test helper sorted flag must match unsorted input"
-        );
-    }
     for (key, value) in entries {
         batch.push(key, value);
     }
     store.commit_batch_with_options(batch, options)
-}
-
-fn entries_have_key_inversion(entries: &[(Vec<u8>, Vec<u8>)]) -> bool {
-    entries.windows(2).any(|window| window[0].0 > window[1].0)
 }

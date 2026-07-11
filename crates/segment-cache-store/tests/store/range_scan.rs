@@ -12,7 +12,7 @@ fn range_iteration_returns_globally_sorted_records() -> Result<()> {
         (make_key(2, 0, 0), make_value(3, 8)),
         (make_key(3, 0, 0), make_value(4, 8)),
     ];
-    commit_entries(&store, &entries, true)?;
+    commit_entries(&store, &entries)?;
 
     let range: Result<Vec<_>> = store
         .range(&make_key(1, 0, 1), &make_key(3, 0, 0))?
@@ -30,7 +30,7 @@ fn visit_range_matches_owned_range() -> Result<()> {
     let entries: Vec<_> = (0..8u64)
         .map(|rep| (make_key(1, 0, rep), make_value(rep as u8, 8)))
         .collect();
-    commit_entries(&store, &entries, true)?;
+    commit_entries(&store, &entries)?;
     let start = make_key(1, 0, 2);
     let end = make_key(1, 0, 6);
     let owned = store.range(&start, &end)?.collect::<Result<Vec<_>>>()?;
@@ -47,14 +47,10 @@ fn visit_range_matches_owned_range() -> Result<()> {
 fn range_outside_all_segments_returns_empty() -> Result<()> {
     let tempdir = tempfile::tempdir()?;
     let store = create_store(&tempdir)?;
-    commit_entries(
-        &store,
-        &[
-            (make_key(2, 0, 0), make_value(1, 8)),
-            (make_key(3, 0, 0), make_value(2, 8)),
-        ],
-        true,
-    )?;
+    commit_entries(&store, &[
+        (make_key(2, 0, 0), make_value(1, 8)),
+        (make_key(3, 0, 0), make_value(2, 8)),
+    ])?;
 
     assert_eq!(
         store.range(&make_key(0, 0, 0), &make_key(1, 0, 0))?.count(),
@@ -74,7 +70,7 @@ fn iter_all_returns_all_records_exactly_once() -> Result<()> {
     let entries: Vec<_> = (0..32u64)
         .map(|rep| (make_key(1, (rep % 4) as u32, rep), make_value(rep as u8, 8)))
         .collect();
-    commit_entries(&store, &entries, true)?;
+    commit_entries(&store, &entries)?;
     let all: Result<Vec<_>> = store.iter_all()?.collect();
     let all = all?;
     assert_eq!(all.len(), entries.len());
@@ -89,7 +85,7 @@ fn visit_all_matches_iter_all_order() -> Result<()> {
     let entries: Vec<_> = (0..32u64)
         .map(|rep| (make_key(1, (rep % 4) as u32, rep), make_value(rep as u8, 8)))
         .collect();
-    commit_entries(&store, &entries, true)?;
+    commit_entries(&store, &entries)?;
 
     let iterated = store.iter_all()?.collect::<Result<Vec<_>>>()?;
     let mut visited = Vec::new();
@@ -103,24 +99,16 @@ fn visit_all_matches_iter_all_order() -> Result<()> {
 fn range_cursors_merge_visible_patch_winners() -> Result<()> {
     let tempdir = tempfile::tempdir()?;
     let store = create_store(&tempdir)?;
-    commit_entries(
-        &store,
-        &[
-            (make_key(1, 0, 0), make_value(0, 8)),
-            (make_key(1, 0, 2), make_value(2, 8)),
-            (make_key(1, 0, 5), make_value(9, 8)),
-        ],
-        true,
-    )?;
-    commit_entries(
-        &store,
-        &[
-            (make_key(1, 0, 1), make_value(1, 8)),
-            (make_key(1, 0, 5), make_value(3, 8)),
-            (make_key(1, 0, 6), make_value(6, 8)),
-        ],
-        true,
-    )?;
+    commit_entries(&store, &[
+        (make_key(1, 0, 0), make_value(0, 8)),
+        (make_key(1, 0, 2), make_value(2, 8)),
+        (make_key(1, 0, 5), make_value(9, 8)),
+    ])?;
+    commit_entries(&store, &[
+        (make_key(1, 0, 1), make_value(1, 8)),
+        (make_key(1, 0, 5), make_value(3, 8)),
+        (make_key(1, 0, 6), make_value(6, 8)),
+    ])?;
     let expected = vec![
         (make_key(1, 0, 0), make_value(0, 8)),
         (make_key(1, 0, 1), make_value(1, 8)),
@@ -138,68 +126,5 @@ fn range_cursors_merge_visible_patch_winners() -> Result<()> {
         .range(&make_key(1, 0, 1), &make_key(1, 0, 6))?
         .collect::<Result<Vec<_>>>()?;
     assert_eq!(range, expected[1..4]);
-    Ok(())
-}
-
-#[test]
-fn visit_many_ordered_matches_fetch_many() -> Result<()> {
-    let tempdir = tempfile::tempdir()?;
-    let store = create_store(&tempdir)?;
-    let entries: Vec<_> = (0..16u64)
-        .map(|rep| (make_key(1, 0, rep), make_value(rep as u8, 8)))
-        .collect();
-    commit_entries(&store, &entries, true)?;
-
-    let mut visited = Vec::new();
-    let keys = entries
-        .iter()
-        .map(|(key, _)| key.clone())
-        .collect::<Vec<_>>();
-    store.visit_many_ordered(&keys, |_, value| {
-        visited.push(value.map(ToOwned::to_owned));
-    })?;
-
-    assert_eq!(
-        visited,
-        entries
-            .iter()
-            .map(|(_, value)| Some(value.clone()))
-            .collect::<Vec<_>>()
-    );
-    Ok(())
-}
-
-#[test]
-fn visit_many_ordered_callback_can_commit_on_miss() -> Result<()> {
-    let tempdir = tempfile::tempdir()?;
-    let store = create_store(&tempdir)?;
-    let existing = vec![
-        (make_key(1, 0, 10), make_value(1, 16)),
-        (make_key(1, 0, 11), make_value(2, 16)),
-    ];
-    commit_entries(&store, &existing, true)?;
-
-    let inserted = (make_key(1, 0, 12), make_value(7, 16));
-    let keys = vec![
-        existing[0].0.clone(),
-        existing[1].0.clone(),
-        inserted.0.clone(),
-    ];
-    let writer = store.clone();
-    let mut visited = Vec::new();
-    store.visit_many_ordered(&keys, |_, value| {
-        if value.is_none() {
-            commit_entries(&writer, &[(inserted.0.clone(), inserted.1.clone())], true)
-                .expect("commit from visitor");
-        }
-        visited.push(value.map(ToOwned::to_owned));
-    })?;
-
-    assert_eq!(visited, vec![
-        Some(make_value(1, 16)),
-        Some(make_value(2, 16)),
-        None
-    ]);
-    assert_eq!(store.fetch_one(&inserted.0)?, Some(inserted.1));
     Ok(())
 }

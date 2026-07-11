@@ -15,7 +15,7 @@ fn contains_matches_fetch_hit_pattern() -> Result<()> {
         (make_key(1, 0, 1), make_value(2, 8)),
         (make_key(1, 0, 3), make_value(3, 8)),
     ];
-    commit_entries(&store, &entries, true)?;
+    commit_entries(&store, &entries)?;
     let keys = [
         make_key(1, 0, 0),
         make_key(1, 0, 1),
@@ -66,7 +66,7 @@ fn visit_many_matches_owned_fetch() -> Result<()> {
     let entries: Vec<_> = (0..8u64)
         .map(|rep| (make_key(1, 0, rep), make_value(rep as u8, 24)))
         .collect();
-    commit_entries(&store, &entries, true)?;
+    commit_entries(&store, &entries)?;
     let key_refs = entries
         .iter()
         .map(|(key, _)| key.as_slice())
@@ -91,7 +91,6 @@ fn ordered_lookup_returns_value_after_key_hit() -> Result<()> {
     commit_entries_with_options(
         &store,
         &entries,
-        true,
         &CommitOptions::default()
             .with_target_block_size(4096)
             .with_flush_threshold_records(NonZeroUsize::new(128).expect("non-zero literal")),
@@ -116,7 +115,6 @@ fn ordered_lookup_returns_miss_for_key_between_records() -> Result<()> {
     commit_entries_with_options(
         &store,
         &entries,
-        true,
         &CommitOptions::default()
             .with_target_block_size(4096)
             .with_flush_threshold_records(NonZeroUsize::new(128).expect("non-zero literal")),
@@ -131,24 +129,16 @@ fn ordered_lookup_returns_miss_for_key_between_records() -> Result<()> {
 fn ordered_lookup_merges_visible_patch_winners() -> Result<()> {
     let tempdir = tempfile::tempdir()?;
     let store = create_store(&tempdir)?;
-    commit_entries(
-        &store,
-        &[
-            (make_key(1, 0, 0), make_value(0, 8)),
-            (make_key(1, 0, 2), make_value(2, 8)),
-            (make_key(1, 0, 5), make_value(9, 8)),
-        ],
-        true,
-    )?;
-    commit_entries(
-        &store,
-        &[
-            (make_key(1, 0, 1), make_value(1, 8)),
-            (make_key(1, 0, 5), make_value(3, 8)),
-            (make_key(1, 0, 6), make_value(6, 8)),
-        ],
-        true,
-    )?;
+    commit_entries(&store, &[
+        (make_key(1, 0, 0), make_value(0, 8)),
+        (make_key(1, 0, 2), make_value(2, 8)),
+        (make_key(1, 0, 5), make_value(9, 8)),
+    ])?;
+    commit_entries(&store, &[
+        (make_key(1, 0, 1), make_value(1, 8)),
+        (make_key(1, 0, 5), make_value(3, 8)),
+        (make_key(1, 0, 6), make_value(6, 8)),
+    ])?;
     let keys = [
         make_key(1, 0, 0),
         make_key(1, 0, 1),
@@ -188,7 +178,7 @@ fn session_can_restart_from_earlier_block() -> Result<()> {
     let entries: Vec<_> = (0..64u64)
         .map(|rep| (make_key(1, 0, rep), make_value(rep as u8, 96)))
         .collect();
-    commit_entries(&store, &entries, true)?;
+    commit_entries(&store, &entries)?;
     let key_refs: Vec<_> = entries.iter().map(|(key, _)| key.as_slice()).collect();
     let mut lookup = store.lookup_session();
 
@@ -211,7 +201,6 @@ fn reports_misses_before_between_and_after_segments() -> Result<()> {
     commit_entries_with_options(
         &store,
         &entries,
-        true,
         &CommitOptions::default()
             .with_target_block_size(256)
             .with_flush_threshold_records(NonZeroUsize::new(1).expect("non-zero literal")),
@@ -243,7 +232,6 @@ fn miss_between_adjacent_blocks_returns_miss() -> Result<()> {
     commit_entries_with_options(
         &store,
         &entries,
-        true,
         &CommitOptions::default()
             .with_target_block_size(64)
             .with_flush_threshold_records(NonZeroUsize::new(128).expect("non-zero literal")),
@@ -281,7 +269,7 @@ fn visit_many_ordered_callback_can_commit_on_miss() -> Result<()> {
         (make_key(1, 0, 0), make_value(1, 16)),
         (make_key(1, 0, 1), make_value(2, 16)),
     ];
-    commit_entries(&store, &existing, true)?;
+    commit_entries(&store, &existing)?;
 
     let inserted = (make_key(1, 0, 2), make_value(9, 16));
     let keys = [
@@ -293,7 +281,7 @@ fn visit_many_ordered_callback_can_commit_on_miss() -> Result<()> {
     let mut visited = Vec::new();
     store.visit_many_ordered(&keys, |_, value| {
         if value.is_none() {
-            commit_entries(&writer, &[(inserted.0.clone(), inserted.1.clone())], true)
+            commit_entries(&writer, &[(inserted.0.clone(), inserted.1.clone())])
                 .expect("commit from visitor");
         }
         visited.push(value.map(ToOwned::to_owned));

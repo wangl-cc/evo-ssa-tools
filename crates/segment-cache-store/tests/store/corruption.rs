@@ -42,7 +42,7 @@ fn corrupted_block_checksum_becomes_miss() -> Result<()> {
     let tempdir = tempfile::tempdir()?;
     let store = create_store(&tempdir)?;
     let key = make_key(1, 1, 0);
-    commit_entries(&store, &[(key.clone(), make_value(9, 16))], true)?;
+    commit_entries(&store, &[(key.clone(), make_value(9, 16))])?;
     let path = first_segment_path(tempdir.path())?;
     corrupt_block_value_payload(&path, 0)?;
 
@@ -62,7 +62,6 @@ fn sparse_ordered_lookup_corrupted_payload_becomes_miss() -> Result<()> {
     commit_entries_with_options(
         &store,
         &entries,
-        true,
         &CommitOptions::default()
             .with_target_block_size(4096)
             .with_flush_threshold_records(NonZeroUsize::new(128).expect("non-zero literal")),
@@ -92,7 +91,7 @@ fn rapidhash_block_checksum_round_trips() -> Result<()> {
         (make_key(1, 1, 0), make_value(1, 16)),
         (make_key(1, 1, 1), make_value(2, 16)),
     ];
-    commit_entries(&store, &entries, true)?;
+    commit_entries(&store, &entries)?;
     drop(store);
 
     let reopened = reopen_store(&tempdir)?;
@@ -113,7 +112,7 @@ fn lz4_value_payload_compression_round_trips() -> Result<()> {
         (make_key(1, 1, 0), make_value(1, 96 * 1024)),
         (make_key(1, 1, 1), make_value(2, 96 * 1024)),
     ];
-    commit_entries(&store, &entries, true)?;
+    commit_entries(&store, &entries)?;
 
     assert_eq!(store.fetch_one(&entries[0].0)?, Some(entries[0].1.clone()));
     assert_eq!(
@@ -147,7 +146,7 @@ fn zstd_value_payload_compression_round_trips() -> Result<()> {
         (make_key(1, 1, 0), make_value(1, 96 * 1024)),
         (make_key(1, 1, 1), make_value(2, 96 * 1024)),
     ];
-    commit_entries(&store, &entries, true)?;
+    commit_entries(&store, &entries)?;
 
     assert_eq!(store.fetch_one(&entries[0].0)?, Some(entries[0].1.clone()));
     assert_eq!(
@@ -177,7 +176,7 @@ fn corrupted_lz4_value_payload_becomes_miss() -> Result<()> {
             .with_value_payload_compression(segment_cache_store::ValuePayloadCompressionKind::Lz4),
     )?;
     let key = make_key(1, 1, 0);
-    commit_entries(&store, &[(key.clone(), make_value(9, 96 * 1024))], true)?;
+    commit_entries(&store, &[(key.clone(), make_value(9, 96 * 1024))])?;
     let path = first_segment_path(tempdir.path())?;
     corrupt_block_value_frame_start(&path, 0)?;
     drop(store);
@@ -202,7 +201,6 @@ fn sparse_lz4_frame_header_corruption_becomes_miss() -> Result<()> {
     commit_entries_with_options(
         &store,
         &entries,
-        true,
         &CommitOptions::default()
             .with_target_block_size(256 * 1024)
             .with_flush_threshold_records(NonZeroUsize::new(128).expect("non-zero literal"))
@@ -234,7 +232,7 @@ fn corrupted_zstd_value_payload_becomes_miss() -> Result<()> {
         ),
     )?;
     let key = make_key(1, 1, 0);
-    commit_entries(&store, &[(key.clone(), make_value(9, 96 * 1024))], true)?;
+    commit_entries(&store, &[(key.clone(), make_value(9, 96 * 1024))])?;
     let path = first_segment_path(tempdir.path())?;
     corrupt_block_value_frame_start(&path, 0)?;
     drop(store);
@@ -260,7 +258,6 @@ fn sparse_zstd_frame_header_corruption_becomes_miss() -> Result<()> {
     commit_entries_with_options(
         &store,
         &entries,
-        true,
         &CommitOptions::default()
             .with_target_block_size(256 * 1024)
             .with_flush_threshold_records(NonZeroUsize::new(128).expect("non-zero literal"))
@@ -290,7 +287,7 @@ fn no_checksum_open_handle_does_not_detect_payload_corruption() -> Result<()> {
     )?;
     let key = make_key(1, 1, 0);
     let value = make_value(9, 16);
-    commit_entries(&store, &[(key.clone(), value.clone())], true)?;
+    commit_entries(&store, &[(key.clone(), value.clone())])?;
     let path = first_segment_path(tempdir.path())?;
     corrupt_block_value_payload(&path, 0)?;
 
@@ -312,7 +309,7 @@ fn block_checksum_verification_can_be_disabled_for_benchmarks() -> Result<()> {
     let store = create_store(&tempdir)?;
     let key = make_key(1, 1, 0);
     let value = make_value(9, 16);
-    commit_entries(&store, &[(key.clone(), value.clone())], true)?;
+    commit_entries(&store, &[(key.clone(), value.clone())])?;
     let path = first_segment_path(tempdir.path())?;
     let unchecked = Store::open(
         tempdir.path(),
@@ -338,7 +335,7 @@ fn store_round_trips_with_global_segments() -> Result<()> {
         (make_key(1, 0, 0), make_value(1, 8)),
         (make_key(2, 0, 0), make_value(2, 8)),
     ];
-    commit_entries(&store, &entries, true)?;
+    commit_entries(&store, &entries)?;
 
     assert_eq!(store.iter_all()?.collect::<Result<Vec<_>>>()?, entries);
     Ok(())
@@ -349,12 +346,12 @@ fn manifest_fingerprint_rejects_same_range_replacement_segment() -> Result<()> {
     let tempdir = tempfile::tempdir()?;
     let store = create_store(&tempdir)?;
     let key = make_key(1, 1, 0);
-    commit_entries(&store, &[(key.clone(), make_value(1, 16))], true)?;
+    commit_entries(&store, &[(key.clone(), make_value(1, 16))])?;
     let original_path = first_segment_path(tempdir.path())?;
 
     let replacement_dir = tempfile::tempdir()?;
     let replacement = create_store(&replacement_dir)?;
-    commit_entries(&replacement, &[(key.clone(), make_value(2, 16))], true)?;
+    commit_entries(&replacement, &[(key.clone(), make_value(2, 16))])?;
     let replacement_path = first_segment_path(replacement_dir.path())?;
     drop(store);
     drop(replacement);
@@ -372,7 +369,7 @@ fn truncated_segment_file_is_ignored_on_reopen() -> Result<()> {
     let tempdir = tempfile::tempdir()?;
     let store = create_store(&tempdir)?;
     let key = make_key(1, 1, 0);
-    commit_entries(&store, &[(key.clone(), make_value(9, 16))], true)?;
+    commit_entries(&store, &[(key.clone(), make_value(9, 16))])?;
     let path = first_segment_path(tempdir.path())?;
     FsOpenOptions::new()
         .write(true)
@@ -390,7 +387,7 @@ fn footer_length_past_file_hides_whole_segment() -> Result<()> {
     let tempdir = tempfile::tempdir()?;
     let store = create_store(&tempdir)?;
     let key = make_key(1, 1, 0);
-    commit_entries(&store, &[(key.clone(), make_value(9, 16))], true)?;
+    commit_entries(&store, &[(key.clone(), make_value(9, 16))])?;
     let path = first_segment_path(tempdir.path())?;
     let mut file = FsOpenOptions::new().read(true).write(true).open(path)?;
     file.seek(SeekFrom::End(
@@ -410,7 +407,7 @@ fn metadata_mismatch_rejects_open() -> Result<()> {
     let tempdir = tempfile::tempdir()?;
     let store = create_store(&tempdir)?;
     let key = make_key(1, 1, 0);
-    commit_entries(&store, &[(key.clone(), make_value(9, 16))], true)?;
+    commit_entries(&store, &[(key.clone(), make_value(9, 16))])?;
     drop(store);
 
     let error = match Store::open(
@@ -439,7 +436,6 @@ fn flush_thresholds_split_one_batch_into_multiple_segments() -> Result<()> {
     let stats = commit_entries_with_options(
         &store,
         &entries,
-        true,
         &CommitOptions::default()
             .with_target_block_size(256)
             .with_flush_threshold_records(NonZeroUsize::new(2).expect("non-zero literal")),
@@ -457,7 +453,7 @@ fn malformed_block_becomes_miss_in_all_read_paths() -> Result<()> {
         (make_key(1, 1, 0), make_value(1, 16)),
         (make_key(1, 1, 1), make_value(2, 16)),
     ];
-    commit_entries(&store, &entries, true)?;
+    commit_entries(&store, &entries)?;
     let path = first_segment_path(tempdir.path())?;
     let mut file = FsOpenOptions::new().read(true).write(true).open(&path)?;
     file.seek(SeekFrom::Start(block_offset(&path, 0)? + 4))?;
@@ -494,7 +490,7 @@ fn variable_value_index_must_start_at_zero_without_block_checksums() -> Result<(
         (make_key(1, 1, 0), make_value(1, 16)),
         (make_key(1, 1, 1), make_value(2, 16)),
     ];
-    commit_entries(&store, &entries, true)?;
+    commit_entries(&store, &entries)?;
     let path = first_segment_path(tempdir.path())?;
     let key_len = entries[0].0.len();
     let record_count = entries.len();
@@ -535,7 +531,7 @@ fn block_last_key_must_stay_within_segment_bounds_without_block_checksums() -> R
         (make_key(1, 1, 0), make_value(1, 16)),
         (make_key(1, 1, 1), make_value(2, 16)),
     ];
-    commit_entries(&store, &entries, true)?;
+    commit_entries(&store, &entries)?;
     let path = first_segment_path(tempdir.path())?;
     let key_len = entries[0].0.len();
     let replacement_key = make_key(1, 1, 2);
@@ -577,7 +573,6 @@ fn corrupted_middle_block_only_loses_that_block_for_open_handle() -> Result<()> 
     commit_entries_with_options(
         &store,
         &entries,
-        true,
         &CommitOptions::default().with_target_block_size(96),
     )?;
     let path = first_segment_path(tempdir.path())?;
@@ -615,7 +610,7 @@ fn corrupted_block_key_ordering_becomes_miss_in_ordered_reads() -> Result<()> {
         (make_key(1, 1, 0), make_value(1, 16)),
         (make_key(1, 1, 1), make_value(2, 16)),
     ];
-    commit_entries(&store, &entries, true)?;
+    commit_entries(&store, &entries)?;
     let path = first_segment_path(tempdir.path())?;
     let key_len = entries[0].0.len();
     mutate_block_metadata(&path, 0, |metadata| {
@@ -648,7 +643,7 @@ fn malformed_footer_block_index_metadata_hides_whole_segment() -> Result<()> {
     let tempdir = tempfile::tempdir()?;
     let store = create_store(&tempdir)?;
     let key = make_key(1, 1, 0);
-    commit_entries(&store, &[(key.clone(), make_value(9, 16))], true)?;
+    commit_entries(&store, &[(key.clone(), make_value(9, 16))])?;
     let path = first_segment_path(tempdir.path())?;
     mutate_footer_payload(&path, |payload| {
         let block_count_offset = 8 + key.len() * 2;
@@ -674,7 +669,6 @@ fn sparse_ordered_lookup_short_block_metadata_becomes_miss() -> Result<()> {
     commit_entries_with_options(
         &store,
         &entries,
-        true,
         &CommitOptions::default()
             .with_target_block_size(4096)
             .with_flush_threshold_records(NonZeroUsize::new(128).expect("non-zero literal")),
@@ -698,7 +692,7 @@ fn corrupted_header_hides_whole_segment() -> Result<()> {
     let tempdir = tempfile::tempdir()?;
     let store = create_store(&tempdir)?;
     let key = make_key(1, 1, 0);
-    commit_entries(&store, &[(key.clone(), make_value(9, 16))], true)?;
+    commit_entries(&store, &[(key.clone(), make_value(9, 16))])?;
     let path = first_segment_path(tempdir.path())?;
     let mut file = FsOpenOptions::new().read(true).write(true).open(path)?;
     file.seek(SeekFrom::Start(0))?;
@@ -716,7 +710,7 @@ fn corrupted_block_index_hides_whole_segment() -> Result<()> {
     let tempdir = tempfile::tempdir()?;
     let store = create_store(&tempdir)?;
     let key = make_key(1, 1, 0);
-    commit_entries(&store, &[(key.clone(), make_value(9, 16))], true)?;
+    commit_entries(&store, &[(key.clone(), make_value(9, 16))])?;
     let path = first_segment_path(tempdir.path())?;
     let block_index_offset = block_index_offset(&path)?;
     let mut file = FsOpenOptions::new().read(true).write(true).open(path)?;
@@ -735,7 +729,7 @@ fn corrupted_footer_hides_whole_segment() -> Result<()> {
     let tempdir = tempfile::tempdir()?;
     let store = create_store(&tempdir)?;
     let key = make_key(1, 1, 0);
-    commit_entries(&store, &[(key.clone(), make_value(9, 16))], true)?;
+    commit_entries(&store, &[(key.clone(), make_value(9, 16))])?;
     let path = first_segment_path(tempdir.path())?;
     let mut file = FsOpenOptions::new().read(true).write(true).open(path)?;
     file.seek(SeekFrom::End(-4))?;
