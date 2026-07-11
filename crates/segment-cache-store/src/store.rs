@@ -19,8 +19,7 @@ use crate::{
     error::{InputError, Result},
     format::{BlockChecksumKind, StoreMetadata, ValueLayout, ValuePayloadCompressionKind},
     read::{
-        cursor::RangeCursor,
-        lookup::{LookupReadOptions, OrderedLookup, SegmentSetReader},
+        LookupReadOptions, cursor::RangeCursor, lookup::OrderedLookup, point::SegmentSetReader,
     },
     write::{CommitOptions, CommitStats, WriteBatch},
 };
