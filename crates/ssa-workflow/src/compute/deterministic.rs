@@ -27,7 +27,9 @@ use crate::{
 ///     .function(|i: i32| Ok(i.abs()))
 ///     .cache(ManagedHashCache::<i32>::default())
 ///     .build()?;
-/// let results = task.with_inputs(0..10).collect()?;
+/// let results = task
+///     .with_inputs(0..10)
+///     .collect::<ssa_workflow::Result<Vec<_>>>()?;
 /// # Ok(())
 /// # }
 /// ```
@@ -170,13 +172,17 @@ mod tests {
 
         let n_inputs = 5;
 
-        let results1 = compute.with_inputs(0..n_inputs).collect()?;
+        let results1 = compute
+            .with_inputs(0..n_inputs)
+            .collect::<Result<Vec<_>>>()?;
 
         let expected: Vec<usize> = (0..n_inputs).map(|i| i * 3).collect();
         assert_eq!(results1, expected);
         assert_eq!(call_count.load(Ordering::SeqCst), n_inputs);
 
-        let results2 = compute.with_inputs(0..n_inputs).collect()?;
+        let results2 = compute
+            .with_inputs(0..n_inputs)
+            .collect::<Result<Vec<_>>>()?;
 
         assert_eq!(results2, expected);
         assert_eq!(call_count.load(Ordering::SeqCst), n_inputs);
@@ -214,7 +220,9 @@ mod tests {
             .build()?;
 
         let inputs = vec![3usize, 0, 2, 1, 4];
-        let results = compute.with_inputs(inputs.clone()).collect()?;
+        let results = compute
+            .with_inputs(inputs.clone())
+            .collect::<Result<Vec<_>>>()?;
 
         assert_eq!(
             results,
@@ -239,7 +247,10 @@ mod tests {
             .build()
             .expect("no-cache deterministic task should build");
 
-        let error = compute.with_inputs(0..128usize).collect().unwrap_err();
+        let error = compute
+            .with_inputs(0..128usize)
+            .collect::<Result<Vec<_>>>()
+            .unwrap_err();
 
         assert!(matches!(error, crate::Error::Compute(_)));
     }

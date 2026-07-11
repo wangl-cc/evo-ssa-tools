@@ -2,7 +2,9 @@
 
 use std::sync::{Arc, atomic};
 
-use rayon::prelude::{IndexedParallelIterator, IntoParallelIterator, ParallelIterator};
+use rayon::prelude::{
+    FromParallelIterator, IndexedParallelIterator, IntoParallelIterator, ParallelIterator,
+};
 
 use crate::{
     cache::CanonicalEncode,
@@ -70,10 +72,11 @@ pub trait Compute {
         unsafe { self.execute_one_with_buffer(input, &mut encode_buffer) }
     }
 
-    /// Start a batch execution builder for ordered `inputs`.
+    /// Start a batch execution plan for `inputs`.
     ///
-    /// Inputs must produce an [`IndexedParallelIterator`], so collected outputs follow the logical
-    /// input order and Rayon can use its indexed collection path.
+    /// Parallel collection requires an [`IndexedParallelIterator`], while serial collection
+    /// requires an [`IntoIterator`]. The corresponding bound is checked when the batch is
+    /// collected.
     ///
     /// Unordered parallel inputs such as `HashSet` intentionally do not satisfy this API:
     ///
@@ -85,7 +88,9 @@ pub trait Compute {
     ///     .function(|input: u8| Ok(input))
     ///     .build()?;
     /// let inputs = HashSet::from([1u8, 2u8]);
-    /// let _ = task.with_inputs(inputs);
+    /// let _ = task
+    ///     .with_inputs(inputs)
+    ///     .collect::<ssa_workflow::Result<Vec<_>>>();
     /// # Ok(())
     /// # }
     /// ```
@@ -97,8 +102,6 @@ pub trait Compute {
     fn with_inputs<I>(&self, inputs: I) -> BatchExecution<'_, Self, I>
     where
         Self: Sized,
-        I: IntoParallelIterator<Item = Self::Input>,
-        I::Iter: IndexedParallelIterator<Item = Self::Input>,
     {
         BatchExecution {
             compute: self,
@@ -108,12 +111,10 @@ pub trait Compute {
     }
 }
 
-/// Batch execution builder returned by [`Compute::with_inputs`].
+/// Batch execution plan returned by [`Compute::with_inputs`].
 pub struct BatchExecution<'a, C, I>
 where
     C: Compute,
-    I: IntoParallelIterator<Item = C::Input>,
-    I::Iter: IndexedParallelIterator<Item = C::Input>,
 {
     compute: &'a C,
     inputs: I,
@@ -123,8 +124,6 @@ where
 impl<'a, C, I> BatchExecution<'a, C, I>
 where
     C: Compute,
-    I: IntoParallelIterator<Item = C::Input>,
-    I::Iter: IndexedParallelIterator<Item = C::Input>,
 {
     /// Interrupt pending work when `signal` is set.
     ///
@@ -133,17 +132,20 @@ where
         self.interrupt_signal = Some(signal);
         self
     }
+}
 
-    /// Build the indexed parallel iterator for this batch.
+impl<'a, C, I> BatchExecution<'a, C, I>
+where
+    C: Clone + Compute + Sync + 'a,
+    I: IntoParallelIterator<Item = C::Input> + 'a,
+    I::Iter: IndexedParallelIterator<Item = C::Input>,
+    C::Output: Send,
+{
+    /// Convert this batch into its indexed parallel result iterator.
     ///
     /// Collecting this iterator as `Result<Vec<_>>` naturally short-circuits on errors.
     /// Collecting it as `Vec<Result<_>>` keeps successful and failed items.
-    pub fn execute(self) -> impl IndexedParallelIterator<Item = Result<C::Output>> + 'a
-    where
-        C: Clone + Sync + 'a,
-        I: 'a,
-        C::Output: Send,
-    {
+    pub fn into_par_iter(self) -> impl IndexedParallelIterator<Item = Result<C::Output>> + 'a {
         let signal = self.interrupt_signal;
         let compute = self.compute;
         self.inputs.into_par_iter().map_init(
@@ -161,28 +163,61 @@ where
         )
     }
 
-    /// Execute the batch and collect outputs in input order.
+    /// Execute the batch in the current Rayon pool and collect into `T` in input order.
     ///
-    /// This is the natural fail-fast collection mode: collection returns the first observed error.
-    pub fn collect(self) -> Result<Vec<C::Output>>
+    /// Collect as `Result<Vec<_>>` to short-circuit on errors, or as `Vec<Result<_>>` to retain
+    /// every item result.
+    pub fn collect<T>(self) -> T
     where
-        C: Clone + Sync + 'a,
-        I: 'a,
-        C::Output: Send,
+        T: FromParallelIterator<Result<C::Output>>,
     {
-        self.execute().collect()
+        self.into_par_iter().collect()
     }
 
-    /// Execute the batch and collect every item result.
+    /// Execute the batch in `pool` and collect into `T` in input order.
     ///
-    /// Use this for long sweeps where independent failures should not stop collection.
-    pub fn results(self) -> Vec<Result<C::Output>>
+    /// Collect as `Result<Vec<_>>` to short-circuit on errors, or as `Vec<Result<_>>` to retain
+    /// every item result.
+    pub fn collect_in<T>(self, pool: &rayon::ThreadPool) -> T
     where
-        C: Clone + Sync + 'a,
-        I: 'a,
-        C::Output: Send,
+        T: FromParallelIterator<Result<C::Output>> + Send,
     {
-        self.execute().collect()
+        let execution = self.into_par_iter();
+        pool.install(move || execution.collect())
+    }
+}
+
+impl<'a, C, I> BatchExecution<'a, C, I>
+where
+    C: Clone + Compute + 'a,
+    I: IntoIterator<Item = C::Input> + 'a,
+{
+    /// Execute the batch serially on the caller thread and collect into `T` in input order.
+    ///
+    /// Collect as `Result<Vec<_>>` to short-circuit on errors, or as `Vec<Result<_>>` to retain
+    /// every item result.
+    pub fn collect_serial<T>(self) -> T
+    where
+        T: FromIterator<Result<C::Output>>,
+    {
+        self.into_serial_iter().collect()
+    }
+
+    fn into_serial_iter(self) -> impl Iterator<Item = Result<C::Output>> + 'a {
+        let signal = self.interrupt_signal;
+        let mut compute = self.compute.clone();
+        let mut buffer = vec![0u8; C::Input::SIZE];
+
+        self.inputs.into_iter().map(move |input| {
+            if let Some(signal) = &signal
+                && signal.is_interrupted()
+            {
+                return Err(Error::Interrupted);
+            }
+
+            // Safety: The buffer is initialized with length Self::Input::SIZE.
+            unsafe { compute.execute_one_with_buffer(input, &mut buffer) }
+        })
     }
 }
 
@@ -213,7 +248,6 @@ impl InterruptSignal {
         self.interrupted.load(atomic::Ordering::Acquire)
     }
 }
-
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
@@ -302,15 +336,158 @@ mod tests {
             }
         }
 
-        #[test]
-        fn results_collects_every_item_result_without_outer_result() {
-            let results = FallibleCompute.with_inputs(0u8..4).results();
+        mod parallel {
+            use std::{ops::Range, rc::Rc};
 
-            assert_eq!(results.len(), 4);
-            assert_eq!(results[0].as_ref().ok(), Some(&10));
-            assert_eq!(results[1].as_ref().ok(), Some(&11));
-            assert!(matches!(results[2], Err(Error::Compute(_))));
-            assert_eq!(results[3].as_ref().ok(), Some(&13));
+            use super::*;
+
+            #[test]
+            fn collect_into_vec_preserves_item_results() {
+                let results = FallibleCompute
+                    .with_inputs(0u8..4)
+                    .collect::<Vec<Result<_>>>();
+
+                assert_eq!(results.len(), 4);
+                assert_eq!(results[0].as_ref().ok(), Some(&10));
+                assert_eq!(results[1].as_ref().ok(), Some(&11));
+                assert!(matches!(results[2], Err(Error::Compute(_))));
+                assert_eq!(results[3].as_ref().ok(), Some(&13));
+            }
+
+            #[derive(Clone)]
+            struct ThreadIndexCompute;
+
+            impl Compute for ThreadIndexCompute {
+                type Input = u8;
+                type Output = Option<usize>;
+
+                fn computation_path(&self) -> &ComputationPath {
+                    &TEST_PATH
+                }
+
+                fn execute_with_encoded_input(
+                    &mut self,
+                    _input: Self::Input,
+                    _encoded: &[u8],
+                ) -> Result<Self::Output> {
+                    Ok(rayon::current_thread_index())
+                }
+            }
+
+            #[test]
+            fn collect_in_uses_specified_pool() -> Result<()> {
+                let pool = rayon::ThreadPoolBuilder::new()
+                    .num_threads(1)
+                    .build()
+                    .expect("single-thread test pool should build");
+                let outputs = ThreadIndexCompute
+                    .with_inputs(0u8..8)
+                    .collect_in::<Result<Vec<_>>>(&pool)?;
+
+                assert_eq!(outputs, vec![Some(0); 8]);
+                Ok(())
+            }
+
+            struct LocalParallelInputs {
+                range: Range<u8>,
+                marker: Rc<()>,
+            }
+
+            impl IntoParallelIterator for LocalParallelInputs {
+                type Item = u8;
+                type Iter = <Range<u8> as IntoParallelIterator>::Iter;
+
+                fn into_par_iter(self) -> Self::Iter {
+                    drop(self.marker);
+                    self.range.into_par_iter()
+                }
+            }
+
+            #[test]
+            fn collect_in_accepts_local_sources_with_send_parallel_iterators() -> Result<()> {
+                let pool = rayon::ThreadPoolBuilder::new()
+                    .num_threads(1)
+                    .build()
+                    .expect("single-thread test pool should build");
+                let inputs = LocalParallelInputs {
+                    range: 0..2,
+                    marker: Rc::new(()),
+                };
+
+                let outputs = FallibleCompute
+                    .with_inputs(inputs)
+                    .collect_in::<Result<Vec<_>>>(&pool)?;
+
+                assert_eq!(outputs, [10, 11]);
+                Ok(())
+            }
+        }
+
+        mod serial {
+            use super::*;
+
+            #[test]
+            fn collect_into_result_preserves_order() -> Result<()> {
+                let outputs = FallibleCompute
+                    .with_inputs([3u8, 1, 0])
+                    .collect_serial::<Result<Vec<_>>>()?;
+
+                assert_eq!(outputs, [13, 11, 10]);
+                Ok(())
+            }
+
+            #[test]
+            fn collect_into_vec_preserves_order_and_item_results() {
+                let results = FallibleCompute
+                    .with_inputs(0u8..4)
+                    .collect_serial::<Vec<Result<_>>>();
+
+                assert_eq!(results.len(), 4);
+                assert_eq!(results[0].as_ref().ok(), Some(&10));
+                assert_eq!(results[1].as_ref().ok(), Some(&11));
+                assert!(matches!(results[2], Err(Error::Compute(_))));
+                assert_eq!(results[3].as_ref().ok(), Some(&13));
+            }
+
+            #[derive(Clone)]
+            struct CountingFallibleCompute {
+                calls: Arc<AtomicUsize>,
+            }
+
+            impl Compute for CountingFallibleCompute {
+                type Input = u8;
+                type Output = u8;
+
+                fn computation_path(&self) -> &ComputationPath {
+                    &TEST_PATH
+                }
+
+                fn execute_with_encoded_input(
+                    &mut self,
+                    input: Self::Input,
+                    _encoded: &[u8],
+                ) -> Result<Self::Output> {
+                    self.calls.fetch_add(1, Ordering::SeqCst);
+                    if input == 2 {
+                        Err(Error::Compute(Box::new(TestComputeError)))
+                    } else {
+                        Ok(input)
+                    }
+                }
+            }
+
+            #[test]
+            fn collect_into_result_stops_on_first_error() {
+                let calls = Arc::new(AtomicUsize::new(0));
+                let result = CountingFallibleCompute {
+                    calls: Arc::clone(&calls),
+                }
+                .with_inputs(0u8..5)
+                .collect_serial::<Result<Vec<_>>>();
+
+                assert!(matches!(result, Err(Error::Compute(_))));
+                assert_eq!(calls.load(Ordering::SeqCst), 3);
+            }
         }
     }
 
@@ -356,99 +533,127 @@ mod tests {
             }
         }
 
-        #[test]
-        fn signal_set_before_batch_skips_all_work() {
-            let signal = InterruptSignal::new();
-            signal.interrupt();
-            let calls = Arc::new(AtomicUsize::new(0));
+        mod parallel {
+            use super::*;
 
-            let results = CountingCompute {
-                calls: Arc::clone(&calls),
-            }
-            .with_inputs(0u8..4)
-            .with_interrupt_signal(signal)
-            .results();
+            #[test]
+            fn collect_into_vec_preserves_preset_interrupts() {
+                let signal = InterruptSignal::new();
+                signal.interrupt();
+                let calls = Arc::new(AtomicUsize::new(0));
 
-            assert_eq!(calls.load(Ordering::SeqCst), 0);
-            assert_eq!(results.len(), 4);
-            assert!(
-                results
-                    .iter()
-                    .all(|result| { matches!(result, Err(Error::Interrupted)) })
-            );
-        }
+                let results = CountingCompute {
+                    calls: Arc::clone(&calls),
+                }
+                .with_inputs(0u8..4)
+                .with_interrupt_signal(signal)
+                .collect::<Vec<Result<_>>>();
 
-        #[test]
-        fn collect_observes_preset_interrupt_signal() {
-            let signal = InterruptSignal::new();
-            signal.interrupt();
-            let calls = Arc::new(AtomicUsize::new(0));
-
-            let result = CountingCompute {
-                calls: Arc::clone(&calls),
-            }
-            .with_inputs(0u8..4)
-            .with_interrupt_signal(signal)
-            .collect();
-
-            assert!(matches!(result, Err(Error::Interrupted)));
-            assert_eq!(calls.load(Ordering::SeqCst), 0);
-        }
-
-        #[derive(Clone)]
-        struct InterruptingCompute {
-            signal: InterruptSignal,
-            calls: Arc<AtomicUsize>,
-        }
-
-        impl Compute for InterruptingCompute {
-            type Input = u8;
-            type Output = u8;
-
-            fn computation_path(&self) -> &ComputationPath {
-                &TEST_PATH
+                assert_eq!(calls.load(Ordering::SeqCst), 0);
+                assert_eq!(results.len(), 4);
+                assert!(
+                    results
+                        .iter()
+                        .all(|result| { matches!(result, Err(Error::Interrupted)) })
+                );
             }
 
-            fn execute_with_encoded_input(
-                &mut self,
-                input: Self::Input,
-                _encoded: &[u8],
-            ) -> Result<Self::Output> {
-                self.calls.fetch_add(1, Ordering::SeqCst);
-                self.signal.interrupt();
-                Ok(input)
+            #[test]
+            fn collect_into_result_observes_preset_interrupt() {
+                let signal = InterruptSignal::new();
+                signal.interrupt();
+                let calls = Arc::new(AtomicUsize::new(0));
+
+                let result = CountingCompute {
+                    calls: Arc::clone(&calls),
+                }
+                .with_inputs(0u8..4)
+                .with_interrupt_signal(signal)
+                .collect::<Result<Vec<_>>>();
+
+                assert!(matches!(result, Err(Error::Interrupted)));
+                assert_eq!(calls.load(Ordering::SeqCst), 0);
             }
-        }
 
-        #[test]
-        fn signal_set_during_batch_skips_pending_work() {
-            let signal = InterruptSignal::new();
-            let calls = Arc::new(AtomicUsize::new(0));
-            let compute = InterruptingCompute {
-                signal: signal.clone(),
-                calls: Arc::clone(&calls),
-            };
+            #[derive(Clone)]
+            struct InterruptingCompute {
+                signal: InterruptSignal,
+                calls: Arc<AtomicUsize>,
+            }
 
-            let pool = rayon::ThreadPoolBuilder::new()
-                .num_threads(1)
-                .build()
-                .expect("single-thread test pool should build");
-            let results = pool.install(|| {
-                compute
+            impl Compute for InterruptingCompute {
+                type Input = u8;
+                type Output = u8;
+
+                fn computation_path(&self) -> &ComputationPath {
+                    &TEST_PATH
+                }
+
+                fn execute_with_encoded_input(
+                    &mut self,
+                    input: Self::Input,
+                    _encoded: &[u8],
+                ) -> Result<Self::Output> {
+                    self.calls.fetch_add(1, Ordering::SeqCst);
+                    self.signal.interrupt();
+                    Ok(input)
+                }
+            }
+
+            #[test]
+            fn collect_in_skips_pending_work_after_interrupt() {
+                let signal = InterruptSignal::new();
+                let calls = Arc::new(AtomicUsize::new(0));
+                let compute = InterruptingCompute {
+                    signal: signal.clone(),
+                    calls: Arc::clone(&calls),
+                };
+
+                let pool = rayon::ThreadPoolBuilder::new()
+                    .num_threads(1)
+                    .build()
+                    .expect("single-thread test pool should build");
+                let results = compute
                     .with_inputs(0u8..4)
                     .with_interrupt_signal(signal)
-                    .results()
-            });
+                    .collect_in::<Vec<Result<_>>>(&pool);
 
-            assert_eq!(calls.load(Ordering::SeqCst), 1);
-            assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
-            assert_eq!(
-                results
-                    .iter()
-                    .filter(|result| matches!(result, Err(Error::Interrupted)))
-                    .count(),
-                3
-            );
+                assert_eq!(calls.load(Ordering::SeqCst), 1);
+                assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
+                assert_eq!(
+                    results
+                        .iter()
+                        .filter(|result| matches!(result, Err(Error::Interrupted)))
+                        .count(),
+                    3
+                );
+            }
+        }
+
+        mod serial {
+            use super::*;
+
+            #[test]
+            fn collect_into_vec_preserves_preset_interrupts() {
+                let signal = InterruptSignal::new();
+                signal.interrupt();
+                let calls = Arc::new(AtomicUsize::new(0));
+
+                let results = CountingCompute {
+                    calls: Arc::clone(&calls),
+                }
+                .with_inputs(0u8..4)
+                .with_interrupt_signal(signal)
+                .collect_serial::<Vec<Result<_>>>();
+
+                assert_eq!(calls.load(Ordering::SeqCst), 0);
+                assert_eq!(results.len(), 4);
+                assert!(
+                    results
+                        .iter()
+                        .all(|result| matches!(result, Err(Error::Interrupted)))
+                );
+            }
         }
     }
 }

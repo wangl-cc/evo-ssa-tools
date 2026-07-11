@@ -136,8 +136,10 @@ fn managed_transform_uses_child_path_for_output_space() -> Result<()> {
         .build()?;
 
     let inputs: Vec<_> = (0..8usize).collect();
-    let first = transform.with_inputs(inputs.clone()).collect()?;
-    let second = transform.with_inputs(inputs).collect()?;
+    let first = transform
+        .with_inputs(inputs.clone())
+        .collect::<Result<Vec<_>>>()?;
+    let second = transform.with_inputs(inputs).collect::<Result<Vec<_>>>()?;
 
     assert_eq!(first, second);
     assert_eq!(first, (0..8usize).map(|i| i * 2 + 1).collect::<Vec<_>>());

@@ -66,7 +66,7 @@ fn test_transform_source_and_transform_cache_split() -> Result<()> {
             .build()?
     };
 
-    let results1 = transform1.with_inputs(0..3).collect()?;
+    let results1 = transform1.with_inputs(0..3).collect::<Result<Vec<_>>>()?;
 
     let expected: Vec<String> = (0..3).map(|i| format!("Result: {}", i * 2)).collect();
     assert_eq!(results1, expected);
@@ -85,7 +85,7 @@ fn test_transform_source_and_transform_cache_split() -> Result<()> {
             .build()?
     };
 
-    let results2 = transform2.with_inputs(0..3).collect()?;
+    let results2 = transform2.with_inputs(0..3).collect::<Result<Vec<_>>>()?;
 
     assert_eq!(results2, expected);
     assert_eq!(stage1_calls.load(Ordering::SeqCst), 3);
@@ -105,7 +105,7 @@ fn test_transform_with_different_types() -> Result<()> {
         .cache(ManagedHashCache::<String>::default())
         .build()?;
 
-    let results = transform.with_inputs(0..5u32).collect()?;
+    let results = transform.with_inputs(0..5u32).collect::<Result<Vec<_>>>()?;
 
     let expected: Vec<String> = (0..5u32).map(|i| format!("Value: {}", i * 100)).collect();
     assert_eq!(results, expected);

@@ -111,9 +111,11 @@
 //! Within one stream, random values are consumed sequentially; changing how many values that stream
 //! consumes can change later values from the same stream.
 
+pub mod input;
+
 use std::marker::PhantomData;
 
-use rayon::prelude::{IndexedParallelIterator, IntoParallelIterator, ParallelIterator};
+pub use input::{RepeatedStochasticInputs, StochasticInput};
 
 use crate::{
     BatchExecution, Compute, Result,
@@ -128,57 +130,6 @@ use crate::{
 type BuildStochasticTask<CP, P, O, S, F> =
     StochasticTask<<CP as CacheProvider<O>>::Cache, P, O, S, F>;
 
-/// Input for one stochastic execution.
-///
-/// This wraps a deterministic parameter value (`param`) with a `repetition_index`.
-///
-/// The pair serves two roles:
-///
-/// - It is the canonical input used for cache-key construction.
-/// - It selects one reproducible stochastic repetition.
-///
-/// # Encoding
-///
-/// Canonical encoding is `param` bytes followed by big-endian `repetition_index` bytes.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct StochasticInput<P> {
-    /// Deterministic model/config input.
-    pub param: P,
-    /// Repetition index used for random stream derivation.
-    pub repetition_index: u64,
-}
-
-impl<P> StochasticInput<P> {
-    /// Create a stochastic input from `(param, repetition_index)`.
-    pub const fn new(param: P, repetition_index: u64) -> Self {
-        Self {
-            param,
-            repetition_index,
-        }
-    }
-}
-
-impl<P> From<(P, u64)> for StochasticInput<P> {
-    fn from((param, repetition_index): (P, u64)) -> Self {
-        Self {
-            param,
-            repetition_index,
-        }
-    }
-}
-
-impl<P: CanonicalEncode> CanonicalEncode for StochasticInput<P> {
-    const SIZE: usize = P::SIZE + u64::SIZE;
-
-    unsafe fn encode_into(&self, buffer: &mut [u8]) {
-        unsafe {
-            self.param.encode_into(&mut buffer[..P::SIZE]);
-            self.repetition_index
-                .encode_into(&mut buffer[P::SIZE..Self::SIZE]);
-        }
-    }
-}
-
 /// Convenience methods for computations keyed by [`StochasticInput`].
 ///
 /// This trait is implemented for every [`Compute`] node, including stochastic tasks and
@@ -188,26 +139,41 @@ impl<P: CanonicalEncode> CanonicalEncode for StochasticInput<P> {
 pub trait StochasticComputeExt: Compute {
     /// Start a batch execution for `repetitions` stochastic repetitions of one deterministic input.
     ///
-    /// The batch uses `0..repetitions` as its indexed parallel input range and converts each item
-    /// to `StochasticInput::new(param.clone(), index as u64)`. Collected outputs therefore
-    /// remain in repetition-index order while the stochastic identity continues to use a
-    /// platform-stable `u64` repetition id.
+    /// The batch lazily generates `StochasticInput::new(param.clone(), index as u64)` for each
+    /// repetition. Collected outputs therefore remain in repetition-index order while the
+    /// stochastic identity continues to use a platform-stable `u64` repetition id.
     fn with_repeated_input<P>(
         &self,
         param: P,
         repetitions: usize,
-    ) -> BatchExecution<'_, Self, impl IndexedParallelIterator<Item = StochasticInput<P>>>
+    ) -> BatchExecution<'_, Self, RepeatedStochasticInputs<[P; 1]>>
     where
         Self: Sized + Compute<Input = StochasticInput<P>>,
-        P: Clone + Send,
+        P: Clone,
     {
-        self.with_inputs(
-            (0..repetitions)
-                .into_par_iter()
-                .map_with(param, |param, index| {
-                    StochasticInput::new(param.clone(), index as u64)
-                }),
-        )
+        self.with_inputs(RepeatedStochasticInputs::new([param], repetitions))
+    }
+
+    /// Start a batch execution for `repetitions` stochastic repetitions of each parameter.
+    ///
+    /// The batch consumes `params` directly through its serial or indexed parallel conversion and
+    /// lazily emits inputs in parameter-major order. It does not materialize the parameter source
+    /// or the full `params.len() * repetitions` input grid.
+    ///
+    /// # Panics
+    ///
+    /// Parallel collection panics if the total number of repeated inputs cannot be represented by
+    /// `usize`.
+    fn with_repeated_inputs<P, I>(
+        &self,
+        params: I,
+        repetitions: usize,
+    ) -> BatchExecution<'_, Self, RepeatedStochasticInputs<I>>
+    where
+        Self: Sized + Compute<Input = StochasticInput<P>>,
+        P: Clone,
+    {
+        self.with_inputs(RepeatedStochasticInputs::new(params, repetitions))
     }
 }
 
@@ -505,10 +471,39 @@ mod tests {
 
             let inputs: Vec<_> = (0..128u64).map(|i| StochasticInput::new((), i)).collect();
 
-            let outputs1 = task1.with_inputs(inputs.clone()).collect()?;
-            let outputs2 = task2.with_inputs(inputs).collect()?;
+            let outputs1 = task1
+                .with_inputs(inputs.clone())
+                .collect::<Result<Vec<_>>>()?;
+            let outputs2 = task2.with_inputs(inputs).collect::<Result<Vec<_>>>()?;
 
             assert_eq!(outputs1, outputs2);
+            Ok(())
+        }
+
+        #[test]
+        fn repeated_inputs_are_parameter_major_and_lazy_schedulable() -> Result<()> {
+            let mut expected_task = StochasticTask::builder("repeated-inputs-order-v1")
+                .function(|rng, param| Ok((param, rng.next_u64())))
+                .build()?;
+            let task = StochasticTask::builder("repeated-inputs-order-v1")
+                .function(|rng, param| Ok((param, rng.next_u64())))
+                .build()?;
+
+            let expected = vec![
+                expected_task.execute_one(StochasticInput::new(10u32, 0))?,
+                expected_task.execute_one(StochasticInput::new(10u32, 1))?,
+                expected_task.execute_one(StochasticInput::new(20u32, 0))?,
+                expected_task.execute_one(StochasticInput::new(20u32, 1))?,
+            ];
+            let serial = task
+                .with_repeated_inputs(vec![10u32, 20], 2)
+                .collect_serial::<Result<Vec<_>>>()?;
+            let parallel = task
+                .with_repeated_inputs(vec![10u32, 20], 2)
+                .collect::<Result<Vec<_>>>()?;
+
+            assert_eq!(serial, expected);
+            assert_eq!(parallel, expected);
             Ok(())
         }
 
@@ -529,31 +524,6 @@ mod tests {
             assert_eq!(task.execute_one(input.clone())?, task.execute_one(input)?);
             assert_eq!(call_count.load(Ordering::SeqCst), 2);
             Ok(())
-        }
-    }
-
-    mod input_encoding {
-        use super::*;
-
-        #[test]
-        fn test_stochastic_input_from_tuple_matches_new_encoding() {
-            let from_new = StochasticInput::new(123u64, 9);
-            let from_tuple: StochasticInput<u64> = (123u64, 9u64).into();
-            let from_fields = StochasticInput {
-                param: 123u64,
-                repetition_index: 9,
-            };
-
-            let mut buffer_new = vec![0u8; StochasticInput::<u64>::SIZE];
-            let mut buffer_tuple = vec![0u8; StochasticInput::<u64>::SIZE];
-            let mut buffer_fields = vec![0u8; StochasticInput::<u64>::SIZE];
-
-            let encoded_new = unsafe { from_new.encode_with_buffer(&mut buffer_new) };
-            let encoded_tuple = unsafe { from_tuple.encode_with_buffer(&mut buffer_tuple) };
-            let encoded_fields = unsafe { from_fields.encode_with_buffer(&mut buffer_fields) };
-
-            assert_eq!(encoded_new, encoded_tuple);
-            assert_eq!(encoded_new, encoded_fields);
         }
     }
 }
