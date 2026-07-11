@@ -237,10 +237,16 @@ impl Store {
     /// This exists for completeness; ordered batch lookup is the optimized path.
     pub fn fetch_one(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {
         self.validate_key_len(key)?;
-        let state = self.inner.state.read();
+        let (main_segments, patch_segments) = {
+            let state = self.inner.state.read();
+            (
+                Arc::clone(&state.main_segments),
+                Arc::clone(&state.patch_segments),
+            )
+        };
         SegmentSetReader::new(
-            state.main_segments.as_ref(),
-            state.patch_segments.as_ref(),
+            main_segments.as_ref(),
+            patch_segments.as_ref(),
             self.lookup_read_options(),
         )
         .fetch_one(key)
