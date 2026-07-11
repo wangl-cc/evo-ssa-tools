@@ -5,9 +5,7 @@ use std::sync::Arc;
 use crate::{
     engine::runtime::{SegmentSnapshot, SegmentState, StoreGeometry},
     error::{InputError, Result},
-    format::{
-        CorruptionError, ValuePayloadCompressionKind, ValuePayloadDecoder, block::DecodedBlock,
-    },
+    format::{ValuePayloadCompressionKind, ValuePayloadDecoder, block::DecodedBlock},
     store::Store,
 };
 
@@ -29,9 +27,14 @@ struct LookupState {
     snapshot: Option<SegmentSnapshot>,
     current_segment_index: Option<usize>,
     current_block_index: Option<usize>,
-    loaded_block: Option<DecodedBlock>,
-    decoded_payload: Option<Vec<u8>>,
+    loaded_block: Option<LoadedBlock>,
     payload_decoder: ValuePayloadDecoder,
+}
+
+struct LoadedBlock {
+    block_index: usize,
+    block: DecodedBlock,
+    decoded_payload: Option<Vec<u8>>,
 }
 
 impl LookupState {
@@ -41,7 +44,6 @@ impl LookupState {
             current_segment_index: None,
             current_block_index: None,
             loaded_block: None,
-            decoded_payload: None,
             payload_decoder: ValuePayloadDecoder::new(value_payload_compression),
         }
     }
@@ -62,12 +64,12 @@ impl LookupState {
     }
 
     fn recycle_loaded_block(&mut self) -> Vec<u8> {
-        self.payload_decoder
-            .reclaim_payload_buffer(self.decoded_payload.take());
-        let Some(block) = self.loaded_block.take() else {
+        let Some(loaded) = self.loaded_block.take() else {
             return Vec::new();
         };
-        block.into_bytes()
+        self.payload_decoder
+            .reclaim_payload_buffer(loaded.decoded_payload);
+        loaded.block.into_bytes()
     }
 }
 
@@ -133,16 +135,15 @@ impl<'a> PatchWinnerReader<'a> {
     }
 
     fn value(&mut self, winner: PatchWinner) -> Result<Option<&[u8]>> {
-        let Some(segment) = self.segments.get(winner.segment_index) else {
-            return Err(CorruptionError::Block.into());
-        };
-        let Some(state) = self
+        let segment = self
+            .segments
+            .get(winner.segment_index)
+            .expect("patch winner references its source segment");
+        let state = self
             .states
             .get_mut(winner.segment_index)
             .and_then(Option::as_mut)
-        else {
-            return Err(CorruptionError::Block.into());
-        };
+            .expect("patch winner retains its lookup state");
         state.current_segment_index = Some(winner.segment_index);
         match state.value_at_index(
             segment,
@@ -674,12 +675,11 @@ impl LookupState {
     }
 
     fn initial_block_index(&self, segment: &SegmentState, key: &[u8]) -> usize {
-        if let Some(block) = self.loaded_block.as_ref()
-            && block.first_key() <= key
-            && key <= block.last_key()
-            && let Some(index) = self.current_block_index
+        if let Some(loaded) = self.loaded_block.as_ref()
+            && loaded.block.first_key() <= key
+            && key <= loaded.block.last_key()
         {
-            return index;
+            return loaded.block_index;
         }
 
         if let Some(index) = self
@@ -713,12 +713,16 @@ impl LookupState {
         block_index: usize,
         options: LookupReadOptions,
     ) -> Result<&DecodedBlock> {
-        if self.current_block_index == Some(block_index) && self.loaded_block.is_some() {
-            return self
+        let already_loaded = self
+            .loaded_block
+            .as_ref()
+            .is_some_and(|loaded| loaded.block_index == block_index);
+        if already_loaded {
+            return Ok(&self
                 .loaded_block
                 .as_ref()
-                .ok_or(CorruptionError::Block)
-                .map_err(Into::into);
+                .expect("loaded block was just matched")
+                .block);
         }
 
         let buffer = self.recycle_loaded_block();
@@ -729,21 +733,36 @@ impl LookupState {
             buffer,
         )?;
         self.current_block_index = Some(block_index);
-        Ok(self.loaded_block.insert(block))
+        let loaded = self.loaded_block.insert(LoadedBlock {
+            block_index,
+            block,
+            decoded_payload: None,
+        });
+        Ok(&loaded.block)
     }
 
     fn ensure_decoded_payload(&mut self) -> Result<()> {
-        let block = self.loaded_block.as_ref().ok_or(CorruptionError::Block)?;
-        if self.decoded_payload.is_none() {
-            self.decoded_payload = block.decode_payload_if_needed(&mut self.payload_decoder)?;
+        let loaded = self
+            .loaded_block
+            .as_mut()
+            .expect("payload decoding follows block loading");
+        if loaded.decoded_payload.is_none() {
+            loaded.decoded_payload = loaded
+                .block
+                .decode_payload_if_needed(&mut self.payload_decoder)?;
         }
         Ok(())
     }
 
     fn loaded_block_and_payload(&self) -> Result<(&DecodedBlock, &[u8])> {
-        let block = self.loaded_block.as_ref().ok_or(CorruptionError::Block)?;
-        let payload = block.payload_bytes(self.decoded_payload.as_deref())?;
-        Ok((block, payload))
+        let loaded = self
+            .loaded_block
+            .as_ref()
+            .expect("payload access follows block loading");
+        let payload = loaded
+            .block
+            .payload_bytes(loaded.decoded_payload.as_deref())?;
+        Ok((&loaded.block, payload))
     }
 
     fn value_at_index(

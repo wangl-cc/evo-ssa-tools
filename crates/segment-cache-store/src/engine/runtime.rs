@@ -238,13 +238,11 @@ impl VerifiedBlocks {
     }
 
     fn is_verified(&self, block_index: usize) -> bool {
-        self.blocks.get(block_index).copied().unwrap_or(false)
+        self.blocks[block_index]
     }
 
     fn mark(&mut self, block_index: usize) {
-        if let Some(block) = self.blocks.get_mut(block_index) {
-            *block = true;
-        }
+        self.blocks[block_index] = true;
     }
 }
 
@@ -263,16 +261,6 @@ mod tests {
             blocks.mark(0);
             assert!(blocks.is_verified(0));
             assert!(!blocks.is_verified(1));
-        }
-
-        #[test]
-        fn out_of_range_marks_are_ignored() {
-            let mut blocks = VerifiedBlocks::new(1);
-
-            blocks.mark(9);
-
-            assert!(!blocks.is_verified(0));
-            assert!(!blocks.is_verified(9));
         }
     }
 }
