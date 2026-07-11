@@ -459,7 +459,7 @@ impl std::fmt::Display for SpaceRatio {
 mod tests {
     use std::path::Path;
 
-    use segment_cache_store::{BlockChecksumKind, CreateOptions};
+    use segment_cache_store::{BlockChecksumKind, CreateOptions, WriteBatch};
 
     use super::*;
 
@@ -543,9 +543,9 @@ mod tests {
 
     fn create_store(root: &Path, entries: &[([u8; 4], &[u8])]) -> Result<()> {
         let store = Store::create(root, create_options())?;
-        let mut batch = store.begin_batch();
+        let mut batch = WriteBatch::new();
         for (key, value) in entries {
-            batch.push(key, value)?;
+            batch.push(key, value);
         }
         store.commit_batch(batch)?;
         Ok(())

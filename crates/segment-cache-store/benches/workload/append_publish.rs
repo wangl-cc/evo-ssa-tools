@@ -37,9 +37,9 @@ fn bench_append_publish(c: &mut Criterion, profile: ValueProfile, dataset: &Data
             || tempfile::tempdir().expect("tempdir should work"),
             |tempdir| {
                 let store = create_segment_store(tempdir.path(), profile);
-                let mut batch = store.begin_batch();
+                let mut batch = segment_cache_store::WriteBatch::new();
                 for (key, value) in &shuffled {
-                    batch.push(key, value).expect("push should succeed");
+                    batch.push(key, value);
                 }
                 store.commit_batch(batch).expect("commit should succeed");
             },

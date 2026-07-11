@@ -557,7 +557,7 @@ impl Store {
             None,
         );
 
-        let mut merged = WriteBatch::default();
+        let mut merged = WriteBatch::new();
         let mut index = 0usize;
         let len = batch.len();
         enum Advance {
@@ -575,11 +575,11 @@ impl Store {
                         let entry = batch.entry(index);
                         match entry.key().cmp(existing_record.key) {
                             Ordering::Less => {
-                                merged.push(entry.key(), entry.value())?;
+                                merged.push(entry.key(), entry.value());
                                 Advance::Batch
                             }
                             Ordering::Greater => {
-                                merged.push(existing_record.key, existing_record.value)?;
+                                merged.push(existing_record.key, existing_record.value);
                                 Advance::Existing
                             }
                             Ordering::Equal => {
@@ -588,18 +588,18 @@ impl Store {
                                 } else {
                                     existing_record.value
                                 };
-                                merged.push(entry.key(), winner)?;
+                                merged.push(entry.key(), winner);
                                 Advance::Both
                             }
                         }
                     }
                     (true, None) => {
                         let entry = batch.entry(index);
-                        merged.push(entry.key(), entry.value())?;
+                        merged.push(entry.key(), entry.value());
                         Advance::Batch
                     }
                     (false, Some(existing_record)) => {
-                        merged.push(existing_record.key, existing_record.value)?;
+                        merged.push(existing_record.key, existing_record.value);
                         Advance::Existing
                     }
                     (false, None) => Advance::Done,

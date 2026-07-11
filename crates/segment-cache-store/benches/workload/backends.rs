@@ -11,7 +11,7 @@ use fjall3::{
 };
 use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
 use segment_cache_store::{
-    BlockChecksumKind, CommitOptions, CreateOptions, OpenOptions, Store, StoreMetadata,
+    BlockChecksumKind, CommitOptions, CreateOptions, OpenOptions, Store, StoreMetadata, WriteBatch,
 };
 
 use crate::{
@@ -100,9 +100,9 @@ pub(crate) fn fill_segment_store_with_options(
     entries: &[(Vec<u8>, Vec<u8>)],
     options: &CommitOptions,
 ) {
-    let mut batch = store.begin_batch();
+    let mut batch = WriteBatch::new();
     for (key, value) in entries {
-        batch.push(key, value).expect("push should succeed");
+        batch.push(key, value);
     }
     store
         .commit_batch_with_options(batch, options)
@@ -116,7 +116,7 @@ pub(crate) fn rebuild_segment_store_into(
     new_entries: &[(Vec<u8>, Vec<u8>)],
 ) -> (Store, usize) {
     let new_store = create_segment_store(new_root, profile);
-    let mut batch = new_store.begin_batch();
+    let mut batch = WriteBatch::new();
     let mut old_records = old_store
         .iter_all()
         .expect("old store should scan")
@@ -138,13 +138,9 @@ pub(crate) fn rebuild_segment_store_into(
                 .expect("peeked old record should exist")
                 .expect("peeked old record should be readable");
             checksum = checksum.wrapping_add(touch_bytes(&value));
-            batch
-                .push_owned(old_key, value)
-                .expect("push should succeed");
+            batch.push(&old_key, &value);
         } else {
-            batch
-                .push(key, computed_value)
-                .expect("push should succeed");
+            batch.push(key, computed_value);
             checksum = checksum.wrapping_add(touch_bytes(computed_value));
         }
     }
@@ -246,11 +242,11 @@ pub(crate) fn run_segment_axis_changes(
         if missing_indices.is_empty() {
             continue;
         }
-        let mut batch = store.begin_batch();
+        let mut batch = WriteBatch::new();
         for index in missing_indices {
             let (key, value) = &round.entries[index];
             report.checksum = report.checksum.wrapping_add(touch_bytes(value));
-            batch.push(key, value).expect("push should succeed");
+            batch.push(key, value);
         }
         let stats = store.commit_batch(batch).expect("commit should succeed");
         report.inserted += stats.input_records;

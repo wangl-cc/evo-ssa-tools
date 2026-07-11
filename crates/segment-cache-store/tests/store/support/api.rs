@@ -1,6 +1,6 @@
 use segment_cache_store::{
     BlockChecksumKind, CommitOptions, CommitStats, CreateOptions, OpenOptions as StoreOpenOptions,
-    Result, Store, StoreMetadata,
+    Result, Store, StoreMetadata, WriteBatch,
 };
 
 pub(crate) fn metadata() -> StoreMetadata {
@@ -116,7 +116,7 @@ pub(crate) fn commit_entries(
     entries: &[(Vec<u8>, Vec<u8>)],
     sorted: bool,
 ) -> Result<CommitStats> {
-    let mut batch = store.begin_batch();
+    let mut batch = WriteBatch::new();
     if !sorted {
         assert!(
             entries_have_key_inversion(entries),
@@ -124,7 +124,7 @@ pub(crate) fn commit_entries(
         );
     }
     for (key, value) in entries {
-        batch.push(key, value)?;
+        batch.push(key, value);
     }
     store.commit_batch_with_options(batch, &commit_options())
 }
@@ -135,7 +135,7 @@ pub(crate) fn commit_entries_with_options(
     sorted: bool,
     options: &CommitOptions,
 ) -> Result<CommitStats> {
-    let mut batch = store.begin_batch();
+    let mut batch = WriteBatch::new();
     if !sorted {
         assert!(
             entries_have_key_inversion(entries),
@@ -143,7 +143,7 @@ pub(crate) fn commit_entries_with_options(
         );
     }
     for (key, value) in entries {
-        batch.push(key, value)?;
+        batch.push(key, value);
     }
     store.commit_batch_with_options(batch, options)
 }

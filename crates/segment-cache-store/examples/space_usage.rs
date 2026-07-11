@@ -193,9 +193,9 @@ fn default_segment_create_options() -> CreateOptions {
 }
 
 fn write_entries_to_segment_store(store: &Store, entries: &[(Vec<u8>, Vec<u8>)]) {
-    let mut batch = store.begin_batch();
+    let mut batch = segment_cache_store::WriteBatch::new();
     for (key, value) in entries {
-        batch.push(key, value).expect("push should succeed");
+        batch.push(key, value);
     }
     store
         .commit_batch_with_options(

@@ -2,7 +2,7 @@ use std::num::NonZeroU32;
 
 use segment_cache_store::{
     CompressionPolicyError, CreateOptions, Error, InputError, OpenOptions, OptionsError, Result,
-    Store, ValueLayout, ValuePayloadCompressionPolicy,
+    Store, ValueLayout, ValuePayloadCompressionPolicy, WriteBatch,
 };
 
 use crate::support::api::{
@@ -14,8 +14,8 @@ use crate::support::api::{
 fn wrong_length_keys_are_rejected() -> Result<()> {
     let tempdir = tempfile::tempdir()?;
     let store = create_store(&tempdir)?;
-    let mut batch = store.begin_batch();
-    batch.push(b"short", b"value")?;
+    let mut batch = WriteBatch::new();
+    batch.push(b"short", b"value");
     let error = match store.commit_batch(batch) {
         Ok(_) => panic!("wrong-length key should be rejected"),
         Err(error) => error,

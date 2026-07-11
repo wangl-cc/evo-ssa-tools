@@ -290,9 +290,9 @@ impl OverlayStore {
         fill_segment_store_with_options(&store, &dataset.main_entries, options);
 
         for chunk in chunk_by_count(&dataset.patch_entries, patch_count) {
-            let mut batch = store.begin_batch();
+            let mut batch = segment_cache_store::WriteBatch::new();
             for (key, value) in chunk {
-                batch.push(key, value).expect("push should succeed");
+                batch.push(key, value);
             }
             let stats = store
                 .commit_batch_with_options(batch, options)

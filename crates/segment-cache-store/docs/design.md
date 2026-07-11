@@ -409,7 +409,7 @@ These limits are above the intended workload shape and should not be approached 
 
 The public write path is batch-only:
 
-- `Store::begin_batch`
+- `WriteBatch::new`
 - `WriteBatch::push`
 - `Store::commit_batch`
 - `Store::commit_batch_with_options`

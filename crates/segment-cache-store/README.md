@@ -23,8 +23,8 @@ let metadata = StoreMetadata::from_text("my-cache-schema-v1");
 let create_options = CreateOptions::new(16, metadata.clone(), BlockChecksumKind::None)?;
 let store = Store::create("cache-root", create_options)?;
 
-let mut batch = store.begin_batch();
-batch.push(&[0; 16], b"serialized value")?;
+let mut batch = segment_cache_store::WriteBatch::new();
+batch.push(&[0; 16], b"serialized value");
 store.commit_batch(batch)?;
 
 let reopened = Store::open("cache-root", OpenOptions::read_write(metadata))?;

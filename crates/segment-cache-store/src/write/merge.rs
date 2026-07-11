@@ -119,32 +119,32 @@ impl StoreMergeRecords {
                 (Some(destination_record), Some(source_record)) => {
                     match destination_record.key.cmp(source_record.key) {
                         std::cmp::Ordering::Less => {
-                            batch.push(destination_record.key, destination_record.value)?;
+                            batch.push(destination_record.key, destination_record.value);
                             Advance::Destination
                         }
                         std::cmp::Ordering::Greater => {
                             source_stats.add_record(source_record.key, source_record.value)?;
-                            batch.push(source_record.key, source_record.value)?;
+                            batch.push(source_record.key, source_record.value);
                             Advance::Source
                         }
                         std::cmp::Ordering::Equal => {
                             source_stats.add_record(source_record.key, source_record.value)?;
                             if source_record.value < destination_record.value {
-                                batch.push(source_record.key, source_record.value)?;
+                                batch.push(source_record.key, source_record.value);
                             } else {
-                                batch.push(destination_record.key, destination_record.value)?;
+                                batch.push(destination_record.key, destination_record.value);
                             }
                             Advance::Both
                         }
                     }
                 }
                 (Some(destination_record), None) => {
-                    batch.push(destination_record.key, destination_record.value)?;
+                    batch.push(destination_record.key, destination_record.value);
                     Advance::Destination
                 }
                 (None, Some(source_record)) => {
                     source_stats.add_record(source_record.key, source_record.value)?;
-                    batch.push(source_record.key, source_record.value)?;
+                    batch.push(source_record.key, source_record.value);
                     Advance::Source
                 }
                 (None, None) => Advance::Done,
@@ -250,7 +250,7 @@ impl Store {
     ) -> Result<(Vec<WrittenSegment>, usize)> {
         let mut written = Vec::new();
         let mut output_records = 0usize;
-        let mut batch = WriteBatch::default();
+        let mut batch = WriteBatch::new();
         while records.push_next_into(&mut batch)? {
             output_records += 1;
             if batch.len() >= options.flush_threshold_records()

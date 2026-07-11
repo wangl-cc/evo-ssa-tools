@@ -75,12 +75,6 @@ impl Store {
 
     // Write path.
 
-    /// Starts a buffered write batch.
-    #[must_use]
-    pub fn begin_batch(&self) -> WriteBatch {
-        WriteBatch::default()
-    }
-
     /// Publishes a write batch with default segment write options.
     pub fn commit_batch(&self, batch: WriteBatch) -> Result<CommitStats> {
         self.commit_with_options(batch, &CommitOptions::default())

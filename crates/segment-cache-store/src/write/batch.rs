@@ -9,7 +9,7 @@ use std::ops::Range;
 use crate::{
     error::{InputError, Result},
     format::{
-        FormatError, ValueLayout,
+        ValueLayout,
         record::{EntryRef, EntrySource, EntryView},
     },
 };
@@ -20,7 +20,6 @@ pub struct WriteBatch {
     entries: Vec<BufferedEntry>,
     key_bytes: Vec<u8>,
     value_bytes: Vec<u8>,
-    bytes: usize,
 }
 
 /// Batch validated against store geometry, sorted, and known to have unique keys.
@@ -58,8 +57,14 @@ impl ByteSpan {
 }
 
 impl WriteBatch {
+    /// Creates an empty write batch.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
     /// Copies a key/value pair into this batch.
-    pub fn push(&mut self, key: &[u8], value: &[u8]) -> Result<()> {
+    pub fn push(&mut self, key: &[u8], value: &[u8]) {
         let key_offset = self.key_bytes.len();
         let value_offset = self.value_bytes.len();
         self.key_bytes.extend_from_slice(key);
@@ -67,37 +72,11 @@ impl WriteBatch {
         self.push_entry(
             ByteSpan::new(key_offset, key.len()),
             ByteSpan::new(value_offset, value.len()),
-        )
+        );
     }
 
-    /// Moves an owned key/value pair into this batch arena.
-    pub fn push_owned(&mut self, mut key: Vec<u8>, mut value: Vec<u8>) -> Result<()> {
-        let key = {
-            let offset = self.key_bytes.len();
-            let len = key.len();
-            self.key_bytes.append(&mut key);
-            ByteSpan::new(offset, len)
-        };
-        let value = {
-            let offset = self.value_bytes.len();
-            let len = value.len();
-            self.value_bytes.append(&mut value);
-            ByteSpan::new(offset, len)
-        };
-        self.push_entry(key, value)
-    }
-
-    fn push_entry(&mut self, key: ByteSpan, value: ByteSpan) -> Result<()> {
-        let entry_bytes = key
-            .len
-            .checked_add(value.len)
-            .ok_or(FormatError::limit("batch byte length"))?;
-        self.bytes = self
-            .bytes
-            .checked_add(entry_bytes)
-            .ok_or(FormatError::limit("batch byte length"))?;
+    fn push_entry(&mut self, key: ByteSpan, value: ByteSpan) {
         self.entries.push(BufferedEntry { key, value });
-        Ok(())
     }
 
     /// Number of records currently buffered.
@@ -113,7 +92,7 @@ impl WriteBatch {
     }
 
     pub(super) fn byte_len(&self) -> usize {
-        self.bytes
+        self.key_bytes.len().saturating_add(self.value_bytes.len())
     }
 
     pub(super) fn prepare_for(
@@ -252,9 +231,9 @@ mod tests {
 
         #[test]
         fn sorts_entry_metadata_without_changing_payload_slices() {
-            let mut batch = WriteBatch::default();
-            batch.push(b"key-2", b"value-2").expect("push should work");
-            batch.push(b"key-1", b"value-1").expect("push should work");
+            let mut batch = WriteBatch::new();
+            batch.push(b"key-2", b"value-2");
+            batch.push(b"key-1", b"value-1");
 
             let batch = batch
                 .prepare_for(5, ValueLayout::VARIABLE)
@@ -268,10 +247,10 @@ mod tests {
 
         #[test]
         fn detects_duplicate_keys_after_sorting() {
-            let mut batch = WriteBatch::default();
-            batch.push(b"key-2", b"value-a").expect("push should work");
-            batch.push(b"key-1", b"value-b").expect("push should work");
-            batch.push(b"key-2", b"value-c").expect("push should work");
+            let mut batch = WriteBatch::new();
+            batch.push(b"key-2", b"value-a");
+            batch.push(b"key-1", b"value-b");
+            batch.push(b"key-2", b"value-c");
 
             let error = batch
                 .prepare_for(5, ValueLayout::VARIABLE)
@@ -288,10 +267,10 @@ mod tests {
 
         #[test]
         fn splits_by_record_and_byte_thresholds() {
-            let mut batch = WriteBatch::default();
-            batch.push(b"key-1", b"aaa").expect("push should work");
-            batch.push(b"key-2", b"bbb").expect("push should work");
-            batch.push(b"key-3", b"ccc").expect("push should work");
+            let mut batch = WriteBatch::new();
+            batch.push(b"key-1", b"aaa");
+            batch.push(b"key-2", b"bbb");
+            batch.push(b"key-3", b"ccc");
 
             let batch = batch
                 .prepare_for(5, ValueLayout::VARIABLE)

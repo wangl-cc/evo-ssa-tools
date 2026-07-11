@@ -1,4 +1,4 @@
-use segment_cache_store::{CommitStats, Result};
+use segment_cache_store::{CommitStats, Result, WriteBatch};
 
 use crate::support::api::{commit_entries, create_store, make_key, make_value};
 
@@ -45,16 +45,16 @@ fn sorted_and_unsorted_batches_publish_same_results() -> Result<()> {
 }
 
 #[test]
-fn owned_batch_entries_round_trip() -> Result<()> {
+fn batch_entries_round_trip() -> Result<()> {
     let tempdir = tempfile::tempdir()?;
     let store = create_store(&tempdir)?;
     let entries = vec![
         (make_key(1, 0, 0), make_value(1, 8)),
         (make_key(1, 0, 1), make_value(2, 16)),
     ];
-    let mut batch = store.begin_batch();
-    for (key, value) in entries.clone() {
-        batch.push_owned(key, value)?;
+    let mut batch = WriteBatch::new();
+    for (key, value) in &entries {
+        batch.push(key, value);
     }
     store.commit_batch(batch)?;
 
@@ -67,12 +67,12 @@ fn owned_batch_entries_round_trip() -> Result<()> {
 fn empty_batch_commit_and_batch_len_are_noops() -> Result<()> {
     let tempdir = tempfile::tempdir()?;
     let store = create_store(&tempdir)?;
-    let mut batch = store.begin_batch();
+    let mut batch = WriteBatch::new();
     assert_eq!(batch.len(), 0);
-    batch.push(&make_key(1, 0, 0), &make_value(1, 8))?;
+    batch.push(&make_key(1, 0, 0), &make_value(1, 8));
     assert_eq!(batch.len(), 1);
 
-    let empty_stats = store.commit_batch(store.begin_batch())?;
+    let empty_stats = store.commit_batch(WriteBatch::new())?;
     assert_eq!(empty_stats, CommitStats::default());
     assert_eq!(store.iter_all()?.count(), 0);
     Ok(())
