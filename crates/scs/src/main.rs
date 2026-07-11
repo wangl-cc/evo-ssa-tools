@@ -106,16 +106,23 @@ impl StoreRoot {
     }
 
     fn print_stats(&self) -> Result<()> {
-        let opened = self.open_read_only()?;
-        let logical = LogicalStats::collect(opened.store()).with_context(|| {
+        let store = self.open_read_only()?;
+        let logical = LogicalStats::collect(&store).with_context(|| {
             format!("collect logical stats from store `{}`", self.path.display())
         })?;
-        let storage = opened.store().storage_stats().with_context(|| {
+        let storage = store.storage_stats().with_context(|| {
             format!("collect storage stats from store `{}`", self.path.display())
         })?;
 
         println!("root: {}", self.path.display());
-        opened.print_identity();
+        println!("metadata: {}", MetadataView(store.metadata()));
+        println!("key_len: {}", store.key_len());
+        println!("value_layout: {}", ValueLayoutView(&store));
+        println!("block_checksum: {}", store.block_checksum().name());
+        println!(
+            "value_payload_compression: {}",
+            store.value_payload_compression().name()
+        );
         logical.print();
         StorageStatsView(storage).print(logical.total_bytes());
         if let Some(key) = logical.min_key.as_deref() {
@@ -128,9 +135,8 @@ impl StoreRoot {
     }
 
     fn print_value(&self, key: &[u8], value_limit: usize) -> Result<()> {
-        let opened = self.open_read_only()?;
-        let value = opened
-            .store()
+        let store = self.open_read_only()?;
+        let value = store
             .fetch_one(key)
             .with_context(|| format!("fetch key from store `{}`", self.path.display()))?;
 
@@ -144,8 +150,7 @@ impl StoreRoot {
         let destination_store = self.open_writer()?;
         let source_store = source.open_read_only()?;
         let stats = destination_store
-            .store()
-            .merge_from(source_store.store())
+            .merge_from(&source_store)
             .with_context(|| {
                 format!(
                     "merge source store `{}` into destination store `{}`",
@@ -161,9 +166,8 @@ impl StoreRoot {
     }
 
     fn normalize(&self) -> Result<()> {
-        let opened = self.open_writer()?;
-        let stats = opened
-            .store()
+        let store = self.open_writer()?;
+        let stats = store
             .normalize()
             .with_context(|| format!("normalize store `{}`", self.path.display()))?;
 
@@ -173,13 +177,11 @@ impl StoreRoot {
     }
 
     fn compact(&self) -> Result<()> {
-        let opened = self.open_writer()?;
-        let stats = opened
-            .store()
+        let store = self.open_writer()?;
+        let stats = store
             .normalize()
             .with_context(|| format!("normalize store `{}`", self.path.display()))?;
-        opened
-            .store()
+        store
             .garbage_collect()
             .with_context(|| format!("garbage-collect store `{}`", self.path.display()))?;
 
@@ -190,9 +192,8 @@ impl StoreRoot {
     }
 
     fn garbage_collect(&self) -> Result<()> {
-        let opened = self.open_writer()?;
-        opened
-            .store()
+        let store = self.open_writer()?;
+        store
             .garbage_collect()
             .with_context(|| format!("garbage-collect store `{}`", self.path.display()))?;
 
@@ -201,26 +202,24 @@ impl StoreRoot {
         Ok(())
     }
 
-    fn open_read_only(&self) -> Result<OpenedStore> {
+    fn open_read_only(&self) -> Result<Store> {
         self.open(OpenMode::ReadOnly)
     }
 
-    fn open_writer(&self) -> Result<OpenedStore> {
+    fn open_writer(&self) -> Result<Store> {
         self.open(OpenMode::Writer)
     }
 
-    fn open(&self, mode: OpenMode) -> Result<OpenedStore> {
+    fn open(&self, mode: OpenMode) -> Result<Store> {
         let info = Store::inspect(&self.path)
             .with_context(|| format!("inspect store `{}`", self.path.display()))?;
         let options = mode.open_options(info.metadata);
-        Ok(OpenedStore {
-            store: Store::open(&self.path, options).with_context(|| {
-                format!(
-                    "open store `{}`{}",
-                    self.path.display(),
-                    mode.description_suffix()
-                )
-            })?,
+        Store::open(&self.path, options).with_context(|| {
+            format!(
+                "open store `{}`{}",
+                self.path.display(),
+                mode.description_suffix()
+            )
         })
     }
 }
@@ -244,27 +243,6 @@ impl OpenMode {
             Self::ReadOnly => " read-only",
             Self::Writer => " for writing",
         }
-    }
-}
-
-struct OpenedStore {
-    store: Store,
-}
-
-impl OpenedStore {
-    fn store(&self) -> &Store {
-        &self.store
-    }
-
-    fn print_identity(&self) {
-        println!("metadata: {}", MetadataView(self.store.metadata()));
-        println!("key_len: {}", self.store.key_len());
-        println!("value_layout: {}", ValueLayoutView(&self.store));
-        println!("block_checksum: {}", self.store.block_checksum().name());
-        println!(
-            "value_payload_compression: {}",
-            self.store.value_payload_compression().name()
-        );
     }
 }
 
@@ -510,11 +488,11 @@ mod tests {
 
         root.print_stats()?;
         let read_only = root.open_read_only()?;
-        assert_eq!(read_only.store().iter_all()?.count(), 0);
+        assert_eq!(read_only.iter_all()?.count(), 0);
         drop(read_only);
 
         let writer = root.open_writer()?;
-        writer.store().garbage_collect()?;
+        writer.garbage_collect()?;
         Ok(())
     }
 
@@ -527,7 +505,7 @@ mod tests {
         ])?;
         let opened = StoreRoot::new(tempdir.path().to_path_buf()).open_read_only()?;
 
-        let stats = LogicalStats::collect(opened.store())?;
+        let stats = LogicalStats::collect(&opened)?;
 
         assert_eq!(stats.records, 2);
         assert_eq!(stats.key_bytes, KEY_ONE.len() + KEY_TWO.len());
