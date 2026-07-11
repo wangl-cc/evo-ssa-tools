@@ -41,7 +41,9 @@ pub(crate) fn store_create_options(key_len: usize) -> CreateOptions {
 }
 
 pub(crate) fn commit_options_with_block_size(block_size: usize) -> CommitOptions {
-    CommitOptions::default().with_target_block_size(block_size)
+    CommitOptions::default().with_target_block_size(
+        u32::try_from(block_size).expect("benchmark block size must fit the on-disk format"),
+    )
 }
 
 pub(crate) fn fixed_store_create_options(key_len: usize, value_len: NonZeroU32) -> CreateOptions {

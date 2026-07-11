@@ -1,4 +1,4 @@
-use std::num::NonZeroU32;
+use std::num::{NonZeroU32, NonZeroUsize};
 
 #[cfg(any(feature = "checksum-crc32c", feature = "checksum-rapidhash"))]
 use segment_cache_store::{CommitStats, OpenOptions};
@@ -77,7 +77,7 @@ fn merge_from_resolves_duplicate_keys_by_smallest_value() -> Result<()> {
         &source,
         &commit_options()
             .with_patch_segment_limit(0)
-            .with_flush_threshold_records(64),
+            .with_flush_threshold_records(NonZeroUsize::new(64).expect("non-zero literal")),
     )?;
 
     assert_eq!(stats.input_records, 3);

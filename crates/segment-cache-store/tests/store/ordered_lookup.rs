@@ -1,3 +1,5 @@
+use std::num::NonZeroUsize;
+
 use segment_cache_store::{CommitOptions, Error, InputError, Result};
 
 use crate::support::api::{
@@ -92,7 +94,7 @@ fn ordered_lookup_returns_value_after_key_hit() -> Result<()> {
         true,
         &CommitOptions::default()
             .with_target_block_size(4096)
-            .with_flush_threshold_records(128),
+            .with_flush_threshold_records(NonZeroUsize::new(128).expect("non-zero literal")),
     )?;
 
     let key = make_key(1, 0, 4);
@@ -117,7 +119,7 @@ fn ordered_lookup_returns_miss_for_key_between_records() -> Result<()> {
         true,
         &CommitOptions::default()
             .with_target_block_size(4096)
-            .with_flush_threshold_records(128),
+            .with_flush_threshold_records(NonZeroUsize::new(128).expect("non-zero literal")),
     )?;
 
     let key = make_key(1, 0, 3);
@@ -212,7 +214,7 @@ fn reports_misses_before_between_and_after_segments() -> Result<()> {
         true,
         &CommitOptions::default()
             .with_target_block_size(256)
-            .with_flush_threshold_records(1),
+            .with_flush_threshold_records(NonZeroUsize::new(1).expect("non-zero literal")),
     )?;
     let keys = [
         make_key(1, 0, 0),
@@ -244,7 +246,7 @@ fn miss_between_adjacent_blocks_returns_miss() -> Result<()> {
         true,
         &CommitOptions::default()
             .with_target_block_size(64)
-            .with_flush_threshold_records(128),
+            .with_flush_threshold_records(NonZeroUsize::new(128).expect("non-zero literal")),
     )?;
     let keys = [
         make_key(1, 0, 0),

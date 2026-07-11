@@ -174,7 +174,6 @@ impl Store {
         if self.inner.writer_lock.is_none() {
             return Err(InputError::ReadOnlyStore.into());
         }
-        options.validate()?;
         self.validate_merge_source(source)?;
         if Arc::ptr_eq(&self.inner, &source.inner) {
             return Ok(CommitStats::default());

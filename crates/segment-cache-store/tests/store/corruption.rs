@@ -2,6 +2,7 @@ use std::{
     fs,
     fs::OpenOptions as FsOpenOptions,
     io::{Seek, SeekFrom, Write},
+    num::NonZeroUsize,
 };
 
 #[cfg(any(feature = "value-compression-lz4", feature = "value-compression-zstd"))]
@@ -64,7 +65,7 @@ fn sparse_ordered_lookup_corrupted_payload_becomes_miss() -> Result<()> {
         true,
         &CommitOptions::default()
             .with_target_block_size(4096)
-            .with_flush_threshold_records(128),
+            .with_flush_threshold_records(NonZeroUsize::new(128).expect("non-zero literal")),
     )?;
     let path = first_segment_path(tempdir.path())?;
     corrupt_block_value_payload(&path, 0)?;
@@ -204,7 +205,7 @@ fn sparse_lz4_frame_header_corruption_becomes_miss() -> Result<()> {
         true,
         &CommitOptions::default()
             .with_target_block_size(256 * 1024)
-            .with_flush_threshold_records(128)
+            .with_flush_threshold_records(NonZeroUsize::new(128).expect("non-zero literal"))
             .with_value_payload_compression_policy(
                 ValuePayloadCompressionPolicy::new(1, 0).expect("compression policy is valid"),
             ),
@@ -262,7 +263,7 @@ fn sparse_zstd_frame_header_corruption_becomes_miss() -> Result<()> {
         true,
         &CommitOptions::default()
             .with_target_block_size(256 * 1024)
-            .with_flush_threshold_records(128)
+            .with_flush_threshold_records(NonZeroUsize::new(128).expect("non-zero literal"))
             .with_value_payload_compression_policy(
                 ValuePayloadCompressionPolicy::new(1, 0).expect("compression policy is valid"),
             ),
@@ -441,7 +442,7 @@ fn flush_thresholds_split_one_batch_into_multiple_segments() -> Result<()> {
         true,
         &CommitOptions::default()
             .with_target_block_size(256)
-            .with_flush_threshold_records(2),
+            .with_flush_threshold_records(NonZeroUsize::new(2).expect("non-zero literal")),
     )?;
     assert_eq!(stats.segments_published, 2);
     assert_eq!(store.iter_all()?.count(), entries.len());
@@ -676,7 +677,7 @@ fn sparse_ordered_lookup_short_block_metadata_becomes_miss() -> Result<()> {
         true,
         &CommitOptions::default()
             .with_target_block_size(4096)
-            .with_flush_threshold_records(128),
+            .with_flush_threshold_records(NonZeroUsize::new(128).expect("non-zero literal")),
     )?;
     let path = first_segment_path(tempdir.path())?;
     truncate_first_block_to_declared_len(&path, 4)?;

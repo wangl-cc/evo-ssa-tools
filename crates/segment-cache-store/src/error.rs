@@ -141,15 +141,6 @@ pub enum OptionsError {
     #[error("key_len must fit in u32")]
     KeyLenTooLarge,
 
-    #[error("target_block_size must fit in u32")]
-    TargetBlockSizeTooLarge,
-
-    #[error("flush_threshold_records must be greater than zero")]
-    FlushThresholdRecordsZero,
-
-    #[error("flush_threshold_bytes must be greater than zero")]
-    FlushThresholdBytesZero,
-
     #[error(transparent)]
     CompressionPolicy(#[from] CompressionPolicyError),
 

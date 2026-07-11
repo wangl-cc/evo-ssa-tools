@@ -1,8 +1,8 @@
 use std::num::NonZeroU32;
 
 use segment_cache_store::{
-    CommitOptions, CompressionPolicyError, CreateOptions, Error, InputError, OpenOptions,
-    OptionsError, Result, Store, ValueLayout, ValuePayloadCompressionPolicy,
+    CompressionPolicyError, CreateOptions, Error, InputError, OpenOptions, OptionsError, Result,
+    Store, ValueLayout, ValuePayloadCompressionPolicy,
 };
 
 use crate::support::api::{
@@ -28,7 +28,7 @@ fn wrong_length_keys_are_rejected() -> Result<()> {
 }
 
 #[test]
-fn invalid_store_options_are_rejected() -> Result<()> {
+fn invalid_create_options_are_rejected() {
     assert!(matches!(
         CreateOptions::new(0, metadata(), test_block_checksum()),
         Err(OptionsError::KeyLenZero)
@@ -37,42 +37,6 @@ fn invalid_store_options_are_rejected() -> Result<()> {
         CreateOptions::new(usize::MAX, metadata(), test_block_checksum(),),
         Err(OptionsError::KeyLenTooLarge)
     ));
-
-    for invalid in [
-        CommitOptions::default().with_flush_threshold_records(0),
-        CommitOptions::default().with_flush_threshold_bytes(0),
-    ] {
-        let store = create_store(&tempfile::tempdir()?)?;
-        let error = store
-            .commit_batch_with_options(store.begin_batch(), &invalid)
-            .unwrap_err();
-        assert!(matches!(
-            error,
-            Error::Input(InputError::InvalidOptions(
-                OptionsError::FlushThresholdRecordsZero | OptionsError::FlushThresholdBytesZero
-            ))
-        ));
-    }
-
-    if let Some(oversized_target_block_size) = usize::try_from(u32::MAX)
-        .ok()
-        .and_then(|max| max.checked_add(1))
-    {
-        let store = create_store(&tempfile::tempdir()?)?;
-        let error = store
-            .commit_batch_with_options(
-                store.begin_batch(),
-                &CommitOptions::default().with_target_block_size(oversized_target_block_size),
-            )
-            .unwrap_err();
-        assert!(matches!(
-            error,
-            Error::Input(InputError::InvalidOptions(
-                OptionsError::TargetBlockSizeTooLarge
-            ))
-        ));
-    }
-    Ok(())
 }
 
 #[test]

@@ -4,13 +4,14 @@ use std::{
     cmp::Ordering,
     collections::{BTreeSet, HashSet},
     fs,
+    num::NonZeroUsize,
     ops::Range,
     sync::Arc,
 };
 
 use crate::{
     engine::{paths, runtime::SegmentState, segment_file::SegmentFingerprintWriter},
-    error::{InputError, OptionsError, Result},
+    error::{InputError, Result},
     format::{
         CatalogMismatch, ValuePayloadCompressionPolicy,
         manifest::{
@@ -34,13 +35,13 @@ const DEFAULT_PATCH_DIRECT_RECORD_LIMIT: usize = 4_096;
 #[derive(Clone, Debug)]
 pub struct CommitOptions {
     /// Target logical block split size for newly written segments.
-    target_block_size: usize,
+    target_block_size: u32,
     /// Writer-side policy for deciding whether value payloads are worth compressing.
     value_payload_compression_policy: ValuePayloadCompressionPolicy,
     /// Maximum records per newly published segment chunk.
-    flush_threshold_records: usize,
+    flush_threshold_records: NonZeroUsize,
     /// Maximum approximate key/value bytes per newly published segment chunk.
-    flush_threshold_bytes: usize,
+    flush_threshold_bytes: NonZeroUsize,
     /// Maximum live patch segments allowed before the next overlapping commit normalizes.
     patch_segment_limit: usize,
     /// Maximum input records eligible for direct patch publication.
@@ -52,8 +53,10 @@ impl Default for CommitOptions {
         Self {
             target_block_size: 16 * 1024,
             value_payload_compression_policy: ValuePayloadCompressionPolicy::DEFAULT,
-            flush_threshold_records: 4_096,
-            flush_threshold_bytes: 8 * 1024 * 1024,
+            flush_threshold_records: NonZeroUsize::new(4_096)
+                .expect("default record threshold is non-zero"),
+            flush_threshold_bytes: NonZeroUsize::new(8 * 1024 * 1024)
+                .expect("default byte threshold is non-zero"),
             patch_segment_limit: DEFAULT_PATCH_SEGMENT_LIMIT,
             patch_direct_record_limit: DEFAULT_PATCH_DIRECT_RECORD_LIMIT,
         }
@@ -62,7 +65,7 @@ impl Default for CommitOptions {
 
 impl CommitOptions {
     /// Sets the target logical block split size for newly written segments.
-    pub fn with_target_block_size(mut self, target_block_size: usize) -> Self {
+    pub fn with_target_block_size(mut self, target_block_size: u32) -> Self {
         self.target_block_size = target_block_size;
         self
     }
@@ -81,13 +84,13 @@ impl CommitOptions {
     }
 
     /// Sets the maximum records written to one segment chunk during this commit.
-    pub fn with_flush_threshold_records(mut self, flush_threshold_records: usize) -> Self {
+    pub fn with_flush_threshold_records(mut self, flush_threshold_records: NonZeroUsize) -> Self {
         self.flush_threshold_records = flush_threshold_records;
         self
     }
 
     /// Sets the approximate maximum key/value bytes written to one segment chunk.
-    pub fn with_flush_threshold_bytes(mut self, flush_threshold_bytes: usize) -> Self {
+    pub fn with_flush_threshold_bytes(mut self, flush_threshold_bytes: NonZeroUsize) -> Self {
         self.flush_threshold_bytes = flush_threshold_bytes;
         self
     }
@@ -110,25 +113,16 @@ impl CommitOptions {
         self
     }
 
-    pub(crate) fn validate(&self) -> Result<()> {
-        if self.target_block_size > u32::MAX as usize {
-            return Err(OptionsError::TargetBlockSizeTooLarge.into());
-        }
-        if self.flush_threshold_records == 0 {
-            return Err(OptionsError::FlushThresholdRecordsZero.into());
-        }
-        if self.flush_threshold_bytes == 0 {
-            return Err(OptionsError::FlushThresholdBytesZero.into());
-        }
-        Ok(())
+    pub(super) fn target_block_size(&self) -> usize {
+        self.target_block_size as usize
     }
 
     pub(super) fn flush_threshold_records(&self) -> usize {
-        self.flush_threshold_records
+        self.flush_threshold_records.get()
     }
 
     pub(super) fn flush_threshold_bytes(&self) -> usize {
-        self.flush_threshold_bytes
+        self.flush_threshold_bytes.get()
     }
 }
 
@@ -384,7 +378,6 @@ impl Store {
         if self.inner.writer_lock.is_none() {
             return Err(InputError::ReadOnlyStore.into());
         }
-        options.validate()?;
         if batch.is_empty() {
             return Ok(CommitStats::default());
         }
@@ -411,8 +404,8 @@ impl Store {
         let affected_main = plan.affected_main_range(&batch_min, &batch_max);
         let direct_ranges = batch.flush_ranges(
             key_len,
-            options.flush_threshold_records,
-            options.flush_threshold_bytes,
+            options.flush_threshold_records(),
+            options.flush_threshold_bytes(),
         );
 
         let (written, output_records) = if affected_main.is_empty() {
@@ -462,7 +455,6 @@ impl Store {
         if self.inner.writer_lock.is_none() {
             return Err(InputError::ReadOnlyStore.into());
         }
-        options.validate()?;
         let _commit_guard = self.inner.commit_lock.lock();
 
         let geometry = self.inner.geometry;
@@ -511,8 +503,8 @@ impl Store {
         let merged = self.merge_region(batch, affected_live)?;
         let ranges = merged.flush_ranges(
             self.inner.geometry.key_len,
-            options.flush_threshold_records,
-            options.flush_threshold_bytes,
+            options.flush_threshold_records(),
+            options.flush_threshold_bytes(),
         );
         let written =
             self.write_batch_segments(&merged, ranges, SegmentTier::Main, plan, options)?;
@@ -693,7 +685,7 @@ impl Store {
             geometry.block_checksum,
             geometry.value_payload_compression,
             options.value_payload_compression_policy,
-            options.target_block_size,
+            options.target_block_size(),
         )
     }
 
@@ -705,7 +697,7 @@ impl Store {
             geometry.value_layout,
             geometry.block_checksum,
             geometry.value_payload_compression,
-            options.target_block_size,
+            options.target_block_size(),
         )
     }
 }
