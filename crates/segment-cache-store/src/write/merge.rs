@@ -10,7 +10,8 @@ use crate::{
     store::Store,
     write::{
         batch::{PreparedBatch, WriteBatch},
-        commit::{CommitOptions, CommitPlan, CommitStats, WrittenSegment},
+        commit::{CommitPlan, CommitStats, WrittenSegment},
+        options::CommitOptions,
     },
 };
 

@@ -9,6 +9,8 @@
 mod batch;
 mod commit;
 mod merge;
+mod options;
 
 pub use batch::WriteBatch;
-pub use commit::{CommitOptions, CommitStats};
+pub use commit::CommitStats;
+pub use options::CommitOptions;
