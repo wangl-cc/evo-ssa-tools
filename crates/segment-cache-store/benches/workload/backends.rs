@@ -49,9 +49,11 @@ pub(crate) fn fixed_store_create_options(key_len: usize, value_len: NonZeroU32) 
 }
 
 pub(crate) fn open_options(verify_crc: bool) -> OpenOptions {
-    OpenOptions::new(store_metadata())
-        .with_block_checksum_verification(verify_crc)
-        .with_read_only(!verify_crc)
+    if verify_crc {
+        OpenOptions::read_write(store_metadata())
+    } else {
+        OpenOptions::read_only(store_metadata()).with_block_checksum_verification(false)
+    }
 }
 
 pub(crate) fn create_segment_store(root: &Path, profile: ValueProfile) -> Store {

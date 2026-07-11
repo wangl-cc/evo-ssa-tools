@@ -1,8 +1,8 @@
 use std::num::NonZeroU32;
 
 use segment_cache_store::{
-    CommitOptions, CompressionPolicyError, CreateOptions, Error, InputError, OptionsError, Result,
-    Store, ValueLayout, ValuePayloadCompressionPolicy,
+    CommitOptions, CompressionPolicyError, CreateOptions, Error, InputError, OpenOptions,
+    OptionsError, Result, Store, ValueLayout, ValuePayloadCompressionPolicy,
 };
 
 use crate::support::api::{
@@ -119,9 +119,7 @@ fn writable_open_requires_block_checksum_verification() -> Result<()> {
 
     let reader = Store::open(
         tempdir.path(),
-        open_options()
-            .with_block_checksum_verification(false)
-            .with_read_only(true),
+        OpenOptions::read_only(metadata()).with_block_checksum_verification(false),
     )?;
     assert_eq!(reader.iter_all()?.count(), 0);
     Ok(())

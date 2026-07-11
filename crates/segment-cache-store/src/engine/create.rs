@@ -122,6 +122,10 @@ impl Store {
         let manifest = StoreManifest::new(options.key_len);
         paths::publish_manifest(&paths, &manifest)?;
         paths::publish_descriptor(&paths, &descriptor)?;
-        open_existing(root, OpenOptions::new(options.metadata), Some(writer_lock))
+        open_existing(
+            root,
+            OpenOptions::read_write(options.metadata),
+            Some(writer_lock),
+        )
     }
 }

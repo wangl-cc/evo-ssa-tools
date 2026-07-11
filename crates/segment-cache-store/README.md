@@ -27,7 +27,7 @@ let mut batch = store.begin_batch();
 batch.push(&[0; 16], b"serialized value")?;
 store.commit_batch(batch)?;
 
-let reopened = Store::open("cache-root", OpenOptions::new(metadata))?;
+let reopened = Store::open("cache-root", OpenOptions::read_write(metadata))?;
 let value = reopened.fetch_one(&[0; 16])?;
 # Ok::<_, segment_cache_store::Error>(())
 ```

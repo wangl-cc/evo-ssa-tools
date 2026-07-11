@@ -57,12 +57,25 @@ pub struct StoreInfo {
 }
 
 impl OpenOptions {
-    /// Creates open options that require the persisted store metadata to match.
-    pub fn new(expected_metadata: StoreMetadata) -> Self {
+    /// Creates options for a writable open that verifies block checksums.
+    pub fn read_write(expected_metadata: StoreMetadata) -> Self {
         Self {
             expected_metadata,
             verify_block_checksums: true,
             read_only: false,
+        }
+    }
+
+    /// Creates options for a read-only open that verifies block checksums.
+    ///
+    /// A read-only handle takes no writer lock, runs no garbage collection,
+    /// and creates no directories. Mutating operations return
+    /// [`crate::InputError::ReadOnlyStore`].
+    pub fn read_only(expected_metadata: StoreMetadata) -> Self {
+        Self {
+            expected_metadata,
+            verify_block_checksums: true,
+            read_only: true,
         }
     }
 
@@ -74,16 +87,6 @@ impl OpenOptions {
     /// segment-structure, and manifest fingerprint checks still run either way.
     pub fn with_block_checksum_verification(mut self, verify: bool) -> Self {
         self.verify_block_checksums = verify;
-        self
-    }
-
-    /// Opens the store without acquiring the writer lock or running GC.
-    ///
-    /// A read-only handle never touches the filesystem beyond reads: it takes
-    /// no lock, runs no GC, and creates no directories. Commits on a read-only
-    /// handle are rejected with [`crate::InputError::ReadOnlyStore`].
-    pub fn with_read_only(mut self, read_only: bool) -> Self {
-        self.read_only = read_only;
         self
     }
 
@@ -115,7 +118,7 @@ impl Store {
     ///
     /// This does not acquire the writer lock, validate `MANIFEST`, or run any
     /// catalog housekeeping. It is intended for tools that need to discover the
-    /// metadata required by [`OpenOptions::new`].
+    /// metadata required by [`OpenOptions::read_write`] or [`OpenOptions::read_only`].
     pub fn inspect(root: impl AsRef<Path>) -> Result<StoreInfo> {
         let paths = StorePaths::new(root);
         let descriptor = paths::load_descriptor(&paths)?.ok_or(CatalogMismatch::MissingStore)?;

@@ -315,9 +315,7 @@ fn block_checksum_verification_can_be_disabled_for_benchmarks() -> Result<()> {
     let path = first_segment_path(tempdir.path())?;
     let unchecked = Store::open(
         tempdir.path(),
-        StoreOpenOptions::new(metadata())
-            .with_block_checksum_verification(false)
-            .with_read_only(true),
+        StoreOpenOptions::read_only(metadata()).with_block_checksum_verification(false),
     )?;
     corrupt_block_value_payload(&path, 0)?;
 
@@ -416,7 +414,7 @@ fn metadata_mismatch_rejects_open() -> Result<()> {
 
     let error = match Store::open(
         tempdir.path(),
-        StoreOpenOptions::new(StoreMetadata::from_text("different")),
+        StoreOpenOptions::read_write(StoreMetadata::from_text("different")),
     ) {
         Ok(_) => panic!("metadata mismatch should reject open"),
         Err(error) => error,

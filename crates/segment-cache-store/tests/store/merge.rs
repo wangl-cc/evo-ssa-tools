@@ -1,7 +1,7 @@
 use std::num::NonZeroU32;
 
 #[cfg(any(feature = "checksum-crc32c", feature = "checksum-rapidhash"))]
-use segment_cache_store::CommitStats;
+use segment_cache_store::{CommitStats, OpenOptions};
 use segment_cache_store::{CreateOptions, Error, InputError, Result, Store, StoreMetadata};
 
 use crate::support::api::{
@@ -10,7 +10,7 @@ use crate::support::api::{
 };
 #[cfg(any(feature = "checksum-crc32c", feature = "checksum-rapidhash"))]
 use crate::support::{
-    api::open_options,
+    api::metadata,
     segment_file::{corrupt_block_value_payload, first_segment_path},
 };
 
@@ -229,9 +229,7 @@ fn merge_from_skips_corrupt_source_blocks_when_forcing_verification() -> Result<
     drop(source);
     let source = Store::open(
         source_dir.path(),
-        open_options()
-            .with_read_only(true)
-            .with_block_checksum_verification(false),
+        OpenOptions::read_only(metadata()).with_block_checksum_verification(false),
     )?;
 
     let stats = destination.merge_from(&source)?;

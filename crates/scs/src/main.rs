@@ -212,7 +212,7 @@ impl StoreRoot {
     fn open(&self, mode: OpenMode) -> Result<OpenedStore> {
         let info = Store::inspect(&self.path)
             .with_context(|| format!("inspect store `{}`", self.path.display()))?;
-        let options = OpenOptions::new(info.metadata).with_read_only(mode.is_read_only());
+        let options = mode.open_options(info.metadata);
         Ok(OpenedStore {
             store: Store::open(&self.path, options).with_context(|| {
                 format!(
@@ -232,8 +232,11 @@ enum OpenMode {
 }
 
 impl OpenMode {
-    fn is_read_only(self) -> bool {
-        matches!(self, Self::ReadOnly)
+    fn open_options(self, metadata: StoreMetadata) -> OpenOptions {
+        match self {
+            Self::ReadOnly => OpenOptions::read_only(metadata),
+            Self::Writer => OpenOptions::read_write(metadata),
+        }
     }
 
     fn description_suffix(self) -> &'static str {
@@ -493,10 +496,7 @@ mod tests {
         run_cli(["scs", "gc", destination_arg.as_str()])?;
         run_cli(["scs", "compact", destination_arg.as_str()])?;
 
-        let reopened = Store::open(
-            destination.path(),
-            OpenOptions::new(test_metadata()).with_read_only(true),
-        )?;
+        let reopened = Store::open(destination.path(), OpenOptions::read_only(test_metadata()))?;
         assert_eq!(reopened.fetch_one(&KEY_ONE)?, Some(b"alpha".to_vec()));
         assert_eq!(reopened.fetch_one(&KEY_TWO)?, Some(b"beta".to_vec()));
         Ok(())

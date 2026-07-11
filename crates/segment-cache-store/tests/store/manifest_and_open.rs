@@ -257,7 +257,7 @@ fn manifest_metadata_mismatch_is_rejected() -> Result<()> {
 
     let error = match Store::open(
         tempdir.path(),
-        StoreOpenOptions::new(StoreMetadata::from_text("different")),
+        StoreOpenOptions::read_write(StoreMetadata::from_text("different")),
     ) {
         Ok(_) => panic!("mismatched manifest metadata should be rejected"),
         Err(error) => error,

@@ -71,7 +71,7 @@ pub(crate) fn create_options() -> CreateOptions {
 }
 
 pub(crate) fn open_options() -> StoreOpenOptions {
-    StoreOpenOptions::new(metadata())
+    StoreOpenOptions::read_write(metadata())
 }
 
 pub(crate) fn commit_options() -> CommitOptions {
@@ -96,7 +96,7 @@ pub(crate) fn reopen_store(tempdir: &tempfile::TempDir) -> Result<Store> {
 /// Opens a second read-only handle that takes no writer lock, so it can coexist
 /// with a live writer handle to the same root.
 pub(crate) fn reopen_store_read_only(tempdir: &tempfile::TempDir) -> Result<Store> {
-    Store::open(tempdir.path(), open_options().with_read_only(true))
+    Store::open(tempdir.path(), StoreOpenOptions::read_only(metadata()))
 }
 
 pub(crate) fn make_key(a: u32, b: u32, rep: u64) -> Vec<u8> {
