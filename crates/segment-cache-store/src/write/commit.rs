@@ -10,7 +10,7 @@ use std::{
 };
 
 use crate::{
-    engine::{paths, runtime::SegmentState, segment_file::SegmentFingerprintWriter},
+    engine::{runtime::SegmentState, segment_file::SegmentFingerprintWriter},
     error::{InputError, Result},
     format::{
         CatalogMismatch, ValuePayloadCompressionPolicy,
@@ -518,7 +518,7 @@ impl Store {
         key_len: usize,
     ) -> Result<CommitPublicationStats> {
         let publication = plan.into_publication(written, key_len)?;
-        paths::publish_manifest(&self.inner.paths, &publication.manifest)?;
+        self.inner.paths.publish_manifest(&publication.manifest)?;
 
         let stats = CommitPublicationStats {
             segments_published: publication.segments_published,

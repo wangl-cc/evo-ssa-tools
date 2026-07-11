@@ -53,10 +53,6 @@ impl StorePaths {
         &self.store_file
     }
 
-    pub(crate) fn manifest(&self) -> &Path {
-        &self.manifest
-    }
-
     pub(crate) fn segment_dir(&self) -> &Path {
         &self.segment_dir
     }
@@ -85,12 +81,28 @@ impl StorePaths {
         let _ = fs::remove_file(temp_path_for(&self.manifest));
     }
 
-    pub(super) fn store_file_publish(&self) -> AtomicFilePublish<'_> {
-        publish_for(&self.store_file)
+    pub(super) fn load_descriptor(&self) -> Result<Option<StoreDescriptor>> {
+        if !self.store_file.exists() {
+            return Ok(None);
+        }
+        Ok(Some(StoreDescriptor::parse(&fs::read_to_string(
+            &self.store_file,
+        )?)?))
     }
 
-    pub(super) fn manifest_publish(&self) -> AtomicFilePublish<'_> {
-        publish_for(&self.manifest)
+    pub(super) fn publish_descriptor(&self, descriptor: &StoreDescriptor) -> Result<()> {
+        publish_for(&self.store_file).write_bytes(descriptor.encode().as_bytes())
+    }
+
+    pub(super) fn load_manifest(&self) -> Result<Option<StoreManifest>> {
+        if !self.manifest.exists() {
+            return Ok(None);
+        }
+        Ok(Some(StoreManifest::parse(&fs::read(&self.manifest)?)?))
+    }
+
+    pub(crate) fn publish_manifest(&self, manifest: &StoreManifest) -> Result<()> {
+        publish_for(&self.manifest).write_bytes(&manifest.encode()?)
     }
 
     pub(crate) fn segment_publish_path(&self, segment_id: u32) -> SegmentPublishPath {
@@ -125,32 +137,4 @@ fn publish_for(path: &Path) -> AtomicFilePublish<'_> {
         unreachable!("store paths are named files under the store root");
     };
     publish
-}
-
-// Catalog IO.
-
-pub(super) fn load_descriptor(paths: &StorePaths) -> Result<Option<StoreDescriptor>> {
-    let path = paths.store_file();
-    if !path.exists() {
-        return Ok(None);
-    }
-    Ok(Some(StoreDescriptor::parse(&fs::read_to_string(path)?)?))
-}
-
-pub(super) fn publish_descriptor(paths: &StorePaths, descriptor: &StoreDescriptor) -> Result<()> {
-    paths
-        .store_file_publish()
-        .write_bytes(descriptor.encode().as_bytes())
-}
-
-pub(super) fn load_manifest(paths: &StorePaths) -> Result<Option<StoreManifest>> {
-    let path = paths.manifest();
-    if !path.exists() {
-        return Ok(None);
-    }
-    Ok(Some(StoreManifest::parse(&fs::read(path)?)?))
-}
-
-pub(crate) fn publish_manifest(paths: &StorePaths, manifest: &StoreManifest) -> Result<()> {
-    paths.manifest_publish().write_bytes(&manifest.encode()?)
 }

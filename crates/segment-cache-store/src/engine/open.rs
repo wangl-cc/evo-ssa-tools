@@ -10,7 +10,7 @@ use parking_lot::{Mutex, RwLock};
 use crate::{
     engine::{
         io::WriterLock,
-        paths::{self, StorePaths},
+        paths::StorePaths,
         runtime::{SegmentState, StoreGeometry, StoreInner, StoreState},
         segment_file::{OpenedSegment, SegmentOpenOptions},
     },
@@ -121,7 +121,9 @@ impl Store {
     /// metadata required by [`OpenOptions::read_write`] or [`OpenOptions::read_only`].
     pub fn inspect(root: impl AsRef<Path>) -> Result<StoreInfo> {
         let paths = StorePaths::new(root);
-        let descriptor = paths::load_descriptor(&paths)?.ok_or(CatalogMismatch::MissingStore)?;
+        let descriptor = paths
+            .load_descriptor()?
+            .ok_or(CatalogMismatch::MissingStore)?;
         StoreInfo::from_descriptor(descriptor)
     }
 
@@ -138,7 +140,9 @@ pub(super) fn open_existing(
 ) -> Result<Store> {
     options.validate()?;
     let paths = StorePaths::new(&root);
-    let descriptor = paths::load_descriptor(&paths)?.ok_or(CatalogMismatch::MissingStore)?;
+    let descriptor = paths
+        .load_descriptor()?
+        .ok_or(CatalogMismatch::MissingStore)?;
     descriptor.validate_structure()?;
     if descriptor.metadata != options.expected_metadata {
         return Err(CatalogMismatch::Metadata.into());
@@ -158,7 +162,9 @@ pub(super) fn open_existing(
         Some(WriterLock::acquire(paths.lock_file())?)
     };
 
-    let manifest = paths::load_manifest(&paths)?.ok_or(CatalogMismatch::MissingManifest)?;
+    let manifest = paths
+        .load_manifest()?
+        .ok_or(CatalogMismatch::MissingManifest)?;
     manifest.validate_structure(descriptor.key_len)?;
 
     // Only a writer mutates catalog housekeeping on open. Segment garbage

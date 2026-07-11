@@ -4,11 +4,7 @@ use std::{num::NonZeroU32, path::PathBuf};
 
 use super::OpenOptions;
 use crate::{
-    engine::{
-        io::WriterLock,
-        open::open_existing,
-        paths::{self, StorePaths},
-    },
+    engine::{io::WriterLock, open::open_existing, paths::StorePaths},
     error::{InputError, OptionsError, Result},
     format::{
         BlockChecksumKind, StoreMetadata, ValueLayout, ValuePayloadCompressionKind,
@@ -120,8 +116,8 @@ impl Store {
         // a root with no `STORE`, which `create` can safely re-create and `open`
         // rejects as missing.
         let manifest = StoreManifest::new(options.key_len);
-        paths::publish_manifest(&paths, &manifest)?;
-        paths::publish_descriptor(&paths, &descriptor)?;
+        paths.publish_manifest(&manifest)?;
+        paths.publish_descriptor(&descriptor)?;
         open_existing(
             root,
             OpenOptions::read_write(options.metadata),
