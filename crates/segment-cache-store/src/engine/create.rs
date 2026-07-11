@@ -38,33 +38,30 @@ pub struct CreateOptions {
 }
 
 impl CreateOptions {
-    /// Creates default creation options for a store with fixed-width keys.
-    #[cfg(feature = "checksum-rapidhash")]
-    pub fn new(key_len: usize, metadata: StoreMetadata) -> Self {
-        Self {
-            key_len,
-            value_layout: ValueLayout::VARIABLE,
-            block_checksum: BlockChecksumKind::DEFAULT,
-            value_payload_compression: ValuePayloadCompressionKind::DEFAULT,
-            metadata,
-        }
-    }
-
-    /// Creates options with an explicit block checksum implementation.
+    /// Creates options for a store with fixed-width keys and an explicit block checksum.
     ///
-    /// This is the constructor to use when default features are disabled.
-    pub fn new_with_block_checksum(
+    /// # Errors
+    ///
+    /// Returns [`OptionsError::KeyLenZero`] when `key_len` is zero or
+    /// [`OptionsError::KeyLenTooLarge`] when it does not fit the v1 format.
+    pub fn new(
         key_len: usize,
         metadata: StoreMetadata,
         block_checksum: BlockChecksumKind,
-    ) -> Self {
-        Self {
+    ) -> std::result::Result<Self, OptionsError> {
+        if key_len == 0 {
+            return Err(OptionsError::KeyLenZero);
+        }
+        if key_len > u32::MAX as usize {
+            return Err(OptionsError::KeyLenTooLarge);
+        }
+        Ok(Self {
             key_len,
             value_layout: ValueLayout::VARIABLE,
             block_checksum,
             value_payload_compression: ValuePayloadCompressionKind::DEFAULT,
             metadata,
-        }
+        })
     }
 
     /// Selects the physical value layout used by all visible segments.
@@ -79,12 +76,6 @@ impl CreateOptions {
         self
     }
 
-    /// Selects the block checksum implementation for newly written segments.
-    pub fn with_block_checksum(mut self, block_checksum: BlockChecksumKind) -> Self {
-        self.block_checksum = block_checksum;
-        self
-    }
-
     /// Selects the block-level value-payload compression policy.
     pub fn with_value_payload_compression(
         mut self,
@@ -92,16 +83,6 @@ impl CreateOptions {
     ) -> Self {
         self.value_payload_compression = compression;
         self
-    }
-
-    pub(crate) fn validate(&self) -> Result<()> {
-        if self.key_len == 0 {
-            return Err(OptionsError::KeyLenZero.into());
-        }
-        if self.key_len > u32::MAX as usize {
-            return Err(OptionsError::KeyLenTooLarge.into());
-        }
-        Ok(())
     }
 }
 
@@ -117,7 +98,6 @@ impl Store {
     /// once the writer is gone, creating over an existing root fails with
     /// `StoreAlreadyExists`.
     pub fn create(root: impl Into<PathBuf>, options: CreateOptions) -> Result<Self> {
-        options.validate()?;
         let root = root.into();
         let paths = StorePaths::new(&root);
         paths.ensure_root()?;

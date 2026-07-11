@@ -15,23 +15,12 @@ This crate is intentionally narrower than a general-purpose database. It does no
 ## Basic Use
 
 ```rust,no_run
-use segment_cache_store::{CreateOptions, OpenOptions, Store, StoreMetadata};
+use segment_cache_store::{
+    BlockChecksumKind, CreateOptions, OpenOptions, Store, StoreMetadata,
+};
 
 let metadata = StoreMetadata::from_text("my-cache-schema-v1");
-let create_options = {
-    #[cfg(feature = "checksum-rapidhash")]
-    {
-        CreateOptions::new(16, metadata.clone())
-    }
-    #[cfg(not(feature = "checksum-rapidhash"))]
-    {
-        CreateOptions::new_with_block_checksum(
-            16,
-            metadata.clone(),
-            segment_cache_store::BlockChecksumKind::None,
-        )
-    }
-};
+let create_options = CreateOptions::new(16, metadata.clone(), BlockChecksumKind::None)?;
 let store = Store::create("cache-root", create_options)?;
 
 let mut batch = store.begin_batch();
@@ -43,11 +32,11 @@ let value = reopened.fetch_one(&[0; 16])?;
 # Ok::<_, segment_cache_store::Error>(())
 ```
 
-One store root has one fixed key length, one value layout, one block checksum implementation, one value-payload compression kind, and one caller-defined metadata namespace. The default block checksum is `BlockChecksumKind::RapidHashV3_64`; callers can select another built-in implementation through `CreateOptions::with_block_checksum(kind)`. Value-payload compression defaults to `ValuePayloadCompressionKind::None`; optional feature flags expose compression-capable kinds such as `ValuePayloadCompressionKind::Lz4` and `ValuePayloadCompressionKind::ZstdLevel1` for `CreateOptions::with_value_payload_compression(kind)`. Per-commit `ValuePayloadCompressionPolicy` thresholds control when newly written compression-capable blocks actually keep compressed frames. Published segment files are immutable. The main tier remains globally non-overlapping; a bounded patch tier can temporarily overlap main segments so small interleaving commits avoid immediate rebuild. When the patch tier reaches its configured bound, the store normalizes the touched range and atomically publishes a replacement `MANIFEST`. Callers can also run `Store::normalize()` explicitly before a read-heavy phase, `Store::merge_from(&source)` to atomically import visible records from a compatible worker store, and `Store::garbage_collect()` explicitly when retired segment files should be reclaimed.
+One store root has one fixed key length, one value layout, one block checksum implementation, one value-payload compression kind, and one caller-defined metadata namespace. Callers select the checksum explicitly when constructing `CreateOptions`. Value-payload compression defaults to `ValuePayloadCompressionKind::None`; optional feature flags expose compression-capable kinds such as `ValuePayloadCompressionKind::Lz4` and `ValuePayloadCompressionKind::ZstdLevel1` for `CreateOptions::with_value_payload_compression(kind)`. Per-commit `ValuePayloadCompressionPolicy` thresholds control when newly written compression-capable blocks actually keep compressed frames. Published segment files are immutable. The main tier remains globally non-overlapping; a bounded patch tier can temporarily overlap main segments so small interleaving commits avoid immediate rebuild. When the patch tier reaches its configured bound, the store normalizes the touched range and atomically publishes a replacement `MANIFEST`. Callers can also run `Store::normalize()` explicitly before a read-heavy phase, `Store::merge_from(&source)` to atomically import visible records from a compatible worker store, and `Store::garbage_collect()` explicitly when retired segment files should be reclaimed.
 
 ## Feature Flags
 
-The default feature set enables `checksum-rapidhash`, which exposes `BlockChecksumKind::RapidHashV3_64` and makes `CreateOptions::new` use it as the default block checksum. `BlockChecksumKind::None` is always available; it stores no per-block checksum bytes, but catalog metadata and manifest-to-segment identity checks still use internal integrity checks when a store is opened. `checksum-crc32c` exposes `BlockChecksumKind::Crc32c` as an optional block checksum implementation; CRC32C is still used internally for fixed catalog and segment structural checks. `value-compression-lz4` and `value-compression-zstd` expose optional block-level value-payload compression algorithms. If default features are disabled, use `CreateOptions::new_with_block_checksum(key_len, metadata, kind)` so the checksum choice remains explicit.
+The default feature set enables `checksum-rapidhash`, which exposes `BlockChecksumKind::RapidHashV3_64`. `BlockChecksumKind::None` is always available; it stores no per-block checksum bytes, but catalog metadata and manifest-to-segment identity checks still use internal integrity checks when a store is opened. `checksum-crc32c` exposes `BlockChecksumKind::Crc32c` as an optional block checksum implementation; CRC32C is still used internally for fixed catalog and segment structural checks. `value-compression-lz4` and `value-compression-zstd` expose optional block-level value-payload compression algorithms. `CreateOptions::new(key_len, metadata, kind)` has the same signature for every feature combination.
 
 Internal design and evaluation notes live in:
 

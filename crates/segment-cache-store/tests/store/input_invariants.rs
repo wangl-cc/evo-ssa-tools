@@ -1,13 +1,13 @@
 use std::num::NonZeroU32;
 
 use segment_cache_store::{
-    CommitOptions, CompressionPolicyError, Error, InputError, OptionsError, Result, Store,
-    ValueLayout, ValuePayloadCompressionPolicy,
+    CommitOptions, CompressionPolicyError, CreateOptions, Error, InputError, OptionsError, Result,
+    Store, ValueLayout, ValuePayloadCompressionPolicy,
 };
 
 use crate::support::api::{
     commit_entries, create_options, create_options_with_key_len, create_store, create_store_with,
-    make_key, make_value, open_options, reopen_store,
+    make_key, make_value, metadata, open_options, reopen_store, test_block_checksum,
 };
 
 #[test]
@@ -29,23 +29,14 @@ fn wrong_length_keys_are_rejected() -> Result<()> {
 
 #[test]
 fn invalid_store_options_are_rejected() -> Result<()> {
-    let tempdir = tempfile::tempdir()?;
-    let invalid_options = vec![
-        create_options_with_key_len(0),
-        create_options_with_key_len(usize::MAX),
-    ];
-    for invalid in invalid_options {
-        let error = match Store::create(tempdir.path(), invalid) {
-            Ok(_) => panic!("invalid store options should be rejected"),
-            Err(error) => error,
-        };
-        assert!(matches!(
-            error,
-            Error::Input(InputError::InvalidOptions(
-                OptionsError::KeyLenZero | OptionsError::KeyLenTooLarge
-            ))
-        ));
-    }
+    assert!(matches!(
+        CreateOptions::new(0, metadata(), test_block_checksum()),
+        Err(OptionsError::KeyLenZero)
+    ));
+    assert!(matches!(
+        CreateOptions::new(usize::MAX, metadata(), test_block_checksum(),),
+        Err(OptionsError::KeyLenTooLarge)
+    ));
 
     for invalid in [
         CommitOptions::default().with_flush_threshold_records(0),

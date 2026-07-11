@@ -10,7 +10,9 @@ use fjall3::{
     config::{BlockSizePolicy, HashRatioPolicy},
 };
 use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
-use segment_cache_store::{CommitOptions, CreateOptions, OpenOptions, Store, StoreMetadata};
+use segment_cache_store::{
+    BlockChecksumKind, CommitOptions, CreateOptions, OpenOptions, Store, StoreMetadata,
+};
 
 use crate::{
     data::AxisChangeDataset,
@@ -24,18 +26,18 @@ pub(crate) fn store_metadata() -> StoreMetadata {
 }
 
 pub(crate) fn store_create_options(key_len: usize) -> CreateOptions {
-    #[cfg(feature = "checksum-rapidhash")]
-    {
-        CreateOptions::new(key_len, store_metadata())
-    }
-    #[cfg(not(feature = "checksum-rapidhash"))]
-    {
-        CreateOptions::new_with_block_checksum(
-            key_len,
-            store_metadata(),
-            segment_cache_store::BlockChecksumKind::None,
-        )
-    }
+    let block_checksum = {
+        #[cfg(feature = "checksum-rapidhash")]
+        {
+            BlockChecksumKind::RapidHashV3_64
+        }
+        #[cfg(not(feature = "checksum-rapidhash"))]
+        {
+            BlockChecksumKind::None
+        }
+    };
+    CreateOptions::new(key_len, store_metadata(), block_checksum)
+        .expect("benchmark key length should be valid")
 }
 
 pub(crate) fn commit_options_with_block_size(block_size: usize) -> CommitOptions {

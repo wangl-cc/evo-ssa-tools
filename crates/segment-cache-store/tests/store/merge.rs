@@ -141,11 +141,11 @@ fn merge_from_rejects_incompatible_source_metadata() -> Result<()> {
     let destination = create_store(&destination_dir)?;
     let source = Store::create(
         source_dir.path(),
-        CreateOptions::new_with_block_checksum(
+        CreateOptions::new(
             16,
             StoreMetadata::from_text("different-cache-namespace"),
             test_block_checksum(),
-        ),
+        )?,
     )?;
 
     let error = destination

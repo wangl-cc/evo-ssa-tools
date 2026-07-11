@@ -56,7 +56,14 @@ pub(crate) fn block_checksum_from_format_id(format_id: u32) -> Option<BlockCheck
 }
 
 pub(crate) fn create_options_with_key_len(key_len: usize) -> CreateOptions {
-    CreateOptions::new_with_block_checksum(key_len, metadata(), test_block_checksum())
+    CreateOptions::new(key_len, metadata(), test_block_checksum())
+        .expect("test key length should be valid")
+}
+
+pub(crate) fn create_options_with_block_checksum(
+    block_checksum: BlockChecksumKind,
+) -> CreateOptions {
+    CreateOptions::new(16, metadata(), block_checksum).expect("test key length should be valid")
 }
 
 pub(crate) fn create_options() -> CreateOptions {

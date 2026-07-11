@@ -552,7 +552,8 @@ mod tests {
     }
 
     fn create_options() -> CreateOptions {
-        CreateOptions::new_with_block_checksum(4, test_metadata(), BlockChecksumKind::None)
+        CreateOptions::new(4, test_metadata(), BlockChecksumKind::None)
+            .expect("test key length should be valid")
     }
 
     fn test_metadata() -> StoreMetadata {

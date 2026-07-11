@@ -11,6 +11,12 @@ use segment_cache_store::{
     OpenOptions as StoreOpenOptions, Result, Store, StoreMetadata,
 };
 
+#[cfg(any(
+    feature = "checksum-rapidhash",
+    feature = "value-compression-lz4",
+    feature = "value-compression-zstd"
+))]
+use crate::support::api::create_options;
 #[cfg(any(feature = "checksum-crc32c", feature = "checksum-rapidhash"))]
 use crate::support::api::metadata;
 #[cfg(feature = "checksum-rapidhash")]
@@ -19,8 +25,8 @@ use crate::support::api::reopen_store;
 use crate::support::segment_file::corrupt_block_value_frame_start;
 use crate::support::{
     api::{
-        commit_entries, commit_entries_with_options, create_options, create_store,
-        create_store_with, make_key, make_value, reopen_store_read_only,
+        commit_entries, commit_entries_with_options, create_options_with_block_checksum,
+        create_store, create_store_with, make_key, make_value, reopen_store_read_only,
     },
     segment_file::{
         FOOTER_TRAILER_LEN, block_index_offset, block_offset, corrupt_block_value_payload,
@@ -79,7 +85,7 @@ fn rapidhash_block_checksum_round_trips() -> Result<()> {
     let tempdir = tempfile::tempdir()?;
     let store = create_store_with(
         &tempdir,
-        create_options().with_block_checksum(BlockChecksumKind::RapidHashV3_64),
+        create_options_with_block_checksum(BlockChecksumKind::RapidHashV3_64),
     )?;
     let entries = vec![
         (make_key(1, 1, 0), make_value(1, 16)),
@@ -279,7 +285,7 @@ fn no_checksum_open_handle_does_not_detect_payload_corruption() -> Result<()> {
     let tempdir = tempfile::tempdir()?;
     let store = create_store_with(
         &tempdir,
-        create_options().with_block_checksum(BlockChecksumKind::None),
+        create_options_with_block_checksum(BlockChecksumKind::None),
     )?;
     let key = make_key(1, 1, 0);
     let value = make_value(9, 16);
@@ -483,7 +489,7 @@ fn variable_value_index_must_start_at_zero_without_block_checksums() -> Result<(
     let tempdir = tempfile::tempdir()?;
     let store = create_store_with(
         &tempdir,
-        create_options().with_block_checksum(BlockChecksumKind::None),
+        create_options_with_block_checksum(BlockChecksumKind::None),
     )?;
     let entries = vec![
         (make_key(1, 1, 0), make_value(1, 16)),
@@ -524,7 +530,7 @@ fn block_last_key_must_stay_within_segment_bounds_without_block_checksums() -> R
     let tempdir = tempfile::tempdir()?;
     let store = create_store_with(
         &tempdir,
-        create_options().with_block_checksum(BlockChecksumKind::None),
+        create_options_with_block_checksum(BlockChecksumKind::None),
     )?;
     let entries = vec![
         (make_key(1, 1, 0), make_value(1, 16)),

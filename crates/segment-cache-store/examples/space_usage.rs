@@ -6,7 +6,7 @@ use fjall3::{
 };
 use rand::{RngExt, SeedableRng, rngs::StdRng};
 use redb::{Database, TableDefinition};
-use segment_cache_store::{CommitOptions, CreateOptions, Store, StoreMetadata};
+use segment_cache_store::{BlockChecksumKind, CommitOptions, CreateOptions, Store, StoreMetadata};
 
 const KEY_LEN: usize = 128;
 const REDB_TABLE: TableDefinition<&[u8], &[u8]> = TableDefinition::new("bench");
@@ -174,18 +174,22 @@ fn segment_create_options(fixed_value_len: Option<NonZeroU32>) -> CreateOptions 
 }
 
 fn default_segment_create_options() -> CreateOptions {
-    #[cfg(feature = "checksum-rapidhash")]
-    {
-        CreateOptions::new(KEY_LEN, StoreMetadata::from_text("space-usage"))
-    }
-    #[cfg(not(feature = "checksum-rapidhash"))]
-    {
-        CreateOptions::new_with_block_checksum(
-            KEY_LEN,
-            StoreMetadata::from_text("space-usage"),
-            segment_cache_store::BlockChecksumKind::None,
-        )
-    }
+    let block_checksum = {
+        #[cfg(feature = "checksum-rapidhash")]
+        {
+            BlockChecksumKind::RapidHashV3_64
+        }
+        #[cfg(not(feature = "checksum-rapidhash"))]
+        {
+            BlockChecksumKind::None
+        }
+    };
+    CreateOptions::new(
+        KEY_LEN,
+        StoreMetadata::from_text("space-usage"),
+        block_checksum,
+    )
+    .expect("example key length should be valid")
 }
 
 fn write_entries_to_segment_store(store: &Store, entries: &[(Vec<u8>, Vec<u8>)]) {

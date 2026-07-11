@@ -36,10 +36,6 @@ pub enum BlockChecksumKind {
 }
 
 impl BlockChecksumKind {
-    /// Default block checksum used by [`crate::CreateOptions::new`].
-    #[cfg(feature = "checksum-rapidhash")]
-    pub const DEFAULT: Self = Self::RapidHashV3_64;
-
     /// Resolves a persisted checksum id to a built-in checksum.
     pub(crate) const fn from_format_id(format_id: u32) -> Option<Self> {
         match format_id {
