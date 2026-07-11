@@ -156,7 +156,7 @@ pub(crate) fn rebuild_segment_store_into(
 pub(crate) fn sum_segment_fetches(store: &Store, keys: &[Vec<u8>]) -> usize {
     let mut total = 0usize;
     store
-        .visit_many_ordered_slice(keys, |_, value| {
+        .visit_many_ordered(keys, |_, value| {
             if let Some(value) = value {
                 total = total.wrapping_add(touch_bytes(value));
             }
@@ -230,7 +230,7 @@ pub(crate) fn run_segment_axis_changes(
         report.queries += round.entries.len();
         let mut missing_indices = Vec::new();
         store
-            .visit_many_ordered_slice(&round.keys, |index, value| {
+            .visit_many_ordered(&round.keys, |index, value| {
                 if let Some(value) = value {
                     report.hits += 1;
                     report.checksum = report.checksum.wrapping_add(touch_bytes(value));

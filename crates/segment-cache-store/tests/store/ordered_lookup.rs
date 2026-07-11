@@ -71,7 +71,7 @@ fn visit_many_matches_owned_fetch() -> Result<()> {
         .collect::<Vec<_>>();
 
     let mut visited = vec![None; key_refs.len()];
-    store.visit_many_ordered(key_refs.iter().copied(), |index, value| {
+    store.visit_many_ordered(&key_refs, |index, value| {
         visited[index] = value.map(ToOwned::to_owned);
     })?;
 
@@ -172,7 +172,7 @@ fn ordered_lookup_merges_visible_patch_winners() -> Result<()> {
     );
 
     let mut visited = vec![None; keys.len()];
-    store.visit_many_ordered(keys.iter().map(Vec::as_slice), |index, value| {
+    store.visit_many_ordered(&keys, |index, value| {
         visited[index] = value.map(ToOwned::to_owned);
     })?;
     assert_eq!(visited, expected);
@@ -289,7 +289,7 @@ fn visit_many_ordered_callback_can_commit_on_miss() -> Result<()> {
     ];
     let writer = store.clone();
     let mut visited = Vec::new();
-    store.visit_many_ordered(keys.iter().map(Vec::as_slice), |_, value| {
+    store.visit_many_ordered(&keys, |_, value| {
         if value.is_none() {
             commit_entries(&writer, &[(inserted.0.clone(), inserted.1.clone())], true)
                 .expect("commit from visitor");

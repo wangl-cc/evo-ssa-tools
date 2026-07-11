@@ -205,25 +205,14 @@ impl Store {
         lookup.fetch_many(keys)
     }
 
-    /// Visits an ordered key stream with borrowed value slices.
-    pub fn visit_many_ordered<'a, I, F>(&self, keys: I, visitor: F) -> Result<()>
-    where
-        I: IntoIterator<Item = &'a [u8]>,
-        F: FnMut(usize, Option<&[u8]>),
-    {
-        let mut lookup = self.lookup_session();
-        lookup.visit_many(keys, visitor)
-    }
-
-    /// Visits ordered keys already stored in a slice without allocating an intermediate
-    /// key-reference list.
-    pub fn visit_many_ordered_slice<K, F>(&self, keys: &[K], visitor: F) -> Result<()>
+    /// Visits ordered keys with borrowed value slices.
+    pub fn visit_many_ordered<K, F>(&self, keys: &[K], visitor: F) -> Result<()>
     where
         K: AsRef<[u8]>,
         F: FnMut(usize, Option<&[u8]>),
     {
         let mut lookup = self.lookup_session();
-        lookup.visit_many_slice(keys, visitor)
+        lookup.visit_many(keys, visitor)
     }
 
     /// Creates a reusable ordered lookup session with cursor state.

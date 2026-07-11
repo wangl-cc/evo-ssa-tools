@@ -196,17 +196,7 @@ impl OrderedLookup {
     }
 
     /// Visits ordered keys with borrowed value slices.
-    pub fn visit_many<'a, I, F>(&mut self, keys: I, visitor: F) -> Result<()>
-    where
-        I: IntoIterator<Item = &'a [u8]>,
-        F: FnMut(usize, Option<&[u8]>),
-    {
-        let keys = collect_and_validate_lookup_keys(keys, self.store.inner.geometry.key_len)?;
-        self.process_many_slice(&keys, visitor)
-    }
-
-    /// Visits ordered keys already stored in a slice.
-    pub fn visit_many_slice<K, F>(&mut self, keys: &[K], visitor: F) -> Result<()>
+    pub fn visit_many<K, F>(&mut self, keys: &[K], visitor: F) -> Result<()>
     where
         K: AsRef<[u8]>,
         F: FnMut(usize, Option<&[u8]>),

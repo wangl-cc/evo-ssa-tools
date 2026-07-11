@@ -142,7 +142,7 @@ fn range_cursors_merge_visible_patch_winners() -> Result<()> {
 }
 
 #[test]
-fn visit_many_ordered_slice_matches_fetch_many() -> Result<()> {
+fn visit_many_ordered_matches_fetch_many() -> Result<()> {
     let tempdir = tempfile::tempdir()?;
     let store = create_store(&tempdir)?;
     let entries: Vec<_> = (0..16u64)
@@ -155,7 +155,7 @@ fn visit_many_ordered_slice_matches_fetch_many() -> Result<()> {
         .iter()
         .map(|(key, _)| key.clone())
         .collect::<Vec<_>>();
-    store.visit_many_ordered_slice(&keys, |_, value| {
+    store.visit_many_ordered(&keys, |_, value| {
         visited.push(value.map(ToOwned::to_owned));
     })?;
 
@@ -170,7 +170,7 @@ fn visit_many_ordered_slice_matches_fetch_many() -> Result<()> {
 }
 
 #[test]
-fn visit_many_ordered_slice_callback_can_commit_on_miss() -> Result<()> {
+fn visit_many_ordered_callback_can_commit_on_miss() -> Result<()> {
     let tempdir = tempfile::tempdir()?;
     let store = create_store(&tempdir)?;
     let existing = vec![
@@ -187,7 +187,7 @@ fn visit_many_ordered_slice_callback_can_commit_on_miss() -> Result<()> {
     ];
     let writer = store.clone();
     let mut visited = Vec::new();
-    store.visit_many_ordered_slice(&keys, |_, value| {
+    store.visit_many_ordered(&keys, |_, value| {
         if value.is_none() {
             commit_entries(&writer, &[(inserted.0.clone(), inserted.1.clone())], true)
                 .expect("commit from visitor");
