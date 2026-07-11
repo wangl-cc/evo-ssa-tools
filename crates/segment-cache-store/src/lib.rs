@@ -22,6 +22,9 @@
 //! 6. [`Store`]: the cheaply cloneable public handle, whose operational API is assembled in `store`
 //!    from the read and write layers
 
+#[cfg(not(unix))]
+compile_error!("segment-cache-store currently supports Unix targets only");
+
 mod engine;
 mod error;
 mod format;

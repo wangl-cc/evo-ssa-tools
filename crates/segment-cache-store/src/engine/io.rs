@@ -78,10 +78,9 @@ fn sync_dir(path: &Path) -> Result<()> {
 /// when this value is dropped, which closes the underlying file descriptor.
 #[derive(Debug)]
 pub(crate) struct WriterLock {
-    // The lock is bound to the open file description; keeping the `File` alive
-    // keeps the lock held. The field is otherwise unused.
-    #[allow(dead_code)]
-    file: File,
+    // The lock is bound to the open file description, so this field exists to
+    // keep the lock held for the lifetime of `WriterLock`.
+    _file: File,
 }
 
 impl WriterLock {
@@ -98,7 +97,7 @@ impl WriterLock {
             .truncate(false)
             .open(path)?;
         match file.try_lock() {
-            Ok(()) => Ok(Self { file }),
+            Ok(()) => Ok(Self { _file: file }),
             Err(TryLockError::WouldBlock) => Err(InputError::WriterLocked.into()),
             Err(TryLockError::Error(error)) => Err(error.into()),
         }
@@ -125,20 +124,6 @@ pub(super) fn read_exact_at(
         buffer = rest;
     }
     Ok(())
-}
-
-/// Reads exactly `buffer.len()` bytes at `offset` without moving any shared
-/// file cursor.
-#[cfg(not(unix))]
-pub(super) fn read_exact_at(file: &File, offset: u64, buffer: &mut [u8]) -> std::io::Result<()> {
-    use std::io::{Read, Seek, SeekFrom};
-
-    // Unix is the only supported platform; this fallback only keeps other
-    // targets compiling. It clones the handle so the seek does not disturb
-    // other readers of the shared `File`.
-    let mut file = file.try_clone()?;
-    file.seek(SeekFrom::Start(offset))?;
-    file.read_exact(buffer)
 }
 
 #[cfg(test)]

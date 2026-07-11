@@ -12,6 +12,8 @@ It is optimized for:
 
 This crate is intentionally narrower than a general-purpose database. It does not provide transactions, deletes, WAL recovery, or background compaction of cold ranges. The foreground maintenance operations are explicit: normalization folds live patch segments into the main tier, and garbage collection removes unreferenced segment files. Values for one key are expected to be deterministic and semantically immutable: if duplicate visible copies exist, reads, normalization, and store merges keep the lexicographically smallest value bytes rather than applying last-writer-wins updates.
 
+The crate currently supports Unix targets only. Its positioned reads, directory durability, and advisory writer lock semantics rely on Unix filesystem APIs.
+
 ## Basic Use
 
 ```rust,no_run
