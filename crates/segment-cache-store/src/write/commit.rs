@@ -19,7 +19,7 @@ use crate::{
         record::EntrySource,
         segment::SegmentWriter,
     },
-    read::cursor::{RangeCursor, SegmentRangeCursor},
+    read::cursor::RangeCursor,
     store::Store,
     write::batch::{PreparedBatch, WriteBatch},
 };
@@ -184,6 +184,11 @@ pub(super) struct CommitPublicationStats {
     pub(super) segments_retired: usize,
 }
 
+pub(super) struct RetiredSegments {
+    pub(super) main: Vec<Arc<SegmentState>>,
+    pub(super) patches: Vec<Arc<SegmentState>>,
+}
+
 impl CommitPlan {
     pub(super) fn from_snapshot(
         manifest: StoreManifest,
@@ -270,12 +275,12 @@ impl CommitPlan {
         &mut self,
         region_min: &[u8],
         region_max: &[u8],
-    ) -> Vec<Arc<SegmentState>> {
+    ) -> RetiredSegments {
         let (normalize_min, normalize_max) = self.normalization_bounds(region_min, region_max);
         self.retire_live_segments_in_range(&normalize_min, &normalize_max)
     }
 
-    fn retire_patch_normalization_segments(&mut self) -> Option<Vec<Arc<SegmentState>>> {
+    fn retire_patch_normalization_segments(&mut self) -> Option<RetiredSegments> {
         let (normalize_min, normalize_max) = self.patch_bounds()?;
         Some(self.retire_live_segments_in_range(&normalize_min, &normalize_max))
     }
@@ -284,12 +289,13 @@ impl CommitPlan {
         &mut self,
         normalize_min: &[u8],
         normalize_max: &[u8],
-    ) -> Vec<Arc<SegmentState>> {
+    ) -> RetiredSegments {
         let affected_main = self.affected_main_range(normalize_min, normalize_max);
-        let mut affected_live = self.affected_main_segments(affected_main);
-        affected_live.extend(self.patch_segments());
-        self.retire_segments(&affected_live);
-        affected_live
+        let main = self.affected_main_segments(affected_main);
+        let patches = self.patch_segments();
+        self.retire_segments(&main);
+        self.retire_segments(&patches);
+        RetiredSegments { main, patches }
     }
 
     fn retire_segments(&mut self, segments: &[Arc<SegmentState>]) {
@@ -502,7 +508,7 @@ impl Store {
             affected_live
         };
 
-        let merged = self.merge_region(batch, &affected_live)?;
+        let merged = self.merge_region(batch, affected_live)?;
         let ranges = merged.flush_ranges(
             self.inner.geometry.key_len,
             options.flush_threshold_records,
@@ -546,21 +552,18 @@ impl Store {
     fn merge_region(
         &self,
         batch: &PreparedBatch,
-        affected: &[Arc<SegmentState>],
+        affected: RetiredSegments,
     ) -> Result<PreparedBatch> {
         let geometry = self.inner.geometry;
         let verify = self.inner.verify_block_checksums;
-        let mut cursors = Vec::with_capacity(affected.len());
-        for segment in affected {
-            cursors.push(SegmentRangeCursor::new(
-                Arc::clone(segment),
-                geometry,
-                verify,
-                None,
-                None,
-            )?);
-        }
-        let mut existing = RangeCursor::merge(cursors);
+        let mut existing = RangeCursor::from_segment_sets(
+            affected.main,
+            affected.patches,
+            geometry,
+            verify,
+            None,
+            None,
+        );
 
         let mut merged = WriteBatch::default();
         let mut index = 0usize;

@@ -13,75 +13,78 @@ use crate::{
 
 /// Streaming cursor over records in key order.
 pub struct RangeCursor {
-    pub(crate) cursors: Vec<SegmentRangeCursor>,
-    mode: RangeCursorMode,
+    runs: Vec<SegmentRunCursor>,
     merge_duplicate_indices: Vec<usize>,
 }
 
-enum RangeCursorMode {
-    Concatenate { active_cursor_index: usize },
-    Merge,
+/// One non-overlapping run of segments traversed with only its current segment loaded.
+struct SegmentRunCursor {
+    segments: Vec<Arc<SegmentState>>,
+    geometry: StoreGeometry,
+    verify_block_checksums: bool,
+    start: Option<Vec<u8>>,
+    end: Option<Vec<u8>>,
+    next_segment_index: usize,
+    current: Option<SegmentRangeCursor>,
 }
 
 impl RangeCursor {
-    pub(crate) fn new(cursors: Vec<SegmentRangeCursor>) -> Self {
-        Self {
-            cursors,
-            mode: RangeCursorMode::Concatenate {
-                active_cursor_index: 0,
-            },
-            merge_duplicate_indices: Vec::new(),
+    /// Builds one lazy main run plus one independently mergeable run per patch segment.
+    pub(crate) fn from_segment_sets(
+        main_segments: Vec<Arc<SegmentState>>,
+        patch_segments: Vec<Arc<SegmentState>>,
+        geometry: StoreGeometry,
+        verify_block_checksums: bool,
+        start: Option<Vec<u8>>,
+        end: Option<Vec<u8>>,
+    ) -> Self {
+        let mut runs =
+            Vec::with_capacity(usize::from(!main_segments.is_empty()) + patch_segments.len());
+        if !main_segments.is_empty() {
+            runs.push(SegmentRunCursor::new(
+                main_segments,
+                geometry,
+                verify_block_checksums,
+                start.clone(),
+                end.clone(),
+            ));
         }
-    }
-
-    pub(crate) fn merge(cursors: Vec<SegmentRangeCursor>) -> Self {
-        let merge_duplicate_indices = Vec::with_capacity(cursors.len());
+        for segment in patch_segments {
+            runs.push(SegmentRunCursor::new(
+                vec![segment],
+                geometry,
+                verify_block_checksums,
+                start.clone(),
+                end.clone(),
+            ));
+        }
+        let merge_duplicate_indices = Vec::with_capacity(runs.len());
         Self {
-            cursors,
-            mode: RangeCursorMode::Merge,
+            runs,
             merge_duplicate_indices,
         }
     }
 
     pub(crate) fn current_record(&mut self) -> Result<Option<ParsedRecord<'_, '_>>> {
-        match self.mode {
-            RangeCursorMode::Concatenate { .. } => {
-                let Some(cursor_index) = self.next_concat_cursor_index()? else {
-                    return Ok(None);
-                };
-                self.cursors[cursor_index].current_record()
-            }
-            RangeCursorMode::Merge => {
-                let Some(winner_index) = self.refresh_merge_winner_indices()? else {
-                    return Ok(None);
-                };
-                self.cursors[winner_index].current_record()
-            }
-        }
+        self.ensure_runs_positioned()?;
+        let Some(winner_index) = self.refresh_merge_winner_indices()? else {
+            return Ok(None);
+        };
+        self.runs[winner_index].current_record()
     }
 
     pub(crate) fn advance_record(&mut self) -> Result<()> {
-        match self.mode {
-            RangeCursorMode::Concatenate { .. } => {
-                let Some(cursor_index) = self.next_concat_cursor_index()? else {
-                    return Ok(());
-                };
-                self.cursors[cursor_index].advance()?;
-                self.advance_concat_cursor(cursor_index)?;
-            }
-            RangeCursorMode::Merge => {
-                if self.merge_duplicate_indices.is_empty()
-                    && self.refresh_merge_winner_indices()?.is_none()
-                {
-                    return Ok(());
-                }
-                let mut duplicate_indices = std::mem::take(&mut self.merge_duplicate_indices);
-                for index in duplicate_indices.drain(..) {
-                    self.cursors[index].advance()?;
-                }
-                self.merge_duplicate_indices = duplicate_indices;
+        if self.merge_duplicate_indices.is_empty() {
+            self.ensure_runs_positioned()?;
+            if self.refresh_merge_winner_indices()?.is_none() {
+                return Ok(());
             }
         }
+        let mut duplicate_indices = std::mem::take(&mut self.merge_duplicate_indices);
+        for index in duplicate_indices.drain(..) {
+            self.runs[index].advance()?;
+        }
+        self.merge_duplicate_indices = duplicate_indices;
         Ok(())
     }
 
@@ -89,39 +92,22 @@ impl RangeCursor {
     where
         F: FnOnce(&[u8], &[u8]) -> Result<()>,
     {
-        match self.mode {
-            RangeCursorMode::Concatenate { .. } => {
-                let Some(cursor_index) = self.next_concat_cursor_index()? else {
-                    return Ok(false);
-                };
-                {
-                    let record = self.cursors[cursor_index]
-                        .current_record()?
-                        .expect("active cursor has a current record");
-                    visitor(record.key, record.value)?;
-                }
-                self.cursors[cursor_index].advance()?;
-                self.advance_concat_cursor(cursor_index)?;
-            }
-            RangeCursorMode::Merge => {
-                let mut duplicate_indices = std::mem::take(&mut self.merge_duplicate_indices);
-                let Some(winner_index) = self.next_merged_indices_into(&mut duplicate_indices)?
-                else {
-                    self.merge_duplicate_indices = duplicate_indices;
-                    return Ok(false);
-                };
-                {
-                    let record = self.cursors[winner_index]
-                        .current_record()?
-                        .expect("winner cursor has a current record");
-                    visitor(record.key, record.value)?;
-                }
-                for index in duplicate_indices.drain(..) {
-                    self.cursors[index].advance()?;
-                }
-                self.merge_duplicate_indices = duplicate_indices;
-            }
+        self.ensure_runs_positioned()?;
+        let mut duplicate_indices = std::mem::take(&mut self.merge_duplicate_indices);
+        let Some(winner_index) = self.next_merged_indices_into(&mut duplicate_indices)? else {
+            self.merge_duplicate_indices = duplicate_indices;
+            return Ok(false);
+        };
+        {
+            let record = self.runs[winner_index]
+                .current_record()?
+                .expect("winner run has a current record");
+            visitor(record.key, record.value)?;
         }
+        for index in duplicate_indices.drain(..) {
+            self.runs[index].advance()?;
+        }
+        self.merge_duplicate_indices = duplicate_indices;
         Ok(true)
     }
 
@@ -139,33 +125,9 @@ impl RangeCursor {
         Ok(())
     }
 
-    fn next_concat_cursor_index(&mut self) -> Result<Option<usize>> {
-        let RangeCursorMode::Concatenate {
-            active_cursor_index,
-        } = &mut self.mode
-        else {
-            return Ok(None);
-        };
-        while *active_cursor_index < self.cursors.len() {
-            if self.cursors[*active_cursor_index]
-                .current_record()?
-                .is_some()
-            {
-                return Ok(Some(*active_cursor_index));
-            }
-            *active_cursor_index += 1;
-        }
-        Ok(None)
-    }
-
-    fn advance_concat_cursor(&mut self, cursor_index: usize) -> Result<()> {
-        if let RangeCursorMode::Concatenate {
-            active_cursor_index,
-        } = &mut self.mode
-            && *active_cursor_index == cursor_index
-            && self.cursors[cursor_index].current_record()?.is_none()
-        {
-            *active_cursor_index += 1;
+    fn ensure_runs_positioned(&mut self) -> Result<()> {
+        for run in &mut self.runs {
+            run.ensure_positioned()?;
         }
         Ok(())
     }
@@ -185,8 +147,8 @@ impl RangeCursor {
         let mut winner_index = None;
         let mut winner_key = None;
         let mut winner_value = None;
-        for (index, cursor) in self.cursors.iter().enumerate() {
-            let Some(record) = cursor.current_record()? else {
+        for (index, run) in self.runs.iter().enumerate() {
+            let Some(record) = run.current_record()? else {
                 continue;
             };
             let Some(key) = winner_key else {
@@ -215,6 +177,64 @@ impl RangeCursor {
             }
         }
         Ok(winner_index)
+    }
+}
+
+impl SegmentRunCursor {
+    fn new(
+        segments: Vec<Arc<SegmentState>>,
+        geometry: StoreGeometry,
+        verify_block_checksums: bool,
+        start: Option<Vec<u8>>,
+        end: Option<Vec<u8>>,
+    ) -> Self {
+        Self {
+            segments,
+            geometry,
+            verify_block_checksums,
+            start,
+            end,
+            next_segment_index: 0,
+            current: None,
+        }
+    }
+
+    fn ensure_positioned(&mut self) -> Result<()> {
+        loop {
+            if self
+                .current
+                .as_ref()
+                .is_some_and(|cursor| !cursor.exhausted)
+            {
+                return Ok(());
+            }
+            self.current = None;
+            let Some(segment) = self.segments.get(self.next_segment_index) else {
+                return Ok(());
+            };
+            self.next_segment_index += 1;
+            self.current = Some(SegmentRangeCursor::new(
+                Arc::clone(segment),
+                self.geometry,
+                self.verify_block_checksums,
+                self.start.clone(),
+                self.end.clone(),
+            )?);
+        }
+    }
+
+    fn current_record(&self) -> Result<Option<ParsedRecord<'_, '_>>> {
+        match &self.current {
+            Some(cursor) => cursor.current_record(),
+            None => Ok(None),
+        }
+    }
+
+    fn advance(&mut self) -> Result<()> {
+        self.current
+            .as_mut()
+            .expect("winner run is positioned")
+            .advance()
     }
 }
 

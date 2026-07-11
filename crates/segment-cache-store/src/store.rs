@@ -11,13 +11,15 @@ use std::sync::Arc;
 
 use crate::{
     engine::{
-        StoreStorageStats, gc::garbage_collect_unreferenced, runtime::StoreInner,
+        StoreStorageStats,
+        gc::garbage_collect_unreferenced,
+        runtime::{SegmentState, StoreInner},
         storage::collect_storage_stats,
     },
     error::{InputError, Result},
     format::{BlockChecksumKind, StoreMetadata, ValueLayout, ValuePayloadCompressionKind},
     read::{
-        cursor::{RangeCursor, SegmentRangeCursor},
+        cursor::RangeCursor,
         lookup::{LookupReadOptions, OrderedLookup, SegmentSetReader},
     },
     write::{CommitOptions, CommitStats, WriteBatch},
@@ -293,32 +295,38 @@ impl Store {
             )
         };
         let (main_segments, patch_segments) = visible;
-        let mut cursors = Vec::with_capacity(main_segments.len() + patch_segments.len());
-        for segment in main_segments.iter().chain(patch_segments.iter()) {
+        let intersects_range = |segment: &&Arc<SegmentState>| {
             if let Some(start) = start
                 && segment.max_key.as_slice() < start
             {
-                continue;
+                return false;
             }
             if let Some(end) = end
                 && segment.min_key.as_slice() >= end
             {
-                continue;
+                return false;
             }
-            cursors.push(SegmentRangeCursor::new(
-                Arc::clone(segment),
-                self.inner.geometry,
-                self.inner.verify_block_checksums,
-                start.map(ToOwned::to_owned),
-                end.map(ToOwned::to_owned),
-            )?);
-        }
+            true
+        };
+        let main_segments = main_segments
+            .iter()
+            .filter(intersects_range)
+            .map(Arc::clone)
+            .collect();
+        let patch_segments = patch_segments
+            .iter()
+            .filter(intersects_range)
+            .map(Arc::clone)
+            .collect();
 
-        if patch_segments.is_empty() {
-            Ok(RangeCursor::new(cursors))
-        } else {
-            Ok(RangeCursor::merge(cursors))
-        }
+        Ok(RangeCursor::from_segment_sets(
+            main_segments,
+            patch_segments,
+            self.inner.geometry,
+            self.inner.verify_block_checksums,
+            start.map(ToOwned::to_owned),
+            end.map(ToOwned::to_owned),
+        ))
     }
 
     fn validate_key_len(&self, key: &[u8]) -> Result<()> {

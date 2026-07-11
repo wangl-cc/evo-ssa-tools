@@ -6,7 +6,7 @@ use crate::{
     engine::runtime::{SegmentState, StoreGeometry},
     error::{InputError, Result},
     format::{FormatError, manifest::SegmentTier},
-    read::cursor::{RangeCursor, SegmentRangeCursor},
+    read::cursor::RangeCursor,
     store::Store,
     write::{
         batch::{PreparedBatch, WriteBatch},
@@ -15,8 +15,8 @@ use crate::{
 };
 
 struct MergeSourceSnapshot {
-    segments: Vec<Arc<SegmentState>>,
-    has_patches: bool,
+    main_segments: Vec<Arc<SegmentState>>,
+    patch_segments: Vec<Arc<SegmentState>>,
     min_key: Vec<u8>,
     max_key: Vec<u8>,
 }
@@ -35,37 +35,29 @@ struct MergeInputStats {
 impl MergeSourceSnapshot {
     fn from_store(store: &Store) -> Option<Self> {
         let state = store.inner.state.read();
-        let has_patches = !state.patch_segments.is_empty();
-        let mut segments =
-            Vec::with_capacity(state.main_segments.len() + state.patch_segments.len());
-        segments.extend(state.main_segments.iter().cloned());
-        segments.extend(state.patch_segments.iter().cloned());
-        let (min_key, max_key) = segment_bounds(&segments)?;
+        let (min_key, max_key) = segment_bounds(
+            state
+                .main_segments
+                .iter()
+                .chain(state.patch_segments.iter()),
+        )?;
         Some(Self {
-            segments,
-            has_patches,
+            main_segments: state.main_segments.iter().cloned().collect(),
+            patch_segments: state.patch_segments.iter().cloned().collect(),
             min_key,
             max_key,
         })
     }
 
-    fn cursor(&self, geometry: StoreGeometry, verify_block_checksums: bool) -> Result<RangeCursor> {
-        let mut cursors = Vec::with_capacity(self.segments.len());
-        self.push_cursors(&mut cursors, geometry, verify_block_checksums)?;
-        if self.has_patches {
-            Ok(RangeCursor::merge(cursors))
-        } else {
-            Ok(RangeCursor::new(cursors))
-        }
-    }
-
-    fn push_cursors(
-        &self,
-        cursors: &mut Vec<SegmentRangeCursor>,
-        geometry: StoreGeometry,
-        verify_block_checksums: bool,
-    ) -> Result<()> {
-        push_segment_cursors(cursors, &self.segments, geometry, verify_block_checksums)
+    fn cursor(&self, geometry: StoreGeometry, verify_block_checksums: bool) -> RangeCursor {
+        RangeCursor::from_segment_sets(
+            self.main_segments.clone(),
+            self.patch_segments.clone(),
+            geometry,
+            verify_block_checksums,
+            None,
+            None,
+        )
     }
 }
 
@@ -191,7 +183,7 @@ impl Store {
         let Some(source_snapshot) = MergeSourceSnapshot::from_store(source) else {
             return Ok(CommitStats::default());
         };
-        let mut source_cursor = source_snapshot.cursor(source.inner.geometry, true)?;
+        let mut source_cursor = source_snapshot.cursor(source.inner.geometry, true);
         if source_cursor.current_record()?.is_none() {
             return Ok(CommitStats::default());
         }
@@ -211,14 +203,14 @@ impl Store {
         let affected_live =
             plan.retire_normalized_segments(&source_snapshot.min_key, &source_snapshot.max_key);
 
-        let mut cursors = Vec::with_capacity(affected_live.len());
-        push_segment_cursors(
-            &mut cursors,
-            &affected_live,
+        let destination_cursor = RangeCursor::from_segment_sets(
+            affected_live.main,
+            affected_live.patches,
             geometry,
             self.inner.verify_block_checksums,
-        )?;
-        let destination_cursor = RangeCursor::merge(cursors);
+            None,
+            None,
+        );
         let mut records = StoreMergeRecords::new(destination_cursor, source_cursor);
         let (written, output_records) =
             self.write_cursor_segments(&mut records, &mut plan, options)?;
@@ -295,11 +287,13 @@ impl Store {
     }
 }
 
-fn segment_bounds(segments: &[Arc<SegmentState>]) -> Option<(Vec<u8>, Vec<u8>)> {
-    let first = segments.first()?;
+fn segment_bounds<'a>(
+    mut segments: impl Iterator<Item = &'a Arc<SegmentState>>,
+) -> Option<(Vec<u8>, Vec<u8>)> {
+    let first = segments.next()?;
     let mut min_key = first.min_key.clone();
     let mut max_key = first.max_key.clone();
-    for segment in &segments[1..] {
+    for segment in segments {
         if segment.min_key < min_key {
             min_key = segment.min_key.clone();
         }
@@ -308,22 +302,4 @@ fn segment_bounds(segments: &[Arc<SegmentState>]) -> Option<(Vec<u8>, Vec<u8>)> 
         }
     }
     Some((min_key, max_key))
-}
-
-fn push_segment_cursors(
-    cursors: &mut Vec<SegmentRangeCursor>,
-    segments: &[Arc<SegmentState>],
-    geometry: StoreGeometry,
-    verify_block_checksums: bool,
-) -> Result<()> {
-    for segment in segments {
-        cursors.push(SegmentRangeCursor::new(
-            Arc::clone(segment),
-            geometry,
-            verify_block_checksums,
-            None,
-            None,
-        )?);
-    }
-    Ok(())
 }
