@@ -2,7 +2,7 @@
 
 ## Identity
 
-- Implementation commit: `9f8b2e6b`
+- Implementation commit: `9f8b2e6275f6e5aafbca269b6bfd0712f8c1a181`
 - Comparison baseline: `b093515-m1`
 - Date: 2026-07-12
 - Host: Apple M1, 16 GiB RAM, Darwin 25.5.0, APFS-backed temporary directories
