@@ -1,13 +1,13 @@
-use proc_macro2::{Ident as ProcIdent, Span, TokenStream as TokenStream2};
-use quote::quote;
+use proc_macro2::Span;
 use syn::{
-    Attribute, Error, Field, Ident, LitStr, Path, Result, meta::ParseNestedMeta, spanned::Spanned,
+    Attribute, Error, Field, Ident, LitStr, Path, Result, meta::ParseNestedMeta, parse_quote,
+    spanned::Spanned,
 };
 
 pub(crate) struct TypeAttrs {
     name: LitStr,
     version: Option<LitStr>,
-    schema_crate: Option<Path>,
+    schema_path: Path,
 }
 
 impl TypeAttrs {
@@ -34,27 +34,20 @@ impl TypeAttrs {
         Ok(Self {
             name: rename.unwrap_or_else(|| default_ident_name(ident)),
             version,
-            schema_crate,
+            schema_path: schema_crate.unwrap_or_else(|| parse_quote!(::ssa_cache_schema)),
         })
     }
 
-    pub(crate) fn schema_path_tokens(&self) -> TokenStream2 {
-        match &self.schema_crate {
-            Some(schema_crate) => quote! { #schema_crate },
-            None => quote! { ::ssa_cache_schema },
-        }
+    pub(crate) fn schema_path(&self) -> &Path {
+        &self.schema_path
     }
 
-    pub(crate) fn name_tokens(&self) -> TokenStream2 {
-        let name = &self.name;
-        quote! { #name }
+    pub(crate) fn name(&self) -> &LitStr {
+        &self.name
     }
 
-    pub(crate) fn version_tokens(&self, writer: &ProcIdent) -> TokenStream2 {
-        match &self.version {
-            Some(version) => quote! { #writer.type_version(#version); },
-            None => TokenStream2::new(),
-        }
+    pub(crate) fn version(&self) -> Option<&LitStr> {
+        self.version.as_ref()
     }
 }
 
@@ -82,15 +75,14 @@ impl VariantAttrs {
         })
     }
 
-    pub(crate) fn name_tokens(&self) -> TokenStream2 {
-        let name = &self.name;
-        quote! { #name }
+    pub(crate) fn name(&self) -> &LitStr {
+        &self.name
     }
 }
 
 #[derive(Default)]
 pub(crate) struct FieldAttrs {
-    rename: Option<LitStr>,
+    name: Option<LitStr>,
 }
 
 impl FieldAttrs {
@@ -102,25 +94,22 @@ impl FieldAttrs {
             }
             attr.parse_nested_meta(|meta| {
                 if meta.path.is_ident("rename") {
-                    parse_lit_str_value(&mut parsed.rename, meta, "rename")
+                    parse_lit_str_value(&mut parsed.name, meta, "rename")
                 } else {
                     Err(meta.error("unsupported cache_schema field attribute"))
                 }
             })?;
         }
-        if parsed.rename.is_none()
+        if parsed.name.is_none()
             && let Some(ident) = &field.ident
         {
-            parsed.rename = Some(default_ident_name(ident));
+            parsed.name = Some(default_ident_name(ident));
         }
         Ok(parsed)
     }
 
-    pub(crate) fn name_tokens(&self) -> TokenStream2 {
-        match &self.rename {
-            Some(rename) => quote! { Some(#rename) },
-            None => quote! { None },
-        }
+    pub(crate) fn name(&self) -> Option<&LitStr> {
+        self.name.as_ref()
     }
 }
 

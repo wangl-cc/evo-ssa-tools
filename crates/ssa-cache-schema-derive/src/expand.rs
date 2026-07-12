@@ -1,7 +1,7 @@
 use proc_macro2::{Ident, Span, TokenStream as TokenStream2};
 use quote::{quote, quote_spanned};
 use syn::{
-    Data, DeriveInput, Error, Field, Fields, Result, Variant, punctuated::Punctuated,
+    Data, DeriveInput, Error, Field, Fields, Path, Result, Variant, punctuated::Punctuated,
     spanned::Spanned, token::Comma,
 };
 
@@ -14,13 +14,13 @@ pub(crate) fn expand_cache_schema(input: DeriveInput) -> Result<TokenStream2> {
     let ident = input.ident;
     let attrs = TypeAttrs::parse(&input.attrs, &ident)?;
     let mut generics = input.generics;
-    let schema_path = attrs.schema_path_tokens();
-    add_field_schema_bounds(&mut generics, &input.data, &schema_path);
+    let schema_path = attrs.schema_path();
+    add_field_schema_bounds(&mut generics, &input.data, schema_path);
     let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
     let writer = Ident::new("__cache_schema_writer", Span::mixed_site());
     let body = match input.data {
-        Data::Struct(data) => expand_struct_body(&attrs, &schema_path, &writer, &data.fields)?,
-        Data::Enum(data) => expand_enum_body(&attrs, &schema_path, &writer, &data.variants)?,
+        Data::Struct(data) => expand_struct_body(&attrs, schema_path, &writer, &data.fields)?,
+        Data::Enum(data) => expand_enum_body(&attrs, schema_path, &writer, &data.variants)?,
         Data::Union(data) => {
             return Err(Error::new(
                 data.union_token.span(),
@@ -40,12 +40,14 @@ pub(crate) fn expand_cache_schema(input: DeriveInput) -> Result<TokenStream2> {
 
 fn expand_struct_body(
     attrs: &TypeAttrs,
-    schema_path: &TokenStream2,
+    schema_path: &Path,
     writer: &Ident,
     fields: &Fields,
 ) -> Result<TokenStream2> {
-    let name = attrs.name_tokens();
-    let version = attrs.version_tokens(writer);
+    let name = attrs.name();
+    let version = attrs
+        .version()
+        .map(|version| quote! { #writer.type_version(#version); });
     let style = expand_empty_product_style(fields, schema_path, writer);
     let field_tokens = expand_fields(fields, schema_path, writer)?;
 
@@ -60,12 +62,14 @@ fn expand_struct_body(
 
 fn expand_enum_body(
     attrs: &TypeAttrs,
-    schema_path: &TokenStream2,
+    schema_path: &Path,
     writer: &Ident,
     variants: &Punctuated<Variant, Comma>,
 ) -> Result<TokenStream2> {
-    let name = attrs.name_tokens();
-    let version = attrs.version_tokens(writer);
+    let name = attrs.name();
+    let version = attrs
+        .version()
+        .map(|version| quote! { #writer.type_version(#version); });
     let variants = variants
         .iter()
         .enumerate()
@@ -82,11 +86,11 @@ fn expand_enum_body(
 
 fn expand_variant(
     (index, variant): (usize, &Variant),
-    schema_path: &TokenStream2,
+    schema_path: &Path,
     writer: &Ident,
 ) -> Result<TokenStream2> {
     let attrs = VariantAttrs::parse(&variant.attrs, &variant.ident)?;
-    let name = attrs.name_tokens();
+    let name = attrs.name();
     let style = expand_empty_product_style(&variant.fields, schema_path, writer);
     let fields = expand_fields(&variant.fields, schema_path, writer)?;
 
@@ -98,11 +102,7 @@ fn expand_variant(
     })
 }
 
-fn expand_empty_product_style(
-    fields: &Fields,
-    schema_path: &TokenStream2,
-    writer: &Ident,
-) -> TokenStream2 {
+fn expand_empty_product_style(fields: &Fields, schema_path: &Path, writer: &Ident) -> TokenStream2 {
     let style = match fields {
         Fields::Unit => Some(quote! { #schema_path::EmptyProductStyle::Unit }),
         Fields::Unnamed(fields) if fields.unnamed.is_empty() => {
@@ -120,11 +120,7 @@ fn expand_empty_product_style(
     }
 }
 
-fn expand_fields(
-    fields: &Fields,
-    schema_path: &TokenStream2,
-    writer: &Ident,
-) -> Result<TokenStream2> {
+fn expand_fields(fields: &Fields, schema_path: &Path, writer: &Ident) -> Result<TokenStream2> {
     fields
         .iter()
         .enumerate()
@@ -135,11 +131,14 @@ fn expand_fields(
 
 fn expand_field(
     (index, field): (usize, &Field),
-    schema_path: &TokenStream2,
+    schema_path: &Path,
     writer: &Ident,
 ) -> Result<TokenStream2> {
     let attrs = FieldAttrs::parse(field)?;
-    let name = attrs.name_tokens();
+    let name = match attrs.name() {
+        Some(name) => quote! { Some(#name) },
+        None => quote! { None },
+    };
     let ty = &field.ty;
 
     Ok(quote_spanned! { ty.span() =>

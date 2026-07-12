@@ -1,11 +1,6 @@
-use proc_macro2::TokenStream as TokenStream2;
-use syn::{Data, Generics, Type, parse_quote};
+use syn::{Data, Generics, Path, Type, parse_quote};
 
-pub(crate) fn add_field_schema_bounds(
-    generics: &mut Generics,
-    data: &Data,
-    schema_path: &TokenStream2,
-) {
+pub(crate) fn add_field_schema_bounds(generics: &mut Generics, data: &Data, schema_path: &Path) {
     match data {
         Data::Struct(data) => add_bounds(
             generics,
@@ -23,7 +18,7 @@ pub(crate) fn add_field_schema_bounds(
     }
 }
 
-fn add_bounds<'a, I>(generics: &mut Generics, field_types: I, schema_path: &TokenStream2)
+fn add_bounds<'a, I>(generics: &mut Generics, field_types: I, schema_path: &Path)
 where
     I: IntoIterator<Item = &'a Type>,
 {
