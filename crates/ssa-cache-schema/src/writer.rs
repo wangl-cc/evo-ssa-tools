@@ -7,7 +7,6 @@ const DOMAIN_VERSION: &[u8] = b"ssa-cache-schema:v1";
 /// New writers are seeded with the fixed `ssa-cache-schema:v1` domain/version header. Every token
 /// is encoded as a one-byte tag followed by fixed-width integers or length-prefixed byte strings.
 /// This keeps different schema trees from colliding through ambiguous concatenation.
-#[derive(Clone)]
 pub struct SchemaWriter {
     hasher: blake3::Hasher,
 }
@@ -27,7 +26,7 @@ pub enum EmptyProductStyle {
 // Construction.
 impl SchemaWriter {
     /// Create a schema writer seeded with the schema domain/version header.
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         let mut hasher = blake3::Hasher::new();
         hasher.update(DOMAIN_VERSION);
         Self { hasher }
@@ -197,18 +196,6 @@ impl SchemaWriter {
     }
 }
 
-impl Default for SchemaWriter {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl std::fmt::Debug for SchemaWriter {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("SchemaWriter").finish_non_exhaustive()
-    }
-}
-
 #[repr(u8)]
 #[derive(Clone, Copy)]
 enum Tag {
@@ -335,24 +322,5 @@ mod tests {
         let seq = seq.finish_fingerprint();
 
         assert_ne!(map, seq);
-    }
-
-    #[test]
-    fn default_writer_matches_new_writer() {
-        let mut from_default = SchemaWriter::default();
-        from_default.leaf("u32");
-
-        let mut from_new = SchemaWriter::new();
-        from_new.leaf("u32");
-
-        assert_eq!(
-            from_default.finish_fingerprint(),
-            from_new.finish_fingerprint()
-        );
-    }
-
-    #[test]
-    fn debug_output_names_writer_without_exposing_hasher_state() {
-        assert_eq!(format!("{:?}", SchemaWriter::new()), "SchemaWriter { .. }");
     }
 }
