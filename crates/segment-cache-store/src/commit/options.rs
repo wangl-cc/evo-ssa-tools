@@ -2,6 +2,7 @@
 
 use std::num::NonZeroUsize;
 
+#[cfg(feature = "value-compression")]
 use crate::block::ValuePayloadCompressionPolicy;
 
 const DEFAULT_PATCH_SEGMENT_LIMIT: usize = 8;
@@ -14,6 +15,7 @@ const DEFAULT_PATCH_DIRECT_RECORD_LIMIT: usize = 4_096;
 #[derive(Clone, Debug)]
 pub struct CommitOptions {
     target_block_size: u32,
+    #[cfg(feature = "value-compression")]
     value_payload_compression_policy: ValuePayloadCompressionPolicy,
     flush_threshold_records: NonZeroUsize,
     flush_threshold_bytes: NonZeroUsize,
@@ -25,6 +27,7 @@ impl Default for CommitOptions {
     fn default() -> Self {
         Self {
             target_block_size: 16 * 1024,
+            #[cfg(feature = "value-compression")]
             value_payload_compression_policy: ValuePayloadCompressionPolicy::DEFAULT,
             flush_threshold_records: NonZeroUsize::new(4_096)
                 .expect("default record threshold is non-zero"),
@@ -48,6 +51,7 @@ impl CommitOptions {
     /// The store's persisted compression kind still controls which frame
     /// encodings are supported. This policy only affects newly written blocks
     /// whose store was created with a compression-capable kind.
+    #[cfg(feature = "value-compression")]
     pub fn with_value_payload_compression_policy(
         mut self,
         policy: ValuePayloadCompressionPolicy,
@@ -90,7 +94,7 @@ impl CommitOptions {
         self.target_block_size as usize
     }
 
-    #[cfg(any(feature = "value-compression-lz4", feature = "value-compression-zstd"))]
+    #[cfg(feature = "value-compression")]
     pub(super) fn value_payload_compression_policy(&self) -> ValuePayloadCompressionPolicy {
         self.value_payload_compression_policy
     }

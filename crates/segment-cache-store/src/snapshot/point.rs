@@ -2,21 +2,21 @@
 
 use std::sync::Arc;
 
-use crate::{
-    block::ValuePayloadDecoder, error::Result, segment::state::SegmentState,
-    snapshot::LookupReadOptions,
-};
+use super::LookupReadOptions;
+#[cfg(feature = "value-compression")]
+use crate::block::ValuePayloadDecoder;
+use crate::{error::Result, segment::Segment};
 
 pub(crate) struct SegmentSetReader<'a> {
-    main_segments: &'a [Arc<SegmentState>],
-    patch_segments: &'a [Arc<SegmentState>],
+    main_segments: &'a [Arc<Segment>],
+    patch_segments: &'a [Arc<Segment>],
     options: LookupReadOptions,
 }
 
 impl<'a> SegmentSetReader<'a> {
     pub(crate) fn new(
-        main_segments: &'a [Arc<SegmentState>],
-        patch_segments: &'a [Arc<SegmentState>],
+        main_segments: &'a [Arc<Segment>],
+        patch_segments: &'a [Arc<Segment>],
         options: LookupReadOptions,
     ) -> Self {
         Self {
@@ -29,8 +29,8 @@ impl<'a> SegmentSetReader<'a> {
     pub(crate) fn fetch_one(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {
         let mut winner = self.fetch_one_from_main(key)?;
         for segment in self.patch_segments {
-            if segment.min_key.as_slice() <= key
-                && key <= segment.max_key.as_slice()
+            if segment.min_key() <= key
+                && key <= segment.max_key()
                 && let Some(value) = self.fetch_one_from_segment(segment, key)?
                 && winner
                     .as_ref()
@@ -45,24 +45,24 @@ impl<'a> SegmentSetReader<'a> {
     fn fetch_one_from_main(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {
         let segment_index = match self
             .main_segments
-            .partition_point(|segment| segment.min_key.as_slice() <= key)
+            .partition_point(|segment| segment.min_key() <= key)
         {
             0 => return Ok(None),
             idx => idx - 1,
         };
         let segment = &self.main_segments[segment_index];
-        if key > segment.max_key.as_slice() {
+        if key > segment.max_key() {
             return Ok(None);
         }
         self.fetch_one_from_segment(segment, key)
     }
 
-    fn fetch_one_from_segment(
-        &self,
-        segment: &SegmentState,
-        key: &[u8],
-    ) -> Result<Option<Vec<u8>>> {
+    fn fetch_one_from_segment(&self, segment: &Segment, key: &[u8]) -> Result<Option<Vec<u8>>> {
         let block_index = segment.find_block_index(key);
+        if !segment.block_contains(block_index, key) {
+            return Ok(None);
+        }
+        #[cfg(feature = "value-compression")]
         let mut payload_decoder =
             ValuePayloadDecoder::new(self.options.geometry.value_payload_compression);
         let block = match segment.load_block(
@@ -78,12 +78,20 @@ impl<'a> SegmentSetReader<'a> {
         if !block.key_matches_at_index(record_index, key) {
             return Ok(None);
         }
-        let decoded_payload = match block.decode_payload_if_needed(&mut payload_decoder) {
-            Ok(decoded_payload) => decoded_payload,
-            Err(_) => return Ok(None),
+        #[cfg(feature = "value-compression")]
+        let value = {
+            let decoded_payload = match block.decode_payload_if_needed(&mut payload_decoder) {
+                Ok(decoded_payload) => decoded_payload,
+                Err(_) => return Ok(None),
+            };
+            block
+                .value_at_index(record_index, decoded_payload.as_deref())?
+                .to_vec()
         };
-        Ok(block
-            .value_at_index(record_index, decoded_payload.as_deref())
-            .map(|value| Some(value.to_vec()))?)
+        #[cfg(not(feature = "value-compression"))]
+        let value = block
+            .value_at_index_with_payload(record_index, block.payload_bytes()?)?
+            .to_vec();
+        Ok(Some(value))
     }
 }

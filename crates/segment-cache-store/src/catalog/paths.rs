@@ -9,14 +9,12 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use crate::{
-    Result,
-    catalog::{
-        descriptor::StoreDescriptor,
-        io::{AtomicFilePublish, temp_path_for},
-        manifest::StoreManifest,
-    },
+use super::{
+    StoreManifest,
+    descriptor::StoreDescriptor,
+    io::{AtomicFilePublish, temp_path_for},
 };
+use crate::Result;
 
 const STORE_FILE_NAME: &str = "STORE";
 const MANIFEST_FILE_NAME: &str = "MANIFEST";

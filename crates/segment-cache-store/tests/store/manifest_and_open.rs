@@ -218,7 +218,7 @@ fn unsupported_store_block_checksum_is_rejected() -> Result<()> {
             "block_checksum_id={}\n",
             block_checksum_format_id(test_block_checksum())
         ),
-        "block_checksum_id=999\n",
+        "block_checksum_id=255\n",
     );
     fs::write(store_path, store_file)?;
 
@@ -229,7 +229,7 @@ fn unsupported_store_block_checksum_is_rejected() -> Result<()> {
     assert!(matches!(
         error,
         Error::Catalog(CatalogError::Mismatch(
-            CatalogMismatch::UnsupportedBlockChecksum { format_id: 999 }
+            CatalogMismatch::UnsupportedBlockChecksum { format_id: 255 }
         ))
     ));
     Ok(())
@@ -245,7 +245,7 @@ fn unsupported_store_value_payload_compression_is_rejected() -> Result<()> {
     let mut store_file = fs::read_to_string(&store_path)?;
     store_file = store_file.replace(
         "value_payload_compression_id=0\n",
-        "value_payload_compression_id=999\n",
+        "value_payload_compression_id=255\n",
     );
     fs::write(store_path, store_file)?;
 
@@ -256,7 +256,7 @@ fn unsupported_store_value_payload_compression_is_rejected() -> Result<()> {
     assert!(matches!(
         error,
         Error::Catalog(CatalogError::Mismatch(
-            CatalogMismatch::UnsupportedValuePayloadCompression { format_id: 999 }
+            CatalogMismatch::UnsupportedValuePayloadCompression { format_id: 255 }
         ))
     ));
     Ok(())

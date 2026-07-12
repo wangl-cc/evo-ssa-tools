@@ -1,8 +1,10 @@
 use std::num::NonZeroU32;
 
+#[cfg(feature = "value-compression")]
+use segment_cache_store::{CompressionPolicyError, ValuePayloadCompressionPolicy};
 use segment_cache_store::{
-    CompressionPolicyError, CreateOptions, Error, InputError, OpenOptions, OptionsError, Result,
-    Store, ValueLayout, ValuePayloadCompressionPolicy, WriteBatch,
+    CreateOptions, Error, InputError, OpenOptions, OptionsError, Result, Store, ValueLayout,
+    WriteBatch,
 };
 
 use crate::support::api::{
@@ -39,6 +41,7 @@ fn invalid_create_options_are_rejected() {
     ));
 }
 
+#[cfg(feature = "value-compression")]
 #[test]
 fn compression_policy_rejects_invalid_saved_percentage() {
     let error = ValuePayloadCompressionPolicy::new(64, 101)

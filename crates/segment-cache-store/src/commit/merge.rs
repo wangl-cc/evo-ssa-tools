@@ -2,23 +2,24 @@
 
 use std::{mem, sync::Arc};
 
+use super::{
+    Committer,
+    batch::{PreparedBatch, WriteBatch},
+    options::CommitOptions,
+    plan::{CommitPlan, StagedSegment},
+    publish::CommitStats,
+};
 use crate::{
-    catalog::manifest::SegmentTier,
-    commit::{
-        batch::{PreparedBatch, WriteBatch},
-        execution::{CommitPlan, CommitStats, WrittenSegment},
-        options::CommitOptions,
-    },
+    catalog::SegmentTier,
     error::{FormatError, InputError, Result},
-    schema::StoreGeometry,
-    segment::state::SegmentState,
+    segment::{Segment, SegmentGeometry},
     snapshot::RangeCursor,
-    store::Store,
+    store::StoreInner,
 };
 
 struct MergeSourceSnapshot {
-    main_segments: Vec<Arc<SegmentState>>,
-    patch_segments: Vec<Arc<SegmentState>>,
+    main_segments: Vec<Arc<Segment>>,
+    patch_segments: Vec<Arc<Segment>>,
     min_key: Vec<u8>,
     max_key: Vec<u8>,
 }
@@ -35,8 +36,8 @@ struct MergeInputStats {
 }
 
 impl MergeSourceSnapshot {
-    fn from_store(store: &Store) -> Option<Self> {
-        let state = store.inner.state.read();
+    fn from_store(store: &StoreInner) -> Option<Self> {
+        let state = store.state.read();
         let (min_key, max_key) = segment_bounds(
             state
                 .main_segments
@@ -51,7 +52,7 @@ impl MergeSourceSnapshot {
         })
     }
 
-    fn cursor(&self, geometry: StoreGeometry, verify_block_checksums: bool) -> RangeCursor {
+    fn cursor(&self, geometry: SegmentGeometry, verify_block_checksums: bool) -> RangeCursor {
         RangeCursor::from_segment_sets(
             self.main_segments.clone(),
             self.patch_segments.clone(),
@@ -166,25 +167,25 @@ impl StoreMergeRecords {
     }
 }
 
-impl Store {
+impl Committer<'_> {
     /// Atomically merges every visible record from `source` into this store.
     pub(crate) fn merge_store_with_options(
         &self,
-        source: &Store,
+        source: &Arc<StoreInner>,
         options: &CommitOptions,
     ) -> Result<CommitStats> {
         if self.inner.writer_lock.is_none() {
             return Err(InputError::ReadOnlyStore.into());
         }
         self.validate_merge_source(source)?;
-        if Arc::ptr_eq(&self.inner, &source.inner) {
+        if Arc::ptr_eq(self.inner, source) {
             return Ok(CommitStats::default());
         }
 
         let Some(source_snapshot) = MergeSourceSnapshot::from_store(source) else {
             return Ok(CommitStats::default());
         };
-        let mut source_cursor = source_snapshot.cursor(source.inner.geometry, true);
+        let mut source_cursor = source_snapshot.cursor(source.geometry, true);
         if source_cursor.current_record()?.is_none() {
             return Ok(CommitStats::default());
         }
@@ -227,18 +228,18 @@ impl Store {
         })
     }
 
-    fn validate_merge_source(&self, source: &Store) -> Result<()> {
-        if self.inner.metadata != source.inner.metadata {
+    fn validate_merge_source(&self, source: &StoreInner) -> Result<()> {
+        if self.inner.metadata != source.metadata {
             return Err(InputError::SourceMetadataMismatch.into());
         }
-        if self.inner.geometry.key_len != source.inner.geometry.key_len {
+        if self.inner.geometry.key_len != source.geometry.key_len {
             return Err(InputError::SourceKeyLengthMismatch {
                 expected: self.inner.geometry.key_len,
-                actual: source.inner.geometry.key_len,
+                actual: source.geometry.key_len,
             }
             .into());
         }
-        if self.inner.geometry.value_layout != source.inner.geometry.value_layout {
+        if self.inner.geometry.value_layout != source.geometry.value_layout {
             return Err(InputError::SourceValueLayoutMismatch.into());
         }
         Ok(())
@@ -249,7 +250,7 @@ impl Store {
         records: &mut StoreMergeRecords,
         plan: &mut CommitPlan,
         options: &CommitOptions,
-    ) -> Result<(Vec<WrittenSegment>, usize)> {
+    ) -> Result<(Vec<StagedSegment>, usize)> {
         let mut written = Vec::new();
         let mut output_records = 0usize;
         let mut batch = WriteBatch::new();
@@ -268,7 +269,7 @@ impl Store {
     fn flush_cursor_batch(
         &self,
         batch: &mut WriteBatch,
-        written: &mut Vec<WrittenSegment>,
+        written: &mut Vec<StagedSegment>,
         plan: &mut CommitPlan,
         options: &CommitOptions,
     ) -> Result<()> {
@@ -289,17 +290,17 @@ impl Store {
 }
 
 fn segment_bounds<'a>(
-    mut segments: impl Iterator<Item = &'a Arc<SegmentState>>,
+    mut segments: impl Iterator<Item = &'a Arc<Segment>>,
 ) -> Option<(Vec<u8>, Vec<u8>)> {
     let first = segments.next()?;
-    let mut min_key = first.min_key.clone();
-    let mut max_key = first.max_key.clone();
+    let mut min_key = first.min_key().to_vec();
+    let mut max_key = first.max_key().to_vec();
     for segment in segments {
-        if segment.min_key < min_key {
-            min_key = segment.min_key.clone();
+        if segment.min_key() < min_key.as_slice() {
+            min_key = segment.min_key().to_vec();
         }
-        if segment.max_key > max_key {
-            max_key = segment.max_key.clone();
+        if segment.max_key() > max_key.as_slice() {
+            max_key = segment.max_key().to_vec();
         }
     }
     Some((min_key, max_key))

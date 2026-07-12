@@ -7,23 +7,26 @@
 //! manifest transitions to [`crate::commit`], and lifecycle operations to
 //! [`crate::catalog`].
 
-pub(crate) mod state;
+mod state;
 
-use std::sync::Arc;
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+};
+
+pub(crate) use state::StoreInner;
 
 use crate::{
     block::{BlockChecksumKind, ValuePayloadCompressionKind},
     catalog::{
-        StoreStorageStats, gc::garbage_collect_unreferenced, storage::collect_storage_stats,
+        Catalog, CreateOptions, OpenOptions, OpenedStore, StoreInfo, StoreMetadata,
+        StoreStorageStats,
     },
-    commit::{CommitOptions, CommitStats, WriteBatch},
+    commit::{CommitOptions, CommitStats, Committer, WriteBatch},
     error::{InputError, Result},
-    schema::{StoreMetadata, ValueLayout},
-    segment::state::SegmentState,
-    snapshot::{
-        LookupReadOptions, ordered::OrderedLookup, point::SegmentSetReader, range::RangeCursor,
-    },
-    store::state::StoreInner,
+    segment::Segment,
+    snapshot::{LookupReadOptions, OrderedLookup, RangeCursor, SegmentSetReader},
+    value::ValueLayout,
 };
 
 /// Persistent append-only cache store.
@@ -33,8 +36,46 @@ pub struct Store {
 }
 
 impl Store {
-    // Store identity.
+    fn from_opened(opened: OpenedStore) -> Self {
+        Self {
+            inner: Arc::new(StoreInner::from_opened(opened)),
+        }
+    }
 
+    /// Creates a new empty store rooted at `root`.
+    ///
+    /// Creation fails if persistent store state already exists. Use
+    /// [`Store::open`] for an existing store.
+    ///
+    /// Creation takes the same stable writer lock used by ordinary writer opens,
+    /// so two cooperating creators cannot publish different `STORE` files for
+    /// one root. A creator racing an existing writer fails with `WriterLocked`;
+    /// once the writer is gone, creating over an existing root fails with
+    /// `StoreAlreadyExists`.
+    pub fn create(root: impl Into<PathBuf>, options: CreateOptions) -> Result<Self> {
+        Catalog::at(root.into())
+            .create(options)
+            .map(Self::from_opened)
+    }
+
+    /// Reads persistent store identity from `STORE` without opening segment files.
+    ///
+    /// This does not acquire the writer lock, validate `MANIFEST`, or run any
+    /// catalog housekeeping. It is intended for tools that need to discover the
+    /// metadata required by [`OpenOptions::read_write`] or [`OpenOptions::read_only`].
+    pub fn inspect(root: impl AsRef<Path>) -> Result<StoreInfo> {
+        Catalog::at(root.as_ref()).inspect()
+    }
+
+    /// Opens an existing store rooted at `root`.
+    pub fn open(root: impl Into<PathBuf>, options: OpenOptions) -> Result<Self> {
+        Catalog::at(root.into())
+            .open(options)
+            .map(Self::from_opened)
+    }
+}
+
+impl Store {
     /// Returns the caller-defined compatibility metadata persisted for this store.
     #[must_use]
     pub fn metadata(&self) -> &StoreMetadata {
@@ -71,14 +112,14 @@ impl Store {
     /// files under the opened root; visible logical record statistics are
     /// intentionally left to read APIs such as [`Store::iter_all`].
     pub fn storage_stats(&self) -> Result<StoreStorageStats> {
-        collect_storage_stats(&self.inner.paths)
+        self.inner.paths.storage_stats()
     }
+}
 
-    // Write path.
-
+impl Store {
     /// Publishes a write batch with default segment write options.
     pub fn commit_batch(&self, batch: WriteBatch) -> Result<CommitStats> {
-        self.commit_with_options(batch, &CommitOptions::default())
+        Committer::new(&self.inner).commit_with_options(batch, &CommitOptions::default())
     }
 
     /// Publishes a write batch using explicit segment write options.
@@ -103,7 +144,7 @@ impl Store {
         batch: WriteBatch,
         options: &CommitOptions,
     ) -> Result<CommitStats> {
-        self.commit_with_options(batch, options)
+        Committer::new(&self.inner).commit_with_options(batch, options)
     }
 
     /// Folds all live patch segments into the main tier with default options.
@@ -122,7 +163,7 @@ impl Store {
     /// no-op and returns default stats. Returns [`InputError::ReadOnlyStore`]
     /// on a read-only handle.
     pub fn normalize_with_options(&self, options: &CommitOptions) -> Result<CommitStats> {
-        self.normalize_patches_with_options(options)
+        Committer::new(&self.inner).normalize_patches_with_options(options)
     }
 
     /// Merges another compatible store into this store with default segment write options.
@@ -152,7 +193,7 @@ impl Store {
         source: &Store,
         options: &CommitOptions,
     ) -> Result<CommitStats> {
-        self.merge_store_with_options(source, options)
+        Committer::new(&self.inner).merge_store_with_options(&source.inner, options)
     }
 
     /// Deletes segment files not referenced by the current manifest.
@@ -174,11 +215,11 @@ impl Store {
             let state = self.inner.state.read();
             state.manifest.clone()
         };
-        garbage_collect_unreferenced(&self.inner.paths, &manifest)
+        self.inner.paths.garbage_collect_unreferenced(&manifest)
     }
+}
 
-    // Read path.
-
+impl Store {
     /// Checks an ordered key stream and returns a cache-safe hit bitmap.
     ///
     /// This is not an index-only probe: normal block checksum verification still
@@ -213,7 +254,7 @@ impl Store {
     /// Creates a reusable ordered lookup session with cursor state.
     #[must_use]
     pub fn lookup_session(&self) -> OrderedLookup {
-        OrderedLookup::new(self.clone())
+        OrderedLookup::new(Arc::clone(&self.inner))
     }
 
     /// Fetches one key.
@@ -266,9 +307,9 @@ impl Store {
     {
         self.range_cursor(None, None)?.visit_all(visitor)
     }
+}
 
-    // Shared read helpers.
-
+impl Store {
     pub(crate) fn lookup_read_options(&self) -> LookupReadOptions {
         LookupReadOptions {
             geometry: self.inner.geometry,
@@ -285,14 +326,14 @@ impl Store {
             )
         };
         let (main_segments, patch_segments) = visible;
-        let intersects_range = |segment: &&Arc<SegmentState>| {
+        let intersects_range = |segment: &&Arc<Segment>| {
             if let Some(start) = start
-                && segment.max_key.as_slice() < start
+                && segment.max_key() < start
             {
                 return false;
             }
             if let Some(end) = end
-                && segment.min_key.as_slice() >= end
+                && segment.min_key() >= end
             {
                 return false;
             }

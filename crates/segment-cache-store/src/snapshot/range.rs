@@ -1,12 +1,13 @@
 //! Streaming ordered range cursors.
 
-use std::sync::Arc;
+use std::{cmp::Ordering, sync::Arc};
 
+#[cfg(feature = "value-compression")]
+use crate::block::ValuePayloadDecoder;
 use crate::{
-    block::{DecodedBlock, ParsedRecord, ValuePayloadDecoder},
+    block::{DecodedBlock, ParsedRecord},
     error::Result,
-    schema::StoreGeometry,
-    segment::state::SegmentState,
+    segment::{Segment, SegmentGeometry},
 };
 
 /// Streaming cursor over records in key order.
@@ -17,8 +18,8 @@ pub struct RangeCursor {
 
 /// One non-overlapping run of segments traversed with only its current segment loaded.
 struct SegmentRunCursor {
-    segments: Vec<Arc<SegmentState>>,
-    geometry: StoreGeometry,
+    segments: Vec<Arc<Segment>>,
+    geometry: SegmentGeometry,
     verify_block_checksums: bool,
     start: Option<Vec<u8>>,
     end: Option<Vec<u8>>,
@@ -29,9 +30,9 @@ struct SegmentRunCursor {
 impl RangeCursor {
     /// Builds one lazy main run plus one independently mergeable run per patch segment.
     pub(crate) fn from_segment_sets(
-        main_segments: Vec<Arc<SegmentState>>,
-        patch_segments: Vec<Arc<SegmentState>>,
-        geometry: StoreGeometry,
+        main_segments: Vec<Arc<Segment>>,
+        patch_segments: Vec<Arc<Segment>>,
+        geometry: SegmentGeometry,
         verify_block_checksums: bool,
         start: Option<Vec<u8>>,
         end: Option<Vec<u8>>,
@@ -180,8 +181,8 @@ impl RangeCursor {
 
 impl SegmentRunCursor {
     fn new(
-        segments: Vec<Arc<SegmentState>>,
-        geometry: StoreGeometry,
+        segments: Vec<Arc<Segment>>,
+        geometry: SegmentGeometry,
         verify_block_checksums: bool,
         start: Option<Vec<u8>>,
         end: Option<Vec<u8>>,
@@ -253,27 +254,29 @@ impl Iterator for RangeCursor {
 }
 
 pub(crate) struct SegmentRangeCursor {
-    segment: Arc<SegmentState>,
-    geometry: StoreGeometry,
+    segment: Arc<Segment>,
+    geometry: SegmentGeometry,
     verify_block_checksums: bool,
     start: Option<Vec<u8>>,
     end: Option<Vec<u8>>,
     block_index: usize,
     position: Option<SegmentCursorPosition>,
     spare_block_bytes: Vec<u8>,
+    #[cfg(feature = "value-compression")]
     payload_decoder: ValuePayloadDecoder,
 }
 
 struct SegmentCursorPosition {
     block: DecodedBlock,
+    #[cfg(feature = "value-compression")]
     decoded_payload: Option<Vec<u8>>,
     record_index: usize,
 }
 
 impl SegmentRangeCursor {
     pub(crate) fn new(
-        segment: Arc<SegmentState>,
-        geometry: StoreGeometry,
+        segment: Arc<Segment>,
+        geometry: SegmentGeometry,
         verify_block_checksums: bool,
         start: Option<Vec<u8>>,
         end: Option<Vec<u8>>,
@@ -290,6 +293,7 @@ impl SegmentRangeCursor {
             block_index,
             position: None,
             spare_block_bytes: Vec::new(),
+            #[cfg(feature = "value-compression")]
             payload_decoder: ValuePayloadDecoder::new(geometry.value_payload_compression),
         };
         cursor.load_next_valid_record()?;
@@ -297,18 +301,19 @@ impl SegmentRangeCursor {
     }
 
     fn current_record(&self) -> Result<Option<ParsedRecord<'_, '_>>> {
-        let Some(SegmentCursorPosition {
-            block,
-            decoded_payload,
-            record_index,
-        }) = &self.position
-        else {
+        let Some(position) = &self.position else {
             return Ok(None);
         };
-        let payload = block.payload_bytes(decoded_payload.as_deref())?;
-        Ok(Some(
-            block.record_at_index_with_payload(*record_index, payload)?,
-        ))
+        #[cfg(feature = "value-compression")]
+        let payload = position
+            .block
+            .payload_bytes(position.decoded_payload.as_deref())?;
+        #[cfg(not(feature = "value-compression"))]
+        let payload = position.block.payload_bytes()?;
+        Ok(Some(position.block.record_at_index_with_payload(
+            position.record_index,
+            payload,
+        )?))
     }
 
     fn advance(&mut self) -> Result<()> {
@@ -341,8 +346,19 @@ impl SegmentRangeCursor {
     fn load_next_valid_record(&mut self) -> Result<()> {
         self.recycle_current_block();
 
-        while self.block_index < self.segment.block_index.len() {
+        while self.block_index < self.segment.block_count() {
             let block_index = self.block_index;
+            if let Some(end) = self.end.as_deref()
+                && self.segment.block_min_cmp(block_index, end) != Ordering::Less
+            {
+                return Ok(());
+            }
+            if let Some(start) = self.start.as_deref()
+                && self.segment.block_max_cmp(block_index, start) == Ordering::Less
+            {
+                self.block_index += 1;
+                continue;
+            }
             self.block_index += 1;
             let buffer = std::mem::take(&mut self.spare_block_bytes);
             let block = match self.segment.load_block_reusing(
@@ -356,18 +372,6 @@ impl SegmentRangeCursor {
                 Err(error) => return Err(error),
             };
 
-            if let Some(end) = self.end.as_deref()
-                && block.first_key() >= end
-            {
-                return Ok(());
-            }
-            if let Some(start) = self.start.as_deref()
-                && block.last_key() < start
-            {
-                self.spare_block_bytes = block.into_bytes();
-                continue;
-            }
-
             let record_index = self
                 .start
                 .as_deref()
@@ -375,6 +379,7 @@ impl SegmentRangeCursor {
             if record_index < block.record_count()
                 && Self::record_is_before_end(self.end.as_deref(), &block, record_index)?
             {
+                #[cfg(feature = "value-compression")]
                 let decoded_payload =
                     match block.decode_payload_if_needed(&mut self.payload_decoder) {
                         Ok(decoded_payload) => decoded_payload,
@@ -385,6 +390,7 @@ impl SegmentRangeCursor {
                     };
                 self.position = Some(SegmentCursorPosition {
                     block,
+                    #[cfg(feature = "value-compression")]
                     decoded_payload,
                     record_index,
                 });
@@ -408,14 +414,11 @@ impl SegmentRangeCursor {
     }
 
     fn recycle_current_block(&mut self) {
-        if let Some(SegmentCursorPosition {
-            block,
-            decoded_payload,
-            ..
-        }) = self.position.take()
-        {
-            self.spare_block_bytes = block.into_bytes();
-            self.payload_decoder.reclaim_payload_buffer(decoded_payload);
+        if let Some(position) = self.position.take() {
+            #[cfg(feature = "value-compression")]
+            self.payload_decoder
+                .reclaim_payload_buffer(position.decoded_payload);
+            self.spare_block_bytes = position.block.into_bytes();
         }
     }
 

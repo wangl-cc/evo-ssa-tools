@@ -11,11 +11,12 @@
 mod persistence;
 
 pub(crate) use persistence::SegmentWriteError;
-pub use persistence::{CatalogError, CatalogMismatch, CorruptionError, FormatError};
+pub use persistence::{CorruptionError, FormatError};
 
-use crate::{
-    block::CompressionPolicyError,
-    catalog::{ManifestEncodeError, ManifestParseError, StoreFileParseError},
+#[cfg(feature = "value-compression")]
+use crate::block::CompressionPolicyError;
+use crate::catalog::{
+    CatalogError, CatalogMismatch, ManifestEncodeError, ManifestParseError, StoreFileParseError,
 };
 
 /// Top-level error returned by the segment cache store.
@@ -44,6 +45,7 @@ impl From<OptionsError> for Error {
     }
 }
 
+#[cfg(feature = "value-compression")]
 impl From<CompressionPolicyError> for Error {
     fn from(error: CompressionPolicyError) -> Self {
         Self::Input(InputError::InvalidOptions(error.into()))
@@ -144,6 +146,7 @@ pub enum OptionsError {
     #[error("key_len must fit in u32")]
     KeyLenTooLarge,
 
+    #[cfg(feature = "value-compression")]
     #[error(transparent)]
     CompressionPolicy(#[from] CompressionPolicyError),
 

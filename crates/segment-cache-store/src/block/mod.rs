@@ -11,6 +11,8 @@
 //! - [`layout`]: byte-layout math shared by both directions
 //! - [`encode`]: sorted entries in, block bytes out
 //! - [`decode`]: block bytes in, borrowed record views out
+//! - [`checksum`]: persisted checksum identity and optional digest calculation
+//! - [`compression`]: persisted compression identity and optional policy, frame, and codec logic
 
 mod checksum;
 mod compression;
@@ -19,11 +21,11 @@ mod encode;
 mod layout;
 
 pub use checksum::BlockChecksumKind;
-pub(crate) use checksum::MAX_BLOCK_CHECKSUM_LEN;
-pub use compression::{
-    CompressionPolicyError, ValuePayloadCompressionKind, ValuePayloadCompressionPolicy,
-};
-pub(crate) use compression::{DecodedPayload, ValuePayloadDecoder, ValuePayloadEncoder};
-pub(crate) use decode::{BlockDecodeOptions, BlockKeyUpperBound, DecodedBlock, ParsedRecord};
+pub use compression::ValuePayloadCompressionKind;
+#[cfg(feature = "value-compression")]
+pub use compression::{CompressionPolicyError, ValuePayloadCompressionPolicy};
+#[cfg(feature = "value-compression")]
+pub(crate) use compression::{ValuePayloadDecoder, ValuePayloadEncoder};
+pub(crate) use decode::{BlockDecodeOptions, BlockKeyRangeRef, DecodedBlock, ParsedRecord};
 pub(super) use encode::BlockBuilder;
-pub(crate) use layout::KEY_PREFIX_LEN_LEN;
+pub(crate) use layout::BLOCK_METADATA_HEADER_LEN;

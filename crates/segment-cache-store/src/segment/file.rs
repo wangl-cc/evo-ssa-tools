@@ -5,57 +5,41 @@
 //! required ranges and applies the open-time validation policy (a segment that
 //! fails any check is treated as absent, never as an error).
 
-use std::{
-    fs::File,
-    io::{self, Write},
-    path::PathBuf,
-};
+use std::{fs::File, path::PathBuf};
 
+use super::{
+    Segment, SegmentFingerprint, SegmentGeometry,
+    format::{SEGMENT_FOOTER_TRAILER_LEN, SEGMENT_HEADER_LEN, SegmentFooter, SegmentHeader},
+    index::BlockIndexEntry,
+    io::read_exact_at,
+};
 use crate::{
     binary::BinaryCursor,
-    block::{
-        BlockChecksumKind, BlockDecodeOptions, BlockKeyUpperBound, DecodedBlock,
-        ValuePayloadCompressionKind,
-    },
-    catalog::manifest::SegmentFileFingerprint,
-    error::Result,
-    schema::ValueLayout,
-    segment::format::{
-        BlockIndexEntry, SEGMENT_FOOTER_TRAILER_LEN, SEGMENT_HEADER_LEN, SegmentFooter,
-        SegmentHeader,
-    },
+    block::{BlockDecodeOptions, BlockKeyRangeRef, DecodedBlock},
+    error::{CorruptionError, Result},
 };
 
-const FINGERPRINT_READ_CHUNK_LEN: usize = 64 * 1024;
-const FINGERPRINT_HASH_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
-const FINGERPRINT_HASH_PRIME: u64 = 0x0000_0100_0000_01b3;
-
 #[derive(Clone, Copy)]
-pub(crate) struct SegmentOpenOptions {
-    pub(crate) expected_key_len: usize,
-    pub(crate) expected_value_layout: ValueLayout,
-    pub(crate) expected_block_checksum: BlockChecksumKind,
-    pub(crate) expected_value_payload_compression: ValuePayloadCompressionKind,
-    pub(crate) expected_fingerprint: SegmentFileFingerprint,
+pub(crate) struct SegmentOpenOptions<'a> {
+    pub(crate) geometry: SegmentGeometry,
+    pub(crate) expected_fingerprint: SegmentFingerprint,
+    pub(crate) expected_min_key: &'a [u8],
+    pub(crate) expected_max_key: &'a [u8],
 }
 
 #[derive(Clone, Copy)]
-pub(crate) struct BlockReadOptions<'a> {
-    pub(crate) key_len: usize,
-    pub(crate) value_layout: ValueLayout,
-    pub(crate) block_checksum: BlockChecksumKind,
-    pub(crate) value_payload_compression: ValuePayloadCompressionKind,
+pub(crate) struct BlockReadOptions {
+    pub(crate) geometry: SegmentGeometry,
+    #[cfg(feature = "block-checksum")]
     pub(crate) verify_checksum: bool,
-    pub(crate) upper_key_bound: BlockKeyUpperBound<'a>,
 }
 
 /// Open segment handle with its sparse block index loaded into memory.
 #[derive(Debug)]
-pub(crate) struct OpenedSegment {
+pub(super) struct OpenedSegment {
     pub(crate) file: File,
     pub(crate) min_key: Vec<u8>,
     pub(crate) max_key: Vec<u8>,
-    pub(crate) fingerprint: SegmentFileFingerprint,
     pub(crate) block_index: Vec<BlockIndexEntry>,
 }
 
@@ -65,7 +49,7 @@ impl OpenedSegment {
     /// Returns `Ok(None)` when the file is missing, malformed, corrupt, or
     /// does not match the expected store geometry: a referenced segment that
     /// fails to open is miss space, not an error.
-    pub(crate) fn open(path: PathBuf, options: SegmentOpenOptions) -> Result<Option<Self>> {
+    pub(crate) fn open(path: PathBuf, options: SegmentOpenOptions<'_>) -> Result<Option<Self>> {
         let file = match File::open(&path) {
             Ok(file) => file,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -77,19 +61,24 @@ impl OpenedSegment {
             Err(error) => return Err(error),
         };
         if !header.matches_geometry(
-            options.expected_key_len,
-            options.expected_value_layout,
-            options.expected_block_checksum,
-            options.expected_value_payload_compression,
+            options.geometry.key_len,
+            options.geometry.value_layout,
+            options.geometry.block_checksum,
+            options.geometry.value_payload_compression,
         ) {
             return Ok(None);
         }
-        let footer = match read_footer(&file, options.expected_key_len) {
+        let footer = match read_footer(
+            &file,
+            options.geometry.key_len,
+            options.expected_min_key,
+            options.expected_max_key,
+        ) {
             Ok(footer) => footer,
             Err(error) if error.is_cache_miss_corruption() => return Ok(None),
             Err(error) => return Err(error),
         };
-        let fingerprint = match segment_file_fingerprint(&file) {
+        let fingerprint = match SegmentFingerprint::from_file(&file) {
             Ok(fingerprint) => fingerprint,
             Err(error) if error.is_cache_miss_corruption() => return Ok(None),
             Err(error) => return Err(error),
@@ -99,86 +88,22 @@ impl OpenedSegment {
         }
         Ok(Some(Self {
             file,
-            min_key: footer.min_key,
-            max_key: footer.max_key,
-            fingerprint,
+            min_key: options.expected_min_key.to_vec(),
+            max_key: options.expected_max_key.to_vec(),
             block_index: footer.block_index,
         }))
     }
 }
 
-pub(crate) fn segment_file_fingerprint(file: &File) -> Result<SegmentFileFingerprint> {
-    use crate::error::CorruptionError;
-
-    let len = file.metadata()?.len();
-    let mut hash = FINGERPRINT_HASH_OFFSET;
-    let mut offset = 0;
-    let mut buffer = vec![0u8; FINGERPRINT_READ_CHUNK_LEN];
-    while offset < len {
-        let remaining = usize::try_from(len - offset).unwrap_or(usize::MAX);
-        let read_len = remaining.min(buffer.len());
-        let chunk = &mut buffer[..read_len];
-        match read_exact_at(file, offset, chunk) {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => {
-                return Err(CorruptionError::SegmentFormat.into());
-            }
-            Err(error) => return Err(error.into()),
-        }
-        hash = fingerprint_hash_append(hash, chunk);
-        offset += read_len as u64;
+impl Segment {
+    /// Opens and validates one manifest-referenced segment.
+    pub(crate) fn open(
+        segment_id: u32,
+        path: PathBuf,
+        options: SegmentOpenOptions<'_>,
+    ) -> Result<Option<Self>> {
+        Ok(OpenedSegment::open(path, options)?.map(|opened| Self::from_opened(segment_id, opened)))
     }
-    Ok(SegmentFileFingerprint { len, hash })
-}
-
-/// `Write` adapter that fingerprints exactly the bytes accepted by the inner writer.
-pub(crate) struct SegmentFingerprintWriter<'a, W> {
-    inner: &'a mut W,
-    len: u64,
-    hash: u64,
-}
-
-impl<'a, W> SegmentFingerprintWriter<'a, W> {
-    pub(crate) fn new(inner: &'a mut W) -> Self {
-        Self {
-            inner,
-            len: 0,
-            hash: FINGERPRINT_HASH_OFFSET,
-        }
-    }
-
-    pub(crate) fn fingerprint(&self) -> SegmentFileFingerprint {
-        SegmentFileFingerprint {
-            len: self.len,
-            hash: self.hash,
-        }
-    }
-}
-
-impl<W: Write> Write for SegmentFingerprintWriter<'_, W> {
-    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        let written = self.inner.write(bytes)?;
-        let written_len = u64::try_from(written)
-            .map_err(|_| io::Error::other("segment fingerprint length overflow"))?;
-        self.len = self
-            .len
-            .checked_add(written_len)
-            .ok_or_else(|| io::Error::other("segment fingerprint length overflow"))?;
-        self.hash = fingerprint_hash_append(self.hash, &bytes[..written]);
-        Ok(written)
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        self.inner.flush()
-    }
-}
-
-fn fingerprint_hash_append(mut hash: u64, bytes: &[u8]) -> u64 {
-    for &byte in bytes {
-        hash ^= u64::from(byte);
-        hash = hash.wrapping_mul(FINGERPRINT_HASH_PRIME);
-    }
-    hash
 }
 
 fn read_header(file: &File) -> Result<SegmentHeader> {
@@ -187,7 +112,12 @@ fn read_header(file: &File) -> Result<SegmentHeader> {
     Ok(SegmentHeader::from_bytes(&bytes)?)
 }
 
-fn read_footer(file: &File, key_len: usize) -> Result<SegmentFooter> {
+fn read_footer(
+    file: &File,
+    key_len: usize,
+    expected_min_key: &[u8],
+    expected_max_key: &[u8],
+) -> Result<SegmentFooter> {
     use crate::error::CorruptionError;
 
     let file_len = file.metadata()?.len();
@@ -212,94 +142,50 @@ fn read_footer(file: &File, key_len: usize) -> Result<SegmentFooter> {
     let footer_len = usize::try_from(footer_len).map_err(|_| CorruptionError::SegmentFormat)?;
     let mut bytes = vec![0u8; footer_len];
     read_exact_at(file, data_end, &mut bytes)?;
-    Ok(SegmentFooter::from_bytes(&bytes, key_len, data_end)?)
+    Ok(SegmentFooter::from_bytes(
+        &bytes,
+        key_len,
+        data_end,
+        expected_min_key,
+        expected_max_key,
+    )?)
 }
 
 /// Reads and decodes one block, allocating a fresh buffer.
-pub(crate) fn read_block(
+pub(super) fn read_block(
     file: &File,
     entry: &BlockIndexEntry,
-    options: BlockReadOptions<'_>,
+    options: BlockReadOptions,
 ) -> Result<DecodedBlock> {
     read_block_reusing(file, entry, options, Vec::new())
 }
 
 /// Reads and decodes one block while reusing a caller-owned backing buffer.
-pub(crate) fn read_block_reusing(
+pub(super) fn read_block_reusing(
     file: &File,
     entry: &BlockIndexEntry,
-    options: BlockReadOptions<'_>,
+    options: BlockReadOptions,
     mut bytes: Vec<u8>,
 ) -> Result<DecodedBlock> {
-    let block_len = entry.block_len as usize;
+    let block_len = usize::try_from(entry.byte_range.end - entry.byte_range.start)
+        .map_err(|_| CorruptionError::SegmentFormat)?;
     if bytes.len() < block_len {
         bytes.resize(block_len, 0);
     } else {
         bytes.truncate(block_len);
     }
-    read_exact_at(file, entry.block_offset, &mut bytes)?;
-    Ok(DecodedBlock::decode(bytes, entry, BlockDecodeOptions {
-        key_len: options.key_len,
-        value_layout: options.value_layout,
-        block_checksum: options.block_checksum,
-        value_payload_compression: options.value_payload_compression,
+    read_exact_at(file, entry.byte_range.start, &mut bytes)?;
+    Ok(DecodedBlock::decode(bytes, BlockDecodeOptions {
+        expected_key_range: BlockKeyRangeRef {
+            prefix: entry.key_range.prefix(),
+            min_suffix: entry.key_range.min_suffix(),
+            max_suffix: entry.key_range.max_suffix(),
+        },
+        key_len: options.geometry.key_len,
+        value_layout: options.geometry.value_layout,
+        block_checksum: options.geometry.block_checksum,
+        value_payload_compression: options.geometry.value_payload_compression,
+        #[cfg(feature = "block-checksum")]
         verify_checksum: options.verify_checksum,
-        upper_key_bound: options.upper_key_bound,
     })?)
-}
-
-/// Reads exactly `buffer.len()` bytes at `offset` without moving the shared
-/// segment file cursor.
-fn read_exact_at(file: &File, mut offset: u64, mut buffer: &mut [u8]) -> std::io::Result<()> {
-    use std::os::unix::fs::FileExt;
-
-    while !buffer.is_empty() {
-        let read = file.read_at(buffer, offset)?;
-        if read == 0 {
-            return Err(std::io::ErrorKind::UnexpectedEof.into());
-        }
-        offset += read as u64;
-        let (_, rest) = buffer.split_at_mut(read);
-        buffer = rest;
-    }
-    Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use std::{
-        fs,
-        io::{Seek, Write},
-    };
-
-    use super::{SegmentFingerprintWriter, segment_file_fingerprint};
-
-    #[test]
-    fn write_time_fingerprint_matches_file_scan() {
-        let tempdir = tempfile::tempdir().expect("tempdir should be created");
-        let path = tempdir.path().join("segment");
-        let mut file = fs::File::options()
-            .read(true)
-            .write(true)
-            .create_new(true)
-            .open(&path)
-            .expect("segment file should be created");
-        let write_time_fingerprint = {
-            let mut writer = SegmentFingerprintWriter::new(&mut file);
-            writer
-                .write_all(b"header")
-                .expect("first write should succeed");
-            writer
-                .write_all(&[0, 1, 2, 3, 4])
-                .expect("second write should succeed");
-            writer.fingerprint()
-        };
-        file.flush().expect("segment file should flush");
-        file.rewind().expect("segment file should rewind");
-
-        assert_eq!(
-            write_time_fingerprint,
-            segment_file_fingerprint(&file).expect("file scan should fingerprint segment")
-        );
-    }
 }

@@ -9,10 +9,8 @@ use std::collections::BTreeSet;
 
 use crc32c::crc32c;
 
-use crate::{
-    binary::BinaryCursor,
-    error::{CatalogError, CatalogMismatch},
-};
+use super::{CatalogError, CatalogMismatch};
+use crate::{binary::BinaryCursor, segment::SegmentFingerprint};
 
 const MANIFEST_VERSION: u32 = 1;
 
@@ -74,15 +72,9 @@ pub enum ManifestParseError {
 pub(crate) struct SegmentManifestEntry {
     pub(crate) segment_id: u32,
     pub(crate) tier: SegmentTier,
-    pub(crate) fingerprint: SegmentFileFingerprint,
+    pub(crate) fingerprint: SegmentFingerprint,
     pub(crate) min_key: Vec<u8>,
     pub(crate) max_key: Vec<u8>,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct SegmentFileFingerprint {
-    pub(crate) len: u64,
-    pub(crate) hash: u64,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -95,7 +87,7 @@ impl SegmentManifestEntry {
     pub(crate) fn new(
         segment_id: u32,
         tier: SegmentTier,
-        fingerprint: SegmentFileFingerprint,
+        fingerprint: SegmentFingerprint,
         min_key: Vec<u8>,
         max_key: Vec<u8>,
     ) -> Self {
@@ -108,17 +100,19 @@ impl SegmentManifestEntry {
         }
     }
 
-    pub(crate) fn matches_segment(
-        &self,
-        min_key: &[u8],
-        max_key: &[u8],
-        fingerprint: SegmentFileFingerprint,
-    ) -> bool {
-        self.min_key == min_key && self.max_key == max_key && self.fingerprint == fingerprint
-    }
-
     pub(crate) fn is_main(&self) -> bool {
         self.tier == SegmentTier::Main
+    }
+
+    /// Validates this entry independently of neighboring manifest entries.
+    pub(crate) fn validate_shape(&self, key_len: usize) -> Result<(), CatalogMismatch> {
+        if self.min_key.len() != key_len || self.max_key.len() != key_len {
+            return Err(CatalogMismatch::SegmentKeyLen);
+        }
+        if self.min_key > self.max_key {
+            return Err(CatalogMismatch::SegmentKeyRange);
+        }
+        Ok(())
     }
 }
 
@@ -218,7 +212,7 @@ impl StoreManifest {
         let mut previous_max: Option<&[u8]> = None;
         let mut seen_patch = false;
         for entry in &self.segments {
-            validate_segment_entry_shape(entry, key_len)?;
+            entry.validate_shape(key_len)?;
             if entry.is_main() {
                 if seen_patch {
                     return Err(CatalogMismatch::SegmentTierOrder.into());
@@ -245,22 +239,6 @@ impl StoreManifest {
         }
         Ok(())
     }
-}
-
-/// Validates one entry's key shape independent of its neighbors.
-///
-/// Shared by open-time structure validation above and commit planning.
-pub(crate) fn validate_segment_entry_shape(
-    entry: &SegmentManifestEntry,
-    key_len: usize,
-) -> std::result::Result<(), CatalogMismatch> {
-    if entry.min_key.len() != key_len || entry.max_key.len() != key_len {
-        return Err(CatalogMismatch::SegmentKeyLen);
-    }
-    if entry.min_key > entry.max_key {
-        return Err(CatalogMismatch::SegmentKeyRange);
-    }
-    Ok(())
 }
 
 fn manifest_entry_len(key_len: usize) -> Option<usize> {
@@ -320,7 +298,7 @@ impl<'a> ManifestParser<'a> {
             let segment_id = self.read_u32("segment_id")?;
             let tier = SegmentTier::from_u8(self.read_u8("tier")?)
                 .ok_or(ManifestParseError::UnsupportedSegmentTier)?;
-            let fingerprint = SegmentFileFingerprint {
+            let fingerprint = SegmentFingerprint {
                 len: self.read_u64("segment_len")?,
                 hash: self.read_u64("segment_hash")?,
             };
@@ -416,8 +394,8 @@ mod tests {
         )
     }
 
-    fn fingerprint(seed: u32) -> SegmentFileFingerprint {
-        SegmentFileFingerprint {
+    fn fingerprint(seed: u32) -> SegmentFingerprint {
+        SegmentFingerprint {
             len: 1024 + u64::from(seed),
             hash: u64::from(seed),
         }

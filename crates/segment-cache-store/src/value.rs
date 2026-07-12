@@ -30,10 +30,6 @@ impl ValueLayout {
         self.fixed_len.is_none()
     }
 
-    pub(crate) fn fixed_len(self) -> Option<NonZeroU32> {
-        self.fixed_len
-    }
-
     /// Returns the fixed value length when this store uses fixed-width values.
     #[must_use]
     pub fn fixed_value_len(self) -> Option<NonZeroU32> {

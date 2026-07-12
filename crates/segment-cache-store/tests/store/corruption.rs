@@ -12,11 +12,7 @@ use segment_cache_store::{
     OpenOptions as StoreOpenOptions, Result, Store, StoreMetadata,
 };
 
-#[cfg(any(
-    feature = "checksum-rapidhash",
-    feature = "value-compression-lz4",
-    feature = "value-compression-zstd"
-))]
+#[cfg(any(feature = "value-compression-lz4", feature = "value-compression-zstd"))]
 use crate::support::api::create_options;
 #[cfg(any(feature = "checksum-crc32c", feature = "checksum-rapidhash"))]
 use crate::support::api::metadata;
@@ -32,7 +28,7 @@ use crate::support::{
     segment_file::{
         FOOTER_TRAILER_LEN, block_index_offset, block_offset, corrupt_block_value_payload,
         first_segment_path, mutate_block_metadata, mutate_footer_payload,
-        truncate_first_block_to_declared_len,
+        truncate_first_block_to_len,
     },
 };
 
@@ -539,12 +535,12 @@ fn variable_value_index_must_start_at_zero_without_block_checksums() -> Result<(
     let record_count = entries.len();
     mutate_block_metadata(&path, 0, |metadata| {
         let prefix_len = u32::from_le_bytes(
-            metadata[..4]
+            metadata[4..8]
                 .try_into()
                 .expect("prefix length field should exist"),
         ) as usize;
         let suffix_len = key_len - prefix_len;
-        let value_index_offset = 4 + prefix_len + record_count * suffix_len;
+        let value_index_offset = 8 + prefix_len + record_count * suffix_len;
         metadata[value_index_offset..value_index_offset + 4].copy_from_slice(&1u32.to_le_bytes());
     })?;
 
@@ -580,12 +576,12 @@ fn block_last_key_must_stay_within_segment_bounds_without_block_checksums() -> R
     let replacement_key = make_key(1, 1, 2);
     mutate_block_metadata(&path, 0, |metadata| {
         let prefix_len = u32::from_le_bytes(
-            metadata[..4]
+            metadata[4..8]
                 .try_into()
                 .expect("prefix length field should exist"),
         ) as usize;
         let suffix_len = key_len - prefix_len;
-        let last_suffix_offset = 4 + prefix_len + suffix_len;
+        let last_suffix_offset = 8 + prefix_len + suffix_len;
         metadata[last_suffix_offset..last_suffix_offset + suffix_len]
             .copy_from_slice(&replacement_key[prefix_len..]);
     })?;
@@ -658,7 +654,7 @@ fn corrupted_block_key_ordering_becomes_miss_in_ordered_reads() -> Result<()> {
     let key_len = entries[0].0.len();
     mutate_block_metadata(&path, 0, |metadata| {
         let prefix_len = key_len - 1;
-        let suffix_start = 4 + prefix_len;
+        let suffix_start = 8 + prefix_len;
         let first_suffix = suffix_start;
         let second_suffix = suffix_start + 1;
         metadata[second_suffix] = metadata[first_suffix];
@@ -689,7 +685,7 @@ fn malformed_footer_block_index_metadata_hides_whole_segment() -> Result<()> {
     commit_entries(&store, &[(key.clone(), make_value(9, 16))])?;
     let path = first_segment_path(tempdir.path())?;
     mutate_footer_payload(&path, |payload| {
-        let block_count_offset = 8 + key.len() * 2;
+        let block_count_offset = 8;
         payload[block_count_offset..block_count_offset + 4].copy_from_slice(&0u32.to_le_bytes());
     })?;
 
@@ -717,7 +713,7 @@ fn sparse_ordered_lookup_short_block_metadata_becomes_miss() -> Result<()> {
             .with_flush_threshold_records(NonZeroUsize::new(128).expect("non-zero literal")),
     )?;
     let path = first_segment_path(tempdir.path())?;
-    truncate_first_block_to_declared_len(&path, 4)?;
+    truncate_first_block_to_len(&path, 4)?;
     drop(store);
 
     let reopened = reopen_store_read_only(&tempdir)?;

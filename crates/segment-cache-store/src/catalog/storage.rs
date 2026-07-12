@@ -2,7 +2,8 @@
 
 use std::{fs, path::Path};
 
-use crate::{Result, catalog::paths::StorePaths};
+use super::StorePaths;
+use crate::Result;
 
 /// Physical file usage for one store root.
 ///
@@ -23,10 +24,12 @@ pub struct StoreStorageStats {
     pub total_bytes: u64,
 }
 
-pub(crate) fn collect_storage_stats(paths: &StorePaths) -> Result<StoreStorageStats> {
-    let mut stats = StoreStorageStats::default();
-    StorageStatsCollector::new(paths).collect_into(&mut stats, paths.root())?;
-    Ok(stats)
+impl StorePaths {
+    pub(crate) fn storage_stats(&self) -> Result<StoreStorageStats> {
+        let mut stats = StoreStorageStats::default();
+        StorageStatsCollector::new(self).collect_into(&mut stats, self.root())?;
+        Ok(stats)
+    }
 }
 
 struct StorageStatsCollector<'a> {

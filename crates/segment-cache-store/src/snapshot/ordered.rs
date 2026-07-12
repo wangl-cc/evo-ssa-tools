@@ -2,12 +2,15 @@
 
 use std::sync::Arc;
 
+use super::LookupReadOptions;
+#[cfg(feature = "value-compression")]
+use crate::block::ValuePayloadDecoder;
 use crate::{
-    block::{DecodedBlock, ValuePayloadCompressionKind, ValuePayloadDecoder},
+    block::{DecodedBlock, ValuePayloadCompressionKind},
+    catalog::SegmentSnapshot,
     error::{InputError, Result},
-    segment::state::SegmentState,
-    snapshot::LookupReadOptions,
-    store::{Store, state::SegmentSnapshot},
+    segment::Segment,
+    store::StoreInner,
 };
 
 /// Reusable ordered lookup session.
@@ -15,7 +18,7 @@ use crate::{
 /// The session keeps cursor state and the most recently loaded block, making
 /// repeated ordered batches cheaper than independent point lookups.
 pub struct OrderedLookup {
-    store: Store,
+    inner: Arc<StoreInner>,
     state: LookupState,
 }
 
@@ -29,23 +32,26 @@ struct LookupState {
     current_segment_index: Option<usize>,
     current_block_index: Option<usize>,
     loaded_block: Option<LoadedBlock>,
+    #[cfg(feature = "value-compression")]
     payload_decoder: ValuePayloadDecoder,
 }
 
 struct LoadedBlock {
     block_index: usize,
     block: DecodedBlock,
+    #[cfg(feature = "value-compression")]
     decoded_payload: Option<Vec<u8>>,
 }
 
 impl LookupState {
-    fn new(value_payload_compression: ValuePayloadCompressionKind) -> Self {
+    fn new(_value_payload_compression: ValuePayloadCompressionKind) -> Self {
         Self {
             snapshot: None,
             current_segment_index: None,
             current_block_index: None,
             loaded_block: None,
-            payload_decoder: ValuePayloadDecoder::new(value_payload_compression),
+            #[cfg(feature = "value-compression")]
+            payload_decoder: ValuePayloadDecoder::new(_value_payload_compression),
         }
     }
 
@@ -68,6 +74,7 @@ impl LookupState {
         let Some(loaded) = self.loaded_block.take() else {
             return Vec::new();
         };
+        #[cfg(feature = "value-compression")]
         self.payload_decoder
             .reclaim_payload_buffer(loaded.decoded_payload);
         loaded.block.into_bytes()
@@ -100,13 +107,13 @@ impl PatchWinner {
 }
 
 struct PatchWinnerReader<'a> {
-    segments: &'a [Arc<SegmentState>],
+    segments: &'a [Arc<Segment>],
     states: Vec<Option<LookupState>>,
     options: LookupReadOptions,
 }
 
 impl<'a> PatchWinnerReader<'a> {
-    fn new(segments: &'a [Arc<SegmentState>], options: LookupReadOptions) -> Self {
+    fn new(segments: &'a [Arc<Segment>], options: LookupReadOptions) -> Self {
         let states = segments.iter().map(|_| None).collect();
         Self {
             segments,
@@ -153,10 +160,10 @@ impl<'a> PatchWinnerReader<'a> {
 }
 
 impl OrderedLookup {
-    pub(crate) fn new(store: Store) -> Self {
-        let value_payload_compression = store.inner.geometry.value_payload_compression;
+    pub(crate) fn new(inner: Arc<StoreInner>) -> Self {
+        let value_payload_compression = inner.geometry.value_payload_compression;
         Self {
-            store,
+            inner,
             state: LookupState::new(value_payload_compression),
         }
     }
@@ -166,7 +173,7 @@ impl OrderedLookup {
     where
         I: IntoIterator<Item = &'a [u8]>,
     {
-        let keys = collect_and_validate_lookup_keys(keys, self.store.inner.geometry.key_len)?;
+        let keys = collect_and_validate_lookup_keys(keys, self.inner.geometry.key_len)?;
         let mut results = Vec::with_capacity(keys.len());
         self.process_many_slice(&keys, |_, value| {
             results.push(value.map(ToOwned::to_owned));
@@ -179,7 +186,7 @@ impl OrderedLookup {
     where
         I: IntoIterator<Item = &'a [u8]>,
     {
-        let keys = collect_and_validate_lookup_keys(keys, self.store.inner.geometry.key_len)?;
+        let keys = collect_and_validate_lookup_keys(keys, self.inner.geometry.key_len)?;
         self.process_contains_slice(&keys)
     }
 
@@ -189,7 +196,7 @@ impl OrderedLookup {
         K: AsRef<[u8]>,
         F: FnMut(usize, Option<&[u8]>),
     {
-        validate_lookup_key_slice(keys, self.store.inner.geometry.key_len)?;
+        validate_lookup_key_slice(keys, self.inner.geometry.key_len)?;
         self.process_many_slice(keys, visitor)
     }
 
@@ -198,9 +205,9 @@ impl OrderedLookup {
         K: AsRef<[u8]>,
         F: FnMut(usize, Option<&[u8]>),
     {
-        let options = self.store.lookup_read_options();
+        let options = self.read_options();
         let (main_segments, patch_segments) = {
-            let state = self.store.inner.state.read();
+            let state = self.inner.state.read();
             (state.main_segments.clone(), state.patch_segments.clone())
         };
         if patch_segments.is_empty() {
@@ -228,9 +235,9 @@ impl OrderedLookup {
     where
         K: AsRef<[u8]>,
     {
-        let options = self.store.lookup_read_options();
+        let options = self.read_options();
         let (main_segments, patch_segments) = {
-            let state = self.store.inner.state.read();
+            let state = self.inner.state.read();
             (state.main_segments.clone(), state.patch_segments.clone())
         };
         let mut results = vec![false; keys.len()];
@@ -279,6 +286,13 @@ impl OrderedLookup {
         }
 
         Ok(results)
+    }
+
+    fn read_options(&self) -> LookupReadOptions {
+        LookupReadOptions {
+            geometry: self.inner.geometry,
+            verify_block_checksums: self.inner.verify_block_checksums,
+        }
     }
 
     fn process_many_with_patches<K, F>(
@@ -391,12 +405,12 @@ where
     Ok(())
 }
 
-fn key_range_for_segment<K>(keys: &[K], segment: &SegmentState) -> std::ops::Range<usize>
+fn key_range_for_segment<K>(keys: &[K], segment: &Segment) -> std::ops::Range<usize>
 where
     K: AsRef<[u8]>,
 {
-    let start = keys.partition_point(|key| key.as_ref() < segment.min_key.as_slice());
-    let end = keys.partition_point(|key| key.as_ref() <= segment.max_key.as_slice());
+    let start = keys.partition_point(|key| key.as_ref() < segment.min_key());
+    let end = keys.partition_point(|key| key.as_ref() <= segment.max_key());
     start..end
 }
 
@@ -405,7 +419,7 @@ where
     K: AsRef<[u8]>,
     F: FnMut(usize, Option<LookupHit<'_>>) -> Result<()>,
 {
-    segments: &'a [Arc<SegmentState>],
+    segments: &'a [Arc<Segment>],
     lookup_state: &'a mut LookupState,
     keys: &'a [K],
     base_index: usize,
@@ -422,7 +436,7 @@ where
     F: FnMut(usize, Option<LookupHit<'_>>) -> Result<()>,
 {
     fn new(
-        segments: &'a [Arc<SegmentState>],
+        segments: &'a [Arc<Segment>],
         lookup_state: &'a mut LookupState,
         keys: &'a [K],
         base_index: usize,
@@ -457,28 +471,23 @@ where
             }
 
             let segment = self.segments[self.segment_index].as_ref();
-            if key > segment.max_key.as_slice() {
+            if key > segment.max_key() {
                 self.segment_index += 1;
                 self.lookup_state
                     .reset_segment_if_needed(self.segment_index);
                 continue;
             }
 
-            if key < segment.min_key.as_slice() {
-                self.visit_misses_before(segment.min_key.as_slice())?;
+            if key < segment.min_key() {
+                self.visit_misses_before(segment.min_key())?;
                 continue;
             }
 
             let block_index = self.lookup_state.initial_block_index(segment, key);
             let block_end = block_end_from_index(segment, block_index, self.keys, self.key_index);
             if block_end == self.key_index {
-                if should_advance_past_empty_block(segment, block_index, key) {
-                    self.lookup_state.current_block_index = block_index.checked_add(1);
-                    self.lookup_state.recycle_loaded_block();
-                } else {
-                    (self.visitor)(self.base_index + self.key_index, None)?;
-                    self.key_index += 1;
-                }
+                (self.visitor)(self.base_index + self.key_index, None)?;
+                self.key_index += 1;
                 continue;
             }
 
@@ -501,6 +510,7 @@ where
                 self.key_index = block_end;
                 continue;
             }
+            #[cfg(feature = "value-compression")]
             if let Err(error) = self.lookup_state.ensure_decoded_payload() {
                 if error.is_cache_miss_corruption() {
                     self.visit_corrupt_block_misses(segment, block_index)?;
@@ -546,11 +556,7 @@ where
         Ok(())
     }
 
-    fn visit_corrupt_block_misses(
-        &mut self,
-        segment: &SegmentState,
-        block_index: usize,
-    ) -> Result<()> {
+    fn visit_corrupt_block_misses(&mut self, segment: &Segment, block_index: usize) -> Result<()> {
         let block_end = block_end_from_index(segment, block_index, self.keys, self.key_index);
         for offset in self.key_index..block_end {
             (self.visitor)(self.base_index + offset, None)?;
@@ -563,40 +569,33 @@ where
 }
 
 impl LookupState {
-    fn initial_segment_index(&self, segments: &[Arc<SegmentState>], key: &[u8]) -> usize {
+    fn initial_segment_index(&self, segments: &[Arc<Segment>], key: &[u8]) -> usize {
         let candidate = self
             .current_segment_index
             .filter(|&index| index < segments.len());
         if let Some(index) = candidate {
             let segment = segments[index].as_ref();
-            if segment.min_key.as_slice() <= key {
+            if segment.min_key() <= key {
                 return index;
             }
         }
 
-        segments.partition_point(|segment| segment.max_key.as_slice() < key)
+        segments.partition_point(|segment| segment.max_key() < key)
     }
 
-    fn initial_block_index(&self, segment: &SegmentState, key: &[u8]) -> usize {
+    fn initial_block_index(&self, segment: &Segment, key: &[u8]) -> usize {
         if let Some(loaded) = self.loaded_block.as_ref()
-            && loaded.block.first_key() <= key
-            && key <= loaded.block.last_key()
+            && segment.block_contains(loaded.block_index, key)
         {
             return loaded.block_index;
         }
 
         if let Some(index) = self
             .current_block_index
-            .filter(|&index| index < segment.block_index.len())
+            .filter(|&index| index < segment.block_count())
+            && segment.block_contains(index, key)
         {
-            let entry = &segment.block_index[index];
-            let before_next_block = segment
-                .block_index
-                .get(index + 1)
-                .is_none_or(|next| key < next.first_key.as_slice());
-            if entry.first_key.as_slice() <= key && before_next_block {
-                return index;
-            }
+            return index;
         }
 
         segment.find_block_index(key)
@@ -612,7 +611,7 @@ impl LookupState {
 
     fn ensure_loaded_block(
         &mut self,
-        segment: &SegmentState,
+        segment: &Segment,
         block_index: usize,
         options: LookupReadOptions,
     ) -> Result<&DecodedBlock> {
@@ -639,11 +638,13 @@ impl LookupState {
         let loaded = self.loaded_block.insert(LoadedBlock {
             block_index,
             block,
+            #[cfg(feature = "value-compression")]
             decoded_payload: None,
         });
         Ok(&loaded.block)
     }
 
+    #[cfg(feature = "value-compression")]
     fn ensure_decoded_payload(&mut self) -> Result<()> {
         let loaded = self
             .loaded_block
@@ -662,20 +663,24 @@ impl LookupState {
             .loaded_block
             .as_ref()
             .expect("payload access follows block loading");
+        #[cfg(feature = "value-compression")]
         let payload = loaded
             .block
             .payload_bytes(loaded.decoded_payload.as_deref())?;
+        #[cfg(not(feature = "value-compression"))]
+        let payload = loaded.block.payload_bytes()?;
         Ok((&loaded.block, payload))
     }
 
     fn value_at_index(
         &mut self,
-        segment: &SegmentState,
+        segment: &Segment,
         block_index: usize,
         record_index: usize,
         options: LookupReadOptions,
     ) -> Result<&[u8]> {
         self.ensure_loaded_block(segment, block_index, options)?;
+        #[cfg(feature = "value-compression")]
         self.ensure_decoded_payload()?;
         let (block, payload) = self.loaded_block_and_payload()?;
         block
@@ -765,7 +770,7 @@ where
 }
 
 fn block_end_from_index<K>(
-    segment: &SegmentState,
+    segment: &Segment,
     block_index: usize,
     keys: &[K],
     key_index: usize,
@@ -773,27 +778,13 @@ fn block_end_from_index<K>(
 where
     K: AsRef<[u8]>,
 {
-    let next_first_key = segment
-        .block_index
-        .get(block_index + 1)
-        .map(|entry| entry.first_key.as_slice());
     let mut block_end = key_index;
     while block_end < keys.len() {
-        let belongs_to_block = match next_first_key {
-            Some(next_first_key) => keys[block_end].as_ref() < next_first_key,
-            None => keys[block_end].as_ref() <= segment.max_key.as_slice(),
-        };
-        if !belongs_to_block {
+        if segment.block_max_cmp(block_index, keys[block_end].as_ref()) == std::cmp::Ordering::Less
+        {
             break;
         }
         block_end += 1;
     }
     block_end
-}
-
-fn should_advance_past_empty_block(segment: &SegmentState, block_index: usize, key: &[u8]) -> bool {
-    segment
-        .block_index
-        .get(block_index + 1)
-        .is_some_and(|next| key >= next.first_key.as_slice())
 }

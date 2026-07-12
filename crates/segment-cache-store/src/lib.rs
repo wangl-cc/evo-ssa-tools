@@ -5,14 +5,16 @@
 //! The implementation is organized around persistent concepts and their
 //! invariants rather than horizontal technical layers:
 //!
-//! 1. `block`: one physical read unit and its encoding, decoding, checksum, and compression rules
-//! 2. `schema`: persistent store geometry and caller-defined namespace metadata
-//! 3. `segment`: one immutable sorted file, including records, format, file access, and runtime
-//!    state
-//! 4. `catalog`: namespace identity and the manifest that selects visible segments
-//! 5. `snapshot`: point, ordered, and range reads over one visible segment snapshot
-//! 6. `commit`: validated batches and atomic transitions to a new visible snapshot
-//! 7. [`Store`]: the cheaply cloneable public facade and its shared state
+//! 1. `record`: borrowed sorted key/value input shared by encoders and commits
+//! 2. `value`: the store-wide fixed or variable value layout
+//! 3. `block`: one physical read unit and its encoding, decoding, checksum, and compression rules
+//! 4. `segment`: one immutable sorted file, including geometry, identity, codecs, IO, and the open
+//!    handle
+//! 5. `catalog`: caller metadata, namespace identity, manifest visibility, and the selected segment
+//!    snapshot
+//! 6. `snapshot`: point, ordered, and range reads over one catalog snapshot
+//! 7. `commit`: validated batches, pure transition plans, and atomic publication
+//! 8. [`Store`]: the cheaply cloneable public facade and shared synchronization state
 //!
 //! `binary`, `key`, and `error` are small supporting modules rather than
 //! architectural layers.
@@ -21,29 +23,27 @@
 compile_error!("segment-cache-store currently supports Unix targets only");
 
 mod binary;
-pub(crate) mod block;
+mod block;
 mod catalog;
 mod commit;
 mod error;
 mod key;
-mod schema;
-pub(crate) mod segment;
+mod record;
+mod segment;
 mod snapshot;
 mod store;
+mod value;
 
-pub use block::{
-    BlockChecksumKind, CompressionPolicyError, ValuePayloadCompressionKind,
-    ValuePayloadCompressionPolicy,
-};
+pub use block::{BlockChecksumKind, ValuePayloadCompressionKind};
+#[cfg(feature = "value-compression")]
+pub use block::{CompressionPolicyError, ValuePayloadCompressionPolicy};
 pub use catalog::{
-    CreateOptions, ManifestEncodeError, ManifestParseError, OpenOptions, StoreFileParseError,
-    StoreInfo, StoreStorageStats,
+    CatalogError, CatalogMismatch, CreateOptions, ManifestEncodeError, ManifestParseError,
+    MetadataParseError, OpenOptions, StoreFileParseError, StoreInfo, StoreMetadata,
+    StoreStorageStats,
 };
 pub use commit::{CommitOptions, CommitStats, WriteBatch};
-pub use error::{
-    CatalogError, CatalogMismatch, CorruptionError, Error, FormatError, InputError, OptionsError,
-    Result,
-};
-pub use schema::{MetadataParseError, StoreMetadata, ValueLayout};
+pub use error::{CorruptionError, Error, FormatError, InputError, OptionsError, Result};
 pub use snapshot::{OrderedLookup, RangeCursor};
 pub use store::Store;
+pub use value::ValueLayout;

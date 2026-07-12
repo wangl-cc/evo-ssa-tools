@@ -1,17 +1,15 @@
 //! Store creation options and implementation.
 
-use std::{num::NonZeroU32, path::PathBuf};
+use std::num::NonZeroU32;
 
-use super::OpenOptions;
+use super::{
+    Catalog, OpenOptions, StoreManifest, WriterLock, descriptor::StoreDescriptor,
+    metadata::StoreMetadata,
+};
 use crate::{
     block::{BlockChecksumKind, ValuePayloadCompressionKind},
-    catalog::{
-        descriptor::StoreDescriptor, io::WriterLock, manifest::StoreManifest, open::open_existing,
-        paths::StorePaths,
-    },
     error::{InputError, OptionsError, Result},
-    schema::{StoreMetadata, ValueLayout},
-    store::Store,
+    value::ValueLayout,
 };
 
 /// Options consumed only when creating a new store root.
@@ -83,20 +81,9 @@ impl CreateOptions {
     }
 }
 
-impl Store {
-    /// Creates a new empty store rooted at `root`.
-    ///
-    /// Creation fails if persistent store state already exists. Use
-    /// `Store::open` for an existing store.
-    ///
-    /// Creation takes the same stable writer lock used by ordinary writer opens,
-    /// so two cooperating creators cannot publish different `STORE` files for
-    /// one root. A creator racing an existing writer fails with `WriterLocked`;
-    /// once the writer is gone, creating over an existing root fails with
-    /// `StoreAlreadyExists`.
-    pub fn create(root: impl Into<PathBuf>, options: CreateOptions) -> Result<Self> {
-        let root = root.into();
-        let paths = StorePaths::new(&root);
+impl Catalog {
+    pub(crate) fn create(self, options: CreateOptions) -> Result<super::OpenedStore> {
+        let paths = &self.paths;
         paths.ensure_root()?;
         let writer_lock = WriterLock::acquire(paths.lock_file())?;
         // `STORE` is the creation completion marker, so its presence alone means
@@ -119,10 +106,6 @@ impl Store {
         let manifest = StoreManifest::new(options.key_len);
         paths.publish_manifest(&manifest)?;
         paths.publish_descriptor(&descriptor)?;
-        open_existing(
-            root,
-            OpenOptions::read_write(options.metadata),
-            Some(writer_lock),
-        )
+        self.open_existing(OpenOptions::read_write(options.metadata), Some(writer_lock))
     }
 }

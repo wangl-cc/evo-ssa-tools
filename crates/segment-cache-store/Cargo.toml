@@ -7,10 +7,12 @@ license.workspace = true
 
 [features]
 default = ["checksum-rapidhash"]
-checksum-crc32c = []
-checksum-rapidhash = ["dep:rapidhash"]
-value-compression-lz4 = ["dep:lz4_flex"]
-value-compression-zstd = ["dep:zstd"]
+block-checksum = []
+checksum-crc32c = ["block-checksum"]
+checksum-rapidhash = ["block-checksum", "dep:rapidhash"]
+value-compression = []
+value-compression-lz4 = ["value-compression", "dep:lz4_flex"]
+value-compression-zstd = ["value-compression", "dep:zstd"]
 
 [[bench]]
 harness = false

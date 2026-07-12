@@ -1,28 +1,19 @@
-//! Batch commit options and replacing-manifest segment publication.
+//! Replacing-manifest commit execution and publication.
 
-use std::{
-    cmp::Ordering,
-    collections::{BTreeSet, HashSet},
-    fs,
-    ops::Range,
-    sync::Arc,
+use std::{cmp::Ordering, fs, ops::Range, sync::Arc};
+
+use super::{
+    Committer,
+    batch::{PreparedBatch, WriteBatch},
+    options::CommitOptions,
+    plan::{CommitPlan, CommitPublicationStats, RetiredSegments, StagedSegment},
 };
-
 use crate::{
-    catalog::manifest::{
-        SegmentManifestEntry, SegmentTier, StoreManifest, validate_segment_entry_shape,
-    },
-    commit::{
-        batch::{PreparedBatch, WriteBatch},
-        options::CommitOptions,
-    },
-    error::{CatalogMismatch, InputError, Result},
-    segment::{
-        file::SegmentFingerprintWriter, format::SegmentWriter, record::EntrySource,
-        state::SegmentState,
-    },
+    catalog::{SegmentManifestEntry, SegmentTier},
+    error::{InputError, Result},
+    record::EntrySource,
+    segment::{Segment, SegmentWriter},
     snapshot::RangeCursor,
-    store::Store,
 };
 
 /// Summary returned after a successful batch commit.
@@ -44,228 +35,7 @@ pub struct CommitStats {
     pub output_records: usize,
 }
 
-/// A segment written during this commit, ready to be published.
-pub(super) struct WrittenSegment {
-    entry: SegmentManifestEntry,
-    runtime: Arc<SegmentState>,
-}
-
-/// Immutable decision made from one manifest/runtime snapshot before any file is written.
-///
-/// `CommitPlan` owns the manifest snapshot, the live runtime segments from that
-/// snapshot, and the replacement set. The write path then has a simple phase
-/// order: build plan, materialize merged entries, write files, convert the plan
-/// into the next visible snapshot, publish it.
-pub(super) struct CommitPlan {
-    manifest: StoreManifest,
-    main_segments: Vec<Arc<SegmentState>>,
-    patch_segments: Vec<Arc<SegmentState>>,
-    removed_ids: BTreeSet<u32>,
-    next_segment_id: u32,
-}
-
-struct CommitPublication {
-    manifest: StoreManifest,
-    main_runtime: Vec<Arc<SegmentState>>,
-    patch_runtime: Vec<Arc<SegmentState>>,
-    segments_published: usize,
-    segments_retired: usize,
-}
-
-pub(super) struct CommitPublicationStats {
-    pub(super) segments_published: usize,
-    pub(super) segments_retired: usize,
-}
-
-pub(super) struct RetiredSegments {
-    pub(super) main: Vec<Arc<SegmentState>>,
-    pub(super) patches: Vec<Arc<SegmentState>>,
-}
-
-impl CommitPlan {
-    pub(super) fn from_snapshot(
-        manifest: StoreManifest,
-        main_segments: Vec<Arc<SegmentState>>,
-        patch_segments: Vec<Arc<SegmentState>>,
-    ) -> Self {
-        let live_ids: HashSet<u32> = main_segments
-            .iter()
-            .chain(patch_segments.iter())
-            .map(|segment| segment.segment_id)
-            .collect();
-        let mut removed_ids = BTreeSet::new();
-        for entry in &manifest.segments {
-            if !live_ids.contains(&entry.segment_id) {
-                removed_ids.insert(entry.segment_id);
-            }
-        }
-        let next_segment_id = manifest.next_segment_id;
-        Self {
-            manifest,
-            main_segments,
-            patch_segments,
-            removed_ids,
-            next_segment_id,
-        }
-    }
-
-    fn affected_main_range(&self, batch_min: &[u8], batch_max: &[u8]) -> Range<usize> {
-        affected_range(self.main_entries(), batch_min, batch_max)
-    }
-
-    fn affected_main_segments(&self, range: Range<usize>) -> Vec<Arc<SegmentState>> {
-        self.main_entries()[range]
-            .iter()
-            .filter_map(|entry| find_live_segment(&self.main_segments, entry.segment_id))
-            .collect()
-    }
-
-    fn patch_segments(&self) -> Vec<Arc<SegmentState>> {
-        self.patch_segments.iter().map(Arc::clone).collect()
-    }
-
-    fn should_publish_patch(
-        &self,
-        input_records: usize,
-        new_segment_count: usize,
-        options: &CommitOptions,
-    ) -> bool {
-        input_records <= options.patch_direct_record_limit()
-            && self.patch_segments.len().saturating_add(new_segment_count)
-                <= options.patch_segment_limit()
-    }
-
-    fn normalization_bounds(&self, batch_min: &[u8], batch_max: &[u8]) -> (Vec<u8>, Vec<u8>) {
-        let mut min_key = batch_min.to_vec();
-        let mut max_key = batch_max.to_vec();
-        for segment in &self.patch_segments {
-            if segment.min_key < min_key {
-                min_key = segment.min_key.clone();
-            }
-            if segment.max_key > max_key {
-                max_key = segment.max_key.clone();
-            }
-        }
-        (min_key, max_key)
-    }
-
-    fn patch_bounds(&self) -> Option<(Vec<u8>, Vec<u8>)> {
-        let first = self.patch_segments.first()?;
-        let mut min_key = first.min_key.clone();
-        let mut max_key = first.max_key.clone();
-        for segment in &self.patch_segments[1..] {
-            if segment.min_key < min_key {
-                min_key = segment.min_key.clone();
-            }
-            if segment.max_key > max_key {
-                max_key = segment.max_key.clone();
-            }
-        }
-        Some((min_key, max_key))
-    }
-
-    pub(super) fn retire_normalized_segments(
-        &mut self,
-        region_min: &[u8],
-        region_max: &[u8],
-    ) -> RetiredSegments {
-        let (normalize_min, normalize_max) = self.normalization_bounds(region_min, region_max);
-        self.retire_live_segments_in_range(&normalize_min, &normalize_max)
-    }
-
-    fn retire_patch_normalization_segments(&mut self) -> Option<RetiredSegments> {
-        let (normalize_min, normalize_max) = self.patch_bounds()?;
-        Some(self.retire_live_segments_in_range(&normalize_min, &normalize_max))
-    }
-
-    fn retire_live_segments_in_range(
-        &mut self,
-        normalize_min: &[u8],
-        normalize_max: &[u8],
-    ) -> RetiredSegments {
-        let affected_main = self.affected_main_range(normalize_min, normalize_max);
-        let main = self.affected_main_segments(affected_main);
-        let patches = self.patch_segments();
-        self.retire_segments(&main);
-        self.retire_segments(&patches);
-        RetiredSegments { main, patches }
-    }
-
-    fn retire_segments(&mut self, segments: &[Arc<SegmentState>]) {
-        self.removed_ids
-            .extend(segments.iter().map(|segment| segment.segment_id));
-    }
-
-    fn has_dead_entries(&self) -> bool {
-        !self.removed_ids.is_empty()
-    }
-
-    pub(super) fn allocate_segment_id(&mut self) -> Result<u32> {
-        let segment_id = self.next_segment_id;
-        self.next_segment_id = self
-            .next_segment_id
-            .checked_add(1)
-            .ok_or(CatalogMismatch::SegmentIdExhausted)?;
-        Ok(segment_id)
-    }
-
-    fn into_publication(
-        self,
-        written: Vec<WrittenSegment>,
-        key_len: usize,
-    ) -> Result<CommitPublication> {
-        let segments_published = written.len();
-        let segments_retired = self.removed_ids.len();
-        let mut manifest = self.manifest;
-        manifest
-            .segments
-            .retain(|entry| !self.removed_ids.contains(&entry.segment_id));
-        for segment in &written {
-            validate_segment_entry_shape(&segment.entry, key_len)?;
-            manifest.segments.push(segment.entry.clone());
-        }
-        sort_manifest_entries(&mut manifest.segments);
-        manifest.next_segment_id = self.next_segment_id;
-        manifest.validate_structure(key_len)?;
-
-        let mut main_runtime: Vec<Arc<SegmentState>> = self
-            .main_segments
-            .into_iter()
-            .filter(|segment| !self.removed_ids.contains(&segment.segment_id))
-            .collect();
-        let mut patch_runtime: Vec<Arc<SegmentState>> = self
-            .patch_segments
-            .into_iter()
-            .filter(|segment| !self.removed_ids.contains(&segment.segment_id))
-            .collect();
-        for segment in &written {
-            match segment.entry.tier {
-                SegmentTier::Main => main_runtime.push(Arc::clone(&segment.runtime)),
-                SegmentTier::Patch => patch_runtime.push(Arc::clone(&segment.runtime)),
-            }
-        }
-        sort_runtime_segments(&mut main_runtime);
-        sort_runtime_segments(&mut patch_runtime);
-
-        Ok(CommitPublication {
-            manifest,
-            main_runtime,
-            patch_runtime,
-            segments_published,
-            segments_retired,
-        })
-    }
-
-    fn main_entries(&self) -> &[SegmentManifestEntry] {
-        let main_count = self
-            .manifest
-            .segments
-            .partition_point(SegmentManifestEntry::is_main);
-        &self.manifest.segments[..main_count]
-    }
-}
-
-impl Store {
+impl Committer<'_> {
     /// Runs one batch commit. The public entry points `Store::commit_batch` and
     /// `Store::commit_batch_with_options` live on the store facade and delegate
     /// here; this is the whole replacing-manifest publication algorithm.
@@ -367,7 +137,7 @@ impl Store {
             )
         };
         let mut plan = CommitPlan::from_snapshot(manifest, main_segments, patch_segments);
-        if plan.patch_segments.is_empty() && !plan.has_dead_entries() {
+        if !plan.has_patches() && !plan.has_dead_entries() {
             return Ok(CommitStats::default());
         }
 
@@ -389,7 +159,7 @@ impl Store {
         batch: &PreparedBatch,
         batch_bounds: Option<(&[u8], &[u8])>,
         options: &CommitOptions,
-    ) -> Result<(Vec<WrittenSegment>, usize)> {
+    ) -> Result<(Vec<StagedSegment>, usize)> {
         let affected_live = if let Some((batch_min, batch_max)) = batch_bounds {
             plan.retire_normalized_segments(batch_min, batch_max)
         } else {
@@ -413,7 +183,7 @@ impl Store {
     pub(super) fn publish_plan(
         &self,
         plan: CommitPlan,
-        written: Vec<WrittenSegment>,
+        written: Vec<StagedSegment>,
         key_len: usize,
     ) -> Result<CommitPublicationStats> {
         let publication = plan.into_publication(written, key_len)?;
@@ -534,7 +304,7 @@ impl Store {
         tier: SegmentTier,
         plan: &mut CommitPlan,
         options: &CommitOptions,
-    ) -> Result<Vec<WrittenSegment>> {
+    ) -> Result<Vec<StagedSegment>> {
         let mut written = Vec::with_capacity(ranges.len());
         for range in ranges {
             let segment_id = plan.allocate_segment_id()?;
@@ -551,98 +321,35 @@ impl Store {
         segment_id: u32,
         tier: SegmentTier,
         options: &CommitOptions,
-    ) -> Result<WrittenSegment> {
+    ) -> Result<StagedSegment> {
         let segment_entries = batch.view(range);
         let segment_paths = self.inner.paths.segment_publish_path(segment_id);
         let writer = self.segment_writer(options);
-        let (footer, fingerprint) = segment_paths.publish().write_with(|file| {
-            let mut file = SegmentFingerprintWriter::new(file);
-            let footer = writer.write(&mut file, &segment_entries)?;
-            Ok((footer, file.fingerprint()))
-        })?;
-        let min_key = footer.min_key;
-        let max_key = footer.max_key;
-        let block_index = footer.block_index;
+        let metadata = segment_paths
+            .publish()
+            .write_with(|file| Ok(writer.write(file, &segment_entries)?))?;
+        let fingerprint = metadata.fingerprint();
         let file = fs::File::open(segment_paths.final_path())?;
-        let runtime = Arc::new(SegmentState::from_written(
-            segment_id,
-            file,
-            min_key.clone(),
-            max_key.clone(),
-            block_index,
-        ));
+        let runtime = Arc::new(Segment::from_written(segment_id, file, metadata));
+        let min_key = runtime.min_key().to_vec();
+        let max_key = runtime.max_key().to_vec();
         let entry = SegmentManifestEntry::new(segment_id, tier, fingerprint, min_key, max_key);
-        Ok(WrittenSegment { entry, runtime })
+        Ok(StagedSegment::new(entry, runtime))
     }
 
-    #[cfg(any(feature = "value-compression-lz4", feature = "value-compression-zstd"))]
+    #[cfg(feature = "value-compression")]
     fn segment_writer(&self, options: &CommitOptions) -> SegmentWriter {
         let geometry = self.inner.geometry;
         SegmentWriter::new(
-            geometry.key_len,
-            geometry.value_layout,
-            geometry.block_checksum,
-            geometry.value_payload_compression,
+            geometry,
             options.value_payload_compression_policy(),
             options.target_block_size(),
         )
     }
 
-    #[cfg(not(any(feature = "value-compression-lz4", feature = "value-compression-zstd")))]
+    #[cfg(not(feature = "value-compression"))]
     fn segment_writer(&self, options: &CommitOptions) -> SegmentWriter {
         let geometry = self.inner.geometry;
-        SegmentWriter::new(
-            geometry.key_len,
-            geometry.value_layout,
-            geometry.block_checksum,
-            geometry.value_payload_compression,
-            options.target_block_size(),
-        )
+        SegmentWriter::new(geometry, options.target_block_size())
     }
-}
-
-/// Returns the contiguous index range of segments whose key ranges intersect
-/// `[batch_min, batch_max]`. `main_entries` is sorted by `min_key` and
-/// globally non-overlapping, so the intersecting set is contiguous.
-fn affected_range(
-    main_entries: &[SegmentManifestEntry],
-    batch_min: &[u8],
-    batch_max: &[u8],
-) -> Range<usize> {
-    let start = main_entries.partition_point(|entry| entry.max_key.as_slice() < batch_min);
-    let end = main_entries.partition_point(|entry| entry.min_key.as_slice() <= batch_max);
-    if start >= end {
-        start..start
-    } else {
-        start..end
-    }
-}
-
-fn sort_manifest_entries(entries: &mut [SegmentManifestEntry]) {
-    entries.sort_by(|left, right| match (left.tier, right.tier) {
-        (SegmentTier::Main, SegmentTier::Patch) => Ordering::Less,
-        (SegmentTier::Patch, SegmentTier::Main) => Ordering::Greater,
-        _ => left
-            .min_key
-            .cmp(&right.min_key)
-            .then(left.segment_id.cmp(&right.segment_id)),
-    });
-}
-
-fn sort_runtime_segments(segments: &mut [Arc<SegmentState>]) {
-    segments.sort_by(|left, right| {
-        left.min_key
-            .cmp(&right.min_key)
-            .then(left.segment_id.cmp(&right.segment_id))
-    });
-}
-
-fn find_live_segment(
-    live_segments: &[Arc<SegmentState>],
-    segment_id: u32,
-) -> Option<Arc<SegmentState>> {
-    live_segments
-        .iter()
-        .find(|segment| segment.segment_id == segment_id)
-        .map(Arc::clone)
 }

@@ -22,7 +22,7 @@ pub(crate) fn test_block_checksum() -> BlockChecksumKind {
     }
 }
 
-pub(crate) fn block_checksum_format_id(checksum: BlockChecksumKind) -> u32 {
+pub(crate) fn block_checksum_format_id(checksum: BlockChecksumKind) -> u8 {
     match checksum {
         BlockChecksumKind::None => 0,
         #[cfg(feature = "checksum-crc32c")]
@@ -44,7 +44,7 @@ pub(crate) fn block_checksum_digest_len(checksum: BlockChecksumKind) -> usize {
     }
 }
 
-pub(crate) fn block_checksum_from_format_id(format_id: u32) -> Option<BlockChecksumKind> {
+pub(crate) fn block_checksum_from_format_id(format_id: u8) -> Option<BlockChecksumKind> {
     match format_id {
         0 => Some(BlockChecksumKind::None),
         #[cfg(feature = "checksum-crc32c")]

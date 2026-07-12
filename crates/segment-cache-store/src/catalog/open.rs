@@ -1,27 +1,16 @@
 //! Store open options and implementation.
 
-use std::{
-    path::{Path, PathBuf},
-    sync::Arc,
+use std::sync::Arc;
+
+use super::{
+    Catalog, CatalogMismatch, StoreManifest, StorePaths, VisibleSnapshot, WriterLock,
+    descriptor::StoreDescriptor, metadata::StoreMetadata,
 };
-
-use parking_lot::{Mutex, RwLock};
-
 use crate::{
     block::{BlockChecksumKind, ValuePayloadCompressionKind},
-    catalog::{
-        descriptor::StoreDescriptor, io::WriterLock, manifest::StoreManifest, paths::StorePaths,
-    },
-    error::{CatalogMismatch, OptionsError, Result},
-    schema::{StoreGeometry, StoreMetadata, ValueLayout},
-    segment::{
-        file::{OpenedSegment, SegmentOpenOptions},
-        state::SegmentState,
-    },
-    store::{
-        Store,
-        state::{StoreInner, StoreState},
-    },
+    error::{OptionsError, Result},
+    segment::{Segment, SegmentGeometry, SegmentOpenOptions},
+    value::ValueLayout,
 };
 
 /// Options consumed only when opening an existing store root.
@@ -56,6 +45,16 @@ pub struct StoreInfo {
     pub block_checksum: BlockChecksumKind,
     /// Value-payload compression kind persisted for all visible segments.
     pub value_payload_compression: ValuePayloadCompressionKind,
+}
+
+/// Fully validated persistent state ready to become an in-process store handle.
+pub(crate) struct OpenedStore {
+    pub(crate) paths: StorePaths,
+    pub(crate) metadata: StoreMetadata,
+    pub(crate) geometry: SegmentGeometry,
+    pub(crate) verify_block_checksums: bool,
+    pub(crate) snapshot: VisibleSnapshot,
+    pub(crate) writer_lock: Option<WriterLock>,
 }
 
 impl OpenOptions {
@@ -115,153 +114,131 @@ impl StoreInfo {
     }
 }
 
-impl Store {
-    /// Reads persistent store identity from `STORE` without opening segment files.
-    ///
-    /// This does not acquire the writer lock, validate `MANIFEST`, or run any
-    /// catalog housekeeping. It is intended for tools that need to discover the
-    /// metadata required by [`OpenOptions::read_write`] or [`OpenOptions::read_only`].
-    pub fn inspect(root: impl AsRef<Path>) -> Result<StoreInfo> {
-        let paths = StorePaths::new(root);
+impl Catalog {
+    pub(crate) fn inspect(&self) -> Result<StoreInfo> {
+        let paths = &self.paths;
         let descriptor = paths
             .load_descriptor()?
             .ok_or(CatalogMismatch::MissingStore)?;
         StoreInfo::from_descriptor(descriptor)
     }
 
-    /// Opens an existing store rooted at `root`.
-    pub fn open(root: impl Into<PathBuf>, options: OpenOptions) -> Result<Self> {
-        open_existing(root.into(), options, None)
-    }
-}
-
-pub(super) fn open_existing(
-    root: PathBuf,
-    options: OpenOptions,
-    pre_acquired_writer_lock: Option<WriterLock>,
-) -> Result<Store> {
-    options.validate()?;
-    let paths = StorePaths::new(&root);
-    let descriptor = paths
-        .load_descriptor()?
-        .ok_or(CatalogMismatch::MissingStore)?;
-    descriptor.validate_structure()?;
-    if descriptor.metadata != options.expected_metadata {
-        return Err(CatalogMismatch::Metadata.into());
-    }
-    let block_checksum = resolve_block_checksum(descriptor.block_checksum_id)?;
-    let value_payload_compression =
-        resolve_value_payload_compression(descriptor.value_payload_compression_id)?;
-
-    // A writer takes the advisory lock before reading the manifest so that
-    // any later commit runs under the same lock without a gap a second writer
-    // could slip into.
-    let writer_lock = if options.read_only {
-        None
-    } else if let Some(writer_lock) = pre_acquired_writer_lock {
-        Some(writer_lock)
-    } else {
-        Some(WriterLock::acquire(paths.lock_file())?)
-    };
-
-    let manifest = paths
-        .load_manifest()?
-        .ok_or(CatalogMismatch::MissingManifest)?;
-    manifest.validate_structure(descriptor.key_len)?;
-
-    // Only a writer mutates catalog housekeeping on open. Segment garbage
-    // collection is explicit so it cannot race a read-only open that already
-    // read an older manifest but has not opened all referenced segments yet.
-    if writer_lock.is_some() {
-        paths.ensure_dirs()?;
-        paths.remove_stale_catalog_temps();
+    pub(crate) fn open(self, options: OpenOptions) -> Result<OpenedStore> {
+        self.open_existing(options, None)
     }
 
-    build_store(
-        paths,
-        descriptor,
-        manifest,
-        block_checksum,
-        value_payload_compression,
-        options.verify_block_checksums,
-        writer_lock,
-    )
-}
-
-/// Builds the shared runtime state from validated catalog data, opening every
-/// referenced segment file.
-///
-/// A referenced segment that fails to open (missing, corrupt, or
-/// footer-mismatched) is a dead entry: invisible now, dropped at the next
-/// manifest publication.
-fn build_store(
-    paths: StorePaths,
-    descriptor: StoreDescriptor,
-    manifest: StoreManifest,
-    block_checksum: BlockChecksumKind,
-    value_payload_compression: ValuePayloadCompressionKind,
-    verify_block_checksums: bool,
-    writer_lock: Option<WriterLock>,
-) -> Result<Store> {
-    let geometry = StoreGeometry {
-        key_len: descriptor.key_len,
-        value_layout: descriptor.value_layout,
-        block_checksum,
-        value_payload_compression,
-    };
-    let mut main_segment_states = Vec::new();
-    let mut patch_segment_states = Vec::new();
-    for entry in &manifest.segments {
-        let path = paths.final_segment(entry.segment_id);
-        let segment = match OpenedSegment::open(path, SegmentOpenOptions {
-            expected_key_len: geometry.key_len,
-            expected_value_layout: geometry.value_layout,
-            expected_block_checksum: geometry.block_checksum,
-            expected_value_payload_compression: geometry.value_payload_compression,
-            expected_fingerprint: entry.fingerprint,
-        })? {
-            Some(segment)
-                if entry.matches_segment(
-                    &segment.min_key,
-                    &segment.max_key,
-                    segment.fingerprint,
-                ) =>
-            {
-                segment
-            }
-            _ => continue,
-        };
-        let segment_state = Arc::new(SegmentState::from_opened(entry.segment_id, segment));
-        if entry.is_main() {
-            main_segment_states.push(segment_state);
-        } else {
-            patch_segment_states.push(segment_state);
+    pub(super) fn open_existing(
+        self,
+        options: OpenOptions,
+        pre_acquired_writer_lock: Option<WriterLock>,
+    ) -> Result<OpenedStore> {
+        options.validate()?;
+        let paths = self.paths;
+        let descriptor = paths
+            .load_descriptor()?
+            .ok_or(CatalogMismatch::MissingStore)?;
+        descriptor.validate_structure()?;
+        if descriptor.metadata != options.expected_metadata {
+            return Err(CatalogMismatch::Metadata.into());
         }
+        let block_checksum = resolve_block_checksum(descriptor.block_checksum_id)?;
+        let value_payload_compression =
+            resolve_value_payload_compression(descriptor.value_payload_compression_id)?;
+
+        // A writer takes the advisory lock before reading the manifest so that
+        // any later commit runs under the same lock without a gap a second writer
+        // could slip into.
+        let writer_lock = if options.read_only {
+            None
+        } else if let Some(writer_lock) = pre_acquired_writer_lock {
+            Some(writer_lock)
+        } else {
+            Some(WriterLock::acquire(paths.lock_file())?)
+        };
+
+        let manifest = paths
+            .load_manifest()?
+            .ok_or(CatalogMismatch::MissingManifest)?;
+        manifest.validate_structure(descriptor.key_len)?;
+
+        // Only a writer mutates catalog housekeeping on open. Segment garbage
+        // collection is explicit so it cannot race a read-only open that already
+        // read an older manifest but has not opened all referenced segments yet.
+        if writer_lock.is_some() {
+            paths.ensure_dirs()?;
+            paths.remove_stale_catalog_temps();
+        }
+
+        Self::build_inner(
+            paths,
+            descriptor,
+            manifest,
+            block_checksum,
+            value_payload_compression,
+            options.verify_block_checksums,
+            writer_lock,
+        )
     }
 
-    Ok(Store {
-        inner: Arc::new(StoreInner {
+    /// Builds the shared runtime state from validated catalog data, opening every
+    /// referenced segment file.
+    ///
+    /// A referenced segment that fails to open (missing, corrupt, or mismatched
+    /// with its manifest identity) is a dead entry: invisible now, dropped at
+    /// the next manifest publication.
+    fn build_inner(
+        paths: StorePaths,
+        descriptor: StoreDescriptor,
+        manifest: StoreManifest,
+        block_checksum: BlockChecksumKind,
+        value_payload_compression: ValuePayloadCompressionKind,
+        verify_block_checksums: bool,
+        writer_lock: Option<WriterLock>,
+    ) -> Result<OpenedStore> {
+        let geometry = SegmentGeometry {
+            key_len: descriptor.key_len,
+            value_layout: descriptor.value_layout,
+            block_checksum,
+            value_payload_compression,
+        };
+        let mut main_segment_states = Vec::new();
+        let mut patch_segment_states = Vec::new();
+        for entry in &manifest.segments {
+            let path = paths.final_segment(entry.segment_id);
+            let segment = match Segment::open(entry.segment_id, path, SegmentOpenOptions {
+                geometry,
+                expected_fingerprint: entry.fingerprint,
+                expected_min_key: &entry.min_key,
+                expected_max_key: &entry.max_key,
+            })? {
+                Some(segment) => segment,
+                _ => continue,
+            };
+            let segment = Arc::new(segment);
+            if entry.is_main() {
+                main_segment_states.push(segment);
+            } else {
+                patch_segment_states.push(segment);
+            }
+        }
+
+        Ok(OpenedStore {
             paths,
-            metadata: descriptor.metadata.clone(),
+            metadata: descriptor.metadata,
             geometry,
             verify_block_checksums,
-            commit_lock: Mutex::new(()),
-            state: RwLock::new(StoreState::new(
-                manifest,
-                main_segment_states,
-                patch_segment_states,
-            )),
+            snapshot: VisibleSnapshot::new(manifest, main_segment_states, patch_segment_states),
             writer_lock,
-        }),
-    })
+        })
+    }
 }
 
-fn resolve_block_checksum(format_id: u32) -> Result<BlockChecksumKind> {
+fn resolve_block_checksum(format_id: u8) -> Result<BlockChecksumKind> {
     BlockChecksumKind::from_format_id(format_id)
         .ok_or(CatalogMismatch::UnsupportedBlockChecksum { format_id }.into())
 }
 
-fn resolve_value_payload_compression(format_id: u32) -> Result<ValuePayloadCompressionKind> {
+fn resolve_value_payload_compression(format_id: u8) -> Result<ValuePayloadCompressionKind> {
     ValuePayloadCompressionKind::from_format_id(format_id)
         .ok_or(CatalogMismatch::UnsupportedValuePayloadCompression { format_id }.into())
 }

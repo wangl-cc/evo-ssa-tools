@@ -2,13 +2,8 @@
 
 use std::{collections::HashSet, fs};
 
-use crate::{
-    catalog::{
-        manifest::StoreManifest,
-        paths::{StorePaths, segment_file_name},
-    },
-    error::Result,
-};
+use super::{StoreManifest, StorePaths, paths::segment_file_name};
+use crate::error::Result;
 
 /// Deletes every file under `segments/` that the manifest does not reference.
 ///
@@ -23,25 +18,24 @@ use crate::{
 /// take no writer lock; automatic deletion could remove segment files from an
 /// older manifest snapshot that a concurrent read-only open has already read
 /// but not fully opened yet.
-pub(crate) fn garbage_collect_unreferenced(
-    paths: &StorePaths,
-    manifest: &StoreManifest,
-) -> Result<()> {
-    let referenced: HashSet<String> = manifest
-        .segments
-        .iter()
-        .map(|entry| segment_file_name(entry.segment_id))
-        .collect();
+impl StorePaths {
+    pub(crate) fn garbage_collect_unreferenced(&self, manifest: &StoreManifest) -> Result<()> {
+        let referenced: HashSet<String> = manifest
+            .segments
+            .iter()
+            .map(|entry| segment_file_name(entry.segment_id))
+            .collect();
 
-    for entry in fs::read_dir(paths.segment_dir())? {
-        let entry = entry?;
-        let keep = entry
-            .file_name()
-            .to_str()
-            .is_some_and(|name| referenced.contains(name));
-        if !keep {
-            fs::remove_file(entry.path())?;
+        for entry in fs::read_dir(self.segment_dir())? {
+            let entry = entry?;
+            let keep = entry
+                .file_name()
+                .to_str()
+                .is_some_and(|name| referenced.contains(name));
+            if !keep {
+                fs::remove_file(entry.path())?;
+            }
         }
+        Ok(())
     }
-    Ok(())
 }

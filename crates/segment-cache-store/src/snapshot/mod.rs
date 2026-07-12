@@ -1,19 +1,20 @@
-//! Read operations over one immutable visible main/patch segment snapshot.
+//! Read operations over one immutable catalog-selected segment snapshot.
 //!
 //! Readers own references to an immutable visible segment snapshot, so they
 //! remain valid across commits.
 
-pub(crate) mod ordered;
-pub(crate) mod point;
-pub(crate) mod range;
+mod ordered;
+mod point;
+mod range;
 
-use crate::schema::StoreGeometry;
+use crate::segment::SegmentGeometry;
 
 #[derive(Clone, Copy)]
 pub(crate) struct LookupReadOptions {
-    pub(crate) geometry: StoreGeometry,
+    pub(crate) geometry: SegmentGeometry,
     pub(crate) verify_block_checksums: bool,
 }
 
 pub use ordered::OrderedLookup;
+pub(crate) use point::SegmentSetReader;
 pub use range::RangeCursor;

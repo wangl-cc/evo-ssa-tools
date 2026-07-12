@@ -8,8 +8,8 @@ use std::ops::Range;
 
 use crate::{
     error::{InputError, Result},
-    schema::ValueLayout,
-    segment::record::{EntryRef, EntrySource, EntryView},
+    record::{EntryRef, EntrySource, EntryView},
+    value::ValueLayout,
 };
 
 /// Buffered writes for one atomic manifest publish.
@@ -117,7 +117,7 @@ impl WriteBatch {
                 }
                 .into());
             }
-            if let Some(fixed_len) = value_layout.fixed_len()
+            if let Some(fixed_len) = value_layout.fixed_value_len()
                 && entry.value.len != fixed_len.get() as usize
             {
                 return Err(InputError::WrongValueLength {

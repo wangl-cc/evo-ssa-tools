@@ -2,15 +2,16 @@
 
 use std::ops::Range;
 
+use super::BlockChecksumKind;
 use crate::{
     binary::{BinaryCursor, format_u32},
-    block::BlockChecksumKind,
     error::{CorruptionError, FormatError},
-    schema::ValueLayout,
-    segment::record::EntrySource,
+    record::EntrySource,
+    value::ValueLayout,
 };
 
-pub(crate) const KEY_PREFIX_LEN_LEN: usize = 4;
+pub(crate) const BLOCK_METADATA_HEADER_LEN: usize = 2 * size_of::<u32>();
+const KEY_PREFIX_LEN_OFFSET: usize = size_of::<u32>();
 
 /// Derived lookup-metadata layout for one block.
 ///
@@ -18,6 +19,7 @@ pub(crate) const KEY_PREFIX_LEN_LEN: usize = 4;
 /// the key section and the lookup checksum immediately after lookup metadata:
 ///
 /// ```text
+/// record_count:u32
 /// key_prefix_len:u32
 /// key_prefix
 /// key_suffixes
@@ -45,7 +47,7 @@ impl BlockLookupLayout {
         let suffix_table_len = record_count
             .checked_mul(suffix_len)
             .ok_or(CorruptionError::Block)?;
-        let key_section_len = KEY_PREFIX_LEN_LEN
+        let key_section_len = BLOCK_METADATA_HEADER_LEN
             .checked_add(key_prefix_len)
             .and_then(|len| len.checked_add(suffix_table_len))
             .ok_or(CorruptionError::Block)?;
@@ -63,8 +65,13 @@ impl BlockLookupLayout {
         })
     }
 
-    pub(crate) fn read_key_prefix_len(bytes: &[u8]) -> Result<usize, CorruptionError> {
+    pub(crate) fn read_record_count(bytes: &[u8]) -> Result<usize, CorruptionError> {
         let mut cursor = BinaryCursor::new(bytes);
+        Ok(cursor.read::<u32>().ok_or(CorruptionError::Block)? as usize)
+    }
+
+    pub(crate) fn read_key_prefix_len(bytes: &[u8]) -> Result<usize, CorruptionError> {
+        let mut cursor = BinaryCursor::at(bytes, KEY_PREFIX_LEN_OFFSET);
         Ok(cursor.read::<u32>().ok_or(CorruptionError::Block)? as usize)
     }
 
@@ -287,7 +294,8 @@ impl ValueIndex {
     }
 }
 
-pub(crate) fn read_stored_checksum(
+#[cfg(feature = "block-checksum")]
+pub(super) fn read_stored_checksum(
     bytes: &[u8],
     offset: usize,
     block_checksum: BlockChecksumKind,
@@ -301,7 +309,7 @@ pub(crate) fn read_stored_checksum(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::segment::record::EntryRef;
+    use crate::record::EntryRef;
 
     struct Entries<'a> {
         entries: &'a [(&'a [u8], &'a [u8])],

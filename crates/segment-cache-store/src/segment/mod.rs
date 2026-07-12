@@ -1,6 +1,17 @@
-//! Immutable segment representation and its sorted-record vocabulary.
+//! Immutable segment files and the invariants needed to encode, identify, open,
+//! and read them.
 
-pub(crate) mod file;
-pub(crate) mod format;
-pub(crate) mod record;
-pub(crate) mod state;
+mod file;
+mod fingerprint;
+mod format;
+mod geometry;
+mod index;
+mod io;
+mod state;
+mod writer;
+
+pub(crate) use file::SegmentOpenOptions;
+pub(crate) use fingerprint::SegmentFingerprint;
+pub(crate) use geometry::SegmentGeometry;
+pub(crate) use state::Segment;
+pub(crate) use writer::SegmentWriter;

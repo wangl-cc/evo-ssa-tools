@@ -4,10 +4,11 @@
 //! creation completion marker and owns persistent identity (metadata, key
 //! length, value layout). [`super::paths`] owns loading and atomic publication.
 
-use crate::{
-    error::{CatalogError, CatalogMismatch},
-    schema::{MetadataParseError, StoreMetadata, ValueLayout},
+use super::{
+    CatalogError, CatalogMismatch,
+    metadata::{MetadataParseError, StoreMetadata},
 };
+use crate::value::ValueLayout;
 
 const STORE_VERSION: u32 = 1;
 
@@ -52,8 +53,8 @@ pub(crate) struct StoreDescriptor {
     pub(crate) metadata: StoreMetadata,
     pub(crate) key_len: usize,
     pub(crate) value_layout: ValueLayout,
-    pub(crate) block_checksum_id: u32,
-    pub(crate) value_payload_compression_id: u32,
+    pub(crate) block_checksum_id: u8,
+    pub(crate) value_payload_compression_id: u8,
 }
 
 impl StoreDescriptor {
@@ -61,8 +62,8 @@ impl StoreDescriptor {
         metadata: StoreMetadata,
         key_len: usize,
         value_layout: ValueLayout,
-        block_checksum_id: u32,
-        value_payload_compression_id: u32,
+        block_checksum_id: u8,
+        value_payload_compression_id: u8,
     ) -> Self {
         Self {
             version: STORE_VERSION,
@@ -139,9 +140,9 @@ impl<'a> StoreParser<'a> {
         let metadata = StoreMetadata::parse_store_value(self.required_str("metadata")?)?;
         let key_len = self.required_value::<usize>("key_len")?;
         let value_len = self.required_value::<u32>("value_len")?;
-        let block_checksum_id = self.required_value::<u32>("block_checksum_id")?;
+        let block_checksum_id = self.required_value::<u8>("block_checksum_id")?;
         let value_payload_compression_id =
-            self.required_value::<u32>("value_payload_compression_id")?;
+            self.required_value::<u8>("value_payload_compression_id")?;
         if self.lines.any(|line| !line.is_empty()) {
             return Err(StoreFileParseError::UnexpectedTrailingFields);
         }
@@ -283,6 +284,15 @@ mod tests {
             assert!(matches!(
                 StoreDescriptor::parse(&invalid_value),
                 Err(StoreFileParseError::InvalidFieldValue { field: "key_len" })
+            ));
+
+            let oversized_algorithm_id =
+                store_file_text().replace("block_checksum_id=1\n", "block_checksum_id=256\n");
+            assert!(matches!(
+                StoreDescriptor::parse(&oversized_algorithm_id),
+                Err(StoreFileParseError::InvalidFieldValue {
+                    field: "block_checksum_id"
+                })
             ));
 
             let mut trailing = store_file_text();
