@@ -49,6 +49,38 @@ fn corrupted_block_checksum_becomes_miss() -> Result<()> {
 
 #[cfg(any(feature = "checksum-crc32c", feature = "checksum-rapidhash"))]
 #[test]
+fn point_miss_does_not_cache_payload_verification() -> Result<()> {
+    let tempdir = tempfile::tempdir()?;
+    let store = create_store(&tempdir)?;
+    let first_key = make_key(1, 1, 0);
+    let missing_key = make_key(1, 1, 1);
+    let last_key = make_key(1, 1, 2);
+    commit_entries(&store, &[
+        (first_key, make_value(1, 16)),
+        (last_key.clone(), make_value(2, 16)),
+    ])?;
+
+    assert_eq!(store.fetch_one(&missing_key)?, None);
+    corrupt_block_value_payload(&first_segment_path(tempdir.path())?, 0)?;
+    assert_eq!(store.fetch_one(&last_key)?, None);
+    Ok(())
+}
+
+#[cfg(any(feature = "checksum-crc32c", feature = "checksum-rapidhash"))]
+#[test]
+fn range_scan_verifies_payload_before_exposing_records() -> Result<()> {
+    let tempdir = tempfile::tempdir()?;
+    let store = create_store(&tempdir)?;
+    let key = make_key(1, 1, 0);
+    commit_entries(&store, &[(key, make_value(9, 16))])?;
+    corrupt_block_value_payload(&first_segment_path(tempdir.path())?, 0)?;
+
+    assert_eq!(store.iter_all()?.collect::<Result<Vec<_>>>()?, Vec::new());
+    Ok(())
+}
+
+#[cfg(any(feature = "checksum-crc32c", feature = "checksum-rapidhash"))]
+#[test]
 fn sparse_ordered_lookup_corrupted_payload_becomes_miss() -> Result<()> {
     let tempdir = tempfile::tempdir()?;
     let store = create_store(&tempdir)?;

@@ -30,6 +30,11 @@ pub(super) enum PayloadStorage {
     Compressed,
 }
 
+#[cfg(any(feature = "value-compression-lz4", feature = "value-compression-zstd"))]
+pub(super) struct PendingPayloadFrame {
+    payload_start: usize,
+}
+
 impl PayloadFrame {
     pub(super) fn raw_without_header(payload_len: usize) -> Self {
         Self {
@@ -53,6 +58,15 @@ impl PayloadFrame {
 
     pub(super) fn storage(self) -> PayloadStorage {
         self.storage
+    }
+
+    #[cfg(any(feature = "value-compression-lz4", feature = "value-compression-zstd"))]
+    fn raw_with_header(payload_len: usize) -> Self {
+        Self {
+            storage: PayloadStorage::Raw,
+            payload_len,
+            header_len: HEADER_LEN,
+        }
     }
 }
 
@@ -80,60 +94,96 @@ pub(super) fn parse(
     })
 }
 
-#[cfg(feature = "value-compression-lz4")]
-pub(super) fn encode_lz4(
-    raw_payload: &[u8],
-    policy: ValuePayloadCompressionPolicy,
-    out: &mut Vec<u8>,
-) -> Result<PayloadFrame, FormatError> {
-    if should_store_raw(raw_payload, policy) {
-        return Ok(encode_raw(raw_payload, out));
+#[cfg(any(feature = "value-compression-lz4", feature = "value-compression-zstd"))]
+impl PendingPayloadFrame {
+    pub(super) fn begin(out: &mut Vec<u8>) -> Self {
+        out.push(STORAGE_RAW);
+        Self {
+            payload_start: out.len(),
+        }
     }
 
-    let compressed = lz4_flex::block::compress(raw_payload);
-    if !should_keep_compressed(raw_payload.len(), compressed.len(), policy) {
-        return Ok(encode_raw(raw_payload, out));
+    pub(super) fn payload_len(&self, out: &[u8]) -> Result<usize, FormatError> {
+        out.len()
+            .checked_sub(self.payload_start)
+            .ok_or(FormatError::limit("block value payload frame"))
     }
 
-    write_storage(PayloadStorage::Compressed, out);
-    out.extend_from_slice(&compressed);
-    Ok(PayloadFrame {
-        storage: PayloadStorage::Compressed,
-        payload_len: compressed.len(),
-        header_len: HEADER_LEN,
-    })
-}
+    #[cfg(feature = "value-compression-lz4")]
+    pub(super) fn finish_lz4(
+        self,
+        out: &mut Vec<u8>,
+        policy: ValuePayloadCompressionPolicy,
+        table: &mut Option<lz4_flex::block::CompressTable>,
+        scratch: &mut Vec<u8>,
+    ) -> Result<PayloadFrame, FormatError> {
+        let raw_payload = self.raw_payload(out)?;
+        if should_store_raw(raw_payload, policy) {
+            return Ok(PayloadFrame::raw_with_header(raw_payload.len()));
+        }
 
-#[cfg(feature = "value-compression-zstd")]
-pub(super) fn encode_zstd(
-    raw_payload: &[u8],
-    policy: ValuePayloadCompressionPolicy,
-    out: &mut Vec<u8>,
-    compressor: &mut zstd::bulk::Compressor<'static>,
-    scratch: &mut Vec<u8>,
-) -> Result<PayloadFrame, FormatError> {
-    if should_store_raw(raw_payload, policy) {
-        return Ok(encode_raw(raw_payload, out));
+        let raw_len = raw_payload.len();
+        let bound = lz4_flex::block::get_maximum_output_size(raw_len);
+        if scratch.len() < bound {
+            scratch.resize(bound, 0);
+        }
+        let compressed_len = lz4_flex::block::compress_into_with_table(
+            raw_payload,
+            scratch,
+            table.get_or_insert_with(lz4_flex::block::CompressTable::default),
+        )
+        .map_err(|_| FormatError::limit("lz4 payload"))?;
+        if !should_keep_compressed(raw_len, compressed_len, policy) {
+            return Ok(PayloadFrame::raw_with_header(raw_len));
+        }
+
+        Ok(self.replace_raw(out, &scratch[..compressed_len]))
     }
 
-    let bound = zstd::zstd_safe::compress_bound(raw_payload.len());
-    if scratch.len() < bound {
-        scratch.resize(bound, 0);
-    }
-    let compressed_len = compressor
-        .compress_to_buffer(raw_payload, scratch)
-        .map_err(|_| FormatError::limit("zstd payload"))?;
-    if !should_keep_compressed(raw_payload.len(), compressed_len, policy) {
-        return Ok(encode_raw(raw_payload, out));
+    #[cfg(feature = "value-compression-zstd")]
+    pub(super) fn finish_zstd(
+        self,
+        out: &mut Vec<u8>,
+        policy: ValuePayloadCompressionPolicy,
+        compressor: &mut zstd::bulk::Compressor<'static>,
+        scratch: &mut Vec<u8>,
+    ) -> Result<PayloadFrame, FormatError> {
+        let raw_payload = self.raw_payload(out)?;
+        if should_store_raw(raw_payload, policy) {
+            return Ok(PayloadFrame::raw_with_header(raw_payload.len()));
+        }
+
+        let raw_len = raw_payload.len();
+        let bound = zstd::zstd_safe::compress_bound(raw_len);
+        if scratch.len() < bound {
+            scratch.resize(bound, 0);
+        }
+        let compressed_len = compressor
+            .compress_to_buffer(raw_payload, scratch)
+            .map_err(|_| FormatError::limit("zstd payload"))?;
+        if !should_keep_compressed(raw_len, compressed_len, policy) {
+            return Ok(PayloadFrame::raw_with_header(raw_len));
+        }
+
+        Ok(self.replace_raw(out, &scratch[..compressed_len]))
     }
 
-    write_storage(PayloadStorage::Compressed, out);
-    out.extend_from_slice(&scratch[..compressed_len]);
-    Ok(PayloadFrame {
-        storage: PayloadStorage::Compressed,
-        payload_len: compressed_len,
-        header_len: HEADER_LEN,
-    })
+    fn raw_payload<'a>(&self, out: &'a [u8]) -> Result<&'a [u8], FormatError> {
+        out.get(self.payload_start..)
+            .ok_or(FormatError::limit("block value payload frame"))
+    }
+
+    fn replace_raw(self, out: &mut Vec<u8>, compressed: &[u8]) -> PayloadFrame {
+        let header_start = self.payload_start - HEADER_LEN;
+        out.truncate(self.payload_start);
+        out[header_start] = STORAGE_COMPRESSED;
+        out.extend_from_slice(compressed);
+        PayloadFrame {
+            storage: PayloadStorage::Compressed,
+            payload_len: compressed.len(),
+            header_len: HEADER_LEN,
+        }
+    }
 }
 
 #[cfg(any(feature = "value-compression-lz4", feature = "value-compression-zstd"))]
@@ -152,25 +202,6 @@ fn should_keep_compressed(
     }
     let saved = raw_len - compressed_len;
     saved.saturating_mul(100) >= raw_len.saturating_mul(usize::from(policy.min_saved_percent()))
-}
-
-#[cfg(any(feature = "value-compression-lz4", feature = "value-compression-zstd"))]
-fn encode_raw(raw_payload: &[u8], out: &mut Vec<u8>) -> PayloadFrame {
-    write_storage(PayloadStorage::Raw, out);
-    out.extend_from_slice(raw_payload);
-    PayloadFrame {
-        storage: PayloadStorage::Raw,
-        payload_len: raw_payload.len(),
-        header_len: HEADER_LEN,
-    }
-}
-
-#[cfg(any(feature = "value-compression-lz4", feature = "value-compression-zstd"))]
-fn write_storage(storage: PayloadStorage, out: &mut Vec<u8>) {
-    out.push(match storage {
-        PayloadStorage::Raw => STORAGE_RAW,
-        PayloadStorage::Compressed => STORAGE_COMPRESSED,
-    });
 }
 
 #[cfg(all(

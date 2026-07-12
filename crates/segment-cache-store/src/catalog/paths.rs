@@ -5,14 +5,14 @@
 //! the catalog codecs; these functions only move those bytes to and from disk.
 
 use std::{
-    fs,
+    fs::{self, File},
     path::{Path, PathBuf},
 };
 
 use super::{
     StoreManifest,
     descriptor::StoreDescriptor,
-    io::{AtomicFilePublish, temp_path_for},
+    io::{AtomicFilePublish, StagedFileBatch, temp_path_for},
 };
 use crate::Result;
 
@@ -106,9 +106,10 @@ impl StorePaths {
         publish_for(&self.manifest).write_bytes(&manifest.encode()?)
     }
 
-    pub(crate) fn segment_publish_path(&self, segment_id: u32) -> SegmentPublishPath {
-        SegmentPublishPath {
-            final_path: self.final_segment(segment_id),
+    pub(crate) fn segment_batch(&self) -> SegmentBatchPublication {
+        SegmentBatchPublication {
+            segment_dir: self.segment_dir.clone(),
+            files: StagedFileBatch::new(&self.segment_dir),
         }
     }
 }
@@ -119,17 +120,24 @@ pub(super) fn segment_file_name(segment_id: u32) -> String {
     format!("segment-{segment_id:010}.seg")
 }
 
-pub(crate) struct SegmentPublishPath {
-    final_path: PathBuf,
+/// Segment files staged under one shared durability barrier.
+pub(crate) struct SegmentBatchPublication {
+    segment_dir: PathBuf,
+    files: StagedFileBatch,
 }
 
-impl SegmentPublishPath {
-    pub(crate) fn final_path(&self) -> &Path {
-        &self.final_path
+impl SegmentBatchPublication {
+    pub(crate) fn stage_with<T>(
+        &mut self,
+        segment_id: u32,
+        write: impl FnOnce(&mut File) -> Result<T>,
+    ) -> Result<T> {
+        let final_path = self.segment_dir.join(segment_file_name(segment_id));
+        self.files.stage_with(final_path, write)
     }
 
-    pub(crate) fn publish(&self) -> AtomicFilePublish<'_> {
-        publish_for(&self.final_path)
+    pub(crate) fn publish(self) -> Result<()> {
+        self.files.publish()
     }
 }
 

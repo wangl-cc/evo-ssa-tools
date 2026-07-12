@@ -261,6 +261,7 @@ pub(crate) struct SegmentRangeCursor {
     end: Option<Vec<u8>>,
     block_index: usize,
     position: Option<SegmentCursorPosition>,
+    key_scratch: Vec<u8>,
     spare_block_bytes: Vec<u8>,
     #[cfg(feature = "value-compression")]
     payload_decoder: ValuePayloadDecoder,
@@ -292,6 +293,7 @@ impl SegmentRangeCursor {
             end,
             block_index,
             position: None,
+            key_scratch: vec![0; geometry.key_len],
             spare_block_bytes: Vec::new(),
             #[cfg(feature = "value-compression")]
             payload_decoder: ValuePayloadDecoder::new(geometry.value_payload_compression),
@@ -310,10 +312,13 @@ impl SegmentRangeCursor {
             .payload_bytes(position.decoded_payload.as_deref())?;
         #[cfg(not(feature = "value-compression"))]
         let payload = position.block.payload_bytes()?;
-        Ok(Some(position.block.record_at_index_with_payload(
-            position.record_index,
-            payload,
-        )?))
+        let value = position
+            .block
+            .value_at_index_with_payload(position.record_index, payload)?;
+        Ok(Some(ParsedRecord {
+            key: &self.key_scratch,
+            value,
+        }))
     }
 
     fn advance(&mut self) -> Result<()> {
@@ -326,7 +331,11 @@ impl SegmentRangeCursor {
             }) => {
                 *record_index += 1;
                 if *record_index < block.record_count() {
-                    Some(Self::record_is_before_end(end, block, *record_index)?)
+                    let before_end = Self::record_is_before_end(end, block, *record_index);
+                    if before_end {
+                        block.write_key_at_index(*record_index, &mut self.key_scratch)?;
+                    }
+                    Some(before_end)
                 } else {
                     None
                 }
@@ -377,8 +386,19 @@ impl SegmentRangeCursor {
                 .as_deref()
                 .map_or(0, |start| block.lower_bound_index(start));
             if record_index < block.record_count()
-                && Self::record_is_before_end(self.end.as_deref(), &block, record_index)?
+                && Self::record_is_before_end(self.end.as_deref(), &block, record_index)
             {
+                if let Err(error) = self.segment.verify_block_payload(
+                    block_index,
+                    &block,
+                    self.verify_block_checksums,
+                ) {
+                    if error.is_cache_miss_corruption() {
+                        self.spare_block_bytes = block.into_bytes();
+                        continue;
+                    }
+                    return Err(error);
+                }
                 #[cfg(feature = "value-compression")]
                 let decoded_payload =
                     match block.decode_payload_if_needed(&mut self.payload_decoder) {
@@ -388,6 +408,7 @@ impl SegmentRangeCursor {
                             continue;
                         }
                     };
+                block.write_key_at_index(record_index, &mut self.key_scratch)?;
                 self.position = Some(SegmentCursorPosition {
                     block,
                     #[cfg(feature = "value-compression")]
@@ -402,15 +423,11 @@ impl SegmentRangeCursor {
         Ok(())
     }
 
-    fn record_is_before_end(
-        end: Option<&[u8]>,
-        block: &DecodedBlock,
-        record_index: usize,
-    ) -> Result<bool> {
+    fn record_is_before_end(end: Option<&[u8]>, block: &DecodedBlock, record_index: usize) -> bool {
         if let Some(end) = end {
-            return Ok(block.key_at_index(record_index)? < end);
+            return block.compare_key_at_index(record_index, end) == Ordering::Less;
         }
-        Ok(true)
+        true
     }
 
     fn recycle_current_block(&mut self) {

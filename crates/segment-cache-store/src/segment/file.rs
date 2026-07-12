@@ -31,7 +31,7 @@ pub(crate) struct SegmentOpenOptions<'a> {
 pub(crate) struct BlockReadOptions {
     pub(crate) geometry: SegmentGeometry,
     #[cfg(feature = "block-checksum")]
-    pub(crate) verify_checksum: bool,
+    pub(crate) verify_lookup_checksum: bool,
 }
 
 /// Open segment handle with its sparse block index loaded into memory.
@@ -186,6 +186,6 @@ pub(super) fn read_block_reusing(
         block_checksum: options.geometry.block_checksum,
         value_payload_compression: options.geometry.value_payload_compression,
         #[cfg(feature = "block-checksum")]
-        verify_checksum: options.verify_checksum,
+        verify_lookup_checksum: options.verify_lookup_checksum,
     })?)
 }

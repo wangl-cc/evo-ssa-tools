@@ -20,7 +20,10 @@ pub(crate) struct ValuePayloadEncoder {
 enum EncoderState {
     None,
     #[cfg(feature = "value-compression-lz4")]
-    Lz4,
+    Lz4 {
+        table: Option<lz4_flex::block::CompressTable>,
+        scratch: Vec<u8>,
+    },
     #[cfg(feature = "value-compression-zstd")]
     Zstd {
         compressor: zstd::bulk::Compressor<'static>,
@@ -91,7 +94,10 @@ impl ValuePayloadEncoder {
         let state = match kind {
             ValuePayloadCompressionKind::None => EncoderState::None,
             #[cfg(feature = "value-compression-lz4")]
-            ValuePayloadCompressionKind::Lz4 => EncoderState::Lz4,
+            ValuePayloadCompressionKind::Lz4 => EncoderState::Lz4 {
+                table: None,
+                scratch: Vec::new(),
+            },
             #[cfg(feature = "value-compression-zstd")]
             ValuePayloadCompressionKind::ZstdLevel1 => EncoderState::Zstd {
                 compressor: zstd::bulk::Compressor::new(1)
@@ -120,21 +126,21 @@ impl ValuePayloadEncoder {
                 Ok(PayloadFrame::raw_without_header(raw_len))
             }
             #[cfg(feature = "value-compression-lz4")]
-            EncoderState::Lz4 => {
-                let mut raw_payload = Vec::with_capacity(raw_len);
-                write_raw(&mut raw_payload);
-                validate_written_len(raw_payload.len(), raw_len)?;
-                frame::encode_lz4(&raw_payload, _policy, out)
+            EncoderState::Lz4 { table, scratch } => {
+                let pending = frame::PendingPayloadFrame::begin(out);
+                write_raw(out);
+                validate_written_len(pending.payload_len(out)?, raw_len)?;
+                pending.finish_lz4(out, _policy, table, scratch)
             }
             #[cfg(feature = "value-compression-zstd")]
             EncoderState::Zstd {
                 compressor,
                 scratch,
             } => {
-                let mut raw_payload = Vec::with_capacity(raw_len);
-                write_raw(&mut raw_payload);
-                validate_written_len(raw_payload.len(), raw_len)?;
-                frame::encode_zstd(&raw_payload, _policy, out, compressor, scratch)
+                let pending = frame::PendingPayloadFrame::begin(out);
+                write_raw(out);
+                validate_written_len(pending.payload_len(out)?, raw_len)?;
+                pending.finish_zstd(out, _policy, compressor, scratch)
             }
         }
     }
@@ -273,16 +279,26 @@ mod tests {
 
         #[test]
         fn small_payload_falls_back_to_raw_frame() {
-            let (frame, bytes) = encode_payload(
-                ValuePayloadCompressionKind::Lz4,
-                b"abc",
-                ValuePayloadCompressionPolicy::DEFAULT,
-            );
+            let mut encoder = ValuePayloadEncoder::new(ValuePayloadCompressionKind::Lz4);
+            let mut bytes = Vec::new();
+            let frame = encoder
+                .encode_frame(
+                    3,
+                    ValuePayloadCompressionPolicy::DEFAULT,
+                    &mut bytes,
+                    |payload| payload.extend_from_slice(b"abc"),
+                )
+                .expect("frame should encode");
 
             assert_eq!(frame.frame_len(), frame::HEADER_LEN + 3);
             assert!(frame.is_raw_borrowable());
             assert_eq!(bytes[0], 0);
             assert_eq!(&bytes[frame::HEADER_LEN..], b"abc");
+            let EncoderState::Lz4 { table, scratch } = encoder.state else {
+                panic!("lz4 encoder state should be selected");
+            };
+            assert!(table.is_none());
+            assert_eq!(scratch.capacity(), 0);
         }
 
         #[test]
@@ -295,6 +311,7 @@ mod tests {
             assert!(!frame.is_raw_borrowable());
             assert_eq!(bytes[0], 1);
             assert!(bytes.len() < raw.len());
+            assert_eq!(&bytes[frame::HEADER_LEN..], lz4_flex::block::compress(&raw));
             let mut decoder = ValuePayloadDecoder::new(compression);
             let decoded = compression
                 .decode_frame(&mut decoder, &bytes, raw.len())
@@ -326,12 +343,58 @@ mod tests {
             let policy = ValuePayloadCompressionPolicy::DEFAULT
                 .with_min_saved_percent(100)
                 .expect("saved percentage is valid");
-            let (frame, _) = encode_payload(ValuePayloadCompressionKind::Lz4, &raw, policy);
+            let compression = ValuePayloadCompressionKind::Lz4;
+            let (frame, bytes) = encode_payload(compression, &raw, policy);
             assert!(frame.is_raw_borrowable());
+            assert_eq!(bytes[0], 0);
+            assert_eq!(&bytes[frame::HEADER_LEN..], raw);
+            let mut decoder = ValuePayloadDecoder::new(compression);
+            assert_eq!(
+                compression
+                    .decode_frame(&mut decoder, &bytes, raw.len())
+                    .expect("raw frame should decode"),
+                None
+            );
 
             let policy = ValuePayloadCompressionPolicy::DEFAULT.with_min_try_len(raw.len() + 1);
             let (frame, _) = encode_payload(ValuePayloadCompressionKind::Lz4, &raw, policy);
             assert!(frame.is_raw_borrowable());
+        }
+
+        #[test]
+        fn reuses_compression_scratch_between_frames() {
+            let raw = vec![7u8; ValuePayloadCompressionPolicy::DEFAULT.min_try_len() * 2];
+            let mut encoder = ValuePayloadEncoder::new(ValuePayloadCompressionKind::Lz4);
+
+            let mut first = Vec::new();
+            encoder
+                .encode_frame(
+                    raw.len(),
+                    ValuePayloadCompressionPolicy::DEFAULT,
+                    &mut first,
+                    |payload| payload.extend_from_slice(&raw),
+                )
+                .expect("first frame should encode");
+            let EncoderState::Lz4 { scratch, .. } = &encoder.state else {
+                panic!("lz4 encoder state should be selected");
+            };
+            let first_scratch = (scratch.as_ptr(), scratch.capacity());
+            assert!(first_scratch.1 > 0);
+
+            let mut second = Vec::new();
+            encoder
+                .encode_frame(
+                    raw.len(),
+                    ValuePayloadCompressionPolicy::DEFAULT,
+                    &mut second,
+                    |payload| payload.extend_from_slice(&raw),
+                )
+                .expect("second frame should encode");
+            let EncoderState::Lz4 { scratch, .. } = &encoder.state else {
+                panic!("lz4 encoder state should be selected");
+            };
+            assert_eq!((scratch.as_ptr(), scratch.capacity()), first_scratch);
+            assert_eq!(second, first);
         }
     }
 
@@ -341,16 +404,25 @@ mod tests {
 
         #[test]
         fn small_payload_falls_back_to_raw_frame() {
-            let (frame, bytes) = encode_payload(
-                ValuePayloadCompressionKind::ZstdLevel1,
-                b"abc",
-                ValuePayloadCompressionPolicy::DEFAULT,
-            );
+            let mut encoder = ValuePayloadEncoder::new(ValuePayloadCompressionKind::ZstdLevel1);
+            let mut bytes = Vec::new();
+            let frame = encoder
+                .encode_frame(
+                    3,
+                    ValuePayloadCompressionPolicy::DEFAULT,
+                    &mut bytes,
+                    |payload| payload.extend_from_slice(b"abc"),
+                )
+                .expect("frame should encode");
 
             assert_eq!(frame.frame_len(), frame::HEADER_LEN + 3);
             assert!(frame.is_raw_borrowable());
             assert_eq!(bytes[0], 0);
             assert_eq!(&bytes[frame::HEADER_LEN..], b"abc");
+            let EncoderState::Zstd { scratch, .. } = encoder.state else {
+                panic!("zstd encoder state should be selected");
+            };
+            assert_eq!(scratch.capacity(), 0);
         }
 
         #[test]
@@ -363,6 +435,10 @@ mod tests {
             assert!(!frame.is_raw_borrowable());
             assert_eq!(bytes[0], 1);
             assert!(bytes.len() < raw.len());
+            assert_eq!(
+                &bytes[frame::HEADER_LEN..],
+                ::zstd::bulk::compress(&raw, 1).expect("reference payload should compress")
+            );
             let mut decoder = ValuePayloadDecoder::new(compression);
             let decoded = compression
                 .decode_frame(&mut decoder, &bytes, raw.len())
@@ -386,6 +462,63 @@ mod tests {
                 panic!("zstd decoder state should be selected");
             };
             assert_eq!(buffer.capacity(), 0);
+        }
+
+        #[test]
+        fn strict_policy_keeps_raw_frame() {
+            let raw = vec![7u8; ValuePayloadCompressionPolicy::DEFAULT.min_try_len() * 2];
+            let policy = ValuePayloadCompressionPolicy::DEFAULT
+                .with_min_saved_percent(100)
+                .expect("saved percentage is valid");
+            let compression = ValuePayloadCompressionKind::ZstdLevel1;
+            let (frame, bytes) = encode_payload(compression, &raw, policy);
+
+            assert!(frame.is_raw_borrowable());
+            assert_eq!(bytes[0], 0);
+            assert_eq!(&bytes[frame::HEADER_LEN..], raw);
+            let mut decoder = ValuePayloadDecoder::new(compression);
+            assert_eq!(
+                compression
+                    .decode_frame(&mut decoder, &bytes, raw.len())
+                    .expect("raw frame should decode"),
+                None
+            );
+        }
+
+        #[test]
+        fn reuses_compression_scratch_between_frames() {
+            let raw = vec![7u8; ValuePayloadCompressionPolicy::DEFAULT.min_try_len() * 2];
+            let mut encoder = ValuePayloadEncoder::new(ValuePayloadCompressionKind::ZstdLevel1);
+
+            let mut first = Vec::new();
+            encoder
+                .encode_frame(
+                    raw.len(),
+                    ValuePayloadCompressionPolicy::DEFAULT,
+                    &mut first,
+                    |payload| payload.extend_from_slice(&raw),
+                )
+                .expect("first frame should encode");
+            let EncoderState::Zstd { scratch, .. } = &encoder.state else {
+                panic!("zstd encoder state should be selected");
+            };
+            let first_scratch = (scratch.as_ptr(), scratch.capacity());
+            assert!(first_scratch.1 > 0);
+
+            let mut second = Vec::new();
+            encoder
+                .encode_frame(
+                    raw.len(),
+                    ValuePayloadCompressionPolicy::DEFAULT,
+                    &mut second,
+                    |payload| payload.extend_from_slice(&raw),
+                )
+                .expect("second frame should encode");
+            let EncoderState::Zstd { scratch, .. } = &encoder.state else {
+                panic!("zstd encoder state should be selected");
+            };
+            assert_eq!((scratch.as_ptr(), scratch.capacity()), first_scratch);
+            assert_eq!(second, first);
         }
     }
 

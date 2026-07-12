@@ -1,7 +1,7 @@
 //! Steady-state write design: replacing commits, dead-entry dropping, the
 //! advisory writer lock, explicit GC, and the lookup-across-commit fix.
 
-use std::fs;
+use std::{fs, num::NonZeroUsize};
 
 use segment_cache_store::{
     CatalogError, CatalogMismatch, CommitStats, Error, InputError, Result, Store,
@@ -178,6 +178,54 @@ fn patch_direct_record_limit_can_force_immediate_normalization() -> Result<()> {
     assert_eq!(stats.output_records, 3);
     assert_eq!(stats.segments_retired, 1);
     assert_eq!(stats.segments_published, 1);
+    Ok(())
+}
+
+#[test]
+fn immediate_normalization_streams_into_record_bounded_segments() -> Result<()> {
+    let tempdir = tempfile::tempdir()?;
+    let store = create_store(&tempdir)?;
+    let existing = vec![
+        (make_key(1, 0, 0), make_value(9, 8)),
+        (make_key(1, 0, 2), make_value(9, 8)),
+        (make_key(1, 0, 4), make_value(9, 8)),
+        (make_key(1, 0, 6), make_value(9, 8)),
+    ];
+    commit_entries(&store, &existing)?;
+
+    let incoming = vec![
+        (make_key(1, 0, 1), make_value(1, 8)),
+        (make_key(1, 0, 2), make_value(1, 8)),
+        (make_key(1, 0, 3), make_value(3, 8)),
+        (make_key(1, 0, 5), make_value(5, 8)),
+    ];
+    let options = commit_options()
+        .with_patch_direct_record_limit(0)
+        .with_flush_threshold_records(NonZeroUsize::new(2).expect("non-zero literal"));
+    let stats = commit_entries_with_options(&store, &incoming, &options)?;
+
+    assert_eq!(stats.input_records, 4);
+    assert_eq!(stats.output_records, 7);
+    assert_eq!(stats.segments_retired, 1);
+    assert_eq!(stats.segments_published, 4);
+
+    let expected = vec![
+        (make_key(1, 0, 0), make_value(9, 8)),
+        (make_key(1, 0, 1), make_value(1, 8)),
+        (make_key(1, 0, 2), make_value(1, 8)),
+        (make_key(1, 0, 3), make_value(3, 8)),
+        (make_key(1, 0, 4), make_value(9, 8)),
+        (make_key(1, 0, 5), make_value(5, 8)),
+        (make_key(1, 0, 6), make_value(9, 8)),
+    ];
+    assert_eq!(store.iter_all()?.collect::<Result<Vec<_>>>()?, expected);
+    drop(store);
+    assert_eq!(
+        reopen_store(&tempdir)?
+            .iter_all()?
+            .collect::<Result<Vec<_>>>()?,
+        expected
+    );
     Ok(())
 }
 

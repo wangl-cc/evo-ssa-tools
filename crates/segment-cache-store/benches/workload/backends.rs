@@ -67,6 +67,11 @@ pub(crate) fn open_segment_store(root: &Path, verify_crc: bool) -> Store {
     Store::open(root, open_options(verify_crc)).expect("segment store should reopen")
 }
 
+pub(crate) fn open_segment_store_read_only(root: &Path) -> Store {
+    Store::open(root, OpenOptions::read_only(store_metadata()))
+        .expect("segment store should reopen read-only")
+}
+
 pub(crate) fn create_filled_segment_store(
     root: &Path,
     profile: ValueProfile,

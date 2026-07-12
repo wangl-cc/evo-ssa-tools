@@ -448,9 +448,10 @@ flowchart TD
   Normalize --> Dedup["deduplicate with winner rule"]
   Dedup --> Split
 
-  Split --> WriteSeg["write immutable segment temp file"]
-  WriteSeg --> Rename["fsync file, rename, fsync parent dir"]
-  Rename --> Publish["atomically publish replacing MANIFEST"]
+  Split --> WriteSeg["write and fsync all segment temp files"]
+  WriteSeg --> Rename["rename complete segment batch"]
+  Rename --> SegmentBarrier["fsync segments directory once"]
+  SegmentBarrier --> Publish["atomically publish replacing MANIFEST"]
   Publish --> Swap["swap runtime snapshot"]
 ```
 
@@ -462,9 +463,11 @@ The plan chooses one route:
 - **Patch publish** when the batch overlaps main-tier data but fits the patch policy.
 - **Normalization** when publishing another patch would exceed the patch policy.
 
+Normalization and cross-store merge consume sorted records as bounded output chunks. The active chunk is limited by the configured record and byte thresholds, except that one oversized record is allowed to make progress. Existing records from the affected range are streamed through a range cursor instead of being materialized into one range-sized batch.
+
 The default patch policy is intentionally simple: at most 8 live patch segments, and only batches with at most 4096 input records publish directly to patch. Callers may tune these values through `CommitOptions::with_patch_segment_limit` and `CommitOptions::with_patch_direct_record_limit`. Setting either limit to `0` disables direct patch publication for overlapping commits, so those commits normalize immediately.
 
-There is no WAL. Only data referenced by a published `MANIFEST` is durable. In-progress temp files may be lost. A crash after segment rename but before manifest publish leaves an orphan segment that is invisible and later collected.
+There is no WAL. A commit writes and syncs all segment temp files, renames the complete batch, syncs the shared `segments/` directory once, and only then publishes `MANIFEST`. Only data referenced by a published manifest is visible. In-progress temp files may be lost, and a crash after any segment rename but before manifest publication can leave orphan segments that remain invisible and are later collected.
 
 ## Replacing Manifest Commit
 
@@ -518,10 +521,11 @@ flowchart TD
 
   MainSweep --> SegmentSweep["advance through sorted segment ranges"]
   SegmentSweep --> BlockRange["consume all query keys<br/>belonging to one block"]
-  BlockRange --> FullBlock["read full raw block<br/>verify metadata + payload checksums"]
+  BlockRange --> FullBlock["read full raw block<br/>verify lookup metadata"]
   FullBlock --> HitCheck{"any matching key?"}
   HitCheck -->|no| Misses["emit misses"]
-  HitCheck -->|yes| PayloadReady{"payload compressed?"}
+  HitCheck -->|yes| VerifyPayload["verify payload checksum"]
+  VerifyPayload --> PayloadReady{"payload compressed?"}
   PayloadReady -->|no| Emit["visit borrowed value slices<br/>or copy for owned fetch"]
   PayloadReady -->|yes| DecodePayload["decode ValuePayloadFrame<br/>into cursor scratch"]
   DecodePayload --> Emit
@@ -623,7 +627,7 @@ Ordered lookup processes all query keys that fall inside the current block befor
 
 ### Borrowed Block Parsing
 
-Blocks are decoded as one owned raw-byte buffer plus derived layout metadata. Raw value frames and contiguous key bytes are borrowed directly from that buffer. Prefix-stripped full keys are materialized lazily only for scan-style APIs. Compressed value frames are decoded into a buffer owned by the lookup session or range cursor, and visitor APIs borrow value slices from that buffer. Values are copied only by APIs that return owned vectors.
+Blocks are decoded as one owned raw-byte buffer plus derived layout metadata. Raw value frames and key prefix/suffix slices are borrowed directly from that buffer. A range cursor reconstructs only its current full key into one reusable key-sized scratch buffer. Compressed value frames are decoded into a buffer owned by the lookup session or range cursor, and visitor APIs borrow value slices from that buffer. Values are copied only by APIs that return owned vectors.
 
 ### Raw Block Views And Lazy Payload Decode
 
@@ -631,13 +635,13 @@ Every accessed block is read from its segment in one contiguous positioned read.
 
 ### Split Block Checksums
 
-Block checksum state is split into lookup metadata and value payload checksums. Metadata verification protects key lookup and, for variable values, the offset table used to locate value slices. Payload verification protects returned value bytes and any value-payload frame header. For fixed-value blocks this is effectively a `KeySection` checksum plus a value-payload-frame checksum; for variable-value blocks it is key-plus-offset metadata versus value payload frame. The current reader verifies both regions on the first checked load of a full raw block, then records that block as verified for the lifetime of the immutable segment handle.
+Block checksum state is split into lookup metadata and value payload checksums. Metadata verification protects key lookup and, for variable values, the offset table used to locate value slices. Payload verification protects returned value bytes and any value-payload frame header. For fixed-value blocks this is effectively a `KeySection` checksum plus a value-payload-frame checksum; for variable-value blocks it is key-plus-offset metadata versus value payload frame. The reader verifies lookup metadata when a checked block is first loaded, but defers payload verification until a key hit or range scan needs values. Each phase is recorded independently for the lifetime of the immutable segment handle, so misses do not compute payload digests and later checked reads reuse completed verification.
 
 ### Optional Value-Payload Compression
 
 Compression is deliberately below the caller codec and above the raw block payload bytes. It never changes keys or value indexes. With a compression-capable `ValuePayloadCompressionKind`, the writer can compress the whole block value payload as one frame and stores raw fallback frames for small or incompressible payloads. `ValuePayloadCompressionPolicy` is a non-persistent commit-time tuning knob: changing it affects future blocks but does not affect the reader contract for existing segments. This centralizes checksum and decompression handling in the storage backend while letting sparse misses avoid decompression.
 
-Compression codecs have process-local contexts. Segment writing creates one value-payload encoder per segment publish and reuses it across all blocks in that segment. Ordered lookup sessions and range cursors own value-payload decoders and the current decoded payload, so zstd can reuse its decompression context instead of recreating one per block. When a cursor replaces its current block, it reclaims the decoded payload into the decoder's reusable scratch buffer. This keeps the public read contract borrowed while avoiding repeated zstd context creation and most repeated decoded-buffer allocation in scan-like reads.
+Compression codecs have process-local contexts. Segment writing creates one value-payload encoder per segment publish and reuses its codec context and compression scratch across all blocks in that segment. A block's raw payload is written directly into the block buffer; it remains there for raw fallback and is replaced only when the compressed representation satisfies the policy. Ordered lookup sessions and range cursors own value-payload decoders and the current decoded payload, so zstd can reuse its decompression context instead of recreating one per block. When a cursor replaces its current block, it reclaims the decoded payload into the decoder's reusable scratch buffer. This keeps the public read contract borrowed while avoiding repeated codec context creation and most repeated compression or decompression buffer allocation.
 
 ### Process-Local Verification Reuse
 
@@ -645,7 +649,7 @@ Immutable segment blocks keep process-local verification state. Once a block's m
 
 ### Prefix-Stripped Keys
 
-A block stores the common key prefix once and then stores fixed-width suffixes. Ordered lookup compares prefix and suffix slices directly and does not need to materialize full keys. Scan-style record access materializes full keys lazily only when borrowed full-key slices are needed.
+A block stores the common key prefix once and then stores fixed-width suffixes. Ordered lookup compares prefix and suffix slices directly and does not materialize full keys. Each segment range cursor owns one key-sized scratch buffer and reconstructs only the current record key before exposing its borrowed slice.
 
 ### Fixed-Value Layout
 

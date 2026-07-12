@@ -1,16 +1,14 @@
 //! Cross-store merge publication.
 
-use std::{mem, sync::Arc};
+use std::sync::Arc;
 
 use super::{
     Committer,
-    batch::{PreparedBatch, WriteBatch},
     options::CommitOptions,
-    plan::{CommitPlan, StagedSegment},
-    publish::CommitStats,
+    plan::CommitPlan,
+    publish::{CommitStats, RecordStreamStep, SegmentChunk, SortedRecordStream},
 };
 use crate::{
-    catalog::SegmentTier,
     error::{FormatError, InputError, Result},
     segment::{Segment, SegmentGeometry},
     snapshot::RangeCursor,
@@ -101,8 +99,10 @@ impl StoreMergeRecords {
     fn into_source_stats(self) -> MergeInputStats {
         self.source_stats
     }
+}
 
-    fn push_next_into(&mut self, batch: &mut WriteBatch) -> Result<bool> {
+impl SortedRecordStream for StoreMergeRecords {
+    fn push_next_into(&mut self, chunk: &mut SegmentChunk) -> Result<RecordStreamStep> {
         enum Advance {
             Destination,
             Source,
@@ -122,32 +122,43 @@ impl StoreMergeRecords {
                 (Some(destination_record), Some(source_record)) => {
                     match destination_record.key.cmp(source_record.key) {
                         std::cmp::Ordering::Less => {
-                            batch.push(destination_record.key, destination_record.value);
+                            if !chunk.try_push(destination_record.key, destination_record.value) {
+                                return Ok(RecordStreamStep::ChunkFull);
+                            }
                             Advance::Destination
                         }
                         std::cmp::Ordering::Greater => {
+                            if !chunk.try_push(source_record.key, source_record.value) {
+                                return Ok(RecordStreamStep::ChunkFull);
+                            }
                             source_stats.add_record(source_record.key, source_record.value)?;
-                            batch.push(source_record.key, source_record.value);
                             Advance::Source
                         }
                         std::cmp::Ordering::Equal => {
-                            source_stats.add_record(source_record.key, source_record.value)?;
-                            if source_record.value < destination_record.value {
-                                batch.push(source_record.key, source_record.value);
+                            let winner = if source_record.value < destination_record.value {
+                                source_record.value
                             } else {
-                                batch.push(destination_record.key, destination_record.value);
+                                destination_record.value
+                            };
+                            if !chunk.try_push(source_record.key, winner) {
+                                return Ok(RecordStreamStep::ChunkFull);
                             }
+                            source_stats.add_record(source_record.key, source_record.value)?;
                             Advance::Both
                         }
                     }
                 }
                 (Some(destination_record), None) => {
-                    batch.push(destination_record.key, destination_record.value);
+                    if !chunk.try_push(destination_record.key, destination_record.value) {
+                        return Ok(RecordStreamStep::ChunkFull);
+                    }
                     Advance::Destination
                 }
                 (None, Some(source_record)) => {
+                    if !chunk.try_push(source_record.key, source_record.value) {
+                        return Ok(RecordStreamStep::ChunkFull);
+                    }
                     source_stats.add_record(source_record.key, source_record.value)?;
-                    batch.push(source_record.key, source_record.value);
                     Advance::Source
                 }
                 (None, None) => Advance::Done,
@@ -161,9 +172,9 @@ impl StoreMergeRecords {
                 self.destination.advance_record()?;
                 self.source.advance_record()?;
             }
-            Advance::Done => return Ok(false),
+            Advance::Done => return Ok(RecordStreamStep::Done),
         }
-        Ok(true)
+        Ok(RecordStreamStep::Pushed)
     }
 }
 
@@ -215,7 +226,7 @@ impl Committer<'_> {
         );
         let mut records = StoreMergeRecords::new(destination_cursor, source_cursor);
         let (written, output_records) =
-            self.write_cursor_segments(&mut records, &mut plan, options)?;
+            self.write_record_segments(&mut records, &mut plan, options)?;
         let source_stats = records.into_source_stats();
         let publication_stats = self.publish_plan(plan, written, key_len)?;
 
@@ -242,49 +253,6 @@ impl Committer<'_> {
         if self.inner.geometry.value_layout != source.geometry.value_layout {
             return Err(InputError::SourceValueLayoutMismatch.into());
         }
-        Ok(())
-    }
-
-    fn write_cursor_segments(
-        &self,
-        records: &mut StoreMergeRecords,
-        plan: &mut CommitPlan,
-        options: &CommitOptions,
-    ) -> Result<(Vec<StagedSegment>, usize)> {
-        let mut written = Vec::new();
-        let mut output_records = 0usize;
-        let mut batch = WriteBatch::new();
-        while records.push_next_into(&mut batch)? {
-            output_records += 1;
-            if batch.len() >= options.flush_threshold_records()
-                || batch.byte_len() >= options.flush_threshold_bytes()
-            {
-                self.flush_cursor_batch(&mut batch, &mut written, plan, options)?;
-            }
-        }
-        self.flush_cursor_batch(&mut batch, &mut written, plan, options)?;
-        Ok((written, output_records))
-    }
-
-    fn flush_cursor_batch(
-        &self,
-        batch: &mut WriteBatch,
-        written: &mut Vec<StagedSegment>,
-        plan: &mut CommitPlan,
-        options: &CommitOptions,
-    ) -> Result<()> {
-        if batch.is_empty() {
-            return Ok(());
-        }
-        let geometry = self.inner.geometry;
-        let batch = PreparedBatch::from_sorted_unique(
-            mem::take(batch),
-            geometry.key_len,
-            geometry.value_layout,
-        );
-        let len = batch.len();
-        let segment_id = plan.allocate_segment_id()?;
-        written.push(self.write_segment(&batch, 0..len, segment_id, SegmentTier::Main, options)?);
         Ok(())
     }
 }

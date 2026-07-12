@@ -9,7 +9,7 @@ One benchmark target is used for horizontal comparison against other embedded st
 ## Benchmark Targets
 
 - `comparison`: cross-backend summary benchmark. It compares `segment-cache-store`, tuned `fjall3`, and `redb` on ordered fetch, clustered sparse ordered fetch, full iteration, append publish, and the small-profile parameter-evolution workload.
-- `ordered_lookup`: segment-only read-path benchmark with checksum verification enabled. It measures dense ordered lookup, clustered/random sparse ordered lookup, large-value borrowed-vs-owned fetch APIs, large-value block-size sensitivity, L0 overlay ordered lookup, and L0 overlay scan amplification.
+- `ordered_lookup`: segment-only read-path benchmark with checksum verification enabled. It measures dense ordered lookup, clustered/random sparse ordered lookup, cold process-local checksum verification, large-value borrowed-vs-owned fetch APIs, large-value block-size sensitivity, L0 overlay ordered lookup, and L0 overlay scan amplification.
 - `append_publish`: segment-only write-path benchmark with checksum verification enabled. It measures sorted and unsorted batch publish into fresh stores.
 - `parameter_evolution`: segment-only cache-evolution benchmark with checksum verification enabled. It measures rebuild-vs-L0 behavior for middle inserts and repeated axis changes.
 - `compression`: segment-only value-payload compression benchmark, available with `--features value-compression-lz4,value-compression-zstd`. It compares uncompressed stores against LZ4-created and Zstandard-level-1-created stores using the default writer-side compression policy, reports store bytes, and measures ordered fetch, full iteration, and append publish.
@@ -71,6 +71,10 @@ Segment-only clustered sparse ordered lookup with checksum verification enabled.
 
 Segment-only seeded random sparse ordered lookup with checksum verification enabled. It keeps the query stream sorted after sampling, but the selected keys are not evenly spaced. This tests a less regular sparse shape than the old every-16th-key stress case.
 
+### `cold_first_touch_checksum`
+
+Segment-only first-touch checksum benchmark for the `large` profile with 4,096 records and 256K blocks. Every Criterion iteration opens a fresh read-only store in setup, resetting process-local verification state without clearing the OS page cache. `all_miss` uses keys interleaved between stored keys inside block ranges, so it measures lookup validation without returning values; `all_hit` verifies the corresponding payloads and touches every value. Store-open time is excluded from the measured routine.
+
 ### `large_value_block_size`
 
 Segment-only dense ordered lookup for the `large` profile with block sizes `16K`, `64K`, `256K`, and `512K`. This answers whether large-value performance is blocked by block sizing or by value movement and checksum cost.
@@ -89,7 +93,7 @@ Segment-only L0 overlay scan benchmark. It uses the same logical layout as `over
 
 ### `append_publish`
 
-Segment-only publish benchmark for `sorted_batch` and `unsorted_batch`. The sorted variant models callers that already emit canonical key order; the unsorted variant includes backend sorting cost.
+Segment-only publish benchmark for `sorted_batch` and `unsorted_batch`. The sorted variant models callers that already emit canonical key order; the unsorted variant includes backend sorting cost. `append_publish_many_segments` uses 4,096 small records and a 128-record flush threshold to produce exactly 32 segments, isolating segment-directory publication overhead from large-value IO.
 
 ### `compression_ordered_fetch`
 
@@ -152,6 +156,10 @@ cargo run -p segment-cache-store --example space_usage --offline
 ## Space Metric
 
 Space amplification is treated as a first-class metric. The measurement script lives in [examples/space_usage.rs](../examples/space_usage.rs) and reports logical bytes, directory size, and amplification factor for `segment-cache-store`, `fjall3`, and `redb`.
+
+## Saved Baselines
+
+- [`b093515-m1`](../benchmark-baselines/b093515-m1/README.md): Apple M1 baseline for commit `b093515`, covering all five Criterion targets and the space-usage report.
 
 ## Historical Snapshot
 

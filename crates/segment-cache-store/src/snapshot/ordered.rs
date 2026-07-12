@@ -503,15 +503,18 @@ where
                     }
                     Err(error) => return Err(error),
                 };
-            if !BlockKeySweep::new(block, &self.keys[self.key_index..block_end]).has_any_hit() {
+            let mut block_sweep = BlockKeySweep::new(&self.keys[self.key_index..block_end]);
+            if !block_sweep.find_first_hit(block) {
                 for offset in self.key_index..block_end {
                     (self.visitor)(self.base_index + offset, None)?;
                 }
                 self.key_index = block_end;
                 continue;
             }
-            #[cfg(feature = "value-compression")]
-            if let Err(error) = self.lookup_state.ensure_decoded_payload() {
+            if let Err(error) = self
+                .lookup_state
+                .ensure_payload_ready(segment, self.options)
+            {
                 if error.is_cache_miss_corruption() {
                     self.visit_corrupt_block_misses(segment, block_index)?;
                     continue;
@@ -527,7 +530,8 @@ where
                 Err(error) => return Err(error),
             };
 
-            BlockKeySweep::new(block, &self.keys[self.key_index..block_end]).visit(
+            block_sweep.visit_from_first_hit(
+                block,
                 self.base_index + self.key_index,
                 self.segment_index_base + self.segment_index,
                 block_index,
@@ -644,12 +648,26 @@ impl LookupState {
         Ok(&loaded.block)
     }
 
-    #[cfg(feature = "value-compression")]
-    fn ensure_decoded_payload(&mut self) -> Result<()> {
+    fn ensure_payload_ready(
+        &mut self,
+        segment: &Segment,
+        options: LookupReadOptions,
+    ) -> Result<()> {
+        let loaded = self
+            .loaded_block
+            .as_ref()
+            .expect("payload verification follows block loading");
+        segment.verify_block_payload(
+            loaded.block_index,
+            &loaded.block,
+            options.verify_block_checksums,
+        )?;
+        #[cfg(feature = "value-compression")]
         let loaded = self
             .loaded_block
             .as_mut()
             .expect("payload decoding follows block loading");
+        #[cfg(feature = "value-compression")]
         if loaded.decoded_payload.is_none() {
             loaded.decoded_payload = loaded
                 .block
@@ -680,8 +698,7 @@ impl LookupState {
         options: LookupReadOptions,
     ) -> Result<&[u8]> {
         self.ensure_loaded_block(segment, block_index, options)?;
-        #[cfg(feature = "value-compression")]
-        self.ensure_decoded_payload()?;
+        self.ensure_payload_ready(segment, options)?;
         let (block, payload) = self.loaded_block_and_payload()?;
         block
             .value_at_index_with_payload(record_index, payload)
@@ -693,76 +710,101 @@ struct BlockKeySweep<'a, K>
 where
     K: AsRef<[u8]>,
 {
-    block: &'a DecodedBlock,
     keys: &'a [K],
+    query_index: usize,
     record_index: usize,
+    initialized: bool,
 }
 
 impl<'a, K> BlockKeySweep<'a, K>
 where
     K: AsRef<[u8]>,
 {
-    fn new(block: &'a DecodedBlock, keys: &'a [K]) -> Self {
-        let record_index = keys
-            .first()
-            .map_or(0, |key| block.lower_bound_index(key.as_ref()));
+    fn new(keys: &'a [K]) -> Self {
         Self {
-            block,
             keys,
-            record_index,
+            query_index: 0,
+            record_index: 0,
+            initialized: false,
         }
     }
 
-    fn has_any_hit(mut self) -> bool {
-        for key in self.keys {
-            if self.key_matches(key.as_ref()) {
+    fn find_first_hit(&mut self, block: &DecodedBlock) -> bool {
+        while let Some(key) = self.keys.get(self.query_index) {
+            let key = key.as_ref();
+            self.advance_to(block, key);
+            if block.key_matches_at_index(self.record_index, key) {
                 return true;
             }
+            self.query_index += 1;
         }
         false
     }
 
-    fn visit<F>(
+    fn visit_from_first_hit<F>(
         mut self,
+        block: &DecodedBlock,
         base_index: usize,
         segment_index: usize,
         block_index: usize,
-        payload: &'a [u8],
+        payload: &[u8],
         visitor: &mut F,
     ) -> Result<()>
     where
         F: FnMut(usize, Option<LookupHit<'_>>) -> Result<()>,
     {
-        for (offset, key) in self.keys.iter().enumerate() {
+        for offset in 0..self.query_index {
+            visitor(base_index + offset, None)?;
+        }
+
+        let first_hit = block
+            .value_at_index_with_payload(self.record_index, payload)
+            .ok()
+            .map(|value| LookupHit {
+                value,
+                segment_index,
+                block_index,
+                record_index: self.record_index,
+            });
+        visitor(base_index + self.query_index, first_hit)?;
+        self.query_index += 1;
+
+        while let Some(key) = self.keys.get(self.query_index) {
             let hit = self
-                .value_for(key.as_ref(), payload)
+                .value_for(block, key.as_ref(), payload)
                 .map(|(record_index, value)| LookupHit {
                     value,
                     segment_index,
                     block_index,
                     record_index,
                 });
-            visitor(base_index + offset, hit)?;
+            visitor(base_index + self.query_index, hit)?;
+            self.query_index += 1;
         }
         Ok(())
     }
 
-    fn key_matches(&mut self, key: &[u8]) -> bool {
-        self.advance_to(key);
-        self.block.key_matches_at_index(self.record_index, key)
-    }
-
-    fn value_for(&mut self, key: &[u8], payload: &'a [u8]) -> Option<(usize, &'a [u8])> {
-        self.advance_to(key);
+    fn value_for<'value>(
+        &mut self,
+        block: &DecodedBlock,
+        key: &[u8],
+        payload: &'value [u8],
+    ) -> Option<(usize, &'value [u8])> {
+        self.advance_to(block, key);
         let record_index = self.record_index;
-        self.block
+        block
             .value_at_if_key_with_payload(record_index, key, payload)
             .map(|value| (record_index, value))
     }
 
-    fn advance_to(&mut self, key: &[u8]) {
-        while self.record_index < self.block.record_count()
-            && self.block.compare_key_at_index(self.record_index, key) == std::cmp::Ordering::Less
+    fn advance_to(&mut self, block: &DecodedBlock, key: &[u8]) {
+        if !self.initialized {
+            self.record_index = block.lower_bound_index(key);
+            self.initialized = true;
+            return;
+        }
+        while self.record_index < block.record_count()
+            && block.compare_key_at_index(self.record_index, key) == std::cmp::Ordering::Less
         {
             self.record_index += 1;
         }
@@ -787,4 +829,106 @@ where
         block_end += 1;
     }
     block_end
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{cell::Cell, num::NonZeroU32};
+
+    use super::*;
+    use crate::{
+        block::{
+            BlockChecksumKind, BlockDecodeOptions, BlockKeyRangeRef, ValuePayloadCompressionKind,
+        },
+        value::ValueLayout,
+    };
+
+    struct CountedKey<'a> {
+        bytes: &'a [u8],
+        accesses: Cell<usize>,
+    }
+
+    impl AsRef<[u8]> for CountedKey<'_> {
+        fn as_ref(&self) -> &[u8] {
+            self.accesses.set(self.accesses.get() + 1);
+            self.bytes
+        }
+    }
+
+    #[test]
+    fn first_hit_continues_the_same_query_and_record_sweep() -> Result<()> {
+        let block = decoded_test_block();
+        let keys = [
+            CountedKey {
+                bytes: b"aa00",
+                accesses: Cell::new(0),
+            },
+            CountedKey {
+                bytes: b"aa02",
+                accesses: Cell::new(0),
+            },
+            CountedKey {
+                bytes: b"aa03",
+                accesses: Cell::new(0),
+            },
+            CountedKey {
+                bytes: b"aa03",
+                accesses: Cell::new(0),
+            },
+        ];
+        let mut sweep = BlockKeySweep::new(&keys);
+        assert!(sweep.find_first_hit(&block));
+
+        let payload = raw_payload(&block)?;
+        let mut visits = Vec::new();
+        sweep.visit_from_first_hit(&block, 7, 2, 3, payload, &mut |index, hit| {
+            visits.push((index, hit.map(|hit| hit.value.to_vec())));
+            Ok(())
+        })?;
+
+        assert_eq!(visits, vec![
+            (7, None),
+            (8, None),
+            (9, Some(vec![30])),
+            (10, Some(vec![30])),
+        ]);
+        assert!(keys.iter().all(|key| key.accesses.get() == 1));
+        Ok(())
+    }
+
+    fn decoded_test_block() -> DecodedBlock {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&2u32.to_le_bytes());
+        bytes.extend_from_slice(&3u32.to_le_bytes());
+        bytes.extend_from_slice(b"aa0");
+        bytes.extend_from_slice(b"13");
+        bytes.extend_from_slice(&[10, 30]);
+
+        DecodedBlock::decode(bytes, BlockDecodeOptions {
+            expected_key_range: BlockKeyRangeRef {
+                prefix: b"aa0",
+                min_suffix: b"1",
+                max_suffix: b"3",
+            },
+            key_len: 4,
+            value_layout: ValueLayout::fixed(
+                NonZeroU32::new(1).expect("fixed test value width is non-zero"),
+            ),
+            block_checksum: BlockChecksumKind::None,
+            value_payload_compression: ValuePayloadCompressionKind::None,
+            #[cfg(feature = "block-checksum")]
+            verify_lookup_checksum: true,
+        })
+        .expect("test block should decode")
+    }
+
+    #[cfg(feature = "value-compression")]
+    fn raw_payload(block: &DecodedBlock) -> Result<&[u8]> {
+        Ok(block.payload_bytes(None)?)
+    }
+
+    #[cfg(not(feature = "value-compression"))]
+    fn raw_payload(block: &DecodedBlock) -> Result<&[u8]> {
+        Ok(block.payload_bytes()?)
+    }
 }

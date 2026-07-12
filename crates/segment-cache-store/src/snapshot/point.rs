@@ -78,6 +78,12 @@ impl<'a> SegmentSetReader<'a> {
         if !block.key_matches_at_index(record_index, key) {
             return Ok(None);
         }
+        match segment.verify_block_payload(block_index, &block, self.options.verify_block_checksums)
+        {
+            Ok(()) => {}
+            Err(error) if error.is_cache_miss_corruption() => return Ok(None),
+            Err(error) => return Err(error),
+        }
         #[cfg(feature = "value-compression")]
         let value = {
             let decoded_payload = match block.decode_payload_if_needed(&mut payload_decoder) {

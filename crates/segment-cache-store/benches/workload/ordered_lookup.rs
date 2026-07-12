@@ -1,12 +1,13 @@
 use std::hint::black_box;
 
-use criterion::{Criterion, Throughput};
+use criterion::{BatchSize, Criterion, Throughput};
 use segment_cache_store::{CommitOptions, Store};
 
 use crate::{
     backends::{
         commit_options_with_block_size, create_segment_store, fill_segment_store_with_options,
-        sum_segment_fetches, sum_segment_iter, sum_segment_owned_fetches,
+        open_segment_store_read_only, sum_segment_fetches, sum_segment_iter,
+        sum_segment_owned_fetches,
     },
     data::{Dataset, build_dataset},
     profile::{PROFILES, ValueProfile},
@@ -43,10 +44,72 @@ pub(crate) fn workload(c: &mut Criterion) {
         }
     }
 
+    bench_cold_first_touch_checksum(c);
+
     let profile = ValueProfile::Small;
     let dataset = build_dataset(OVERLAY_RECORD_COUNT, profile);
     bench_overlay_ordered_fetch(c, profile, &dataset);
     bench_overlay_iter_all(c, profile, &dataset);
+}
+
+fn bench_cold_first_touch_checksum(c: &mut Criterion) {
+    const RECORD_COUNT: usize = 4_096;
+    const BLOCK_SIZE: usize = 256 * 1024;
+
+    let profile = ValueProfile::Large;
+    let mut dataset = build_dataset(RECORD_COUNT, profile);
+    let (hit_keys, miss_keys) = interleave_missing_keys(&mut dataset.entries);
+    let tempdir = tempfile::tempdir().expect("tempdir should work");
+    let store = create_filled_store(
+        tempdir.path(),
+        profile,
+        &dataset.entries,
+        &commit_options_with_block_size(BLOCK_SIZE),
+    );
+    drop(store);
+
+    let reopened = open_segment_store_read_only(tempdir.path());
+    assert_eq!(sum_segment_fetches(&reopened, &miss_keys), 0);
+    drop(reopened);
+
+    let mut group = c.benchmark_group("large/cold_first_touch_checksum");
+    group.throughput(Throughput::Elements(RECORD_COUNT as u64));
+    group.bench_function("all_miss", |b| {
+        b.iter_batched(
+            || open_segment_store_read_only(tempdir.path()),
+            |store| black_box(sum_segment_fetches(&store, &miss_keys)),
+            BatchSize::SmallInput,
+        )
+    });
+    group.bench_function("all_hit", |b| {
+        b.iter_batched(
+            || open_segment_store_read_only(tempdir.path()),
+            |store| black_box(sum_segment_fetches(&store, &hit_keys)),
+            BatchSize::SmallInput,
+        )
+    });
+    group.finish();
+}
+
+fn interleave_missing_keys(entries: &mut [(Vec<u8>, Vec<u8>)]) -> (Vec<Vec<u8>>, Vec<Vec<u8>>) {
+    let mut hit_keys = Vec::with_capacity(entries.len());
+    let mut miss_keys = Vec::with_capacity(entries.len());
+    for (key, _) in entries {
+        let suffix_offset = key.len() - std::mem::size_of::<u64>();
+        let suffix = u64::from_be_bytes(
+            key[suffix_offset..]
+                .try_into()
+                .expect("benchmark key suffix is one u64"),
+        );
+        let hit_suffix = suffix * 2;
+        key[suffix_offset..].copy_from_slice(&hit_suffix.to_be_bytes());
+        hit_keys.push(key.clone());
+
+        let mut miss = key.clone();
+        miss[suffix_offset..].copy_from_slice(&(hit_suffix + 1).to_be_bytes());
+        miss_keys.push(miss);
+    }
+    (hit_keys, miss_keys)
 }
 
 fn bench_ordered_fetch(c: &mut Criterion, profile: ValueProfile, dataset: &Dataset) {

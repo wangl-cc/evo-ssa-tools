@@ -1,12 +1,12 @@
 //! Replacing-manifest commit execution and publication.
 
-use std::{cmp::Ordering, fs, ops::Range, sync::Arc};
+use std::{cmp::Ordering, fs, mem, ops::Range, sync::Arc};
 
 use super::{
     Committer,
     batch::{PreparedBatch, WriteBatch},
     options::CommitOptions,
-    plan::{CommitPlan, CommitPublicationStats, RetiredSegments, StagedSegment},
+    plan::{CommitPlan, CommitPublicationStats, StagedSegment},
 };
 use crate::{
     catalog::{SegmentManifestEntry, SegmentTier},
@@ -33,6 +33,154 @@ pub struct CommitStats {
     /// `input_records` for direct main and patch publishes; exceeds it when the
     /// commit normalizes patch/main overlap into replacement main segments.
     pub output_records: usize,
+}
+
+/// Result of asking a sorted record stream to append its next record.
+pub(super) enum RecordStreamStep {
+    Pushed,
+    ChunkFull,
+    Done,
+}
+
+/// Sorted unique records that can pause before a record that exceeds a chunk.
+pub(super) trait SortedRecordStream {
+    fn push_next_into(&mut self, chunk: &mut SegmentChunk) -> Result<RecordStreamStep>;
+}
+
+/// One segment-sized output batch with exact record and byte boundaries.
+///
+/// A single record larger than the byte threshold is accepted into an empty
+/// chunk so every input record can make progress. Otherwise both configured
+/// limits are hard upper bounds.
+pub(super) struct SegmentChunk {
+    batch: WriteBatch,
+    max_records: usize,
+    max_bytes: usize,
+}
+
+impl SegmentChunk {
+    pub(super) fn new(max_records: usize, max_bytes: usize) -> Self {
+        debug_assert!(max_records > 0);
+        debug_assert!(max_bytes > 0);
+        Self {
+            batch: WriteBatch::new(),
+            max_records,
+            max_bytes,
+        }
+    }
+
+    pub(super) fn try_push(&mut self, key: &[u8], value: &[u8]) -> bool {
+        if !self.batch.is_empty() {
+            let record_bytes = key.len().saturating_add(value.len());
+            let exceeds_records = self.batch.len() >= self.max_records;
+            let exceeds_bytes = self.batch.byte_len() > self.max_bytes.saturating_sub(record_bytes);
+            if exceeds_records || exceeds_bytes {
+                return false;
+            }
+        }
+        self.batch.push(key, value);
+        true
+    }
+
+    pub(super) fn is_empty(&self) -> bool {
+        self.batch.is_empty()
+    }
+
+    pub(super) fn take(&mut self) -> WriteBatch {
+        mem::take(&mut self.batch)
+    }
+}
+
+struct PendingSegment<M> {
+    segment_id: u32,
+    tier: SegmentTier,
+    metadata: M,
+}
+
+struct NormalizationRecords<'a> {
+    batch: &'a PreparedBatch,
+    batch_index: usize,
+    existing: RangeCursor,
+}
+
+impl<'a> NormalizationRecords<'a> {
+    fn new(batch: &'a PreparedBatch, existing: RangeCursor) -> Self {
+        Self {
+            batch,
+            batch_index: 0,
+            existing,
+        }
+    }
+}
+
+impl SortedRecordStream for NormalizationRecords<'_> {
+    fn push_next_into(&mut self, chunk: &mut SegmentChunk) -> Result<RecordStreamStep> {
+        enum Advance {
+            Batch,
+            Existing,
+            Both,
+            Done,
+        }
+
+        let advance = {
+            let existing_record = self.existing.current_record()?;
+            match (self.batch_index < self.batch.len(), existing_record) {
+                (true, Some(existing_record)) => {
+                    let entry = self.batch.entry(self.batch_index);
+                    match entry.key().cmp(existing_record.key) {
+                        Ordering::Less => {
+                            if !chunk.try_push(entry.key(), entry.value()) {
+                                return Ok(RecordStreamStep::ChunkFull);
+                            }
+                            Advance::Batch
+                        }
+                        Ordering::Greater => {
+                            if !chunk.try_push(existing_record.key, existing_record.value) {
+                                return Ok(RecordStreamStep::ChunkFull);
+                            }
+                            Advance::Existing
+                        }
+                        Ordering::Equal => {
+                            let winner = if entry.value() <= existing_record.value {
+                                entry.value()
+                            } else {
+                                existing_record.value
+                            };
+                            if !chunk.try_push(entry.key(), winner) {
+                                return Ok(RecordStreamStep::ChunkFull);
+                            }
+                            Advance::Both
+                        }
+                    }
+                }
+                (true, None) => {
+                    let entry = self.batch.entry(self.batch_index);
+                    if !chunk.try_push(entry.key(), entry.value()) {
+                        return Ok(RecordStreamStep::ChunkFull);
+                    }
+                    Advance::Batch
+                }
+                (false, Some(existing_record)) => {
+                    if !chunk.try_push(existing_record.key, existing_record.value) {
+                        return Ok(RecordStreamStep::ChunkFull);
+                    }
+                    Advance::Existing
+                }
+                (false, None) => Advance::Done,
+            }
+        };
+
+        match advance {
+            Advance::Batch => self.batch_index += 1,
+            Advance::Existing => self.existing.advance_record()?,
+            Advance::Both => {
+                self.batch_index += 1;
+                self.existing.advance_record()?;
+            }
+            Advance::Done => return Ok(RecordStreamStep::Done),
+        }
+        Ok(RecordStreamStep::Pushed)
+    }
 }
 
 impl Committer<'_> {
@@ -169,15 +317,16 @@ impl Committer<'_> {
             affected_live
         };
 
-        let merged = self.merge_region(batch, affected_live)?;
-        let ranges = merged.flush_ranges(
-            self.inner.geometry.key_len,
-            options.flush_threshold_records(),
-            options.flush_threshold_bytes(),
+        let existing = RangeCursor::from_segment_sets(
+            affected_live.main,
+            affected_live.patches,
+            self.inner.geometry,
+            self.inner.verify_block_checksums,
+            None,
+            None,
         );
-        let written =
-            self.write_batch_segments(&merged, ranges, SegmentTier::Main, plan, options)?;
-        Ok((written, merged.len()))
+        let mut records = NormalizationRecords::new(batch, existing);
+        self.write_record_segments(&mut records, plan, options)
     }
 
     pub(super) fn publish_plan(
@@ -203,100 +352,79 @@ impl Committer<'_> {
         Ok(stats)
     }
 
-    /// Merges `batch` with the records of the intersecting `affected` segments
-    /// into one sorted, deduplicated batch.
-    ///
-    /// Duplicate keys (a key present in both the batch and an existing segment)
-    /// are resolved by the winner rule: the copy with the lexicographically
-    /// smallest value bytes survives. This rule is history-independent, so
-    /// replicas that hold the same key set converge.
-    fn merge_region(
+    /// Streams sorted unique records into bounded staged segments.
+    pub(super) fn write_record_segments<R: SortedRecordStream>(
         &self,
-        batch: &PreparedBatch,
-        affected: RetiredSegments,
-    ) -> Result<PreparedBatch> {
+        records: &mut R,
+        plan: &mut CommitPlan,
+        options: &CommitOptions,
+    ) -> Result<(Vec<StagedSegment>, usize)> {
         let geometry = self.inner.geometry;
-        let verify = self.inner.verify_block_checksums;
-        let mut existing = RangeCursor::from_segment_sets(
-            affected.main,
-            affected.patches,
-            geometry,
-            verify,
-            None,
-            None,
+        let writer = self.segment_writer(options);
+        let mut segment_batch = self.inner.paths.segment_batch();
+        let mut pending = Vec::new();
+        let mut chunk = SegmentChunk::new(
+            options.flush_threshold_records(),
+            options.flush_threshold_bytes(),
         );
+        let mut output_records = 0usize;
 
-        let mut merged = WriteBatch::new();
-        let mut index = 0usize;
-        let len = batch.len();
-        enum Advance {
-            Batch,
-            Existing,
-            Both,
-            Done,
-        }
-
-        loop {
-            let advance = {
-                let existing_record = existing.current_record()?;
-                match (index < len, existing_record) {
-                    (true, Some(existing_record)) => {
-                        let entry = batch.entry(index);
-                        match entry.key().cmp(existing_record.key) {
-                            Ordering::Less => {
-                                merged.push(entry.key(), entry.value());
-                                Advance::Batch
-                            }
-                            Ordering::Greater => {
-                                merged.push(existing_record.key, existing_record.value);
-                                Advance::Existing
-                            }
-                            Ordering::Equal => {
-                                let winner = if entry.value() <= existing_record.value {
-                                    entry.value()
-                                } else {
-                                    existing_record.value
-                                };
-                                merged.push(entry.key(), winner);
-                                Advance::Both
-                            }
-                        }
-                    }
-                    (true, None) => {
-                        let entry = batch.entry(index);
-                        merged.push(entry.key(), entry.value());
-                        Advance::Batch
-                    }
-                    (false, Some(existing_record)) => {
-                        merged.push(existing_record.key, existing_record.value);
-                        Advance::Existing
-                    }
-                    (false, None) => Advance::Done,
+        {
+            let mut stage_chunk = |chunk: &mut SegmentChunk| -> Result<()> {
+                if chunk.is_empty() {
+                    return Ok(());
                 }
+                let batch = PreparedBatch::from_sorted_unique(
+                    chunk.take(),
+                    geometry.key_len,
+                    geometry.value_layout,
+                );
+                let segment_id = plan.allocate_segment_id()?;
+                let entries = batch.view(0..batch.len());
+                let metadata = segment_batch
+                    .stage_with(segment_id, |file| Ok(writer.write(file, &entries)?))?;
+                pending.push(PendingSegment {
+                    segment_id,
+                    tier: SegmentTier::Main,
+                    metadata,
+                });
+                Ok(())
             };
 
-            match advance {
-                Advance::Batch => {
-                    index += 1;
+            loop {
+                match records.push_next_into(&mut chunk)? {
+                    RecordStreamStep::Pushed => output_records += 1,
+                    RecordStreamStep::ChunkFull => stage_chunk(&mut chunk)?,
+                    RecordStreamStep::Done => break,
                 }
-                Advance::Existing => {
-                    existing.advance_record()?;
-                }
-                Advance::Both => {
-                    index += 1;
-                    existing.advance_record()?;
-                }
-                Advance::Done => break,
             }
+            stage_chunk(&mut chunk)?;
         }
-        Ok(PreparedBatch::from_sorted_unique(
-            merged,
-            geometry.key_len,
-            geometry.value_layout,
-        ))
+        segment_batch.publish()?;
+
+        let mut written = Vec::with_capacity(pending.len());
+        for PendingSegment {
+            segment_id,
+            tier,
+            metadata,
+        } in pending
+        {
+            let fingerprint = metadata.fingerprint();
+            let file = fs::File::open(self.inner.paths.final_segment(segment_id))?;
+            let runtime = Arc::new(Segment::from_written(segment_id, file, metadata));
+            let entry = SegmentManifestEntry::new(
+                segment_id,
+                tier,
+                fingerprint,
+                runtime.min_key().to_vec(),
+                runtime.max_key().to_vec(),
+            );
+            written.push(StagedSegment::new(entry, runtime));
+        }
+        Ok((written, output_records))
     }
 
-    /// Writes one segment file from a contiguous range of a merged batch.
+    /// Stages and publishes segment files for contiguous prepared-batch ranges.
     fn write_batch_segments(
         &self,
         batch: &PreparedBatch,
@@ -305,36 +433,42 @@ impl Committer<'_> {
         plan: &mut CommitPlan,
         options: &CommitOptions,
     ) -> Result<Vec<StagedSegment>> {
-        let mut written = Vec::with_capacity(ranges.len());
+        let writer = self.segment_writer(options);
+        let mut segment_batch = self.inner.paths.segment_batch();
+        let mut pending = Vec::with_capacity(ranges.len());
         for range in ranges {
             let segment_id = plan.allocate_segment_id()?;
-            written.push(self.write_segment(batch, range, segment_id, tier, options)?);
+            let entries = batch.view(range);
+            let metadata =
+                segment_batch.stage_with(segment_id, |file| Ok(writer.write(file, &entries)?))?;
+            pending.push(PendingSegment {
+                segment_id,
+                tier,
+                metadata,
+            });
+        }
+        segment_batch.publish()?;
+
+        let mut written = Vec::with_capacity(pending.len());
+        for PendingSegment {
+            segment_id,
+            tier,
+            metadata,
+        } in pending
+        {
+            let fingerprint = metadata.fingerprint();
+            let file = fs::File::open(self.inner.paths.final_segment(segment_id))?;
+            let runtime = Arc::new(Segment::from_written(segment_id, file, metadata));
+            let entry = SegmentManifestEntry::new(
+                segment_id,
+                tier,
+                fingerprint,
+                runtime.min_key().to_vec(),
+                runtime.max_key().to_vec(),
+            );
+            written.push(StagedSegment::new(entry, runtime));
         }
         Ok(written)
-    }
-
-    /// Writes one segment file from a contiguous range of a logical batch.
-    pub(super) fn write_segment(
-        &self,
-        batch: &PreparedBatch,
-        range: Range<usize>,
-        segment_id: u32,
-        tier: SegmentTier,
-        options: &CommitOptions,
-    ) -> Result<StagedSegment> {
-        let segment_entries = batch.view(range);
-        let segment_paths = self.inner.paths.segment_publish_path(segment_id);
-        let writer = self.segment_writer(options);
-        let metadata = segment_paths
-            .publish()
-            .write_with(|file| Ok(writer.write(file, &segment_entries)?))?;
-        let fingerprint = metadata.fingerprint();
-        let file = fs::File::open(segment_paths.final_path())?;
-        let runtime = Arc::new(Segment::from_written(segment_id, file, metadata));
-        let min_key = runtime.min_key().to_vec();
-        let max_key = runtime.max_key().to_vec();
-        let entry = SegmentManifestEntry::new(segment_id, tier, fingerprint, min_key, max_key);
-        Ok(StagedSegment::new(entry, runtime))
     }
 
     #[cfg(feature = "value-compression")]
@@ -351,5 +485,49 @@ impl Committer<'_> {
     fn segment_writer(&self, options: &CommitOptions) -> SegmentWriter {
         let geometry = self.inner.geometry;
         SegmentWriter::new(geometry, options.target_block_size())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn segment_chunk_stops_at_record_limit() {
+        let mut chunk = SegmentChunk::new(2, usize::MAX);
+
+        assert!(chunk.try_push(b"aa", b"123"));
+        assert!(chunk.try_push(b"bb", b"456"));
+        assert!(!chunk.try_push(b"cc", b"7"));
+
+        let batch = chunk.take();
+        assert_eq!(batch.len(), 2);
+        assert_eq!(batch.byte_len(), 10);
+        assert!(chunk.is_empty());
+    }
+
+    #[test]
+    fn segment_chunk_stops_at_exact_byte_limit() {
+        let mut chunk = SegmentChunk::new(3, 10);
+
+        assert!(chunk.try_push(b"aa", b"123"));
+        assert!(chunk.try_push(b"bb", b"456"));
+        assert!(!chunk.try_push(b"cc", b"7"));
+
+        let batch = chunk.take();
+        assert_eq!(batch.len(), 2);
+        assert_eq!(batch.byte_len(), 10);
+    }
+
+    #[test]
+    fn segment_chunk_allows_one_record_larger_than_byte_limit() {
+        let mut chunk = SegmentChunk::new(2, 3);
+
+        assert!(chunk.try_push(b"key", b"value"));
+        assert!(!chunk.try_push(b"next", b"value"));
+
+        let batch = chunk.take();
+        assert_eq!(batch.len(), 1);
+        assert_eq!(batch.byte_len(), 8);
     }
 }

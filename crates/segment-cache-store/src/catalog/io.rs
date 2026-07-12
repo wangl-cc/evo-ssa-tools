@@ -1,10 +1,9 @@
-//! Low-level catalog filesystem primitives: atomic publication and the
+//! Low-level catalog filesystem primitives: staged file publication and the
 //! advisory writer lock.
 //!
-//! Store catalog files and segment files share the same publication protocol:
-//! write a temporary file, fsync it, rename it into place, then fsync the
-//! final parent directory. The encoded content may be a byte slice or a
-//! streaming writer; this module owns the filesystem protocol for both cases.
+//! Catalog files use one-file atomic publication. Segment commits stage and
+//! sync every temporary file before renaming the complete batch and syncing
+//! its parent directory once.
 
 use std::{
     fs::{self, File, TryLockError},
@@ -19,7 +18,6 @@ use crate::error::{InputError, Result};
 pub(crate) struct AtomicFilePublish<'a> {
     final_path: &'a Path,
     final_parent: &'a Path,
-    temp_path: PathBuf,
 }
 
 impl<'a> AtomicFilePublish<'a> {
@@ -29,12 +27,10 @@ impl<'a> AtomicFilePublish<'a> {
     /// `.tmp` extension to `final_path`.
     pub(super) fn new(final_path: &'a Path) -> Option<Self> {
         let final_parent = final_path.parent()?;
-        let temp_path = temp_path_for(final_path);
 
         Some(Self {
             final_path,
             final_parent,
-            temp_path,
         })
     }
 
@@ -48,13 +44,65 @@ impl<'a> AtomicFilePublish<'a> {
 
     /// Streams content into the temporary file and publishes it atomically.
     pub(crate) fn write_with<T>(&self, write: impl FnOnce(&mut File) -> Result<T>) -> Result<T> {
-        let mut file = File::create(&self.temp_path)?;
+        let mut batch = StagedFileBatch::new(self.final_parent);
+        let result = batch.stage_with(self.final_path.to_path_buf(), write)?;
+        batch.publish()?;
+        Ok(result)
+    }
+}
+
+/// Owned set of synced temporary files awaiting one durability publication.
+///
+/// Staging never changes final paths. Publication consumes the batch, renames
+/// every staged file, then syncs the shared parent directory once.
+#[derive(Debug)]
+pub(super) struct StagedFileBatch {
+    parent: PathBuf,
+    files: Vec<StagedFile>,
+}
+
+#[derive(Debug)]
+struct StagedFile {
+    temp_path: PathBuf,
+    final_path: PathBuf,
+}
+
+impl StagedFileBatch {
+    pub(super) fn new(parent: &Path) -> Self {
+        Self {
+            parent: parent.to_path_buf(),
+            files: Vec::new(),
+        }
+    }
+
+    /// Writes and syncs one temporary file without changing its final path.
+    pub(super) fn stage_with<T>(
+        &mut self,
+        final_path: PathBuf,
+        write: impl FnOnce(&mut File) -> Result<T>,
+    ) -> Result<T> {
+        debug_assert_eq!(final_path.parent(), Some(self.parent.as_path()));
+        let temp_path = temp_path_for(&final_path);
+        let mut file = File::create(&temp_path)?;
         let result = write(&mut file)?;
         file.sync_all()?;
         drop(file);
-        fs::rename(&self.temp_path, self.final_path)?;
-        sync_dir(self.final_parent)?;
+        self.files.push(StagedFile {
+            temp_path,
+            final_path,
+        });
         Ok(result)
+    }
+
+    /// Makes every staged file durable under its final name.
+    pub(super) fn publish(self) -> Result<()> {
+        if self.files.is_empty() {
+            return Ok(());
+        }
+        for file in self.files {
+            fs::rename(file.temp_path, file.final_path)?;
+        }
+        sync_dir(&self.parent)
     }
 }
 
@@ -172,6 +220,37 @@ mod tests {
             b"old",
             "failed temp writes must not replace the visible file"
         );
+    }
+
+    #[test]
+    fn staged_batch_keeps_all_final_paths_hidden_until_publication() {
+        let tempdir = tempfile::tempdir().expect("tempdir should be created");
+        let first = tempdir.path().join("first");
+        let second = tempdir.path().join("second");
+        let mut batch = StagedFileBatch::new(tempdir.path());
+
+        batch
+            .stage_with(first.clone(), |file| {
+                file.write_all(b"one")?;
+                Ok(())
+            })
+            .expect("first file should stage");
+        batch
+            .stage_with(second.clone(), |file| {
+                file.write_all(b"two")?;
+                Ok(())
+            })
+            .expect("second file should stage");
+
+        assert!(!first.exists());
+        assert!(!second.exists());
+        assert!(temp_path_for(&first).exists());
+        assert!(temp_path_for(&second).exists());
+
+        batch.publish().expect("batch should publish");
+
+        assert_eq!(fs::read(first).expect("first file should exist"), b"one");
+        assert_eq!(fs::read(second).expect("second file should exist"), b"two");
     }
 
     #[cfg(unix)]
