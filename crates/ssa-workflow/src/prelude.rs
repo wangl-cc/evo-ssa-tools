@@ -15,7 +15,7 @@ pub use crate::cache::memory::ManagedLruCache;
 #[cfg(feature = "fjall3")]
 pub use crate::cache::storage::Fjall3StorageProvider;
 pub use crate::{
-    Compute, InterruptSignal,
+    BatchProgress, BatchProgressSnapshot, Compute, InterruptSignal,
     cache::{CanonicalEncode, StorageProviderExt, memory::ManagedHashCache},
     compute::{
         DependentInput, DependentStochasticInput, DeterministicTask, RandomVariable,

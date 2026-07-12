@@ -7,5 +7,5 @@ pub mod error;
 pub mod identity;
 pub mod prelude;
 
-pub use compute::{BatchExecution, Compute, InterruptSignal};
+pub use compute::{BatchExecution, BatchProgress, BatchProgressSnapshot, Compute, InterruptSignal};
 pub use error::{Error, Result};

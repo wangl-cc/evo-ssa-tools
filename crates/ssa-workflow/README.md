@@ -110,6 +110,30 @@ fn main() -> ssa_workflow::error::Result<()> {
 - Task and transform ids are stable, versioned names for semantic results, such as `birth-death-ssa-trajectory-v1`.
 - Cache providers such as `ManagedHashCache`, `ManagedLruCache`, and `PersistentCacheProvider` attach storage to a task or transform before it is built.
 
+## Progress Tracking
+
+Batch progress is opt-in and reports batch item execution. It does not inspect simulation internals or classify errors; `started` counts items that have entered the computation regardless of their result, and `in_flight` counts items currently executing. The number of finished attempts is `started - in_flight`.
+
+```rust
+# use ssa_workflow::prelude::*;
+# fn main() -> ssa_workflow::error::Result<()> {
+# let task = DeterministicTask::builder("progress-example-v1")
+#     .function(|input: u32| Ok(input + 1))
+#     .cache(ManagedHashCache::<u32>::default())
+#     .build()?;
+let (batch, progress) = task.with_inputs(0..100u32).track_progress();
+
+let outputs = batch.collect::<ssa_workflow::Result<Vec<_>>>()?;
+let snapshot = progress.snapshot();
+
+assert_eq!(outputs.len(), 100);
+assert_eq!(snapshot.total, 100);
+assert_eq!(snapshot.started, 100);
+assert_eq!(snapshot.in_flight, 0);
+# Ok(())
+# }
+```
+
 ## Computation Identity
 
 Every task and transform needs a stable id. That id becomes part of the computation path used for caching, reproducible RNG streams, and downstream transform identity.
