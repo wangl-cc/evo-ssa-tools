@@ -160,6 +160,7 @@ Space amplification is treated as a first-class metric. The measurement script l
 ## Saved Baselines
 
 - [`b093515-m1`](../benchmark-baselines/b093515-m1/README.md): Apple M1 baseline for commit `b093515`, covering all five Criterion targets and the space-usage report.
+- [`9f8b2e6-m1`](../benchmark-baselines/9f8b2e6-m1/README.md): targeted Apple M1 baseline for the read, publication, normalization, and compression optimizations in commit `9f8b2e6`.
 
 ## Historical Snapshot
 
