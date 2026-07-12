@@ -38,23 +38,19 @@ impl<T: CacheSchema, E: CacheSchema> CacheSchema for Result<T, E> {
     }
 }
 
-impl<T: CacheSchema + ?Sized> CacheSchema for Box<T> {
-    fn write_schema(w: &mut SchemaWriter) {
-        T::write_schema(w);
-    }
+macro_rules! impl_transparent_schema {
+    ($($ty:ty),+ $(,)?) => {
+        $(
+            impl<T: CacheSchema + ?Sized> CacheSchema for $ty {
+                fn write_schema(w: &mut SchemaWriter) {
+                    T::write_schema(w);
+                }
+            }
+        )+
+    };
 }
 
-impl<T: CacheSchema + ?Sized> CacheSchema for &T {
-    fn write_schema(w: &mut SchemaWriter) {
-        T::write_schema(w);
-    }
-}
-
-impl<T: CacheSchema + ?Sized> CacheSchema for &mut T {
-    fn write_schema(w: &mut SchemaWriter) {
-        T::write_schema(w);
-    }
-}
+impl_transparent_schema!(Box<T>, &T, &mut T);
 
 impl<'a, T> CacheSchema for std::borrow::Cow<'a, T>
 where

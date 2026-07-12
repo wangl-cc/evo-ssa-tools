@@ -92,6 +92,7 @@ pub trait CacheSchema {
 }
 
 /// Compute the BLAKE3-128 schema fingerprint for `T`.
+#[must_use = "schema fingerprints must be stored or compared to affect cache compatibility"]
 pub fn schema_fingerprint<T: CacheSchema + ?Sized>() -> SchemaFingerprint {
     let mut writer = SchemaWriter::new();
     T::write_schema(&mut writer);
