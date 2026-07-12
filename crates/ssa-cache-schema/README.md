@@ -24,6 +24,30 @@ assert_eq!(first, second);
 
 The default `derive` feature re-exports the derive macro from `ssa-cache-schema-derive`. Disable default features if you only need the runtime trait and want to provide manual implementations.
 
+## Manual Implementations
+
+Manual implementations receive a `SchemaWriter` and use its structural token methods to describe the logical schema. Writer construction and fingerprint finalization remain internal to `schema_fingerprint::<T>()`.
+
+```rust
+use ssa_cache_schema::{CacheSchema, SchemaWriter, schema_fingerprint};
+
+struct ManualParams {
+    width: u32,
+}
+
+impl CacheSchema for ManualParams {
+    fn write_schema(w: &mut SchemaWriter) {
+        w.struct_begin("ManualParams");
+        w.field_begin(0, Some("width"));
+        u32::write_schema(w);
+        w.field_end();
+        w.struct_end();
+    }
+}
+
+let fingerprint = schema_fingerprint::<ManualParams>();
+```
+
 ## Compatibility Attributes
 
 Use `#[cache_schema(rename = "...")]` when a Rust field, variant, or type is renamed but should keep its previous schema name.
