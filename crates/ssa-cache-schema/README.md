@@ -41,9 +41,15 @@ struct Resized {
 
 Rust module paths are not included, so moving a type between modules does not change its fingerprint. Use `#[cache_schema(version = "...")]` to intentionally change the fingerprint when a semantic format version changes or when a same-shaped type should not remain cache-compatible.
 
-Serde attributes are ignored by `CacheSchema`. For example, `#[serde(skip)]` does not remove a field from the cache schema and `#[serde(rename = "...")]` does not rename it for fingerprinting. Use `cache_schema` attributes or a manual implementation when serde behavior should affect cache compatibility.
-
 Field reorder, field add/remove, field type changes, enum variant reorder, and enum variant add/remove change the fingerprint by default. Derived enum schemas are based on variant order, schema names, and fields; explicit Rust discriminants and `repr` attributes are ignored. Use `#[cache_schema(version = "...")]` or a manual implementation when discriminants are part of the cache wire format.
+
+## Compatibility Boundary
+
+A schema fingerprint identifies only the deterministic canonical token stream emitted by `CacheSchema`. Implementations must describe the same logical schema identically and must not depend on runtime values or nondeterministic process state.
+
+The fingerprint does not identify the serializer or codec that turns values into bytes, including its configuration or version. A persistent cache format must version those choices separately, such as in its cache namespace or format header. Two values can have the same schema fingerprint while using incompatible codec settings.
+
+Serde attributes are ignored by `CacheSchema`. For example, `#[serde(skip)]` does not remove a field from the cache schema and `#[serde(rename = "...")]` does not rename it for fingerprinting. Use `cache_schema` attributes or a manual implementation when serde behavior should affect cache compatibility.
 
 ## Provided Standard Schemas
 

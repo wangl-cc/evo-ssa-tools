@@ -12,6 +12,10 @@
 //! `CacheSchema` describes the serialized shape of a type, not its Rust memory layout. The
 //! resulting canonical bytes are hashed with BLAKE3 and truncated to 128 bits.
 //!
+//! A schema fingerprint covers only the canonical tokens emitted by `CacheSchema`. Serializer or
+//! codec identity, configuration, and version are outside this crate's contract and need their own
+//! cache format version or namespace when persistent caches use the fingerprint.
+//!
 //! ```rust
 //! # #[cfg(feature = "derive")]
 //! use ssa_cache_schema::{CacheSchema, schema_fingerprint};
@@ -74,9 +78,15 @@ pub use writer::{EmptyProductStyle, SchemaWriter};
 /// A 128-bit schema fingerprint.
 pub type SchemaFingerprint = [u8; 16];
 
-/// A type that can describe its cache wire schema.
+/// A type that can describe its logical cache schema.
+///
+/// Implementations must emit the same canonical token stream for the same logical schema. They
+/// must not depend on runtime values or nondeterministic process state.
+///
+/// This trait does not identify the serializer or codec that turns values into bytes. Persistent
+/// cache formats must version those choices separately from the schema fingerprint.
 pub trait CacheSchema {
-    /// Write this type's canonical schema description.
+    /// Write this type's deterministic canonical schema description.
     fn write_schema(w: &mut SchemaWriter);
 }
 
