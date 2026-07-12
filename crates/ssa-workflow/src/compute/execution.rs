@@ -305,21 +305,23 @@ impl BatchProgress {
 
     /// Return the number of input items that have entered the computation.
     pub fn started(&self) -> usize {
-        self.state.snapshot().started
+        let (started, _) = self.state.counts();
+        started
     }
 
     /// Return the number of input items currently executing the computation.
     pub fn in_flight(&self) -> usize {
-        self.state.snapshot().in_flight
+        let (_, in_flight) = self.state.counts();
+        in_flight
     }
 
     /// Return a consistent point-in-time progress snapshot.
     pub fn snapshot(&self) -> BatchProgressSnapshot {
-        let state = self.state.snapshot();
+        let (started, in_flight) = self.state.counts();
         BatchProgressSnapshot {
             total: self.total,
-            started: state.started,
-            in_flight: state.in_flight,
+            started,
+            in_flight,
         }
     }
 
@@ -333,44 +335,25 @@ impl BatchProgress {
 struct PackedProgressState(atomic::AtomicUsize);
 
 impl PackedProgressState {
-    const IN_FLIGHT_BITS: u32 = 16;
-    const IN_FLIGHT_MASK: usize = (1 << Self::IN_FLIGHT_BITS) - 1;
     const IN_FLIGHT_ONE: usize = 1 << Self::STARTED_BITS;
     const STARTED_BITS: u32 = 48;
     const STARTED_MASK: usize = Self::IN_FLIGHT_ONE - 1;
+    const START_DELTA: usize = Self::IN_FLIGHT_ONE + 1;
 
     fn start(&self) {
-        let previous = self
-            .0
-            .fetch_add(Self::IN_FLIGHT_ONE + 1, atomic::Ordering::Relaxed);
-        let previous = Self::decode(previous);
-        debug_assert!(previous.in_flight < Self::IN_FLIGHT_MASK);
-        debug_assert!(previous.started < Self::STARTED_MASK);
+        self.0
+            .fetch_add(Self::START_DELTA, atomic::Ordering::Relaxed);
     }
 
     fn finish(&self) {
-        let previous = self
-            .0
+        self.0
             .fetch_sub(Self::IN_FLIGHT_ONE, atomic::Ordering::Relaxed);
-        debug_assert!(Self::decode(previous).in_flight > 0);
     }
 
-    fn snapshot(&self) -> PackedProgressSnapshot {
-        Self::decode(self.0.load(atomic::Ordering::Relaxed))
+    fn counts(&self) -> (usize, usize) {
+        let state = self.0.load(atomic::Ordering::Relaxed);
+        (state & Self::STARTED_MASK, state >> Self::STARTED_BITS)
     }
-
-    const fn decode(state: usize) -> PackedProgressSnapshot {
-        PackedProgressSnapshot {
-            started: state & Self::STARTED_MASK,
-            in_flight: state >> Self::STARTED_BITS,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct PackedProgressSnapshot {
-    started: usize,
-    in_flight: usize,
 }
 
 struct InFlightGuard<'a> {
@@ -421,6 +404,7 @@ impl InterruptSignal {
         self.interrupted.load(atomic::Ordering::Acquire)
     }
 }
+
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
@@ -893,22 +877,13 @@ mod tests {
 
             state.start();
             state.start();
-            assert_eq!(state.snapshot(), PackedProgressSnapshot {
-                started: 2,
-                in_flight: 2,
-            });
+            assert_eq!(state.counts(), (2, 2));
 
             state.finish();
-            assert_eq!(state.snapshot(), PackedProgressSnapshot {
-                started: 2,
-                in_flight: 1,
-            });
+            assert_eq!(state.counts(), (2, 1));
 
             state.finish();
-            assert_eq!(state.snapshot(), PackedProgressSnapshot {
-                started: 2,
-                in_flight: 0,
-            });
+            assert_eq!(state.counts(), (2, 0));
         }
 
         #[test]
@@ -917,23 +892,17 @@ mod tests {
             let state = PackedProgressState(atomic::AtomicUsize::new(initial));
 
             state.start();
-            assert_eq!(state.snapshot(), PackedProgressSnapshot {
-                started: PackedProgressState::STARTED_MASK,
-                in_flight: 1,
-            });
+            assert_eq!(state.counts(), (PackedProgressState::STARTED_MASK, 1));
 
             state.finish();
 
-            assert_eq!(state.snapshot(), PackedProgressSnapshot {
-                started: PackedProgressState::STARTED_MASK,
-                in_flight: 0,
-            });
+            assert_eq!(state.counts(), (PackedProgressState::STARTED_MASK, 0));
         }
 
         #[test]
         fn packed_in_flight_capacity_covers_rayon_thread_limit() {
             assert!(
-                rayon::max_num_threads() <= PackedProgressState::IN_FLIGHT_MASK,
+                rayon::max_num_threads() <= usize::from(u16::MAX),
                 "packed progress must represent every worker in one Rayon pool"
             );
         }
