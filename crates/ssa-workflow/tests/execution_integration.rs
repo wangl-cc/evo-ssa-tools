@@ -58,7 +58,7 @@ fn prelude_smoke_supports_execute_one_and_batch_collect() -> Result<()> {
 
     assert_eq!(task.execute_one(3usize)?, 12);
 
-    let outputs: Vec<usize> = task.with_inputs(0..4usize).collect()?;
+    let outputs: Vec<usize> = task.with_inputs(0..4usize).collect::<Result<Vec<_>>>()?;
 
     assert_eq!(outputs, vec![0, 4, 8, 12]);
     assert_eq!(call_count.load(Ordering::SeqCst), 4);
@@ -72,7 +72,9 @@ fn stochastic_repeated_input_collects_in_repetition_order() -> Result<()> {
         .cache(RepetitionIndexProvider)
         .build()?;
 
-    let outputs: Vec<u64> = task.with_repeated_input(42u32, 5).collect()?;
+    let outputs: Vec<u64> = task
+        .with_repeated_input(42u32, 5)
+        .collect::<Result<Vec<_>>>()?;
 
     assert_eq!(outputs, vec![0, 1, 2, 3, 4]);
     Ok(())
@@ -91,7 +93,9 @@ fn stochastic_repeated_input_zero_repetitions_is_empty() -> Result<()> {
         .cache(ManagedHashCache::<u64>::default())
         .build()?;
 
-    let outputs: Vec<u64> = task.with_repeated_input((), 0).collect()?;
+    let outputs: Vec<u64> = task
+        .with_repeated_input((), 0)
+        .collect::<Result<Vec<_>>>()?;
 
     assert!(outputs.is_empty());
     assert_eq!(call_count.load(Ordering::SeqCst), 0);
@@ -122,13 +126,17 @@ fn stochastic_transform_reuses_cached_analysis() -> Result<()> {
 
     let repetitions = 8;
 
-    let results1: Vec<u32> = transform.with_repeated_input((), repetitions).collect()?;
+    let results1: Vec<u32> = transform
+        .with_repeated_input((), repetitions)
+        .collect::<Result<Vec<_>>>()?;
 
     assert_eq!(results1.len(), repetitions);
     assert_eq!(experiment_calls.load(Ordering::SeqCst), repetitions);
     assert_eq!(analysis_calls.load(Ordering::SeqCst), repetitions);
 
-    let results2: Vec<u32> = transform.with_repeated_input((), repetitions).collect()?;
+    let results2: Vec<u32> = transform
+        .with_repeated_input((), repetitions)
+        .collect::<Result<Vec<_>>>()?;
 
     assert_eq!(results1, results2);
     assert_eq!(experiment_calls.load(Ordering::SeqCst), repetitions);

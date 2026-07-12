@@ -132,8 +132,8 @@ fn encoded_cache_uses_configured_fresh_codec_in_parallel_execution() -> Result<(
         )))
         .build()?;
 
-    let outputs1 = compute.with_inputs(0..8usize).collect()?;
-    let outputs2 = compute.with_inputs(0..8usize).collect()?;
+    let outputs1 = compute.with_inputs(0..8usize).collect::<Result<Vec<_>>>()?;
+    let outputs2 = compute.with_inputs(0..8usize).collect::<Result<Vec<_>>>()?;
 
     let expected: Vec<_> = (0..8usize).map(|i| i + 10).collect();
     assert_eq!(outputs1, expected);

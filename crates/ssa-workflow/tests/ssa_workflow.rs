@@ -81,7 +81,7 @@ fn birth_death_ssa_transform_is_reproducible_and_cached() -> Result<()> {
 
     let first_run: Vec<SsaSummary> = transform
         .with_repeated_input((INITIAL_CELLS, MAX_EVENTS), input_count)
-        .collect()?;
+        .collect::<Result<Vec<_>>>()?;
 
     assert_eq!(first_run.len(), input_count);
     assert!(first_run.iter().all(|summary| summary.events <= MAX_EVENTS));
@@ -95,7 +95,7 @@ fn birth_death_ssa_transform_is_reproducible_and_cached() -> Result<()> {
 
     let second_run: Vec<SsaSummary> = transform
         .with_repeated_input((INITIAL_CELLS, MAX_EVENTS), input_count)
-        .collect()?;
+        .collect::<Result<Vec<_>>>()?;
 
     assert_eq!(first_run, second_run);
     assert_eq!(ssa_calls.load(Ordering::SeqCst), input_count);

@@ -90,10 +90,10 @@ fn main() -> ssa_workflow::error::Result<()> {
     // Execution is demand-driven: cache misses compute, hits reuse stored results.
     let first_run = peak_population
         .with_repeated_input((25u32, 100u32), repetitions)
-        .collect()?;
+        .collect::<ssa_workflow::Result<Vec<_>>>()?;
     let second_run = peak_population
         .with_repeated_input((25u32, 100u32), repetitions)
-        .collect()?;
+        .collect::<ssa_workflow::Result<Vec<_>>>()?;
 
     assert_eq!(first_run, second_run);
     Ok(())
@@ -102,7 +102,8 @@ fn main() -> ssa_workflow::error::Result<()> {
 
 ## Core Concepts
 
-- `StochasticTask` runs a simulation with reproducible RNG streams. Each `StochasticInput<P>` combines a parameter value with a `repetition_index`; use `.with_repeated_input(param, repetitions)` for the common same-parameter batch case.
+- `BatchExecution::collect` runs in the current Rayon pool, or the global pool when called outside one; use `collect_in` for a specified pool and `collect_serial` for caller-thread execution. Collect into `Result<Vec<_>>` to stop on errors or `Vec<Result<_>>` to retain every item result.
+- `StochasticTask` runs a simulation with reproducible RNG streams. Each `StochasticInput<P>` combines a parameter value with a `repetition_index`; use `.with_repeated_input(param, repetitions)` for the common same-parameter batch case or `.with_repeated_inputs(params, repetitions)` for a lazy parameter-major sweep.
 - `DeterministicTask` runs a pure `input -> output` root computation.
 - `.transform(...)` builds a dependent deterministic analysis from an upstream task or transform.
 - `.stochastic_transform(...)` builds a dependent stochastic analysis from an upstream result.
