@@ -326,8 +326,7 @@ impl BatchProgress {
     }
 
     fn begin_item(&self) -> InFlightGuard<'_> {
-        self.state.start();
-        InFlightGuard { state: &self.state }
+        self.state.start()
     }
 }
 
@@ -340,9 +339,10 @@ impl PackedProgressState {
     const STARTED_MASK: usize = Self::IN_FLIGHT_ONE - 1;
     const START_DELTA: usize = Self::IN_FLIGHT_ONE + 1;
 
-    fn start(&self) {
+    fn start(&self) -> InFlightGuard<'_> {
         self.0
             .fetch_add(Self::START_DELTA, atomic::Ordering::Relaxed);
+        InFlightGuard { state: self }
     }
 
     fn finish(&self) {
@@ -875,14 +875,14 @@ mod tests {
         fn packed_progress_state_updates_counts_atomically() {
             let state = PackedProgressState::default();
 
-            state.start();
-            state.start();
+            let first = state.start();
+            let second = state.start();
             assert_eq!(state.counts(), (2, 2));
 
-            state.finish();
+            drop(first);
             assert_eq!(state.counts(), (2, 1));
 
-            state.finish();
+            drop(second);
             assert_eq!(state.counts(), (2, 0));
         }
 
@@ -891,10 +891,10 @@ mod tests {
             let initial = PackedProgressState::STARTED_MASK - 1;
             let state = PackedProgressState(atomic::AtomicUsize::new(initial));
 
-            state.start();
+            let guard = state.start();
             assert_eq!(state.counts(), (PackedProgressState::STARTED_MASK, 1));
 
-            state.finish();
+            drop(guard);
 
             assert_eq!(state.counts(), (PackedProgressState::STARTED_MASK, 0));
         }
