@@ -156,14 +156,14 @@ pub trait StochasticComputeExt: Compute {
 
     /// Start a batch execution for `repetitions` stochastic repetitions of each parameter.
     ///
-    /// The batch consumes `params` directly through its serial or indexed parallel conversion and
-    /// lazily emits inputs in parameter-major order. It does not materialize the parameter source
-    /// or the full `params.len() * repetitions` input grid.
+    /// The batch consumes `params` through its serial or indexed parallel conversion and lazily
+    /// emits inputs in parameter-major order. This adapter does not collect the parameter source or
+    /// materialize the full `params.len() * repetitions` input grid.
     ///
     /// # Panics
     ///
-    /// Parallel collection panics if the total number of repeated inputs cannot be represented by
-    /// `usize`.
+    /// Parallel conversion or collection panics if the total number of repeated inputs cannot be
+    /// represented by `usize`.
     fn with_repeated_inputs<P, I>(
         &self,
         params: I,

@@ -1,4 +1,4 @@
-//! Core execution traits and batch execution builders.
+//! Core execution traits and batch execution.
 
 use std::sync::{Arc, atomic};
 
@@ -64,21 +64,20 @@ pub trait Compute {
     ///
     /// This is the safe, single-item counterpart to [`Self::execute_one_with_buffer`].
     ///
-    /// If you need to execute multiple ordered inputs in parallel, use [`Self::with_inputs`]
-    /// instead.
+    /// If you need to execute multiple inputs, use [`Self::with_inputs`] instead.
     fn execute_one(&mut self, input: Self::Input) -> Result<Self::Output> {
         let mut encode_buffer = vec![0u8; Self::Input::SIZE];
         // Safety: The buffer is initialized with length Self::Input::SIZE.
         unsafe { self.execute_one_with_buffer(input, &mut encode_buffer) }
     }
 
-    /// Start a batch execution plan for `inputs`.
+    /// Create a batch execution for `inputs`.
     ///
     /// Parallel collection requires an [`IndexedParallelIterator`], while serial collection
-    /// requires an [`IntoIterator`]. The corresponding bound is checked when the batch is
-    /// collected.
+    /// requires an [`IntoIterator`]. The selected execution method determines which input bounds
+    /// are required.
     ///
-    /// Unordered parallel inputs such as `HashSet` intentionally do not satisfy this API:
+    /// Unordered parallel inputs such as `HashSet` do not support parallel collection:
     ///
     /// ```compile_fail
     /// # use ssa_workflow::prelude::*;
@@ -111,7 +110,7 @@ pub trait Compute {
     }
 }
 
-/// Batch execution plan returned by [`Compute::with_inputs`].
+/// Lazy batch execution returned by [`Compute::with_inputs`].
 pub struct BatchExecution<'a, C, I>
 where
     C: Compute,
@@ -163,7 +162,10 @@ where
         )
     }
 
-    /// Execute the batch in the current Rayon pool and collect into `T` in input order.
+    /// Execute the batch in the current Rayon pool and collect into `T`.
+    ///
+    /// Outside a Rayon pool, execution uses the global pool. The result iterator follows input
+    /// order; ordered targets such as `Vec` preserve that order.
     ///
     /// Collect as `Result<Vec<_>>` to short-circuit on errors, or as `Vec<Result<_>>` to retain
     /// every item result.
@@ -174,7 +176,9 @@ where
         self.into_par_iter().collect()
     }
 
-    /// Execute the batch in `pool` and collect into `T` in input order.
+    /// Execute the batch in `pool` and collect into `T`.
+    ///
+    /// The result iterator follows input order; ordered targets such as `Vec` preserve that order.
     ///
     /// Collect as `Result<Vec<_>>` to short-circuit on errors, or as `Vec<Result<_>>` to retain
     /// every item result.
@@ -192,7 +196,9 @@ where
     C: Clone + Compute + 'a,
     I: IntoIterator<Item = C::Input> + 'a,
 {
-    /// Execute the batch serially on the caller thread and collect into `T` in input order.
+    /// Execute the batch serially on the caller thread and collect into `T`.
+    ///
+    /// Results are produced in input order; ordered targets such as `Vec` preserve that order.
     ///
     /// Collect as `Result<Vec<_>>` to short-circuit on errors, or as `Vec<Result<_>>` to retain
     /// every item result.
