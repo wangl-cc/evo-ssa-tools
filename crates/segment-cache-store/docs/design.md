@@ -137,13 +137,16 @@ flowchart TD
   ValuePayload --> ValueChecksum["value_checksum"]
 ```
 
-The layering in code mirrors this structure:
+The code is organized around the same persistent concepts rather than horizontal technical layers:
 
-- `format`: byte layouts and structural validation; no filesystem access.
-- `engine`: filesystem paths, atomic publication, open/create, runtime state, segment file IO, and garbage collection.
-- `read`: ordered lookup and range cursors over runtime snapshots.
-- `write`: write batches and replacing-manifest commits.
-- `store`: public facade that delegates to read and write layers.
+- `block`: one physical read unit, including layout, checksums, compression, encoding, and borrowed decoding.
+- `schema`: persistent store geometry and caller-defined namespace metadata.
+- `segment`: one immutable sorted file, including record views, byte format, file access, and runtime state.
+- `catalog`: persistent store identity, manifest visibility, atomic publication, lifecycle, and garbage collection.
+- `snapshot`: point, ordered, and range reads over one immutable visible segment snapshot.
+- `commit`: validated write batches, segment production, merge, and atomic transition to a new snapshot.
+- `store`: the public facade and shared state tying catalog, snapshots, and commits together.
+- `error`, `binary`, and `key`: small supporting concepts rather than architectural layers.
 
 ## Directory Layout
 

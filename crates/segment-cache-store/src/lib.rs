@@ -2,43 +2,48 @@
 //!
 //! # Code layout
 //!
-//! The crate is layered so each level can be reviewed against `docs/design.md`
-//! mostly on its own. The implementation layers form an acyclic chain —
-//! `format ← engine ← read`, with `write` building on `engine` and `read` — and
-//! [`Store`] sits on top as the facade: `store` collects the whole operational
-//! API as thin delegators into `read` and `write`. `Store` is also the shared
-//! handle those layers hold, so it is a deliberate hub rather than another link
-//! in the chain; the heavy code never depends back up onto the facade's API.
+//! The implementation is organized around persistent concepts and their
+//! invariants rather than horizontal technical layers:
 //!
-//! 1. `error`: the public [`Error`] and the input-contract enums, plus every conversion into
-//!    [`Error`]. Each layer owns its own precise error types (e.g. `format` owns
-//!    [`CatalogError`]/[`FormatError`]/[`CorruptionError`]); this module is where they aggregate at
-//!    the API boundary.
-//! 2. `format`: pure byte layouts — no filesystem access
-//! 3. `engine`: open-store substrate — filesystem primitives, runtime state, create/open, explicit
-//!    GC
-//! 4. `read`: point lookups and range cursors over engine snapshots
-//! 5. `write`: buffered batches and replacing-manifest commits
-//! 6. [`Store`]: the cheaply cloneable public handle, whose operational API is assembled in `store`
-//!    from the read and write layers
+//! 1. `block`: one physical read unit and its encoding, decoding, checksum, and compression rules
+//! 2. `schema`: persistent store geometry and caller-defined namespace metadata
+//! 3. `segment`: one immutable sorted file, including records, format, file access, and runtime
+//!    state
+//! 4. `catalog`: namespace identity and the manifest that selects visible segments
+//! 5. `snapshot`: point, ordered, and range reads over one visible segment snapshot
+//! 6. `commit`: validated batches and atomic transitions to a new visible snapshot
+//! 7. [`Store`]: the cheaply cloneable public facade and its shared state
+//!
+//! `binary`, `key`, and `error` are small supporting modules rather than
+//! architectural layers.
 
 #[cfg(not(unix))]
 compile_error!("segment-cache-store currently supports Unix targets only");
 
-mod engine;
+mod binary;
+pub(crate) mod block;
+mod catalog;
+mod commit;
 mod error;
-mod format;
-mod read;
+mod key;
+mod schema;
+pub(crate) mod segment;
+mod snapshot;
 mod store;
-mod write;
 
-pub use engine::{CreateOptions, OpenOptions, StoreInfo, StoreStorageStats};
-pub use error::{Error, InputError, OptionsError, Result};
-pub use format::{
-    BlockChecksumKind, CatalogError, CatalogMismatch, CompressionPolicyError, CorruptionError,
-    FormatError, ManifestEncodeError, ManifestParseError, MetadataParseError, StoreFileParseError,
-    StoreMetadata, ValueLayout, ValuePayloadCompressionKind, ValuePayloadCompressionPolicy,
+pub use block::{
+    BlockChecksumKind, CompressionPolicyError, ValuePayloadCompressionKind,
+    ValuePayloadCompressionPolicy,
 };
-pub use read::{OrderedLookup, RangeCursor};
+pub use catalog::{
+    CreateOptions, ManifestEncodeError, ManifestParseError, OpenOptions, StoreFileParseError,
+    StoreInfo, StoreStorageStats,
+};
+pub use commit::{CommitOptions, CommitStats, WriteBatch};
+pub use error::{
+    CatalogError, CatalogMismatch, CorruptionError, Error, FormatError, InputError, OptionsError,
+    Result,
+};
+pub use schema::{MetadataParseError, StoreMetadata, ValueLayout};
+pub use snapshot::{OrderedLookup, RangeCursor};
 pub use store::Store;
-pub use write::{CommitOptions, CommitStats, WriteBatch};
