@@ -1,0 +1,8 @@
+error[E0275]: overflow evaluating the requirement `Box<Node>: CacheSchema`
+ --> tests/ui/fail_recursive_type.rs:3:10
+  |
+3 | #[derive(CacheSchema)]
+  |          ^^^^^^^^^^^
+  |
+  = note: required for `Option<Box<Node>>` to implement `CacheSchema`
+  = note: this error originates in the derive macro `CacheSchema` (in Nightly builds, run with -Z macro-backtrace for more info)

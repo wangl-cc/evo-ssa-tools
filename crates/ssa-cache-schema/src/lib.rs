@@ -64,9 +64,10 @@
 //! }
 //! ```
 //!
-//! Recursive schemas are not expanded automatically. Derive does not try to reject every recursive
-//! type shape, so recursive cache schemas need a manual implementation or an explicit reference
-//! scheme.
+//! Recursive schemas are unsupported. Direct structural recursion generally fails trait resolution
+//! during derive, while cycles hidden behind manual implementations can recurse when a fingerprint
+//! is computed. Recursive domains need a manual non-recursive reference identity or a future
+//! definition/reference scheme.
 
 mod impls;
 mod writer;
