@@ -1,6 +1,10 @@
-use segment_cache_store::{CommitStats, Result, WriteBatch};
+use std::num::NonZeroUsize;
 
-use crate::support::api::{commit_entries, create_store, make_key, make_value};
+use segment_cache_store::{CommitOptions, CommitStats, Result, WriteBatch};
+
+use crate::support::api::{
+    commit_entries, commit_entries_with_options, create_store, make_key, make_value, reopen_store,
+};
 
 #[test]
 fn round_trip_batch_commit_then_fetch() -> Result<()> {
@@ -75,6 +79,31 @@ fn empty_batch_commit_and_batch_len_are_noops() -> Result<()> {
     let empty_stats = store.commit_batch(WriteBatch::new())?;
     assert_eq!(empty_stats, CommitStats::default());
     assert_eq!(store.iter_all()?.count(), 0);
+    Ok(())
+}
+
+#[test]
+fn flush_threshold_bytes_splits_batch_independently_of_record_limit() -> Result<()> {
+    let tempdir = tempfile::tempdir()?;
+    let store = create_store(&tempdir)?;
+    let entries: Vec<_> = (0..3)
+        .map(|rep| (make_key(1, 0, rep), make_value(rep as u8, 100)))
+        .collect();
+    let options = CommitOptions::default()
+        .with_flush_threshold_records(NonZeroUsize::new(10).expect("non-zero literal"))
+        .with_flush_threshold_bytes(NonZeroUsize::new(150).expect("non-zero literal"));
+
+    let stats = commit_entries_with_options(&store, &entries, &options)?;
+    assert_eq!(stats.segments_published, entries.len());
+    assert_eq!(stats.output_records, entries.len());
+    drop(store);
+
+    assert_eq!(
+        reopen_store(&tempdir)?
+            .iter_all()?
+            .collect::<Result<Vec<_>>>()?,
+        entries
+    );
     Ok(())
 }
 

@@ -64,6 +64,47 @@ fn range_outside_all_segments_returns_empty() -> Result<()> {
 }
 
 #[test]
+fn bounded_range_crosses_lazy_main_segments_from_sparse_bounds() -> Result<()> {
+    let tempdir = tempfile::tempdir()?;
+    let store = create_store(&tempdir)?;
+    let first = vec![
+        (make_key(1, 0, 0), make_value(1, 8)),
+        (make_key(1, 0, 2), make_value(2, 8)),
+    ];
+    let second = vec![
+        (make_key(3, 0, 0), make_value(3, 8)),
+        (make_key(3, 0, 2), make_value(4, 8)),
+    ];
+    let third = vec![
+        (make_key(5, 0, 0), make_value(5, 8)),
+        (make_key(5, 0, 2), make_value(6, 8)),
+    ];
+    commit_entries(&store, &first)?;
+    commit_entries(&store, &second)?;
+    commit_entries(&store, &third)?;
+
+    let start = make_key(1, 0, 1);
+    let end = make_key(5, 0, 1);
+    let expected = vec![
+        first[1].clone(),
+        second[0].clone(),
+        second[1].clone(),
+        third[0].clone(),
+    ];
+    assert_eq!(
+        store.range(&start, &end)?.collect::<Result<Vec<_>>>()?,
+        expected
+    );
+
+    let mut visited = Vec::new();
+    store.visit_range(&start, &end, |key, value| {
+        visited.push((key.to_vec(), value.to_vec()));
+    })?;
+    assert_eq!(visited, expected);
+    Ok(())
+}
+
+#[test]
 fn iter_all_returns_all_records_exactly_once() -> Result<()> {
     let tempdir = tempfile::tempdir()?;
     let store = create_store(&tempdir)?;

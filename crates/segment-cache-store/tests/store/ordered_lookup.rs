@@ -60,6 +60,20 @@ fn rejects_bad_key_streams() -> Result<()> {
 }
 
 #[test]
+fn ordered_lookup_accepts_empty_input_without_visiting() -> Result<()> {
+    let tempdir = tempfile::tempdir()?;
+    let store = create_store(&tempdir)?;
+    let keys: [&[u8]; 0] = [];
+
+    assert!(store.fetch_many_ordered(keys)?.is_empty());
+    assert!(store.contains_many_ordered(keys)?.is_empty());
+    let mut visits = 0;
+    store.visit_many_ordered(&keys, |_, _| visits += 1)?;
+    assert_eq!(visits, 0);
+    Ok(())
+}
+
+#[test]
 fn visit_many_matches_owned_fetch() -> Result<()> {
     let tempdir = tempfile::tempdir()?;
     let store = create_store(&tempdir)?;

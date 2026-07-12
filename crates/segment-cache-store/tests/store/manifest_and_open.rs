@@ -9,7 +9,8 @@ use segment_cache_store::{
 use crate::support::{
     api::{
         block_checksum_format_id, commit_entries, commit_entries_with_options, create_store,
-        make_key, make_value, metadata, open_options, reopen_store, test_block_checksum,
+        make_key, make_value, metadata, open_options, reopen_store, reopen_store_read_only,
+        test_block_checksum,
     },
     segment_file::first_segment_path,
 };
@@ -128,6 +129,79 @@ fn storage_stats_report_root_file_usage() -> Result<()> {
     assert!(stats.segment_bytes > 0);
     assert!(stats.total_files >= stats.segment_files);
     assert!(stats.total_bytes >= stats.segment_bytes);
+    Ok(())
+}
+
+#[test]
+fn open_mode_controls_catalog_housekeeping() -> Result<()> {
+    let tempdir = tempfile::tempdir()?;
+    let store = create_store(&tempdir)?;
+    drop(store);
+
+    let store_tmp = tempdir.path().join("STORE.tmp");
+    let manifest_tmp = tempdir.path().join("MANIFEST.tmp");
+    let segment_dir = tempdir.path().join("segments");
+    fs::write(&store_tmp, b"stale")?;
+    fs::write(&manifest_tmp, b"stale")?;
+    fs::remove_dir(&segment_dir)?;
+
+    let reader = reopen_store_read_only(&tempdir)?;
+    assert!(store_tmp.exists());
+    assert!(manifest_tmp.exists());
+    assert!(!segment_dir.exists());
+    drop(reader);
+
+    let writer = reopen_store(&tempdir)?;
+    assert!(!store_tmp.exists());
+    assert!(!manifest_tmp.exists());
+    assert!(segment_dir.is_dir());
+    drop(writer);
+    Ok(())
+}
+
+#[test]
+fn missing_manifest_is_rejected_after_store_inspection_succeeds() -> Result<()> {
+    let tempdir = tempfile::tempdir()?;
+    let store = create_store(&tempdir)?;
+    drop(store);
+    fs::remove_file(tempdir.path().join("MANIFEST"))?;
+
+    assert_eq!(Store::inspect(tempdir.path())?.metadata, metadata());
+    let error = match Store::open(tempdir.path(), open_options()) {
+        Ok(_) => panic!("open must require a manifest"),
+        Err(error) => error,
+    };
+    assert!(matches!(
+        error,
+        Error::Catalog(CatalogError::Mismatch(CatalogMismatch::MissingManifest))
+    ));
+    Ok(())
+}
+
+#[test]
+fn exhausted_segment_ids_fail_before_publication() -> Result<()> {
+    let tempdir = tempfile::tempdir()?;
+    let store = create_store(&tempdir)?;
+    drop(store);
+
+    let manifest_path = tempdir.path().join("MANIFEST");
+    let mut manifest = fs::read(&manifest_path)?;
+    manifest[12..16].copy_from_slice(&u32::MAX.to_le_bytes());
+    let crc_offset = manifest.len() - 4;
+    let checksum = crc32c(&manifest[..crc_offset]);
+    manifest[crc_offset..].copy_from_slice(&checksum.to_le_bytes());
+    fs::write(&manifest_path, &manifest)?;
+
+    let store = reopen_store(&tempdir)?;
+    let error = commit_entries(&store, &[(make_key(1, 0, 0), make_value(1, 8))])
+        .expect_err("segment id exhaustion must reject publication");
+    assert!(matches!(
+        error,
+        Error::Catalog(CatalogError::Mismatch(CatalogMismatch::SegmentIdExhausted))
+    ));
+    assert_eq!(store.iter_all()?.count(), 0);
+    assert_eq!(fs::read_dir(tempdir.path().join("segments"))?.count(), 0);
+    assert_eq!(fs::read(manifest_path)?, manifest);
     Ok(())
 }
 

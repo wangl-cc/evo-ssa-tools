@@ -479,6 +479,49 @@ fn malformed_block_becomes_miss_in_all_read_paths() -> Result<()> {
     Ok(())
 }
 
+#[cfg(any(feature = "checksum-crc32c", feature = "checksum-rapidhash"))]
+#[test]
+fn corrupted_patch_candidate_falls_back_to_valid_visible_winner() -> Result<()> {
+    let tempdir = tempfile::tempdir()?;
+    let store = create_store(&tempdir)?;
+    let key = make_key(1, 0, 0);
+    commit_entries(&store, &[(key.clone(), make_value(9, 16))])?;
+    commit_entries(&store, &[(key.clone(), make_value(1, 16))])?;
+    commit_entries(&store, &[(key.clone(), make_value(2, 16))])?;
+
+    let reader = reopen_store_read_only(&tempdir)?;
+    let first_patch = tempdir
+        .path()
+        .join("segments")
+        .join("segment-0000000001.seg");
+    corrupt_block_value_payload(&first_patch, 0)?;
+
+    assert_eq!(reader.fetch_one(&key)?, Some(make_value(2, 16)));
+    assert_eq!(reader.fetch_many_ordered([key.as_slice()])?, vec![Some(
+        make_value(2, 16)
+    )]);
+    assert_eq!(reader.iter_all()?.collect::<Result<Vec<_>>>()?, vec![(
+        key,
+        make_value(2, 16)
+    )]);
+    Ok(())
+}
+
+#[test]
+fn live_segment_truncation_becomes_point_lookup_miss() -> Result<()> {
+    let tempdir = tempfile::tempdir()?;
+    let store = create_store(&tempdir)?;
+    let key = make_key(1, 0, 0);
+    commit_entries(&store, &[(key.clone(), make_value(1, 16))])?;
+    let reader = reopen_store_read_only(&tempdir)?;
+    let path = first_segment_path(tempdir.path())?;
+
+    FsOpenOptions::new().write(true).open(path)?.set_len(0)?;
+
+    assert_eq!(reader.fetch_one(&key)?, None);
+    Ok(())
+}
+
 #[test]
 fn variable_value_index_must_start_at_zero_without_block_checksums() -> Result<()> {
     let tempdir = tempfile::tempdir()?;
