@@ -7,7 +7,9 @@ pub mod stream;
 pub mod transform;
 
 pub use deterministic::DeterministicTask;
-pub use execution::{BatchExecution, Compute, InterruptSignal};
+pub use execution::{
+    BatchExecution, BatchProgress, BatchProgressSnapshot, Compute, InterruptSignal,
+};
 pub use stochastic::{
     RepeatedStochasticInputs, StochasticComputeExt, StochasticInput, StochasticTask,
 };

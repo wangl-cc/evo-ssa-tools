@@ -106,6 +106,7 @@ pub trait Compute {
             compute: self,
             inputs,
             interrupt_signal: None,
+            progress: None,
         }
     }
 }
@@ -118,6 +119,7 @@ where
     compute: &'a C,
     inputs: I,
     interrupt_signal: Option<InterruptSignal>,
+    progress: Option<BatchProgress>,
 }
 
 impl<'a, C, I> BatchExecution<'a, C, I>
@@ -135,6 +137,40 @@ where
 
 impl<'a, C, I> BatchExecution<'a, C, I>
 where
+    C: Compute,
+    I: IntoParallelIterator<Item = C::Input>,
+    I::Iter: IndexedParallelIterator<Item = C::Input>,
+{
+    /// Enable item progress tracking for this batch.
+    ///
+    /// Progress is opt-in. The returned handle can be cloned and polled while the batch executes.
+    /// `started` counts input items that have entered the computation, regardless of their result.
+    /// `in_flight` counts items currently executing the computation.
+    /// The number of finished attempts is `started - in_flight`; after fail-fast collection,
+    /// `total - started` is the number of items that never entered the computation.
+    ///
+    /// Enabling progress converts the inputs into their indexed parallel iterator, so the tracked
+    /// batch supports parallel collection through [`BatchExecution::collect`] or
+    /// [`BatchExecution::collect_in`].
+    ///
+    /// # Panics
+    ///
+    /// Panics if the batch contains more than `2^48 - 1` items.
+    pub fn track_progress(self) -> (BatchExecution<'a, C, I::Iter>, BatchProgress) {
+        let inputs = self.inputs.into_par_iter();
+        let progress = BatchProgress::new(inputs.len());
+        let batch = BatchExecution {
+            compute: self.compute,
+            inputs,
+            interrupt_signal: self.interrupt_signal,
+            progress: Some(progress.clone()),
+        };
+        (batch, progress)
+    }
+}
+
+impl<'a, C, I> BatchExecution<'a, C, I>
+where
     C: Clone + Compute + Sync + 'a,
     I: IntoParallelIterator<Item = C::Input> + 'a,
     I::Iter: IndexedParallelIterator<Item = C::Input>,
@@ -147,14 +183,24 @@ where
     pub fn into_par_iter(self) -> impl IndexedParallelIterator<Item = Result<C::Output>> + 'a {
         let signal = self.interrupt_signal;
         let compute = self.compute;
+        let progress = self.progress;
         self.inputs.into_par_iter().map_init(
-            move || (vec![0u8; C::Input::SIZE], compute.clone(), signal.clone()),
-            |(buffer, compute, signal), input| {
+            move || {
+                (
+                    vec![0u8; C::Input::SIZE],
+                    compute.clone(),
+                    signal.clone(),
+                    progress.clone(),
+                )
+            },
+            |(buffer, compute, signal, progress), input| {
                 if let Some(signal) = signal
                     && signal.is_interrupted()
                 {
                     return Err(Error::Interrupted);
                 }
+
+                let _in_flight = progress.as_ref().map(BatchProgress::begin_item);
 
                 // Safety: The buffer is initialized with length Self::Input::SIZE.
                 unsafe { compute.execute_one_with_buffer(input, buffer) }
@@ -213,6 +259,7 @@ where
         let signal = self.interrupt_signal;
         let mut compute = self.compute.clone();
         let mut buffer = vec![0u8; C::Input::SIZE];
+        let progress = self.progress;
 
         self.inputs.into_iter().map(move |input| {
             if let Some(signal) = &signal
@@ -221,10 +268,113 @@ where
                 return Err(Error::Interrupted);
             }
 
+            let _in_flight = progress.as_ref().map(BatchProgress::begin_item);
+
             // Safety: The buffer is initialized with length Self::Input::SIZE.
             unsafe { compute.execute_one_with_buffer(input, &mut buffer) }
         })
     }
+}
+
+/// Shared item progress for one batch execution.
+#[derive(Debug, Clone)]
+pub struct BatchProgress {
+    total: usize,
+    state: Arc<PackedProgressState>,
+}
+
+impl BatchProgress {
+    const MAX_TRACKED_ITEMS: usize = PackedProgressState::STARTED_MASK;
+
+    fn new(total: usize) -> Self {
+        assert!(
+            total <= Self::MAX_TRACKED_ITEMS,
+            "tracked batch size exceeds the 48-bit started-item capacity"
+        );
+
+        Self {
+            total,
+            state: Arc::new(PackedProgressState::default()),
+        }
+    }
+
+    /// Return the number of input items in the tracked batch.
+    pub const fn total(&self) -> usize {
+        self.total
+    }
+
+    /// Return the number of input items that have entered the computation.
+    pub fn started(&self) -> usize {
+        let (started, _) = self.state.counts();
+        started
+    }
+
+    /// Return the number of input items currently executing the computation.
+    pub fn in_flight(&self) -> usize {
+        let (_, in_flight) = self.state.counts();
+        in_flight
+    }
+
+    /// Return a consistent point-in-time progress snapshot.
+    pub fn snapshot(&self) -> BatchProgressSnapshot {
+        let (started, in_flight) = self.state.counts();
+        BatchProgressSnapshot {
+            total: self.total,
+            started,
+            in_flight,
+        }
+    }
+
+    fn begin_item(&self) -> InFlightGuard<'_> {
+        self.state.start()
+    }
+}
+
+#[derive(Debug, Default)]
+struct PackedProgressState(atomic::AtomicUsize);
+
+impl PackedProgressState {
+    const IN_FLIGHT_ONE: usize = 1 << Self::STARTED_BITS;
+    const STARTED_BITS: u32 = 48;
+    const STARTED_MASK: usize = Self::IN_FLIGHT_ONE - 1;
+    const START_DELTA: usize = Self::IN_FLIGHT_ONE + 1;
+
+    fn start(&self) -> InFlightGuard<'_> {
+        self.0
+            .fetch_add(Self::START_DELTA, atomic::Ordering::Relaxed);
+        InFlightGuard { state: self }
+    }
+
+    fn finish(&self) {
+        self.0
+            .fetch_sub(Self::IN_FLIGHT_ONE, atomic::Ordering::Relaxed);
+    }
+
+    fn counts(&self) -> (usize, usize) {
+        let state = self.0.load(atomic::Ordering::Relaxed);
+        (state & Self::STARTED_MASK, state >> Self::STARTED_BITS)
+    }
+}
+
+struct InFlightGuard<'a> {
+    state: &'a PackedProgressState,
+}
+
+impl Drop for InFlightGuard<'_> {
+    fn drop(&mut self) {
+        self.state.finish();
+    }
+}
+
+/// Point-in-time item progress for one batch execution.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BatchProgressSnapshot {
+    /// Number of input items in the batch.
+    pub total: usize,
+    /// Number of input items that have entered the computation.
+    pub started: usize,
+    /// Number of input items currently executing the computation.
+    pub in_flight: usize,
 }
 
 /// Shared interrupt signal for batch execution.
@@ -254,6 +404,7 @@ impl InterruptSignal {
         self.interrupted.load(atomic::Ordering::Acquire)
     }
 }
+
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
@@ -494,6 +645,295 @@ mod tests {
                 assert!(matches!(result, Err(Error::Compute(_))));
                 assert_eq!(calls.load(Ordering::SeqCst), 3);
             }
+        }
+    }
+
+    mod progress_tracking {
+        use super::*;
+
+        #[derive(Clone)]
+        struct CountingCompute;
+
+        impl Compute for CountingCompute {
+            type Input = u8;
+            type Output = u8;
+
+            fn computation_path(&self) -> &ComputationPath {
+                &TEST_PATH
+            }
+
+            fn execute_with_encoded_input(
+                &mut self,
+                input: Self::Input,
+                _encoded: &[u8],
+            ) -> Result<Self::Output> {
+                Ok(input)
+            }
+        }
+
+        #[derive(Debug, thiserror::Error)]
+        #[error("test compute failed")]
+        struct TestComputeError;
+
+        #[derive(Clone)]
+        struct FallibleCompute;
+
+        impl Compute for FallibleCompute {
+            type Input = u8;
+            type Output = u8;
+
+            fn computation_path(&self) -> &ComputationPath {
+                &TEST_PATH
+            }
+
+            fn execute_with_encoded_input(
+                &mut self,
+                input: Self::Input,
+                _encoded: &[u8],
+            ) -> Result<Self::Output> {
+                if input == 2 {
+                    Err(Error::Compute(Box::new(TestComputeError)))
+                } else {
+                    Ok(input)
+                }
+            }
+        }
+
+        #[test]
+        fn track_progress_reports_batch_total_before_execution() {
+            let (_batch, progress) = CountingCompute.with_inputs(0u8..4).track_progress();
+
+            assert_eq!(progress.total(), 4);
+            assert_eq!(progress.snapshot(), BatchProgressSnapshot {
+                total: 4,
+                started: 0,
+                in_flight: 0,
+            });
+        }
+
+        #[test]
+        fn track_progress_counts_started_items() {
+            let (batch, progress) = CountingCompute.with_inputs(0u8..4).track_progress();
+
+            let results = batch.collect::<Vec<Result<_>>>();
+
+            assert_eq!(results.len(), 4);
+            assert_eq!(progress.total(), 4);
+            assert_eq!(progress.started(), 4);
+            assert_eq!(progress.in_flight(), 0);
+            assert_eq!(progress.snapshot(), BatchProgressSnapshot {
+                total: 4,
+                started: 4,
+                in_flight: 0,
+            });
+        }
+
+        #[test]
+        fn track_progress_counts_failed_items_as_started() {
+            let (batch, progress) = FallibleCompute.with_inputs(0u8..4).track_progress();
+
+            let results = batch.collect::<Vec<Result<_>>>();
+
+            assert_eq!(results.len(), 4);
+            assert!(matches!(results[2], Err(Error::Compute(_))));
+            assert_eq!(progress.snapshot(), BatchProgressSnapshot {
+                total: 4,
+                started: 4,
+                in_flight: 0,
+            });
+        }
+
+        #[derive(Clone)]
+        struct BlockingCompute {
+            entered: Arc<(std::sync::Mutex<usize>, std::sync::Condvar)>,
+            release: Arc<(std::sync::Mutex<bool>, std::sync::Condvar)>,
+        }
+
+        impl Compute for BlockingCompute {
+            type Input = u8;
+            type Output = u8;
+
+            fn computation_path(&self) -> &ComputationPath {
+                &TEST_PATH
+            }
+
+            fn execute_with_encoded_input(
+                &mut self,
+                input: Self::Input,
+                _encoded: &[u8],
+            ) -> Result<Self::Output> {
+                let (entered_lock, entered_condvar) = &*self.entered;
+                let mut entered_count = entered_lock
+                    .lock()
+                    .expect("entered count mutex should not be poisoned");
+                *entered_count += 1;
+                entered_condvar.notify_all();
+                drop(entered_count);
+
+                let (release_lock, release_condvar) = &*self.release;
+                let mut released = release_lock
+                    .lock()
+                    .expect("release mutex should not be poisoned");
+                while !*released {
+                    released = release_condvar
+                        .wait(released)
+                        .expect("release mutex should not be poisoned");
+                }
+
+                Ok(input)
+            }
+        }
+
+        #[test]
+        fn track_progress_reports_in_flight_item_during_execution() {
+            let entered = Arc::new((std::sync::Mutex::new(0usize), std::sync::Condvar::new()));
+            let release = Arc::new((std::sync::Mutex::new(false), std::sync::Condvar::new()));
+            let compute = BlockingCompute {
+                entered: Arc::clone(&entered),
+                release: Arc::clone(&release),
+            };
+            let (batch, progress) = compute.with_inputs(0u8..1).track_progress();
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(1)
+                .build()
+                .expect("single-thread test pool should build");
+
+            std::thread::scope(|scope| {
+                let handle = scope.spawn(|| pool.install(|| batch.collect::<Vec<Result<_>>>()));
+
+                let (entered_lock, entered_condvar) = &*entered;
+                let mut entered_count = entered_lock
+                    .lock()
+                    .expect("entered count mutex should not be poisoned");
+                while *entered_count == 0 {
+                    entered_count = entered_condvar
+                        .wait(entered_count)
+                        .expect("entered count mutex should not be poisoned");
+                }
+                drop(entered_count);
+
+                assert_eq!(progress.snapshot(), BatchProgressSnapshot {
+                    total: 1,
+                    started: 1,
+                    in_flight: 1,
+                });
+
+                let (release_lock, release_condvar) = &*release;
+                let mut released = release_lock
+                    .lock()
+                    .expect("release mutex should not be poisoned");
+                *released = true;
+                release_condvar.notify_all();
+                drop(released);
+
+                let results = handle.join().expect("batch worker should not panic");
+                assert_eq!(results.len(), 1);
+            });
+
+            assert_eq!(progress.snapshot(), BatchProgressSnapshot {
+                total: 1,
+                started: 1,
+                in_flight: 0,
+            });
+        }
+
+        #[derive(Clone)]
+        struct PanickingCompute;
+
+        impl Compute for PanickingCompute {
+            type Input = u8;
+            type Output = u8;
+
+            fn computation_path(&self) -> &ComputationPath {
+                &TEST_PATH
+            }
+
+            fn execute_with_encoded_input(
+                &mut self,
+                _input: Self::Input,
+                _encoded: &[u8],
+            ) -> Result<Self::Output> {
+                panic!("test compute panic");
+            }
+        }
+
+        #[test]
+        fn panicking_item_leaves_no_in_flight_progress() {
+            let (batch, progress) = PanickingCompute.with_inputs(0u8..1).track_progress();
+
+            let panic = std::panic::catch_unwind(|| batch.collect::<Vec<Result<_>>>());
+
+            assert!(panic.is_err());
+            assert_eq!(progress.snapshot(), BatchProgressSnapshot {
+                total: 1,
+                started: 1,
+                in_flight: 0,
+            });
+        }
+
+        #[test]
+        fn packed_progress_state_updates_counts_atomically() {
+            let state = PackedProgressState::default();
+
+            let first = state.start();
+            let second = state.start();
+            assert_eq!(state.counts(), (2, 2));
+
+            drop(first);
+            assert_eq!(state.counts(), (2, 1));
+
+            drop(second);
+            assert_eq!(state.counts(), (2, 0));
+        }
+
+        #[test]
+        fn packed_progress_state_reaches_started_capacity_without_carrying() {
+            let initial = PackedProgressState::STARTED_MASK - 1;
+            let state = PackedProgressState(atomic::AtomicUsize::new(initial));
+
+            let guard = state.start();
+            assert_eq!(state.counts(), (PackedProgressState::STARTED_MASK, 1));
+
+            drop(guard);
+
+            assert_eq!(state.counts(), (PackedProgressState::STARTED_MASK, 0));
+        }
+
+        #[test]
+        fn packed_in_flight_capacity_covers_rayon_thread_limit() {
+            assert!(
+                rayon::max_num_threads() <= usize::from(u16::MAX),
+                "packed progress must represent every worker in one Rayon pool"
+            );
+        }
+
+        #[test]
+        #[should_panic(expected = "tracked batch size exceeds the 48-bit started-item capacity")]
+        fn progress_rejects_batch_larger_than_started_capacity() {
+            let _ = BatchProgress::new(PackedProgressState::STARTED_MASK + 1);
+        }
+
+        #[test]
+        fn interrupted_items_are_not_started_or_in_flight() {
+            let signal = InterruptSignal::new();
+            signal.interrupt();
+            let (batch, progress) = CountingCompute
+                .with_inputs(0u8..4)
+                .with_interrupt_signal(signal)
+                .track_progress();
+
+            let results = batch.collect::<Vec<Result<_>>>();
+
+            assert!(
+                results
+                    .iter()
+                    .all(|result| matches!(result, Err(Error::Interrupted)))
+            );
+            assert_eq!(progress.snapshot(), BatchProgressSnapshot {
+                total: 4,
+                started: 0,
+                in_flight: 0,
+            });
         }
     }
 
