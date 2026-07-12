@@ -16,6 +16,21 @@ fn standard_option_matches_derive_equivalent_schema() {
 }
 
 #[test]
+fn standard_result_matches_derive_equivalent_schema() {
+    #[derive(CacheSchema)]
+    #[cache_schema(rename = "Result")]
+    enum DerivedResult<T, E> {
+        Ok(T),
+        Err(E),
+    }
+
+    assert_eq!(
+        schema_fingerprint::<Result<u32, u64>>(),
+        schema_fingerprint::<DerivedResult<u32, u64>>()
+    );
+}
+
+#[test]
 fn variant_reorder_changes_fingerprint() {
     #[derive(CacheSchema)]
     #[cache_schema(rename = "Event")]

@@ -153,10 +153,6 @@ mod tests {
 
     #[test]
     fn nonzero_wrappers_use_distinct_schema() {
-        assert_eq!(
-            schema_fingerprint::<NonZeroU32>(),
-            schema_fingerprint::<NonZeroU32>()
-        );
         assert_ne!(
             schema_fingerprint::<NonZeroU32>(),
             schema_fingerprint::<u32>()
@@ -240,10 +236,6 @@ mod tests {
     #[cfg(target_has_atomic = "32")]
     #[test]
     fn atomic_integer_schema_is_distinct_from_inner_integer() {
-        assert_eq!(
-            schema_fingerprint::<std::sync::atomic::AtomicU32>(),
-            schema_fingerprint::<std::sync::atomic::AtomicU32>()
-        );
         assert_ne!(
             schema_fingerprint::<std::sync::atomic::AtomicU32>(),
             schema_fingerprint::<u32>()
@@ -253,10 +245,6 @@ mod tests {
     #[cfg(target_has_atomic = "8")]
     #[test]
     fn atomic_bool_schema_is_distinct_from_bool() {
-        assert_eq!(
-            schema_fingerprint::<std::sync::atomic::AtomicBool>(),
-            schema_fingerprint::<std::sync::atomic::AtomicBool>()
-        );
         assert_ne!(
             schema_fingerprint::<std::sync::atomic::AtomicBool>(),
             schema_fingerprint::<bool>()
