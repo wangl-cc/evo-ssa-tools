@@ -1,5 +1,3 @@
-//! Stochastic input identity and lazy repeated input sources.
-
 use std::ops::Range;
 
 use rayon::{
@@ -7,161 +5,7 @@ use rayon::{
     prelude::{IndexedParallelIterator, IntoParallelIterator, ParallelIterator},
 };
 
-use crate::cache::CanonicalEncode;
-
-/// Input for one stochastic execution.
-///
-/// This wraps a deterministic parameter value (`param`) with a `repetition_index`.
-///
-/// The pair serves two roles:
-///
-/// - It is the canonical input used for cache-key construction.
-/// - It selects one reproducible stochastic repetition.
-///
-/// # Encoding
-///
-/// Canonical encoding is `param` bytes followed by big-endian `repetition_index` bytes.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct StochasticInput<P> {
-    /// Deterministic model/config input.
-    pub param: P,
-    /// Repetition index used for random stream derivation.
-    pub repetition_index: u64,
-}
-
-impl<P> StochasticInput<P> {
-    /// Create a stochastic input from `(param, repetition_index)`.
-    pub const fn new(param: P, repetition_index: u64) -> Self {
-        Self {
-            param,
-            repetition_index,
-        }
-    }
-}
-
-impl<P> From<(P, u64)> for StochasticInput<P> {
-    fn from((param, repetition_index): (P, u64)) -> Self {
-        Self {
-            param,
-            repetition_index,
-        }
-    }
-}
-
-impl<P: CanonicalEncode> CanonicalEncode for StochasticInput<P> {
-    const SIZE: usize = P::SIZE + u64::SIZE;
-
-    unsafe fn encode_into(&self, buffer: &mut [u8]) {
-        unsafe {
-            self.param.encode_into(&mut buffer[..P::SIZE]);
-            self.repetition_index
-                .encode_into(&mut buffer[P::SIZE..Self::SIZE]);
-        }
-    }
-}
-
-/// Lazy ordered input source for repeated stochastic executions.
-///
-/// This source represents the logical Cartesian product of `params` and
-/// `0..repetitions` without materializing every [`StochasticInput`]. Items are emitted in
-/// parameter-major order: all repetitions for `params[0]`, then all repetitions for `params[1]`,
-/// and so on.
-///
-/// Converting the source into an indexed parallel iterator panics if the total number of repeated
-/// inputs cannot be represented by `usize`.
-#[derive(Debug, Clone)]
-pub struct RepeatedStochasticInputs<I> {
-    params: I,
-    repetitions: usize,
-}
-
-impl<I> RepeatedStochasticInputs<I> {
-    /// Create a lazy repeated stochastic input source.
-    pub const fn new(params: I, repetitions: usize) -> Self {
-        Self {
-            params,
-            repetitions,
-        }
-    }
-}
-
-impl<I> IntoIterator for RepeatedStochasticInputs<I>
-where
-    I: IntoIterator,
-    I::Item: Clone,
-{
-    type IntoIter = RepeatedStochasticIntoIter<I::IntoIter>;
-    type Item = StochasticInput<I::Item>;
-
-    fn into_iter(self) -> Self::IntoIter {
-        RepeatedStochasticIntoIter {
-            params: self.params.into_iter(),
-            current_param: None,
-            repetitions: self.repetitions,
-            repetition_index: 0,
-        }
-    }
-}
-
-/// Serial iterator over a [`RepeatedStochasticInputs`] source.
-#[derive(Debug, Clone)]
-pub struct RepeatedStochasticIntoIter<I>
-where
-    I: Iterator,
-{
-    params: I,
-    current_param: Option<I::Item>,
-    repetitions: usize,
-    repetition_index: usize,
-}
-
-impl<I> Iterator for RepeatedStochasticIntoIter<I>
-where
-    I: Iterator,
-    I::Item: Clone,
-{
-    type Item = StochasticInput<I::Item>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.repetitions == 0 {
-            return None;
-        }
-
-        if self.current_param.is_none() {
-            self.current_param = self.params.next();
-            self.repetition_index = 0;
-        }
-
-        let param = self.current_param.as_ref()?.clone();
-        let repetition_index = self.repetition_index;
-        self.repetition_index += 1;
-
-        if self.repetition_index == self.repetitions {
-            self.current_param = None;
-        }
-
-        Some(StochasticInput::new(param, repetition_index as u64))
-    }
-
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        if self.repetitions == 0 {
-            return (0, Some(0));
-        }
-
-        let current_remaining = self
-            .current_param
-            .as_ref()
-            .map_or(0, |_| self.repetitions - self.repetition_index);
-        let (lower, upper) = self.params.size_hint();
-        let lower = lower
-            .saturating_mul(self.repetitions)
-            .saturating_add(current_remaining);
-        let upper = upper
-            .and_then(|value| value.checked_mul(self.repetitions))
-            .and_then(|value| value.checked_add(current_remaining));
-        (lower, upper)
-    }
-}
+use super::{RepeatedStochasticInputs, StochasticInput};
 
 impl<I> IntoParallelIterator for RepeatedStochasticInputs<I>
 where
@@ -627,38 +471,7 @@ where
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
-    use std::sync::{
-        Arc,
-        atomic::{AtomicUsize, Ordering},
-    };
-
     use super::*;
-
-    struct DualModeInputs {
-        values: Range<u32>,
-        serial_conversions: Arc<AtomicUsize>,
-        parallel_conversions: Arc<AtomicUsize>,
-    }
-
-    impl IntoIterator for DualModeInputs {
-        type IntoIter = Range<u32>;
-        type Item = u32;
-
-        fn into_iter(self) -> Self::IntoIter {
-            self.serial_conversions.fetch_add(1, Ordering::SeqCst);
-            self.values
-        }
-    }
-
-    impl IntoParallelIterator for DualModeInputs {
-        type Item = u32;
-        type Iter = <Range<u32> as IntoParallelIterator>::Iter;
-
-        fn into_par_iter(self) -> Self::Iter {
-            self.parallel_conversions.fetch_add(1, Ordering::SeqCst);
-            self.values.into_par_iter()
-        }
-    }
 
     enum SplitPattern {
         Prefix,
@@ -783,28 +596,7 @@ mod tests {
     }
 
     #[test]
-    fn stochastic_input_constructors_encode_identically() {
-        let from_new = StochasticInput::new(123u64, 9);
-        let from_tuple: StochasticInput<u64> = (123u64, 9u64).into();
-        let from_fields = StochasticInput {
-            param: 123u64,
-            repetition_index: 9,
-        };
-
-        let mut buffer_new = vec![0u8; StochasticInput::<u64>::SIZE];
-        let mut buffer_tuple = vec![0u8; StochasticInput::<u64>::SIZE];
-        let mut buffer_fields = vec![0u8; StochasticInput::<u64>::SIZE];
-
-        let encoded_new = unsafe { from_new.encode_with_buffer(&mut buffer_new) };
-        let encoded_tuple = unsafe { from_tuple.encode_with_buffer(&mut buffer_tuple) };
-        let encoded_fields = unsafe { from_fields.encode_with_buffer(&mut buffer_fields) };
-
-        assert_eq!(encoded_new, encoded_tuple);
-        assert_eq!(encoded_new, encoded_fields);
-    }
-
-    #[test]
-    fn repeated_inputs_support_standard_serial_and_parallel_iteration() {
+    fn repeated_inputs_are_indexed_and_parameter_major() {
         let inputs = RepeatedStochasticInputs::new(10u32..12, 2);
         let expected = vec![
             StochasticInput::new(10, 0),
@@ -813,8 +605,6 @@ mod tests {
             StochasticInput::new(11, 1),
         ];
         let expected_len = expected.len();
-
-        assert_eq!(inputs.clone().into_iter().collect::<Vec<_>>(), expected);
 
         let parallel_inputs = inputs.clone().into_par_iter();
         assert_eq!(parallel_inputs.opt_len(), Some(expected_len));
@@ -833,37 +623,6 @@ mod tests {
             .zip(0..expected_len)
             .collect::<Vec<_>>();
         assert_eq!(indexed_outputs, expected_indexed);
-    }
-
-    #[test]
-    fn repeated_inputs_use_the_selected_source_mode_directly() {
-        let serial_conversions = Arc::new(AtomicUsize::new(0));
-        let parallel_conversions = Arc::new(AtomicUsize::new(0));
-        let inputs = DualModeInputs {
-            values: 10..12,
-            serial_conversions: Arc::clone(&serial_conversions),
-            parallel_conversions: Arc::clone(&parallel_conversions),
-        };
-        let serial = RepeatedStochasticInputs::new(inputs, 2)
-            .into_iter()
-            .collect::<Vec<_>>();
-
-        assert_eq!(serial.len(), 4);
-        assert_eq!(serial_conversions.load(Ordering::SeqCst), 1);
-        assert_eq!(parallel_conversions.load(Ordering::SeqCst), 0);
-
-        let inputs = DualModeInputs {
-            values: 10..12,
-            serial_conversions: Arc::clone(&serial_conversions),
-            parallel_conversions: Arc::clone(&parallel_conversions),
-        };
-        let parallel = RepeatedStochasticInputs::new(inputs, 2)
-            .into_par_iter()
-            .collect::<Vec<_>>();
-
-        assert_eq!(parallel.len(), 4);
-        assert_eq!(serial_conversions.load(Ordering::SeqCst), 1);
-        assert_eq!(parallel_conversions.load(Ordering::SeqCst), 1);
     }
 
     #[test]
@@ -901,9 +660,14 @@ mod tests {
 
     #[test]
     fn repeated_parallel_producer_supports_recursive_boundary_splits() {
-        let expected = RepeatedStochasticInputs::new([10u32, 20], 3)
-            .into_iter()
-            .collect::<Vec<_>>();
+        let expected = vec![
+            StochasticInput::new(10, 0),
+            StochasticInput::new(10, 1),
+            StochasticInput::new(10, 2),
+            StochasticInput::new(20, 0),
+            StochasticInput::new(20, 1),
+            StochasticInput::new(20, 2),
+        ];
         let prefix_split = RepeatedStochasticInputs::new([10u32, 20], 3)
             .into_par_iter()
             .with_producer(CollectSplitPattern(SplitPattern::Prefix));
@@ -976,14 +740,10 @@ mod tests {
 
     #[test]
     fn zero_repetitions_are_empty_without_consuming_parameters() {
-        let serial = RepeatedStochasticInputs::new(0..usize::MAX, 0).into_iter();
-        assert_eq!(serial.size_hint(), (0, Some(0)));
-        let serial = serial.collect::<Vec<_>>();
         let parallel_inputs =
             RepeatedStochasticInputs::new(0u32..usize::MAX as u32, 0).into_par_iter();
         let split_lengths = parallel_inputs.with_producer(SplitEmpty);
 
-        assert!(serial.is_empty());
         assert_eq!(split_lengths, (0, 0));
     }
 
