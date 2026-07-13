@@ -21,6 +21,10 @@ pub(crate) struct SegmentKeyPrefix {
 #[derive(Clone, Copy)]
 pub(crate) struct SegmentRelativeKey<'a>(&'a [u8]);
 
+/// A segment-relative query key after one validated block-prefix strip.
+#[derive(Clone, Copy)]
+pub(crate) struct BlockRelativeKey<'a>(&'a [u8]);
+
 impl SegmentKeyPrefix {
     #[cfg(test)]
     pub(crate) fn from_owned(prefix: Vec<u8>) -> Self {
@@ -44,12 +48,29 @@ impl SegmentKeyPrefix {
         self.range.len()
     }
 
-    pub(crate) fn strip<'a>(&self, key: &'a [u8]) -> Option<SegmentRelativeKey<'a>> {
-        key.strip_prefix(self.as_slice()).map(SegmentRelativeKey)
+    /// Removes this prefix after the caller has established that `key` lies in
+    /// the segment range represented by this prefix.
+    pub(crate) fn relative_key<'a>(&self, key: &'a [u8]) -> SegmentRelativeKey<'a> {
+        SegmentRelativeKey(&key[self.len()..])
     }
 }
 
 impl<'a> SegmentRelativeKey<'a> {
+    pub(crate) fn as_slice(self) -> &'a [u8] {
+        self.0
+    }
+
+    /// Removes a block-owned prefix after block routing established membership.
+    pub(crate) fn after_block_prefix(self, prefix_len: usize) -> BlockRelativeKey<'a> {
+        BlockRelativeKey(&self.0[prefix_len..])
+    }
+}
+
+impl<'a> BlockRelativeKey<'a> {
+    pub(crate) fn from_suffix(suffix: &'a [u8]) -> Self {
+        Self(suffix)
+    }
+
     pub(crate) fn as_slice(self) -> &'a [u8] {
         self.0
     }
@@ -94,20 +115,6 @@ impl<'a> CompositeKey<'a> {
         self.bytes().cmp(other.bytes())
     }
 
-    pub(crate) fn write_to(self, destination: &mut [u8]) -> bool {
-        if destination.len()
-            != self.segment_prefix.len() + self.extra_prefix.len() + self.suffix.len()
-        {
-            return false;
-        }
-        let (segment_prefix, remainder) = destination.split_at_mut(self.segment_prefix.len());
-        let (extra_prefix, suffix) = remainder.split_at_mut(self.extra_prefix.len());
-        segment_prefix.copy_from_slice(self.segment_prefix);
-        extra_prefix.copy_from_slice(self.extra_prefix);
-        suffix.copy_from_slice(self.suffix);
-        true
-    }
-
     fn bytes(self) -> impl Iterator<Item = &'a u8> {
         self.segment_prefix
             .iter()
@@ -121,28 +128,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn composite_key_compares_and_materializes_all_parts() {
+    fn composite_key_compares_all_parts() {
         let key = CompositeKey::new(b"shared-", b"00", b"7");
         let next = CompositeKey::new(b"shared-", b"00", b"8");
-        let mut bytes = [0; 10];
 
         assert_eq!(key.cmp_slice(b"shared-007"), Ordering::Equal);
         assert_eq!(key.cmp_key(next), Ordering::Less);
-        assert!(key.write_to(&mut bytes));
-        assert_eq!(&bytes, b"shared-007");
     }
 
     #[test]
-    fn segment_relative_key_requires_the_validated_prefix() {
+    fn relative_keys_strip_only_at_validated_range_boundaries() {
         let prefix = SegmentKeyPrefix::from_owned(b"shared-".to_vec());
+        let segment_key = prefix.relative_key(b"shared-block-suffix");
+        let block_key = segment_key.after_block_prefix(b"block-".len());
 
-        assert_eq!(
-            prefix
-                .strip(b"shared-suffix")
-                .expect("prefix should match")
-                .as_slice(),
-            b"suffix"
-        );
-        assert!(prefix.strip(b"other-suffix").is_none());
+        assert_eq!(segment_key.as_slice(), b"block-suffix");
+        assert_eq!(block_key.as_slice(), b"suffix");
     }
 }

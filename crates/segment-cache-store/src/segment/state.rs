@@ -11,7 +11,11 @@ use super::{
     index::SegmentIndex,
     writer::SegmentFileMetadata,
 };
-use crate::{block::DecodedBlock, error::Result};
+use crate::{
+    block::DecodedBlock,
+    error::Result,
+    key::{BlockRelativeKey, SegmentRelativeKey},
+};
 
 /// Visible immutable segment and its in-memory sparse block index.
 pub(crate) struct Segment {
@@ -61,16 +65,34 @@ impl Segment {
         self.block_index.len()
     }
 
-    pub(crate) fn block_contains(&self, index: usize, key: &[u8]) -> bool {
+    pub(crate) fn segment_prefix(&self) -> &[u8] {
+        self.block_index.segment_prefix().as_slice()
+    }
+
+    /// Converts a key whose segment range membership was already established.
+    pub(crate) fn relative_key_in_range<'a>(&self, key: &'a [u8]) -> SegmentRelativeKey<'a> {
+        debug_assert!(self.min_key() <= key && key <= self.max_key());
+        self.block_index.relative_key(key)
+    }
+
+    pub(crate) fn block_contains(&self, index: usize, key: SegmentRelativeKey<'_>) -> bool {
         self.block_index.contains(index, key)
     }
 
-    pub(crate) fn block_min_cmp(&self, index: usize, key: &[u8]) -> Ordering {
-        self.block_index.min_cmp(index, key)
+    pub(crate) fn block_min_cmp(&self, index: usize, key: SegmentRelativeKey<'_>) -> Ordering {
+        self.block_index.relative_min_cmp(index, key)
     }
 
-    pub(crate) fn block_max_cmp(&self, index: usize, key: &[u8]) -> Ordering {
-        self.block_index.max_cmp(index, key)
+    pub(crate) fn block_max_cmp(&self, index: usize, key: SegmentRelativeKey<'_>) -> Ordering {
+        self.block_index.relative_max_cmp(index, key)
+    }
+
+    pub(crate) fn block_relative_key<'a>(
+        &self,
+        index: usize,
+        key: SegmentRelativeKey<'a>,
+    ) -> BlockRelativeKey<'a> {
+        self.block_index.block_relative_key(index, key)
     }
 
     /// Converts a verified on-disk segment into the state used by readers.
@@ -108,7 +130,7 @@ impl Segment {
     }
 
     /// Finds the sparse block-index entry that may contain `key`.
-    pub(crate) fn find_block_index(&self, key: &[u8]) -> usize {
+    pub(crate) fn find_block_index(&self, key: SegmentRelativeKey<'_>) -> usize {
         self.block_index.find_block(key)
     }
 

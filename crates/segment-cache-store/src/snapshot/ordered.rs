@@ -9,6 +9,7 @@ use crate::{
     block::{DecodedBlock, ValuePayloadCompressionKind},
     catalog::SegmentSnapshot,
     error::{InputError, Result},
+    key::{BlockRelativeKey, SegmentRelativeKey},
     segment::Segment,
     store::StoreInner,
 };
@@ -428,6 +429,7 @@ where
     visitor: &'a mut F,
     key_index: usize,
     segment_index: usize,
+    segment_key_end: usize,
 }
 
 impl<'a, K, F> OrderedSegmentSweep<'a, K, F>
@@ -458,6 +460,7 @@ where
             visitor,
             key_index: 0,
             segment_index,
+            segment_key_end: 0,
         }
     }
 
@@ -473,6 +476,7 @@ where
             let segment = self.segments[self.segment_index].as_ref();
             if key > segment.max_key() {
                 self.segment_index += 1;
+                self.segment_key_end = self.key_index;
                 self.lookup_state
                     .reset_segment_if_needed(self.segment_index);
                 continue;
@@ -483,8 +487,20 @@ where
                 continue;
             }
 
-            let block_index = self.lookup_state.initial_block_index(segment, key);
-            let block_end = block_end_from_index(segment, block_index, self.keys, self.key_index);
+            if self.segment_key_end <= self.key_index {
+                self.segment_key_end = self.key_index
+                    + self.keys[self.key_index..]
+                        .partition_point(|candidate| candidate.as_ref() <= segment.max_key());
+            }
+            let segment_key = segment.relative_key_in_range(key);
+            let block_index = self.lookup_state.initial_block_index(segment, segment_key);
+            let block_end = block_end_from_index(
+                segment,
+                block_index,
+                self.keys,
+                self.key_index,
+                self.segment_key_end,
+            );
             if block_end == self.key_index {
                 (self.visitor)(self.base_index + self.key_index, None)?;
                 self.key_index += 1;
@@ -561,7 +577,13 @@ where
     }
 
     fn visit_corrupt_block_misses(&mut self, segment: &Segment, block_index: usize) -> Result<()> {
-        let block_end = block_end_from_index(segment, block_index, self.keys, self.key_index);
+        let block_end = block_end_from_index(
+            segment,
+            block_index,
+            self.keys,
+            self.key_index,
+            self.segment_key_end,
+        );
         for offset in self.key_index..block_end {
             (self.visitor)(self.base_index + offset, None)?;
         }
@@ -587,7 +609,7 @@ impl LookupState {
         segments.partition_point(|segment| segment.max_key() < key)
     }
 
-    fn initial_block_index(&self, segment: &Segment, key: &[u8]) -> usize {
+    fn initial_block_index(&self, segment: &Segment, key: SegmentRelativeKey<'_>) -> usize {
         if let Some(loaded) = self.loaded_block.as_ref()
             && segment.block_contains(loaded.block_index, key)
         {
@@ -732,7 +754,7 @@ where
     fn find_first_hit(&mut self, block: &DecodedBlock) -> bool {
         while let Some(key) = self.keys.get(self.query_index) {
             let key = key.as_ref();
-            self.advance_to(block, key);
+            let key = self.advance_to(block, key);
             if block.key_matches_at_index(self.record_index, key) {
                 return true;
             }
@@ -790,24 +812,30 @@ where
         key: &[u8],
         payload: &'value [u8],
     ) -> Option<(usize, &'value [u8])> {
-        self.advance_to(block, key);
+        let key = self.advance_to(block, key);
         let record_index = self.record_index;
         block
             .value_at_if_key_with_payload(record_index, key, payload)
             .map(|value| (record_index, value))
     }
 
-    fn advance_to(&mut self, block: &DecodedBlock, key: &[u8]) {
+    fn advance_to<'key>(
+        &mut self,
+        block: &DecodedBlock,
+        key: &'key [u8],
+    ) -> BlockRelativeKey<'key> {
+        let key = block.relative_key_in_range(key);
         if !self.initialized {
             self.record_index = block.lower_bound_index(key);
             self.initialized = true;
-            return;
+            return key;
         }
         while self.record_index < block.record_count()
             && block.compare_key_at_index(self.record_index, key) == std::cmp::Ordering::Less
         {
             self.record_index += 1;
         }
+        key
     }
 }
 
@@ -816,14 +844,15 @@ fn block_end_from_index<K>(
     block_index: usize,
     keys: &[K],
     key_index: usize,
+    segment_key_end: usize,
 ) -> usize
 where
     K: AsRef<[u8]>,
 {
     let mut block_end = key_index;
-    while block_end < keys.len() {
-        if segment.block_max_cmp(block_index, keys[block_end].as_ref()) == std::cmp::Ordering::Less
-        {
+    while block_end < segment_key_end {
+        let key = segment.relative_key_in_range(keys[block_end].as_ref());
+        if segment.block_max_cmp(block_index, key) == std::cmp::Ordering::Less {
             break;
         }
         block_end += 1;
@@ -840,7 +869,6 @@ mod tests {
         block::{
             BlockChecksumKind, BlockDecodeOptions, BlockKeyRangeRef, ValuePayloadCompressionKind,
         },
-        key::SegmentKeyPrefix,
         value::ValueLayout,
     };
 
@@ -907,7 +935,7 @@ mod tests {
 
         DecodedBlock::decode(bytes, BlockDecodeOptions {
             expected_key_range: BlockKeyRangeRef {
-                segment_prefix: SegmentKeyPrefix::from_owned(Vec::new()),
+                segment_prefix: &[],
                 extra_prefix: b"aa0",
                 min_suffix: b"1",
                 max_suffix: b"3",

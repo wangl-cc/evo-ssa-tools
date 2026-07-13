@@ -272,6 +272,7 @@ struct SegmentCursorPosition {
     #[cfg(feature = "value-compression")]
     decoded_payload: Option<Vec<u8>>,
     record_index: usize,
+    record_end: usize,
 }
 
 impl SegmentRangeCursor {
@@ -282,9 +283,30 @@ impl SegmentRangeCursor {
         start: Option<Vec<u8>>,
         end: Option<Vec<u8>>,
     ) -> Result<Self> {
-        let block_index = start
-            .as_deref()
-            .map_or(0, |start| segment.find_block_index(start));
+        let mut exhausted = false;
+        let start = match start {
+            Some(start) if start.as_slice() > segment.max_key() => {
+                exhausted = true;
+                None
+            }
+            Some(start) if start.as_slice() <= segment.min_key() => None,
+            start => start,
+        };
+        let end = match end {
+            Some(end) if end.as_slice() <= segment.min_key() => {
+                exhausted = true;
+                None
+            }
+            Some(end) if end.as_slice() > segment.max_key() => None,
+            end => end,
+        };
+        let block_index = if exhausted {
+            segment.block_count()
+        } else {
+            start.as_deref().map_or(0, |start| {
+                segment.find_block_index(segment.relative_key_in_range(start))
+            })
+        };
         let mut cursor = Self {
             segment,
             geometry,
@@ -322,20 +344,24 @@ impl SegmentRangeCursor {
     }
 
     fn advance(&mut self) -> Result<()> {
-        let end = self.end.as_deref();
+        let segment_prefix = self.segment.segment_prefix();
         let has_next_record = match &mut self.position {
             Some(SegmentCursorPosition {
                 block,
                 record_index,
+                record_end,
                 ..
             }) => {
                 *record_index += 1;
-                if *record_index < block.record_count() {
-                    let before_end = Self::record_is_before_end(end, block, *record_index);
-                    if before_end {
-                        block.write_key_at_index(*record_index, &mut self.key_scratch)?;
-                    }
-                    Some(before_end)
+                if *record_index < *record_end {
+                    block.write_key_at_index(
+                        segment_prefix,
+                        *record_index,
+                        &mut self.key_scratch,
+                    )?;
+                    Some(true)
+                } else if *record_end < block.record_count() {
+                    Some(false)
                 } else {
                     None
                 }
@@ -358,12 +384,18 @@ impl SegmentRangeCursor {
         while self.block_index < self.segment.block_count() {
             let block_index = self.block_index;
             if let Some(end) = self.end.as_deref()
-                && self.segment.block_min_cmp(block_index, end) != Ordering::Less
+                && self
+                    .segment
+                    .block_min_cmp(block_index, self.segment.relative_key_in_range(end))
+                    != Ordering::Less
             {
                 return Ok(());
             }
             if let Some(start) = self.start.as_deref()
-                && self.segment.block_max_cmp(block_index, start) == Ordering::Less
+                && self
+                    .segment
+                    .block_max_cmp(block_index, self.segment.relative_key_in_range(start))
+                    == Ordering::Less
             {
                 self.block_index += 1;
                 continue;
@@ -381,13 +413,23 @@ impl SegmentRangeCursor {
                 Err(error) => return Err(error),
             };
 
-            let record_index = self
-                .start
-                .as_deref()
-                .map_or(0, |start| block.lower_bound_index(start));
-            if record_index < block.record_count()
-                && Self::record_is_before_end(self.end.as_deref(), &block, record_index)
-            {
+            let record_index = self.start.as_deref().map_or(0, |start| {
+                let key = self.segment.relative_key_in_range(start);
+                if self.segment.block_min_cmp(block_index, key) != Ordering::Less {
+                    0
+                } else {
+                    block.lower_bound_index(self.segment.block_relative_key(block_index, key))
+                }
+            });
+            let record_end = self.end.as_deref().map_or(block.record_count(), |end| {
+                let key = self.segment.relative_key_in_range(end);
+                if self.segment.block_max_cmp(block_index, key) == Ordering::Less {
+                    block.record_count()
+                } else {
+                    block.lower_bound_index(self.segment.block_relative_key(block_index, key))
+                }
+            });
+            if record_index < record_end {
                 if let Err(error) = self.segment.verify_block_payload(
                     block_index,
                     &block,
@@ -408,12 +450,17 @@ impl SegmentRangeCursor {
                             continue;
                         }
                     };
-                block.write_key_at_index(record_index, &mut self.key_scratch)?;
+                block.write_key_at_index(
+                    self.segment.segment_prefix(),
+                    record_index,
+                    &mut self.key_scratch,
+                )?;
                 self.position = Some(SegmentCursorPosition {
                     block,
                     #[cfg(feature = "value-compression")]
                     decoded_payload,
                     record_index,
+                    record_end,
                 });
                 return Ok(());
             }
@@ -421,13 +468,6 @@ impl SegmentRangeCursor {
         }
 
         Ok(())
-    }
-
-    fn record_is_before_end(end: Option<&[u8]>, block: &DecodedBlock, record_index: usize) -> bool {
-        if let Some(end) = end {
-            return block.compare_key_at_index(record_index, end) == Ordering::Less;
-        }
-        true
     }
 
     fn recycle_current_block(&mut self) {

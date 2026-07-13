@@ -2,7 +2,9 @@
 
 use std::{cmp::Ordering, ops::Range, sync::Arc};
 
-use crate::key::{CompositeKey, SegmentKeyPrefix, SegmentRelativeKey, common_prefix_len};
+use crate::key::{
+    BlockRelativeKey, CompositeKey, SegmentKeyPrefix, SegmentRelativeKey, common_prefix_len,
+};
 
 /// One backing allocation containing the segment prefix and every block range.
 #[derive(Clone, Debug)]
@@ -176,32 +178,17 @@ impl SegmentIndex {
         }
     }
 
-    pub(crate) fn contains(&self, index: usize, key: &[u8]) -> bool {
-        if let Some(key) = self.segment_prefix.strip(key) {
-            return self.relative_min_cmp(index, key) != Ordering::Greater
-                && self.relative_max_cmp(index, key) != Ordering::Less;
-        }
-        self.min_cmp(index, key) != Ordering::Greater && self.max_cmp(index, key) != Ordering::Less
+    /// Removes the already-matched segment prefix without comparing it again.
+    pub(super) fn relative_key<'a>(&self, key: &'a [u8]) -> SegmentRelativeKey<'a> {
+        self.segment_prefix.relative_key(key)
     }
 
-    pub(crate) fn find_block(&self, key: &[u8]) -> usize {
-        if let Some(key) = self.segment_prefix.strip(key) {
-            return self.find_relative_block(key);
-        }
-        let mut left = 0;
-        let mut right = self.len();
-        while left < right {
-            let middle = left + (right - left) / 2;
-            if self.min_cmp(middle, key) != Ordering::Greater {
-                left = middle + 1;
-            } else {
-                right = middle;
-            }
-        }
-        left.saturating_sub(1)
+    pub(crate) fn contains(&self, index: usize, key: SegmentRelativeKey<'_>) -> bool {
+        self.relative_min_cmp(index, key) != Ordering::Greater
+            && self.relative_max_cmp(index, key) != Ordering::Less
     }
 
-    fn find_relative_block(&self, key: SegmentRelativeKey<'_>) -> usize {
+    pub(crate) fn find_block(&self, key: SegmentRelativeKey<'_>) -> usize {
         let mut left = 0;
         let mut right = self.len();
         while left < right {
@@ -215,6 +202,15 @@ impl SegmentIndex {
         left.saturating_sub(1)
     }
 
+    pub(crate) fn block_relative_key<'a>(
+        &self,
+        index: usize,
+        key: SegmentRelativeKey<'a>,
+    ) -> BlockRelativeKey<'a> {
+        debug_assert!(self.contains(index, key));
+        key.after_block_prefix(self.key_range(index).extra_prefix.len())
+    }
+
     pub(crate) fn min_cmp(&self, index: usize, key: &[u8]) -> Ordering {
         self.bound(index, false).cmp_slice(key)
     }
@@ -223,11 +219,11 @@ impl SegmentIndex {
         self.bound(index, true).cmp_slice(key)
     }
 
-    fn relative_min_cmp(&self, index: usize, key: SegmentRelativeKey<'_>) -> Ordering {
+    pub(crate) fn relative_min_cmp(&self, index: usize, key: SegmentRelativeKey<'_>) -> Ordering {
         self.relative_bound(index, false).cmp_slice(key.as_slice())
     }
 
-    fn relative_max_cmp(&self, index: usize, key: SegmentRelativeKey<'_>) -> Ordering {
+    pub(crate) fn relative_max_cmp(&self, index: usize, key: SegmentRelativeKey<'_>) -> Ordering {
         self.relative_bound(index, true).cmp_slice(key.as_slice())
     }
 
@@ -329,7 +325,9 @@ mod tests {
 
         assert_eq!(index.segment_prefix().len(), 508);
         assert_eq!(index.key_range(0).extra_prefix, b"0");
-        assert!(index.contains(0, &min));
+        let relative_min = index.relative_key(&min);
+        assert!(index.contains(0, relative_min));
+        assert_eq!(index.block_relative_key(0, relative_min).as_slice(), b"001");
         assert!(index.validate_ranges(512, &min, &max));
     }
 

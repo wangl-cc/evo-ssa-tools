@@ -243,7 +243,7 @@ pub(super) fn read_block_reusing(
     let expected = index.key_range(block_index);
     Ok(DecodedBlock::decode(bytes, BlockDecodeOptions {
         expected_key_range: BlockKeyRangeRef {
-            segment_prefix: index.segment_prefix().clone(),
+            segment_prefix: index.segment_prefix().as_slice(),
             extra_prefix: expected.extra_prefix,
             min_suffix: expected.min_suffix,
             max_suffix: expected.max_suffix,

@@ -58,10 +58,12 @@ impl<'a> SegmentSetReader<'a> {
     }
 
     fn fetch_one_from_segment(&self, segment: &Segment, key: &[u8]) -> Result<Option<Vec<u8>>> {
-        let block_index = segment.find_block_index(key);
-        if !segment.block_contains(block_index, key) {
+        let segment_key = segment.relative_key_in_range(key);
+        let block_index = segment.find_block_index(segment_key);
+        if !segment.block_contains(block_index, segment_key) {
             return Ok(None);
         }
+        let block_key = segment.block_relative_key(block_index, segment_key);
         #[cfg(feature = "value-compression")]
         let mut payload_decoder =
             ValuePayloadDecoder::new(self.options.geometry.value_payload_compression);
@@ -74,8 +76,8 @@ impl<'a> SegmentSetReader<'a> {
             Err(error) if error.is_cache_miss_corruption() => return Ok(None),
             Err(error) => return Err(error),
         };
-        let record_index = block.lower_bound_index(key);
-        if !block.key_matches_at_index(record_index, key) {
+        let record_index = block.lower_bound_index(block_key);
+        if !block.key_matches_at_index(record_index, block_key) {
             return Ok(None);
         }
         match segment.verify_block_payload(block_index, &block, self.options.verify_block_checksums)

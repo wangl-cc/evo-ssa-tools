@@ -15,25 +15,22 @@ use super::{
     layout::{BLOCK_METADATA_HEADER_LEN, BlockLookupLayout, BlockValueRegion},
 };
 use crate::{
-    error::CorruptionError,
-    key::{CompositeKey, SegmentKeyPrefix},
-    limits::MAX_VALUE_PAYLOAD_LEN,
+    error::CorruptionError, key::BlockRelativeKey, limits::MAX_VALUE_PAYLOAD_LEN,
     value::ValueLayout,
 };
 
 /// Raw block bytes plus derived offsets needed for borrowed record access.
 ///
-/// The segment and block prefixes are combined once per loaded block for the
-/// hot comparison path. Suffixes remain in raw block bytes, scan cursors
-/// reconstruct only their current key into caller-owned scratch, and
-/// compressed values borrow from a decoder-owned buffer supplied by the read
+/// Keys remain segment-relative in raw block bytes. Lookup callers route and
+/// strip both persisted prefixes before comparing record suffixes, while scan
+/// cursors reconstruct only their current key into caller-owned scratch.
+/// Compressed values borrow from a decoder-owned buffer supplied by the read
 /// session.
 #[derive(Debug)]
 pub(crate) struct DecodedBlock {
     bytes: Vec<u8>,
     record_count: usize,
     key_len: usize,
-    key_prefix: Vec<u8>,
     extra_prefix_len: usize,
     suffix_len: usize,
     key_section_len: usize,
@@ -58,15 +55,15 @@ pub(crate) struct ParsedRecord<'key, 'value> {
     pub(crate) value: &'value [u8],
 }
 
-#[derive(Clone)]
+#[derive(Clone, Copy)]
 pub(crate) struct BlockKeyRangeRef<'a> {
-    pub(crate) segment_prefix: SegmentKeyPrefix,
+    pub(crate) segment_prefix: &'a [u8],
     pub(crate) extra_prefix: &'a [u8],
     pub(crate) min_suffix: &'a [u8],
     pub(crate) max_suffix: &'a [u8],
 }
 
-#[derive(Clone)]
+#[derive(Clone, Copy)]
 pub(crate) struct BlockDecodeOptions<'a> {
     pub(crate) expected_key_range: BlockKeyRangeRef<'a>,
     pub(crate) key_len: usize,
@@ -103,22 +100,10 @@ impl DecodedBlock {
         expected_key_range: BlockKeyRangeRef<'_>,
     ) -> Result<Self, CorruptionError> {
         layout.validate_key_section(&bytes)?;
-        let extra_prefix_end = BLOCK_METADATA_HEADER_LEN
-            .checked_add(layout.lookup.key_prefix_len)
-            .ok_or(CorruptionError::Block)?;
-        let extra_prefix = bytes
-            .get(BLOCK_METADATA_HEADER_LEN..extra_prefix_end)
-            .ok_or(CorruptionError::Block)?;
-        let mut key_prefix = Vec::with_capacity(
-            expected_key_range.segment_prefix.len() + layout.lookup.key_prefix_len,
-        );
-        key_prefix.extend_from_slice(expected_key_range.segment_prefix.as_slice());
-        key_prefix.extend_from_slice(extra_prefix);
         let block = Self {
             bytes,
             record_count: layout.record_count,
             key_len: layout.key_len,
-            key_prefix,
             extra_prefix_len: layout.lookup.key_prefix_len,
             suffix_len: layout.suffix_len,
             key_section_len: layout.lookup.key_section_len,
@@ -185,32 +170,54 @@ impl DecodedBlock {
         self.record_count
     }
 
+    /// Borrows the record suffix after block routing established membership.
+    pub(crate) fn relative_key_in_range<'a>(&self, key: &'a [u8]) -> BlockRelativeKey<'a> {
+        debug_assert_eq!(key.len(), self.key_len);
+        let suffix_start = self
+            .key_len
+            .checked_sub(self.suffix_len)
+            .expect("validated suffix length does not exceed key length");
+        BlockRelativeKey::from_suffix(
+            key.get(suffix_start..)
+                .expect("validated lookup key has the store key length"),
+        )
+    }
+
     pub(crate) fn write_key_at_index(
         &self,
+        segment_prefix: &[u8],
         index: usize,
         destination: &mut [u8],
     ) -> Result<(), CorruptionError> {
-        if destination.len() != self.key_len {
+        let extra_prefix = self.extra_key_prefix()?;
+        let suffix = self.key_suffix_at(index)?;
+        if destination.len() != self.key_len
+            || segment_prefix.len() + extra_prefix.len() + suffix.len() != self.key_len
+        {
             return Err(CorruptionError::Block);
         }
-        let key = CompositeKey::new(&[], &self.key_prefix, self.key_suffix_at(index)?);
-        key.write_to(destination)
-            .then_some(())
-            .ok_or(CorruptionError::Block)
+        let (segment_destination, relative_destination) =
+            destination.split_at_mut(segment_prefix.len());
+        let (extra_destination, suffix_destination) =
+            relative_destination.split_at_mut(extra_prefix.len());
+        segment_destination.copy_from_slice(segment_prefix);
+        extra_destination.copy_from_slice(extra_prefix);
+        suffix_destination.copy_from_slice(suffix);
+        Ok(())
     }
 
-    pub(crate) fn lower_bound_index(&self, key: &[u8]) -> usize {
+    pub(crate) fn lower_bound_index(&self, key: BlockRelativeKey<'_>) -> usize {
         self.partition_point_by_key(key)
     }
 
-    pub(crate) fn compare_key_at_index(&self, index: usize, key: &[u8]) -> Ordering {
+    pub(crate) fn compare_key_at_index(&self, index: usize, key: BlockRelativeKey<'_>) -> Ordering {
         self.compare_key(index, key).unwrap_or(Ordering::Greater)
     }
 
     pub(crate) fn value_at_if_key_with_payload<'value>(
         &self,
         index: usize,
-        key: &[u8],
+        key: BlockRelativeKey<'_>,
         payload: &'value [u8],
     ) -> Option<&'value [u8]> {
         if !self.key_matches_at_index(index, key) {
@@ -238,11 +245,11 @@ impl DecodedBlock {
         payload.get(range).ok_or(CorruptionError::Block)
     }
 
-    pub(crate) fn key_matches_at_index(&self, index: usize, key: &[u8]) -> bool {
+    pub(crate) fn key_matches_at_index(&self, index: usize, key: BlockRelativeKey<'_>) -> bool {
         self.compare_key(index, key).ok() == Some(Ordering::Equal)
     }
 
-    fn partition_point_by_key(&self, key: &[u8]) -> usize {
+    fn partition_point_by_key(&self, key: BlockRelativeKey<'_>) -> usize {
         let mut left = 0usize;
         let mut right = self.record_count;
         while left < right {
@@ -291,19 +298,16 @@ impl DecodedBlock {
             .ok_or(CorruptionError::Block)
     }
 
-    fn compare_key(&self, index: usize, key: &[u8]) -> Result<Ordering, CorruptionError> {
-        if index >= self.record_count || key.len() != self.key_len {
+    fn compare_key(
+        &self,
+        index: usize,
+        key: BlockRelativeKey<'_>,
+    ) -> Result<Ordering, CorruptionError> {
+        let key = key.as_slice();
+        if index >= self.record_count || key.len() != self.suffix_len {
             return Err(CorruptionError::Block);
         }
-        let prefix_order = self
-            .key_prefix
-            .as_slice()
-            .cmp(&key[..self.key_prefix.len()]);
-        if prefix_order != Ordering::Equal {
-            return Ok(prefix_order);
-        }
-        self.key_suffix_at(index)
-            .map(|suffix| suffix.cmp(&key[self.key_prefix.len()..]))
+        self.key_suffix_at(index).map(|suffix| suffix.cmp(key))
     }
 
     fn key_suffix_at(&self, index: usize) -> Result<&[u8], CorruptionError> {
@@ -621,7 +625,7 @@ mod tests {
     fn key_range<'a>(min_key: &'a [u8], max_key: &'a [u8]) -> BlockKeyRangeRef<'a> {
         let prefix_len = crate::key::common_prefix_len(min_key, max_key);
         BlockKeyRangeRef {
-            segment_prefix: SegmentKeyPrefix::from_owned(Vec::new()),
+            segment_prefix: &[],
             extra_prefix: &min_key[..prefix_len],
             min_suffix: &min_key[prefix_len..],
             max_suffix: &max_key[prefix_len..],
@@ -665,18 +669,19 @@ mod tests {
             .expect("block should decode");
 
             let payload = raw_payload(&decoded).expect("raw payload should be borrowable");
-            let index = decoded.lower_bound_index(b"aa02");
+            let key = decoded.relative_key_in_range(b"aa02");
+            let index = decoded.lower_bound_index(key);
             assert_eq!(
-                decoded.value_at_if_key_with_payload(index, b"aa02", payload),
+                decoded.value_at_if_key_with_payload(index, key, payload),
                 Some(&b"second"[..])
             );
             let mut key_scratch = vec![0; 4];
             decoded
-                .write_key_at_index(0, &mut key_scratch)
+                .write_key_at_index(&[], 0, &mut key_scratch)
                 .expect("first key should reconstruct");
             assert_eq!(key_scratch, b"aa01");
             decoded
-                .write_key_at_index(1, &mut key_scratch)
+                .write_key_at_index(&[], 1, &mut key_scratch)
                 .expect("scratch should be reusable for the last key");
             assert_eq!(key_scratch, b"aa02");
         }
@@ -723,9 +728,10 @@ mod tests {
             );
             assert_eq!(&block[8..11], b"019");
 
+            let segment_prefix = &first_key[..510];
             let decoded = DecodedBlock::decode(block, BlockDecodeOptions {
                 expected_key_range: BlockKeyRangeRef {
-                    segment_prefix: SegmentKeyPrefix::from_owned(first_key[..510].to_vec()),
+                    segment_prefix,
                     extra_prefix: b"0",
                     min_suffix: b"1",
                     max_suffix: b"9",
@@ -740,7 +746,7 @@ mod tests {
             .expect("relative block should decode");
             let mut key = vec![0; 512];
             decoded
-                .write_key_at_index(1, &mut key)
+                .write_key_at_index(segment_prefix, 1, &mut key)
                 .expect("key should materialize");
             assert_eq!(key, last_key);
         }
@@ -769,13 +775,14 @@ mod tests {
 
             let mut key_scratch = vec![0; 4];
             decoded
-                .write_key_at_index(0, &mut key_scratch)
+                .write_key_at_index(&[], 0, &mut key_scratch)
                 .expect("only key should reconstruct");
             assert_eq!(key_scratch, b"aa01");
             let payload = raw_payload(&decoded).expect("raw payload should be borrowable");
-            let index = decoded.lower_bound_index(b"aa01");
+            let key = decoded.relative_key_in_range(b"aa01");
+            let index = decoded.lower_bound_index(key);
             assert_eq!(
-                decoded.value_at_if_key_with_payload(index, b"aa01", payload),
+                decoded.value_at_if_key_with_payload(index, key, payload),
                 Some(&b"only"[..])
             );
         }

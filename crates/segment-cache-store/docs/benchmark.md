@@ -34,7 +34,7 @@ Each profile currently uses `16,384` records for the standard dataset. The param
 
 ## Baselines
 
-The latest focused v1 format comparison is [v1-format-20260713-m1](../benchmark-baselines/v1-format-20260713-m1/README.md). It records same-session before/after results for trusted open, 16/512-byte key routing, existing ordered workloads, and compressed reads.
+The latest focused read-routing comparison is [relative-key-routing-20260713-m1](../benchmark-baselines/relative-key-routing-20260713-m1/README.md). It compares the finalized v1 format against progressive segment-relative and block-relative lookup, covering trusted open, 16/512-byte key routing, existing ordered workloads, and compressed reads. The preceding [v1-format-20260713-m1](../benchmark-baselines/v1-format-20260713-m1/README.md) baseline isolates the physical-format change itself.
 
 `fjall3` uses a workload-shaped, no-compression configuration derived from the surrounding project: large cache, higher cached-file limit, point-read-hit expectation, profile-sensitive data block tuning, and key-value separation for large values. Compression is omitted because benchmark values are synthetic bytes and the goal is to measure storage layout rather than compression ratio.
 
@@ -165,6 +165,8 @@ Space amplification is treated as a first-class metric. The measurement script l
 - [`b093515-m1`](../benchmark-baselines/b093515-m1/README.md): Apple M1 baseline for commit `b093515`, covering all five Criterion targets and the space-usage report.
 - [`9f8b2e6-m1`](../benchmark-baselines/9f8b2e6-m1/README.md): targeted Apple M1 baseline for the read, publication, normalization, and compression optimizations in commit `9f8b2e6`.
 - [`4cdc470-m1-large-blocks`](../benchmark-baselines/4cdc470-m1-large-blocks/README.md): same-run large-profile cross-backend comparison of 16, 256, and 512 KiB segment block policies.
+- [`v1-format-20260713-m1`](../benchmark-baselines/v1-format-20260713-m1/README.md): focused physical-format comparison covering trusted open, prefix-compressed segment bytes, ordered reads, and compressed reads.
+- [`relative-key-routing-20260713-m1`](../benchmark-baselines/relative-key-routing-20260713-m1/README.md): focused comparison after routing progressively strips validated segment and block prefixes.
 
 ## Historical Snapshot
 
