@@ -140,7 +140,7 @@ fn ordered_lookup_returns_miss_for_key_between_records() -> Result<()> {
 }
 
 #[test]
-fn ordered_lookup_merges_visible_patch_winners() -> Result<()> {
+fn ordered_lookup_merges_main_and_patch_records() -> Result<()> {
     let tempdir = tempfile::tempdir()?;
     let store = create_store(&tempdir)?;
     commit_entries(&store, &[
@@ -150,13 +150,14 @@ fn ordered_lookup_merges_visible_patch_winners() -> Result<()> {
     ])?;
     commit_entries(&store, &[
         (make_key(1, 0, 1), make_value(1, 8)),
-        (make_key(1, 0, 5), make_value(3, 8)),
+        (make_key(1, 0, 4), make_value(4, 8)),
         (make_key(1, 0, 6), make_value(6, 8)),
     ])?;
     let keys = [
         make_key(1, 0, 0),
         make_key(1, 0, 1),
         make_key(1, 0, 2),
+        make_key(1, 0, 4),
         make_key(1, 0, 5),
         make_key(1, 0, 6),
         make_key(1, 0, 7),
@@ -165,7 +166,8 @@ fn ordered_lookup_merges_visible_patch_winners() -> Result<()> {
         Some(make_value(0, 8)),
         Some(make_value(1, 8)),
         Some(make_value(2, 8)),
-        Some(make_value(3, 8)),
+        Some(make_value(4, 8)),
+        Some(make_value(9, 8)),
         Some(make_value(6, 8)),
         None,
     ];

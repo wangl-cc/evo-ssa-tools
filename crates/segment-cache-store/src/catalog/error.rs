@@ -76,6 +76,9 @@ pub enum CatalogMismatch {
     #[error("MANIFEST patch entries are not sorted by key and segment id")]
     SegmentPatchOrder,
 
+    #[error("MANIFEST normalization component contains more than one patch segment")]
+    MultiplePatchesInComponent,
+
     #[error("MANIFEST segment key length does not match STORE")]
     SegmentKeyLen,
 

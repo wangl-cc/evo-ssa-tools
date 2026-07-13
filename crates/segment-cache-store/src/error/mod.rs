@@ -89,7 +89,7 @@ impl Error {
     /// Returns true when a read error should degrade to a cache miss.
     pub(crate) fn is_cache_miss_corruption(&self) -> bool {
         match self {
-            Self::Corruption(_) => true,
+            Self::Corruption(CorruptionError::Block | CorruptionError::SegmentFormat) => true,
             Self::Io(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => true,
             _ => false,
         }
@@ -119,6 +119,9 @@ pub enum InputError {
 
     #[error("duplicate key found inside one commit batch")]
     DuplicateKeyInBatch,
+
+    #[error("key already exists with different value bytes")]
+    KeyConflict,
 
     #[error("store already exists")]
     StoreAlreadyExists,
@@ -169,6 +172,9 @@ mod tests {
         fn classification_is_narrow() {
             assert!(Error::Corruption(CorruptionError::Block).is_cache_miss_corruption());
             assert!(Error::Corruption(CorruptionError::SegmentFormat).is_cache_miss_corruption());
+            assert!(
+                !Error::Corruption(CorruptionError::DuplicateVisibleKey).is_cache_miss_corruption()
+            );
             assert!(Error::Io(std::io::ErrorKind::UnexpectedEof.into()).is_cache_miss_corruption());
             assert!(
                 !Error::Input(InputError::WrongKeyLength {

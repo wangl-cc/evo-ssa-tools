@@ -2,13 +2,13 @@
 
 use std::sync::Arc;
 
-use super::LookupReadOptions;
+use super::{CorruptionHandling, LookupReadOptions};
 #[cfg(feature = "value-compression")]
 use crate::block::ValuePayloadDecoder;
 use crate::{
     block::{DecodedBlock, ValuePayloadCompressionKind},
     catalog::SegmentSnapshot,
-    error::{InputError, Result},
+    error::{CorruptionError, InputError, Result},
     key::{BlockRelativeKey, SegmentRelativeKey},
     segment::Segment,
     store::StoreInner,
@@ -91,13 +91,13 @@ struct LookupHit<'a> {
 }
 
 #[derive(Clone, Copy)]
-struct PatchWinner {
+struct PatchHit {
     segment_index: usize,
     block_index: usize,
     record_index: usize,
 }
 
-impl PatchWinner {
+impl PatchHit {
     fn from_hit(hit: LookupHit<'_>) -> Self {
         Self {
             segment_index: hit.segment_index,
@@ -107,13 +107,13 @@ impl PatchWinner {
     }
 }
 
-struct PatchWinnerReader<'a> {
+struct PatchHitReader<'a> {
     segments: &'a [Arc<Segment>],
     states: Vec<Option<LookupState>>,
     options: LookupReadOptions,
 }
 
-impl<'a> PatchWinnerReader<'a> {
+impl<'a> PatchHitReader<'a> {
     fn new(segments: &'a [Arc<Segment>], options: LookupReadOptions) -> Self {
         let states = segments.iter().map(|_| None).collect();
         Self {
@@ -123,32 +123,20 @@ impl<'a> PatchWinnerReader<'a> {
         }
     }
 
-    fn should_replace(&mut self, current: Option<PatchWinner>, candidate: &[u8]) -> Result<bool> {
-        let Some(current) = current else {
-            return Ok(true);
-        };
-        Ok(self.value(current)?.is_none_or(|winner| candidate < winner))
-    }
-
-    fn value(&mut self, winner: PatchWinner) -> Result<Option<&[u8]>> {
+    fn value(&mut self, hit: PatchHit) -> Result<Option<&[u8]>> {
         let segment = self
             .segments
-            .get(winner.segment_index)
-            .expect("patch winner references its source segment");
+            .get(hit.segment_index)
+            .expect("patch hit references its source segment");
         let state = self
             .states
-            .get_mut(winner.segment_index)
+            .get_mut(hit.segment_index)
             .and_then(Option::as_mut)
-            .expect("patch winner retains its lookup state");
-        state.current_segment_index = Some(winner.segment_index);
-        match state.value_at_index(
-            segment,
-            winner.block_index,
-            winner.record_index,
-            self.options,
-        ) {
+            .expect("patch hit retains its lookup state");
+        state.current_segment_index = Some(hit.segment_index);
+        match state.value_at_index(segment, hit.block_index, hit.record_index, self.options) {
             Ok(value) => Ok(Some(value)),
-            Err(error) if error.is_cache_miss_corruption() => Ok(None),
+            Err(error) if self.options.corruption_handling.degrades(&error) => Ok(None),
             Err(error) => Err(error),
         }
     }
@@ -201,22 +189,45 @@ impl OrderedLookup {
         self.process_many_slice(keys, visitor)
     }
 
+    pub(crate) fn visit_many_strict<K, F>(&mut self, keys: &[K], visitor: F) -> Result<()>
+    where
+        K: AsRef<[u8]>,
+        F: FnMut(usize, Option<&[u8]>) -> Result<()>,
+    {
+        validate_lookup_key_slice(keys, self.inner.geometry.key_len)?;
+        self.process_many_slice_with(keys, CorruptionHandling::Strict, visitor)
+    }
+
     fn process_many_slice<K, F>(&mut self, keys: &[K], mut visitor: F) -> Result<()>
     where
         K: AsRef<[u8]>,
         F: FnMut(usize, Option<&[u8]>),
     {
-        let options = self.read_options();
+        self.process_many_slice_with(keys, CorruptionHandling::AsCacheMiss, |index, value| {
+            visitor(index, value);
+            Ok(())
+        })
+    }
+
+    fn process_many_slice_with<K, F>(
+        &mut self,
+        keys: &[K],
+        corruption_handling: CorruptionHandling,
+        mut visitor: F,
+    ) -> Result<()>
+    where
+        K: AsRef<[u8]>,
+        F: FnMut(usize, Option<&[u8]>) -> Result<()>,
+    {
+        let options = self.read_options(corruption_handling);
         let (main_segments, patch_segments) = {
             let state = self.inner.state.read();
             (state.main_segments.clone(), state.patch_segments.clone())
         };
         if patch_segments.is_empty() {
             self.state.bind_snapshot(&main_segments);
-            let mut visit_value = |index: usize, hit: Option<LookupHit<'_>>| {
-                visitor(index, hit.map(|hit| hit.value));
-                Ok(())
-            };
+            let mut visit_value =
+                |index: usize, hit: Option<LookupHit<'_>>| visitor(index, hit.map(|hit| hit.value));
             OrderedSegmentSweep::new(
                 main_segments.as_ref(),
                 &mut self.state,
@@ -236,7 +247,7 @@ impl OrderedLookup {
     where
         K: AsRef<[u8]>,
     {
-        let options = self.read_options();
+        let options = self.read_options(CorruptionHandling::AsCacheMiss);
         let (main_segments, patch_segments) = {
             let state = self.inner.state.read();
             (state.main_segments.clone(), state.patch_segments.clone())
@@ -270,6 +281,9 @@ impl OrderedLookup {
             let mut patch_state = LookupState::new(options.geometry.value_payload_compression);
             let mut collect_hit = |index: usize, hit: Option<LookupHit<'_>>| {
                 if hit.is_some() {
+                    if results[index] {
+                        return Err(CorruptionError::DuplicateVisibleKey.into());
+                    }
                     results[index] = true;
                 }
                 Ok(())
@@ -289,10 +303,11 @@ impl OrderedLookup {
         Ok(results)
     }
 
-    fn read_options(&self) -> LookupReadOptions {
+    fn read_options(&self, corruption_handling: CorruptionHandling) -> LookupReadOptions {
         LookupReadOptions {
             geometry: self.inner.geometry,
             verify_block_checksums: self.inner.verify_block_checksums,
+            corruption_handling,
         }
     }
 
@@ -306,10 +321,10 @@ impl OrderedLookup {
     ) -> Result<()>
     where
         K: AsRef<[u8]>,
-        F: FnMut(usize, Option<&[u8]>),
+        F: FnMut(usize, Option<&[u8]>) -> Result<()>,
     {
-        let mut patch_winners = vec![None; keys.len()];
-        let mut patch_reader = PatchWinnerReader::new(patch_segments.as_ref(), options);
+        let mut patch_hits = vec![None; keys.len()];
+        let mut patch_reader = PatchHitReader::new(patch_segments.as_ref(), options);
 
         for (patch_segment_index, segment) in patch_segments.iter().enumerate() {
             let key_range = key_range_for_segment(keys, segment);
@@ -321,9 +336,8 @@ impl OrderedLookup {
             let mut collect_hit = |index: usize, hit: Option<LookupHit<'_>>| {
                 if let Some(hit) = hit {
                     saw_hit = true;
-                    let winner = PatchWinner::from_hit(hit);
-                    if patch_reader.should_replace(patch_winners[index], hit.value)? {
-                        patch_winners[index] = Some(winner);
+                    if patch_hits[index].replace(PatchHit::from_hit(hit)).is_some() {
+                        return Err(CorruptionError::DuplicateVisibleKey.into());
                     }
                 }
                 Ok(())
@@ -344,20 +358,21 @@ impl OrderedLookup {
         }
 
         self.state.bind_snapshot(main_segments);
-        let mut emit_winner = |index: usize, main_hit: Option<LookupHit<'_>>| {
+        let mut emit_hit = |index: usize, main_hit: Option<LookupHit<'_>>| {
             let main_value = main_hit.map(|hit| hit.value);
-            let patch_value = match patch_winners[index] {
-                Some(winner) => patch_reader.value(winner)?,
+            let patch_value = match patch_hits[index] {
+                Some(hit) => patch_reader.value(hit)?,
                 None => None,
             };
-            let winner = match (main_value, patch_value) {
-                (Some(main_value), Some(patch_value)) => Some(main_value.min(patch_value)),
+            let value = match (main_value, patch_value) {
+                (Some(_), Some(_)) => {
+                    return Err(CorruptionError::DuplicateVisibleKey.into());
+                }
                 (Some(main_value), None) => Some(main_value),
                 (None, Some(patch_value)) => Some(patch_value),
                 (None, None) => None,
             };
-            visitor(index, winner);
-            Ok(())
+            visitor(index, value)
         };
         OrderedSegmentSweep::new(
             main_segments.as_ref(),
@@ -366,7 +381,7 @@ impl OrderedLookup {
             0,
             0,
             options,
-            &mut emit_winner,
+            &mut emit_hit,
         )
         .run()?;
 
@@ -513,7 +528,7 @@ where
                     .ensure_loaded_block(segment, block_index, self.options)
                 {
                     Ok(block) => block,
-                    Err(error) if error.is_cache_miss_corruption() => {
+                    Err(error) if self.options.corruption_handling.degrades(&error) => {
                         self.visit_corrupt_block_misses(segment, block_index)?;
                         continue;
                     }
@@ -531,7 +546,7 @@ where
                 .lookup_state
                 .ensure_payload_ready(segment, self.options)
             {
-                if error.is_cache_miss_corruption() {
+                if self.options.corruption_handling.degrades(&error) {
                     self.visit_corrupt_block_misses(segment, block_index)?;
                     continue;
                 }
@@ -539,7 +554,7 @@ where
             }
             let (block, payload) = match self.lookup_state.loaded_block_and_payload() {
                 Ok(loaded) => loaded,
-                Err(error) if error.is_cache_miss_corruption() => {
+                Err(error) if self.options.corruption_handling.degrades(&error) => {
                     self.visit_corrupt_block_misses(segment, block_index)?;
                     continue;
                 }

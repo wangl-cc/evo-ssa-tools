@@ -25,7 +25,9 @@ use crate::{
     commit::{CommitOptions, CommitStats, Committer, WriteBatch},
     error::{InputError, Result},
     segment::Segment,
-    snapshot::{LookupReadOptions, OrderedLookup, RangeCursor, SegmentSetReader},
+    snapshot::{
+        CorruptionHandling, LookupReadOptions, OrderedLookup, RangeCursor, SegmentSetReader,
+    },
     value::ValueLayout,
 };
 
@@ -124,18 +126,20 @@ impl Store {
 
     /// Publishes a write batch using explicit segment write options.
     ///
-    /// A batch that interleaves with already-visible main segments is not
-    /// rejected. Small interleaving batches are published into a bounded patch
-    /// tier first; when the patch tier reaches its bound, the commit normalizes
-    /// by merging patch segments, intersecting main segments, and the caller's
-    /// batch into replacement main segments. The publication also drops dead
-    /// manifest entries (segments that no longer open).
+    /// Recommitting byte-identical key/value pairs is idempotent. Reusing a
+    /// visible key for different value bytes fails with
+    /// [`InputError::KeyConflict`] before publication. A small batch that
+    /// interleaves with main-tier segments may become the sole patch in its
+    /// interval-connected component. A later interleaving commit touching that
+    /// component normalizes the patch, intersecting main segments, and new
+    /// records into replacement main segments. Publication also drops dead
+    /// manifest entries whose segment files no longer open.
     ///
     /// # Cost of interleaving batches
     ///
-    /// Direct main publishes and patch publishes write only the caller's batch.
-    /// Normalization rewrites the touched main range plus every live patch
-    /// segment, so its cost is driven by key spread and patch-tier occupancy;
+    /// Direct main and patch publishes write only new records. Normalization
+    /// rewrites the interval-connected component reached by the remaining new
+    /// records; unrelated main and patch segments remain unchanged.
     /// [`CommitStats::output_records`] reports the amplification actually paid.
     ///
     /// Returns [`InputError::ReadOnlyStore`] on a read-only handle.
@@ -174,10 +178,10 @@ impl Store {
     /// compression settings because records are decoded and re-written into
     /// the destination format.
     ///
-    /// Duplicate keys are resolved with the same deterministic winner rule as
-    /// normal commits and range reads: the lexicographically smallest value
-    /// bytes survive. The merge is published with one manifest update, so a
-    /// failed merge does not make a partial result visible.
+    /// Equal keys with byte-identical values are emitted once. Equal keys with
+    /// different values fail with [`InputError::KeyConflict`]. The complete
+    /// logical union is rewritten as main-tier segments and published with one
+    /// manifest update, so a failed merge does not make a partial result visible.
     ///
     /// Returns [`InputError::ReadOnlyStore`] on a read-only destination handle.
     pub fn merge_from(&self, source: &Store) -> Result<CommitStats> {
@@ -314,6 +318,7 @@ impl Store {
         LookupReadOptions {
             geometry: self.inner.geometry,
             verify_block_checksums: self.inner.verify_block_checksums,
+            corruption_handling: CorruptionHandling::AsCacheMiss,
         }
     }
 

@@ -27,7 +27,11 @@ impl FormatError {
     }
 }
 
-/// Published cache data is malformed or corrupt and should degrade to miss.
+/// Published cache data violates a physical or logical storage invariant.
+///
+/// Read paths may degrade unreadable block or segment bytes to a cache miss.
+/// Logical snapshot violations are surfaced because choosing one value would
+/// invent data semantics.
 #[derive(thiserror::Error, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub enum CorruptionError {
@@ -36,6 +40,9 @@ pub enum CorruptionError {
 
     #[error("corrupt, malformed, or unsupported segment format")]
     SegmentFormat,
+
+    #[error("duplicate visible key violates the store's unique-key invariant")]
+    DuplicateVisibleKey,
 }
 
 /// Failure while streaming one segment into a sink: either the sink failed or

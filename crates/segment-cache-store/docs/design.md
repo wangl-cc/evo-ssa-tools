@@ -29,7 +29,7 @@ The implementation intentionally does not provide:
 
 This crate is experimental. The on-disk format may change without migration support; rebuilding the cache from recomputable source data is the migration strategy.
 
-This document describes the current implementation unless a section is explicitly marked as future work. Earlier prototype constraints such as "insert-only commits" and "globally non-overlapping segments only" are no longer current: the store now has a non-overlapping main tier plus a bounded overlapping patch tier.
+This document describes the current target design unless a section is explicitly marked as future work. The store is an insert-only logical map backed by a non-overlapping main tier and a bounded temporary patch tier. Patch is a write-amortization mechanism, not another durable level or an update history.
 
 Currently implemented:
 
@@ -38,8 +38,9 @@ Currently implemented:
 - immutable segment files
 - main tier plus patch tier
 - replacing-manifest commits
-- automatic and explicit normalization of overlapped ranges
-- deterministic duplicate-key winner rule
+- component-local and explicit normalization of overlapped ranges
+- idempotent insertion and explicit conflicting-value rejection
+- atomic main-only cross-store merge
 - dead manifest-entry dropping
 - advisory single-writer lock
 - explicit garbage collection
@@ -55,10 +56,11 @@ Future work is isolated in [Future Sync Design](#future-sync-design). It is not 
 - `MANIFEST` is the only source of visible data.
 - Segment files are immutable after publication.
 - Segment files not referenced by `MANIFEST` are invisible.
+- Every visible logical key has exactly one value.
 - Main-tier segment ranges are sorted and globally non-overlapping.
-- Patch-tier segment ranges are bounded and may overlap main-tier ranges or other patch-tier ranges.
+- A patch segment may overlap main ranges, but one connected normalization component contains at most one patch segment.
+- Patch records never duplicate keys already visible in main or another patch.
 - Missing, malformed, or corrupted data is treated as absent, never as valid output.
-- Copies of one key across visible segments are allowed only because the caller promises those values are semantically interchangeable.
 - Writes are serialized by one logical writer.
 
 ## Caller Contract
@@ -66,7 +68,7 @@ Future work is isolated in [Future Sync Design](#future-sync-design). It is not 
 The store validates key length, fixed value length, manifest structure, segment structure, and block checksums unless the namespace was explicitly created with `BlockChecksumKind::None`. The store cannot validate the caller's logical encoding and cache semantics.
 
 - **Stable key encoding.** The caller must encode each logical input into the same fixed-width key bytes wherever the cache is used. The store compares keys lexicographically and does not understand their internal structure.
-- **Interchangeable values for one key.** If the same key appears in multiple visible segments, any value copy may be retained or returned according to the deterministic winner rule. Byte equality is not required, but the copies must be semantically equivalent for the caller's cache contract.
+- **Stable value for one key.** Recommitting the exact same key/value bytes is an idempotent no-op. Reusing one key for different value bytes is a contract violation and fails before publication. Stochastic computations must therefore include their seed or replicate identity in the key.
 - **Single logical writer.** Only one writer may mutate a root at a time. The implementation enforces this for cooperating processes with an advisory lock.
 - **Immutable files while open.** Segment files must not be externally modified while a `Store` handle is open. The runtime may skip repeated checksum work for block parts that were already verified in the same process.
 
@@ -78,15 +80,17 @@ The store validates key length, fixed value length, manifest structure, segment 
 - `Value`: opaque serialized byte string associated with one key.
 - `Entry`: caller-provided key/value pair before it is encoded into a segment.
 - `Record`: key/value pair decoded from visible storage and returned by reads or scans.
-- `Copy`: one stored record for a key that may also exist in another visible segment.
+- `Conflict`: two records with the same key and different value bytes. A conflict is rejected rather than resolved by arrival order or an arbitrary byte-order winner.
 
 `Entry` means write input. `Record` means read output. Other entry-like structures should be qualified, such as `Manifest entry` or `Block index entry`.
 
 ### Tiers
 
 - `Main tier (L1)`: sorted, globally non-overlapping segment set.
-- `Patch tier (L0)`: bounded segment set for small interleaving writes. Patch segments may overlap main segments and each other.
-- `Normalization`: replacing commit that merges patch segments plus intersecting main segments into new main-tier segments.
+- `Patch tier (L0)`: bounded temporary overlay for one small interleaving batch. A patch may overlap main ranges but does not contain keys already visible elsewhere.
+- `Normalization component`: the interval-connected set obtained by starting from a patch or incoming batch and repeatedly including every main or patch segment whose range intersects the current bounds.
+- `Normalization`: replacing commit that streams one or more normalization components into new main-tier segments while retaining every unaffected main segment unchanged.
+- `Cross-store merge`: strict streaming union of complete logical snapshots that publishes a main-only destination snapshot.
 
 ### Catalog
 
@@ -120,7 +124,7 @@ flowchart TD
   Root --> SegmentDir["segments/"]
 
   Manifest --> MainTier["Main tier (L1)<br/>sorted, non-overlapping ranges"]
-  Manifest --> PatchTier["Patch tier (L0)<br/>bounded overlapping patches"]
+  Manifest --> PatchTier["Patch tier (L0)<br/>one temporary patch per component"]
 
   MainTier --> RuntimeMain["visible main Segment list"]
   PatchTier --> RuntimePatch["visible patch Segment list"]
@@ -234,7 +238,7 @@ Manifest entry order is canonical:
 - all main-tier entries first, sorted by `min_key`
 - all patch-tier entries after main entries, sorted by `(min_key, segment_id)`
 
-Open rejects malformed manifests, duplicate segment ids, invalid key ranges, overlapping main-tier ranges, patch entries before main entries, and `next_segment_id` values that could reuse an existing id.
+Open rejects malformed manifests, duplicate segment ids, invalid key ranges, overlapping main-tier ranges, more than one patch in an interval-connected normalization component, patch entries before main entries, and `next_segment_id` values that could reuse an existing id.
 
 Referenced segments that are missing, malformed, length-mismatched, or inconsistent with their manifest range are dead entries. They are invisible at open time and dropped at the next manifest publication.
 
@@ -436,17 +440,23 @@ flowchart TD
   Batch["WriteBatch: caller input"] --> Prepare["validate geometry, sort, reject duplicate keys"]
   Prepare --> Prepared["PreparedBatch: sorted, unique, geometry-valid"]
   Prepared --> Snapshot["snapshot manifest + live segments"]
-  Snapshot --> Affected["find affected main-tier range"]
+  Snapshot --> Existing["strict ordered comparison with visible keys"]
+  Existing --> Conflict{"same key already visible?"}
+  Conflict -->|same value| NoOp["drop idempotent entries"]
+  Conflict -->|different value| Reject["fail with KeyConflict"]
+  Conflict -->|absent| RouteInput["remaining new entries"]
+  NoOp --> RouteInput
+  RouteInput --> Affected["find interval-connected component"]
   Affected --> Route{"commit route"}
 
   Route -->|no main overlap| Direct["direct main publish"]
-  Route -->|small overlap fits L0| Patch["patch-tier publish"]
-  Route -->|patch bound exceeded| Normalize["normalize: merge batch + patches + affected main"]
+  Route -->|small single-segment batch,<br/>component has no patch| Patch["patch-tier publish"]
+  Route -->|otherwise| Normalize["normalize only the affected component"]
 
   Direct --> Split["split by flush thresholds"]
   Patch --> Split
-  Normalize --> Dedup["deduplicate with winner rule"]
-  Dedup --> Split
+  Normalize --> Unique["stream already-unique records"]
+  Unique --> Split
 
   Split --> WriteSeg["write and fsync all segment temp files"]
   WriteSeg --> Rename["rename complete segment batch"]
@@ -455,17 +465,19 @@ flowchart TD
   Publish --> Swap["swap runtime snapshot"]
 ```
 
-A commit first converts the caller's `WriteBatch` into an internal `PreparedBatch` by validating key/value geometry, sorting by key, and rejecting duplicate keys. Only `PreparedBatch` implements the segment encoder's entry-source contract. Internal normalization and cross-store merge algorithms already emit geometry-compatible records in strictly increasing key order, so they enter the same representation through a private trusted constructor whose assumptions are checked in debug builds. The commit then builds a plan from one manifest/runtime snapshot.
+A commit first converts the caller's `WriteBatch` into an internal `PreparedBatch` by validating key/value geometry, sorting by key, and rejecting duplicate keys. Under the commit lock, one strict ordered comparison checks the prepared keys against the current visible snapshot. Entries whose existing value is byte-identical are removed as idempotent retries; any differing value fails the whole operation with `InputError::KeyConflict` before segment staging. Only absent keys continue to publication.
+
+Only `PreparedBatch` implements the segment encoder's entry-source contract. Internal normalization and cross-store merge algorithms emit geometry-compatible records in strictly increasing key order, so they enter the same representation through a private trusted constructor whose assumptions are checked in debug builds. Administrative write cursors are strict: corruption or a duplicate visible key aborts the operation instead of silently dropping data through read-side corruption-as-miss behavior.
 
 The plan chooses one route:
 
 - **Direct main publish** when the batch does not overlap any main-tier segment.
-- **Patch publish** when the batch overlaps main-tier data but fits the patch policy.
-- **Normalization** when publishing another patch would exceed the patch policy.
+- **Patch publish** when the batch overlaps main-tier data, fits one ordinary segment without an oversized record, satisfies the direct-patch record limit, and its resulting normalization component contains no patch.
+- **Normalization** otherwise. It rewrites only the interval-connected component reached from the incoming batch; unrelated patches and main segments remain unchanged.
 
-Normalization and cross-store merge consume sorted records as bounded output chunks. The active chunk is limited by the configured record and byte thresholds, except that one oversized record is allowed to make progress. Existing records from the affected range are streamed through a range cursor instead of being materialized into one range-sized batch.
+Normalization and cross-store merge consume sorted records as bounded output chunks. The active chunk is limited by the configured record and byte thresholds, except that one oversized record is allowed to make progress. Existing records from the affected component are streamed through a strict range cursor instead of being materialized into one range-sized batch. Segment thresholds are builder policy rather than online occupancy invariants: a final small segment is valid and normalization does not borrow from or merge with an unaffected neighbor merely to improve fill ratio.
 
-The default patch policy is intentionally simple: at most 8 live patch segments, and only batches with at most 4096 input records publish directly to patch. Callers may tune these values through `CommitOptions::with_patch_segment_limit` and `CommitOptions::with_patch_direct_record_limit`. Setting either limit to `0` disables direct patch publication for overlapping commits, so those commits normalize immediately.
+The patch policy is deliberately not an LSM level. At most one patch segment is visible in each normalization component. A second interleaving batch touching that component normalizes it immediately. Disjoint components may each retain one patch, so activity in one key region does not force a rebuild elsewhere. `CommitOptions::with_patch_direct_record_limit` controls the maximum records eligible for direct patch publication; setting it to `0` makes every overlapping commit normalize immediately. The ordinary segment byte threshold is also a hard direct-patch limit, so a single oversized record never becomes a patch.
 
 There is no WAL. A commit writes and syncs all segment temp files, renames the complete batch, syncs the shared `segments/` directory once, and only then publishes `MANIFEST`. Only data referenced by a published manifest is visible. In-progress temp files may be lost, and a crash after any segment rename but before manifest publication can leave orphan segments that remain invisible and are later collected.
 
@@ -475,27 +487,35 @@ The core write primitive is a replacing manifest publication:
 
 > One atomic manifest snapshot removes zero or more old entries and inserts zero or more new entries.
 
-This primitive supports tail append, gap insert, interleaving writes via L0, local normalization, dead-entry dropping, and segment-count convergence. The replacement must leave the main tier sorted and non-overlapping. Patch entries may overlap but are bounded by policy.
+This primitive supports tail append, gap insert, interleaving writes via one temporary patch per component, local normalization, dead-entry dropping, and segment-count convergence. The replacement must leave the main tier sorted and non-overlapping and must not create a second patch in an existing normalization component.
 
 Normalization is foreground and demand-driven. A segment is rewritten only when a new commit intersects its range and the patch policy requires normalization, or when a caller explicitly invokes `Store::normalize` / `Store::normalize_with_options`. There is no background compaction pass that rewrites cold ranges.
 
-Explicit normalization folds every live patch segment into the main tier and drops dead manifest entries. It is useful after many small interleaving writes when the next workflow phase is read-heavy. If no patch segments or dead entries are visible, explicit normalization is a no-op.
+Explicit normalization computes every disjoint patch-connected component, streams each component independently into main-tier output, retains unaffected main segments byte-for-byte, and publishes all replacements with one manifest transition. It is useful before a read-heavy phase or remote publication. If no patch segments or dead entries are visible, explicit normalization is a no-op.
 
-## Duplicate Keys And Winner Rule
+## Unique Keys And Merge Conflicts
 
-Patch segments can make multiple copies of one key visible at the same time. This is safe only because of the caller contract that copies for one key are semantically interchangeable.
+The logical store is a partial function from key bytes to value bytes. Segment overlap is an index-routing property and does not permit duplicate logical keys.
 
-The deterministic winner is the lexicographically smallest value bytes:
+- Duplicate keys inside one `WriteBatch` are rejected.
+- Recommitting an already-visible key with the same value is an idempotent no-op.
+- Recommitting an already-visible key with a different value fails with `InputError::KeyConflict`.
+- Cross-store merge collapses byte-identical records and fails atomically on differing values.
+- A duplicate key encountered while reading internal merge input is an invariant violation, not a winner-selection opportunity.
 
-- Reads return the winning value among visible copies.
-- Normalization keeps the winning value and drops the other copies.
-- The rule depends only on the set of copies, not arrival order or local history.
+This rule does not invent precedence from arrival order, segment tier, or lexicographic value order. If two stochastic computations may legitimately produce different values, their key must encode the seed, replicate, or other identity that makes them different computations.
 
-The winner rule is intentionally byte-based and history-independent so two replicas that eventually hold the same logical copies can converge after normalization.
+## Cross-Store Merge
+
+`Store::merge_from` is a phase-boundary snapshot operation, not repeated online insertion. It captures stable source and destination snapshots, strictly streams their complete logical records in key order, and builds one replacement main-only destination snapshot. Source checksum, structure, or duplicate-key failures abort the operation. Compatible physical geometry is required at the logical boundary, while block checksum and value-compression choices may differ because output is encoded with destination options.
+
+For equal keys, byte-identical values are emitted once and differing values return `InputError::KeyConflict`. The implementation stages and syncs every output segment before one replacing-manifest publication, so conflict, corruption, or I/O failure leaves the prior destination snapshot visible. Retired destination files remain until explicit garbage collection.
+
+Merging several worker stores should use one k-way stream and one publication rather than invoking pairwise merge repeatedly. The first implementation may expose only two-way `merge_from`, but its internal snapshot builder must not rely on arrival order or Patch precedence. Remote publication accepts only main-only snapshots; a local store with patches is normalized into a staged export snapshot before upload.
 
 ## Read Path
 
-`fetch_one` exists for completeness. It binary-searches the main tier by range, then probes patch segments whose ranges contain the key. If multiple visible copies exist, it applies the same winner rule.
+`fetch_one` exists for completeness. It binary-searches the main tier by range and probes the sole patch candidate for that normalization component when present. Main and patch ranges may both contain the query, but only one may contain the exact key.
 
 Ordered lookup is the hot path:
 
@@ -516,7 +536,7 @@ flowchart TD
   Snapshot --> PatchCheck{"patch tier empty?"}
 
   PatchCheck -->|yes| MainSweep["sweep main tier"]
-  PatchCheck -->|no| PatchSweep["sweep each patch segment<br/>collect lexicographic winners"]
+  PatchCheck -->|no| PatchSweep["sweep bounded patch candidates"]
   PatchSweep --> MainSweep
 
   MainSweep --> SegmentSweep["advance through sorted segment ranges"]
@@ -533,7 +553,7 @@ flowchart TD
   Misses --> Output
 ```
 
-When the patch tier is empty, ordered lookup sweeps the main tier directly. When patches exist, it first sweeps each patch segment over its overlapping key subrange and records patch winners, then sweeps the main tier and emits the final winner.
+When the patch tier is empty, ordered lookup sweeps the main tier directly. When patches exist, it probes the bounded patch candidate for each affected component and then the main tier. An exact key hit can come from only one tier; encountering the same exact key twice is an invariant violation.
 
 Within one segment, ordered lookup reuses cursor state and the last loaded raw block. It uses the exact prefix-compressed block ranges to emit gap misses and consume all query keys belonging to one block before loading another block.
 
@@ -545,7 +565,7 @@ With default checksum verification and a non-zero-width checksum algorithm, `con
 
 `range(start, end)` and `visit_range(start, end)` scan the half-open range `[start, end)`. `iter_all()` and `visit_all()` scan all visible records.
 
-If no patch segments are visible, scan concatenates main-tier segment cursors in manifest order. If patch segments are visible, scan uses a k-way merge across main and patch cursors and deduplicates by the winner rule.
+If no patch segments are visible, scan concatenates main-tier segment cursors in manifest order. If patch segments are visible, scan uses a k-way merge across main and patch cursors and rejects duplicate exact keys as an invariant violation.
 
 Scan cursors stream at block granularity. `visit_*` APIs return borrowed slices and do not materialize the full result set. The iterator APIs allocate owned `(Vec<u8>, Vec<u8>)` pairs for convenience.
 
@@ -678,17 +698,16 @@ Lower-level strategies such as `O_DIRECT`, explicit block alignment, mmap-first 
 
 ## Future Sync Design
 
-The current implementation is already shaped around immutable segment files, but the cross-device sync protocol is not implemented. The current manifest still uses local monotone `segment_id` values.
+The current implementation is already shaped around immutable segment files and stable segment content IDs, but the cross-device sync protocol is not implemented. The local manifest still uses monotone `segment_id` values for filenames and publication bookkeeping.
 
 Planned sync work should be implemented as a catalog revision, not as ad-hoc behavior around the current manifest:
 
-- Replace local `segment_id` identity with content-addressed segment references, likely BLAKE3-256 over full segment bytes.
-- Add a per-root `generation:u64` to manifest publications for cheap local change detection.
+- Translate local `segment_id` entries into the existing BLAKE3 `SegmentContentId` references at the repository boundary.
 - Define sync ingestion as a writer operation under the existing advisory lock.
 - Keep transport out of scope: rsync, object storage, or manual file copy can move immutable segment files.
 - Refuse sync between roots whose `STORE` identity differs.
 - Verify content-addressed files when they cross a trust boundary; normal read paths still rely on block-local checksums.
 
-One-way replication can copy all referenced segments and then publish a manifest snapshot on the replica. Bidirectional sync should compute a set union of segment references, then use the same patch and normalization mechanisms already used by local commits. Duplicate key copies converge through the existing winner rule once both sides normalize.
+One-way replication can reuse an already main-only snapshot or build a staged normalized snapshot before uploading referenced segments and publishing a remote manifest. Aggregation must perform the same strict logical snapshot merge as local `merge_from`: equal key/value records collapse, differing values fail, and the published remote segment set is main-only. A manifest-level union of overlapping segment references is not sufficient because it cannot prove logical key uniqueness.
 
 This future revision should rebuild existing experimental stores rather than migrate the current v1 catalog in place.

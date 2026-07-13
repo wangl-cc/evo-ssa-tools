@@ -3,7 +3,6 @@
 use std::{
     cmp::Ordering,
     collections::{BTreeSet, HashSet},
-    ops::Range,
     sync::Arc,
 };
 
@@ -56,6 +55,35 @@ pub(super) struct RetiredSegments {
     pub(super) patches: Vec<Arc<Segment>>,
 }
 
+pub(super) struct NormalizationComponent {
+    main: Vec<Arc<Segment>>,
+    patches: Vec<Arc<Segment>>,
+}
+
+impl NormalizationComponent {
+    pub(super) fn has_main(&self) -> bool {
+        !self.main.is_empty()
+    }
+
+    pub(super) fn has_patches(&self) -> bool {
+        !self.patches.is_empty()
+    }
+
+    pub(super) fn allows_patch(
+        &self,
+        input_records: usize,
+        input_bytes: usize,
+        new_segment_count: usize,
+        options: &CommitOptions,
+    ) -> bool {
+        self.has_main()
+            && !self.has_patches()
+            && new_segment_count == 1
+            && input_records <= options.patch_direct_record_limit()
+            && input_bytes <= options.flush_threshold_bytes()
+    }
+}
+
 impl CommitPlan {
     pub(super) fn from_snapshot(
         manifest: StoreManifest,
@@ -83,87 +111,90 @@ impl CommitPlan {
         }
     }
 
-    pub(super) fn affected_main_range(&self, batch_min: &[u8], batch_max: &[u8]) -> Range<usize> {
-        affected_range(self.main_entries(), batch_min, batch_max)
-    }
-
-    fn affected_main_segments(&self, range: Range<usize>) -> Vec<Arc<Segment>> {
-        self.main_entries()[range]
-            .iter()
-            .filter_map(|entry| find_live_segment(&self.main_segments, entry.segment_id))
-            .collect()
-    }
-
-    fn patch_segments(&self) -> Vec<Arc<Segment>> {
-        self.patch_segments.iter().map(Arc::clone).collect()
-    }
-
     pub(super) fn has_patches(&self) -> bool {
         !self.patch_segments.is_empty()
     }
 
-    pub(super) fn should_publish_patch(
+    pub(super) fn component_for_range(
         &self,
-        input_records: usize,
-        new_segment_count: usize,
-        options: &CommitOptions,
-    ) -> bool {
-        input_records <= options.patch_direct_record_limit()
-            && self.patch_segments.len().saturating_add(new_segment_count)
-                <= options.patch_segment_limit()
-    }
-
-    fn normalization_bounds(&self, batch_min: &[u8], batch_max: &[u8]) -> (Vec<u8>, Vec<u8>) {
-        let mut min_key = batch_min.to_vec();
-        let mut max_key = batch_max.to_vec();
-        for segment in &self.patch_segments {
-            if segment.min_key() < min_key.as_slice() {
-                min_key = segment.min_key().to_vec();
-            }
-            if segment.max_key() > max_key.as_slice() {
-                max_key = segment.max_key().to_vec();
-            }
-        }
-        (min_key, max_key)
-    }
-
-    fn patch_bounds(&self) -> Option<(Vec<u8>, Vec<u8>)> {
-        let first = self.patch_segments.first()?;
-        let mut min_key = first.min_key().to_vec();
-        let mut max_key = first.max_key().to_vec();
-        for segment in &self.patch_segments[1..] {
-            if segment.min_key() < min_key.as_slice() {
-                min_key = segment.min_key().to_vec();
-            }
-            if segment.max_key() > max_key.as_slice() {
-                max_key = segment.max_key().to_vec();
-            }
-        }
-        Some((min_key, max_key))
-    }
-
-    pub(super) fn retire_normalized_segments(
-        &mut self,
         region_min: &[u8],
         region_max: &[u8],
-    ) -> RetiredSegments {
-        let (normalize_min, normalize_max) = self.normalization_bounds(region_min, region_max);
-        self.retire_live_segments_in_range(&normalize_min, &normalize_max)
+    ) -> NormalizationComponent {
+        let mut min_key = region_min.to_vec();
+        let mut max_key = region_max.to_vec();
+        let mut main_ids = HashSet::new();
+        let mut patch_ids = HashSet::new();
+
+        loop {
+            let mut changed = false;
+            for segment in &self.main_segments {
+                if !main_ids.contains(&segment.id())
+                    && ranges_intersect(segment.min_key(), segment.max_key(), &min_key, &max_key)
+                {
+                    main_ids.insert(segment.id());
+                    expand_bounds(&mut min_key, &mut max_key, segment);
+                    changed = true;
+                }
+            }
+            for segment in &self.patch_segments {
+                if !patch_ids.contains(&segment.id())
+                    && ranges_intersect(segment.min_key(), segment.max_key(), &min_key, &max_key)
+                {
+                    patch_ids.insert(segment.id());
+                    expand_bounds(&mut min_key, &mut max_key, segment);
+                    changed = true;
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+
+        NormalizationComponent {
+            main: self
+                .main_segments
+                .iter()
+                .filter(|segment| main_ids.contains(&segment.id()))
+                .cloned()
+                .collect(),
+            patches: self
+                .patch_segments
+                .iter()
+                .filter(|segment| patch_ids.contains(&segment.id()))
+                .cloned()
+                .collect(),
+        }
     }
 
-    pub(super) fn retire_patch_normalization_segments(&mut self) -> Option<RetiredSegments> {
-        let (normalize_min, normalize_max) = self.patch_bounds()?;
-        Some(self.retire_live_segments_in_range(&normalize_min, &normalize_max))
+    pub(super) fn patch_components(&self) -> Vec<NormalizationComponent> {
+        let mut included_patch_ids = HashSet::new();
+        let mut components = Vec::new();
+        for patch in &self.patch_segments {
+            if included_patch_ids.contains(&patch.id()) {
+                continue;
+            }
+            let component = self.component_for_range(patch.min_key(), patch.max_key());
+            included_patch_ids.extend(component.patches.iter().map(|segment| segment.id()));
+            components.push(component);
+        }
+        components
     }
 
-    fn retire_live_segments_in_range(
+    pub(super) fn retire_component(
         &mut self,
-        normalize_min: &[u8],
-        normalize_max: &[u8],
+        component: NormalizationComponent,
     ) -> RetiredSegments {
-        let affected_main = self.affected_main_range(normalize_min, normalize_max);
-        let main = self.affected_main_segments(affected_main);
-        let patches = self.patch_segments();
+        self.retire_segments(&component.main);
+        self.retire_segments(&component.patches);
+        RetiredSegments {
+            main: component.main,
+            patches: component.patches,
+        }
+    }
+
+    pub(super) fn retire_all_live_segments(&mut self) -> RetiredSegments {
+        let main = self.main_segments.clone();
+        let patches = self.patch_segments.clone();
         self.retire_segments(&main);
         self.retire_segments(&patches);
         RetiredSegments { main, patches }
@@ -233,29 +264,6 @@ impl CommitPlan {
             segments_retired,
         })
     }
-
-    fn main_entries(&self) -> &[SegmentManifestEntry] {
-        let main_count = self
-            .manifest
-            .segments
-            .partition_point(SegmentManifestEntry::is_main);
-        &self.manifest.segments[..main_count]
-    }
-}
-
-/// Returns the contiguous main-tier range intersecting `[batch_min, batch_max]`.
-fn affected_range(
-    main_entries: &[SegmentManifestEntry],
-    batch_min: &[u8],
-    batch_max: &[u8],
-) -> Range<usize> {
-    let start = main_entries.partition_point(|entry| entry.max_key.as_slice() < batch_min);
-    let end = main_entries.partition_point(|entry| entry.min_key.as_slice() <= batch_max);
-    if start >= end {
-        start..start
-    } else {
-        start..end
-    }
 }
 
 fn sort_manifest_entries(entries: &mut [SegmentManifestEntry]) {
@@ -277,9 +285,17 @@ fn sort_runtime_segments(segments: &mut [Arc<Segment>]) {
     });
 }
 
-fn find_live_segment(live_segments: &[Arc<Segment>], segment_id: u32) -> Option<Arc<Segment>> {
-    live_segments
-        .iter()
-        .find(|segment| segment.id() == segment_id)
-        .map(Arc::clone)
+fn ranges_intersect(left_min: &[u8], left_max: &[u8], right_min: &[u8], right_max: &[u8]) -> bool {
+    left_min <= right_max && right_min <= left_max
+}
+
+fn expand_bounds(min_key: &mut Vec<u8>, max_key: &mut Vec<u8>, segment: &Segment) {
+    if segment.min_key() < min_key.as_slice() {
+        min_key.clear();
+        min_key.extend_from_slice(segment.min_key());
+    }
+    if segment.max_key() > max_key.as_slice() {
+        max_key.clear();
+        max_key.extend_from_slice(segment.max_key());
+    }
 }

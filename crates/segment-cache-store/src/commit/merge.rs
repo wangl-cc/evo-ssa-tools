@@ -18,8 +18,6 @@ use crate::{
 struct MergeSourceSnapshot {
     main_segments: Vec<Arc<Segment>>,
     patch_segments: Vec<Arc<Segment>>,
-    min_key: Vec<u8>,
-    max_key: Vec<u8>,
 }
 
 struct StoreMergeRecords {
@@ -36,22 +34,17 @@ struct MergeInputStats {
 impl MergeSourceSnapshot {
     fn from_store(store: &StoreInner) -> Option<Self> {
         let state = store.state.read();
-        let (min_key, max_key) = segment_bounds(
-            state
-                .main_segments
-                .iter()
-                .chain(state.patch_segments.iter()),
-        )?;
+        if state.main_segments.is_empty() && state.patch_segments.is_empty() {
+            return None;
+        }
         Some(Self {
             main_segments: state.main_segments.iter().cloned().collect(),
             patch_segments: state.patch_segments.iter().cloned().collect(),
-            min_key,
-            max_key,
         })
     }
 
     fn cursor(&self, geometry: SegmentGeometry, verify_block_checksums: bool) -> RangeCursor {
-        RangeCursor::from_segment_sets(
+        RangeCursor::strict_from_segment_sets(
             self.main_segments.clone(),
             self.patch_segments.clone(),
             geometry,
@@ -135,12 +128,10 @@ impl SortedRecordStream for StoreMergeRecords {
                             Advance::Source
                         }
                         std::cmp::Ordering::Equal => {
-                            let winner = if source_record.value < destination_record.value {
-                                source_record.value
-                            } else {
-                                destination_record.value
-                            };
-                            if !chunk.try_push(source_record.key, winner) {
+                            if source_record.value != destination_record.value {
+                                return Err(InputError::KeyConflict.into());
+                            }
+                            if !chunk.try_push(source_record.key, source_record.value) {
                                 return Ok(RecordStreamStep::ChunkFull);
                             }
                             source_stats.add_record(source_record.key, source_record.value)?;
@@ -213,10 +204,9 @@ impl Committer<'_> {
             )
         };
         let mut plan = CommitPlan::from_snapshot(manifest, main_segments, patch_segments);
-        let affected_live =
-            plan.retire_normalized_segments(&source_snapshot.min_key, &source_snapshot.max_key);
+        let affected_live = plan.retire_all_live_segments();
 
-        let destination_cursor = RangeCursor::from_segment_sets(
+        let destination_cursor = RangeCursor::strict_from_segment_sets(
             affected_live.main,
             affected_live.patches,
             geometry,
@@ -255,21 +245,4 @@ impl Committer<'_> {
         }
         Ok(())
     }
-}
-
-fn segment_bounds<'a>(
-    mut segments: impl Iterator<Item = &'a Arc<Segment>>,
-) -> Option<(Vec<u8>, Vec<u8>)> {
-    let first = segments.next()?;
-    let mut min_key = first.min_key().to_vec();
-    let mut max_key = first.max_key().to_vec();
-    for segment in segments {
-        if segment.min_key() < min_key.as_slice() {
-            min_key = segment.min_key().to_vec();
-        }
-        if segment.max_key() > max_key.as_slice() {
-            max_key = segment.max_key().to_vec();
-        }
-    }
-    Some((min_key, max_key))
 }

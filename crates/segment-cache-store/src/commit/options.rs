@@ -5,7 +5,6 @@ use std::num::NonZeroUsize;
 #[cfg(feature = "value-compression")]
 use crate::block::ValuePayloadCompressionPolicy;
 
-const DEFAULT_PATCH_SEGMENT_LIMIT: usize = 8;
 const DEFAULT_PATCH_DIRECT_RECORD_LIMIT: usize = 4_096;
 
 /// Options consumed by one batch commit.
@@ -19,7 +18,6 @@ pub struct CommitOptions {
     value_payload_compression_policy: ValuePayloadCompressionPolicy,
     flush_threshold_records: NonZeroUsize,
     flush_threshold_bytes: NonZeroUsize,
-    patch_segment_limit: usize,
     patch_direct_record_limit: usize,
 }
 
@@ -33,7 +31,6 @@ impl Default for CommitOptions {
                 .expect("default record threshold is non-zero"),
             flush_threshold_bytes: NonZeroUsize::new(8 * 1024 * 1024)
                 .expect("default byte threshold is non-zero"),
-            patch_segment_limit: DEFAULT_PATCH_SEGMENT_LIMIT,
             patch_direct_record_limit: DEFAULT_PATCH_DIRECT_RECORD_LIMIT,
         }
     }
@@ -72,15 +69,6 @@ impl CommitOptions {
         self
     }
 
-    /// Sets the maximum live patch segments before normalization is forced.
-    ///
-    /// A value of `0` disables direct patch publication for overlapping writes:
-    /// every overlapping commit normalizes immediately.
-    pub fn with_patch_segment_limit(mut self, patch_segment_limit: usize) -> Self {
-        self.patch_segment_limit = patch_segment_limit;
-        self
-    }
-
     /// Sets the maximum input records eligible for direct patch publication.
     ///
     /// A value of `0` disables direct patch publication for overlapping writes:
@@ -105,10 +93,6 @@ impl CommitOptions {
 
     pub(super) fn flush_threshold_bytes(&self) -> usize {
         self.flush_threshold_bytes.get()
-    }
-
-    pub(super) fn patch_segment_limit(&self) -> usize {
-        self.patch_segment_limit
     }
 
     pub(super) fn patch_direct_record_limit(&self) -> usize {

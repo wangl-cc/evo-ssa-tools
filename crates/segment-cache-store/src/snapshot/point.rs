@@ -5,7 +5,10 @@ use std::sync::Arc;
 use super::LookupReadOptions;
 #[cfg(feature = "value-compression")]
 use crate::block::ValuePayloadDecoder;
-use crate::{error::Result, segment::Segment};
+use crate::{
+    error::{CorruptionError, Result},
+    segment::Segment,
+};
 
 pub(crate) struct SegmentSetReader<'a> {
     main_segments: &'a [Arc<Segment>],
@@ -27,30 +30,20 @@ impl<'a> SegmentSetReader<'a> {
     }
 
     pub(crate) fn fetch_one(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {
-        let mut winner = self.fetch_one_from_main(key)?;
-        for segment in self.patch_segments {
-            if segment.min_key() <= key
-                && key <= segment.max_key()
-                && let Some(value) = self.fetch_one_from_segment(segment, key)?
-                && winner
-                    .as_ref()
-                    .is_none_or(|winner| value.as_slice() < winner.as_slice())
-            {
-                winner = Some(value);
-            }
+        let main_value = self.fetch_one_from_run(self.main_segments, key)?;
+        let patch_value = self.fetch_one_from_run(self.patch_segments, key)?;
+        if main_value.is_some() && patch_value.is_some() {
+            return Err(CorruptionError::DuplicateVisibleKey.into());
         }
-        Ok(winner)
+        Ok(patch_value.or(main_value))
     }
 
-    fn fetch_one_from_main(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {
-        let segment_index = match self
-            .main_segments
-            .partition_point(|segment| segment.min_key() <= key)
-        {
+    fn fetch_one_from_run(&self, segments: &[Arc<Segment>], key: &[u8]) -> Result<Option<Vec<u8>>> {
+        let segment_index = match segments.partition_point(|segment| segment.min_key() <= key) {
             0 => return Ok(None),
             idx => idx - 1,
         };
-        let segment = &self.main_segments[segment_index];
+        let segment = &segments[segment_index];
         if key > segment.max_key() {
             return Ok(None);
         }
@@ -73,7 +66,7 @@ impl<'a> SegmentSetReader<'a> {
             self.options.verify_block_checksums,
         ) {
             Ok(block) => block,
-            Err(error) if error.is_cache_miss_corruption() => return Ok(None),
+            Err(error) if self.options.corruption_handling.degrades(&error) => return Ok(None),
             Err(error) => return Err(error),
         };
         let record_index = block.lower_bound_index(block_key);
@@ -83,14 +76,17 @@ impl<'a> SegmentSetReader<'a> {
         match segment.verify_block_payload(block_index, &block, self.options.verify_block_checksums)
         {
             Ok(()) => {}
-            Err(error) if error.is_cache_miss_corruption() => return Ok(None),
+            Err(error) if self.options.corruption_handling.degrades(&error) => return Ok(None),
             Err(error) => return Err(error),
         }
         #[cfg(feature = "value-compression")]
         let value = {
             let decoded_payload = match block.decode_payload_if_needed(&mut payload_decoder) {
                 Ok(decoded_payload) => decoded_payload,
-                Err(_) => return Ok(None),
+                Err(_) if self.options.corruption_handling.degrades_corruption() => {
+                    return Ok(None);
+                }
+                Err(error) => return Err(error.into()),
             };
             block
                 .value_at_index(record_index, decoded_payload.as_deref())?

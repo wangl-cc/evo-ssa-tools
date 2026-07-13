@@ -19,6 +19,7 @@ pub struct WriteBatch {
     entries: Vec<BufferedEntry>,
     key_bytes: Vec<u8>,
     value_bytes: Vec<u8>,
+    byte_len: usize,
 }
 
 /// Batch validated against store geometry, sorted, and known to have unique keys.
@@ -76,6 +77,10 @@ impl WriteBatch {
 
     fn push_entry(&mut self, key: ByteSpan, value: ByteSpan) {
         self.entries.push(BufferedEntry { key, value });
+        self.byte_len = self
+            .byte_len
+            .saturating_add(key.len)
+            .saturating_add(value.len);
     }
 
     /// Number of records currently buffered.
@@ -91,7 +96,7 @@ impl WriteBatch {
     }
 
     pub(super) fn byte_len(&self) -> usize {
-        self.key_bytes.len().saturating_add(self.value_bytes.len())
+        self.byte_len
     }
 
     pub(super) fn prepare_for(
@@ -176,8 +181,30 @@ impl PreparedBatch {
         self.batch.len()
     }
 
+    pub(super) fn is_empty(&self) -> bool {
+        self.batch.is_empty()
+    }
+
     pub(super) fn byte_len(&self) -> usize {
         self.batch.byte_len()
+    }
+
+    pub(super) fn retain_mask(mut self, retain: &[bool]) -> Self {
+        assert_eq!(retain.len(), self.batch.entries.len());
+        let mut byte_len = 0usize;
+        let mut index = 0usize;
+        self.batch.entries.retain(|entry| {
+            let keep = retain[index];
+            index += 1;
+            if keep {
+                byte_len = byte_len
+                    .saturating_add(entry.key.len)
+                    .saturating_add(entry.value.len);
+            }
+            keep
+        });
+        self.batch.byte_len = byte_len;
+        self
     }
 
     pub(super) fn flush_ranges(
@@ -276,6 +303,7 @@ mod tests {
                 }],
                 key_bytes: b"key1".to_vec(),
                 value_bytes: Vec::new(),
+                byte_len: MAX_VALUE_LEN + 5,
             };
 
             assert!(matches!(

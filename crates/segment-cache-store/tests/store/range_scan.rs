@@ -137,7 +137,7 @@ fn visit_all_matches_iter_all_order() -> Result<()> {
 }
 
 #[test]
-fn range_cursors_merge_visible_patch_winners() -> Result<()> {
+fn range_cursors_merge_main_and_patch_records() -> Result<()> {
     let tempdir = tempfile::tempdir()?;
     let store = create_store(&tempdir)?;
     commit_entries(&store, &[
@@ -147,14 +147,15 @@ fn range_cursors_merge_visible_patch_winners() -> Result<()> {
     ])?;
     commit_entries(&store, &[
         (make_key(1, 0, 1), make_value(1, 8)),
-        (make_key(1, 0, 5), make_value(3, 8)),
+        (make_key(1, 0, 4), make_value(4, 8)),
         (make_key(1, 0, 6), make_value(6, 8)),
     ])?;
     let expected = vec![
         (make_key(1, 0, 0), make_value(0, 8)),
         (make_key(1, 0, 1), make_value(1, 8)),
         (make_key(1, 0, 2), make_value(2, 8)),
-        (make_key(1, 0, 5), make_value(3, 8)),
+        (make_key(1, 0, 4), make_value(4, 8)),
+        (make_key(1, 0, 5), make_value(9, 8)),
         (make_key(1, 0, 6), make_value(6, 8)),
     ];
 
@@ -166,6 +167,6 @@ fn range_cursors_merge_visible_patch_winners() -> Result<()> {
     let range = store
         .range(&make_key(1, 0, 1), &make_key(1, 0, 6))?
         .collect::<Result<Vec<_>>>()?;
-    assert_eq!(range, expected[1..4]);
+    assert_eq!(range, expected[1..5]);
     Ok(())
 }

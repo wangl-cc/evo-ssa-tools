@@ -509,13 +509,17 @@ fn malformed_block_becomes_miss_in_all_read_paths() -> Result<()> {
 
 #[cfg(any(feature = "checksum-crc32c", feature = "checksum-rapidhash"))]
 #[test]
-fn corrupted_patch_candidate_falls_back_to_valid_visible_winner() -> Result<()> {
+fn corrupted_patch_becomes_a_miss_without_hiding_main_records() -> Result<()> {
     let tempdir = tempfile::tempdir()?;
     let store = create_store(&tempdir)?;
-    let key = make_key(1, 0, 0);
-    commit_entries(&store, &[(key.clone(), make_value(9, 16))])?;
-    commit_entries(&store, &[(key.clone(), make_value(1, 16))])?;
-    commit_entries(&store, &[(key.clone(), make_value(2, 16))])?;
+    let first_main = make_key(1, 0, 0);
+    let patch = make_key(1, 0, 1);
+    let second_main = make_key(1, 0, 2);
+    commit_entries(&store, &[
+        (first_main.clone(), make_value(9, 16)),
+        (second_main.clone(), make_value(2, 16)),
+    ])?;
+    commit_entries(&store, &[(patch.clone(), make_value(1, 16))])?;
 
     let reader = reopen_store_read_only(&tempdir)?;
     let first_patch = tempdir
@@ -524,14 +528,20 @@ fn corrupted_patch_candidate_falls_back_to_valid_visible_winner() -> Result<()> 
         .join("segment-0000000001.seg");
     corrupt_block_value_payload(&first_patch, 0)?;
 
-    assert_eq!(reader.fetch_one(&key)?, Some(make_value(2, 16)));
-    assert_eq!(reader.fetch_many_ordered([key.as_slice()])?, vec![Some(
-        make_value(2, 16)
-    )]);
-    assert_eq!(reader.iter_all()?.collect::<Result<Vec<_>>>()?, vec![(
-        key,
-        make_value(2, 16)
-    )]);
+    assert_eq!(reader.fetch_one(&patch)?, None);
+    assert_eq!(reader.fetch_one(&first_main)?, Some(make_value(9, 16)));
+    assert_eq!(
+        reader.fetch_many_ordered([
+            first_main.as_slice(),
+            patch.as_slice(),
+            second_main.as_slice(),
+        ])?,
+        vec![Some(make_value(9, 16)), None, Some(make_value(2, 16))]
+    );
+    assert_eq!(reader.iter_all()?.collect::<Result<Vec<_>>>()?, vec![
+        (first_main, make_value(9, 16)),
+        (second_main, make_value(2, 16)),
+    ]);
     Ok(())
 }
 

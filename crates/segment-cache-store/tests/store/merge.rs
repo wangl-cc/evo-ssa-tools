@@ -1,8 +1,10 @@
 use std::num::{NonZeroU32, NonZeroUsize};
 
 #[cfg(any(feature = "checksum-crc32c", feature = "checksum-rapidhash"))]
-use segment_cache_store::{CommitStats, OpenOptions};
-use segment_cache_store::{CreateOptions, Error, InputError, Result, Store, StoreMetadata};
+use segment_cache_store::OpenOptions;
+use segment_cache_store::{
+    CommitStats, CreateOptions, Error, InputError, Result, Store, StoreMetadata,
+};
 
 use crate::support::api::{
     commit_entries, commit_options, create_options, create_options_with_key_len, create_store,
@@ -36,85 +38,108 @@ fn merge_from_imports_disjoint_source_records() -> Result<()> {
 
     assert_eq!(stats.input_records, 2);
     assert_eq!(stats.input_bytes, 48);
+    assert_eq!(stats.segments_retired, 1);
+    assert_eq!(stats.output_records, 4);
     assert_eq!(destination.iter_all()?.collect::<Result<Vec<_>>>()?, {
         let mut expected = destination_entries;
         expected.extend(source_entries);
         expected.sort_by(|left, right| left.0.cmp(&right.0));
         expected
     });
+    assert_eq!(destination.normalize()?, CommitStats::default());
     Ok(())
 }
 
 #[test]
-fn merge_from_resolves_duplicate_keys_by_smallest_value() -> Result<()> {
+fn merge_from_collapses_identical_records() -> Result<()> {
     let destination_dir = tempfile::tempdir()?;
     let source_dir = tempfile::tempdir()?;
     let destination = create_store(&destination_dir)?;
     let source = create_store(&source_dir)?;
-    let smaller_from_source = make_key(2, 0, 0);
-    let smaller_from_destination = make_key(2, 0, 1);
+    let shared = make_key(2, 0, 0);
+    let destination_only = make_key(2, 0, 1);
     let source_only = make_key(2, 0, 2);
 
     commit_entries(&destination, &[
-        (smaller_from_source.clone(), make_value(9, 8)),
-        (smaller_from_destination.clone(), make_value(1, 8)),
+        (shared.clone(), make_value(1, 8)),
+        (destination_only.clone(), make_value(2, 8)),
     ])?;
     commit_entries(&source, &[
-        (smaller_from_source.clone(), make_value(1, 8)),
-        (smaller_from_destination.clone(), make_value(9, 8)),
-        (source_only.clone(), make_value(5, 8)),
+        (shared.clone(), make_value(1, 8)),
+        (source_only.clone(), make_value(3, 8)),
     ])?;
 
     let stats = destination.merge_from_with_options(
         &source,
         &commit_options()
-            .with_patch_segment_limit(0)
             .with_flush_threshold_records(NonZeroUsize::new(64).expect("non-zero literal")),
     )?;
 
-    assert_eq!(stats.input_records, 3);
+    assert_eq!(stats.input_records, 2);
     assert_eq!(stats.output_records, 3);
     assert_eq!(stats.segments_retired, 1);
+    assert_eq!(destination.fetch_one(&shared)?, Some(make_value(1, 8)));
     assert_eq!(
-        destination.fetch_one(&smaller_from_source)?,
-        Some(make_value(1, 8))
+        destination.fetch_one(&destination_only)?,
+        Some(make_value(2, 8))
     );
-    assert_eq!(
-        destination.fetch_one(&smaller_from_destination)?,
-        Some(make_value(1, 8))
-    );
-    assert_eq!(destination.fetch_one(&source_only)?, Some(make_value(5, 8)));
+    assert_eq!(destination.fetch_one(&source_only)?, Some(make_value(3, 8)));
+    assert_eq!(destination.normalize()?, CommitStats::default());
     Ok(())
 }
 
 #[test]
-fn merge_from_imports_source_patch_winners() -> Result<()> {
+fn merge_from_rejects_conflicting_values_atomically() -> Result<()> {
     let destination_dir = tempfile::tempdir()?;
     let source_dir = tempfile::tempdir()?;
     let destination = create_store(&destination_dir)?;
     let source = create_store(&source_dir)?;
-    let overwritten = make_key(3, 0, 0);
+    let shared = make_key(2, 0, 0);
+    let source_only = make_key(2, 0, 1);
+
+    commit_entries(&destination, &[(shared.clone(), make_value(1, 8))])?;
+    commit_entries(&source, &[
+        (shared.clone(), make_value(9, 8)),
+        (source_only.clone(), make_value(2, 8)),
+    ])?;
+
+    let error = destination
+        .merge_from(&source)
+        .expect_err("different values for one key must reject the merge");
+
+    assert!(matches!(error, Error::Input(InputError::KeyConflict)));
+    assert_eq!(destination.fetch_one(&shared)?, Some(make_value(1, 8)));
+    assert_eq!(destination.fetch_one(&source_only)?, None);
+    assert_eq!(destination.iter_all()?.count(), 1);
+    Ok(())
+}
+
+#[test]
+fn merge_from_normalizes_source_patch() -> Result<()> {
+    let destination_dir = tempfile::tempdir()?;
+    let source_dir = tempfile::tempdir()?;
+    let destination = create_store(&destination_dir)?;
+    let source = create_store(&source_dir)?;
+    let first_main = make_key(3, 0, 0);
     let patch_only = make_key(3, 0, 1);
     let main_only = make_key(3, 0, 2);
 
     commit_entries(&source, &[
-        (overwritten.clone(), make_value(9, 8)),
+        (first_main.clone(), make_value(1, 8)),
         (main_only.clone(), make_value(2, 8)),
     ])?;
-    commit_entries(&source, &[
-        (overwritten.clone(), make_value(1, 8)),
-        (patch_only.clone(), make_value(3, 8)),
-    ])?;
+    commit_entries(&source, &[(patch_only.clone(), make_value(3, 8))])?;
 
     let stats = destination.merge_from_with_options(&source, &commit_options())?;
 
     assert_eq!(stats.input_records, 3);
     assert_eq!(stats.input_bytes, 72);
     assert_eq!(destination.iter_all()?.collect::<Result<Vec<_>>>()?, vec![
-        (overwritten, make_value(1, 8)),
+        (first_main, make_value(1, 8)),
         (patch_only, make_value(3, 8)),
         (main_only, make_value(2, 8)),
     ]);
+    assert_eq!(destination.normalize()?, CommitStats::default());
     Ok(())
 }
 
@@ -196,15 +221,19 @@ fn merge_from_rejects_read_only_destination() -> Result<()> {
 
 #[cfg(any(feature = "checksum-crc32c", feature = "checksum-rapidhash"))]
 #[test]
-fn merge_from_skips_corrupt_source_blocks_when_forcing_verification() -> Result<()> {
+fn merge_from_rejects_corrupt_source_blocks_when_forcing_verification() -> Result<()> {
     let destination_dir = tempfile::tempdir()?;
     let source_dir = tempfile::tempdir()?;
     let destination = create_store(&destination_dir)?;
     let source = create_store(&source_dir)?;
-    let key = make_key(3, 0, 0);
+    let destination_key = make_key(3, 0, 0);
+    let source_key = make_key(3, 0, 1);
     let destination_value = make_value(1, 32);
-    commit_entries(&destination, &[(key.clone(), destination_value.clone())])?;
-    commit_entries(&source, &[(key.clone(), make_value(7, 32))])?;
+    commit_entries(&destination, &[(
+        destination_key.clone(),
+        destination_value.clone(),
+    )])?;
+    commit_entries(&source, &[(source_key.clone(), make_value(7, 32))])?;
     corrupt_block_value_payload(&first_segment_path(source_dir.path())?, 0)?;
     drop(source);
     let source = Store::open(
@@ -212,9 +241,15 @@ fn merge_from_skips_corrupt_source_blocks_when_forcing_verification() -> Result<
         OpenOptions::read_only(metadata()).with_block_checksum_verification(false),
     )?;
 
-    let stats = destination.merge_from(&source)?;
+    let error = destination
+        .merge_from(&source)
+        .expect_err("strict merge must reject source corruption");
 
-    assert_eq!(stats, CommitStats::default());
-    assert_eq!(destination.fetch_one(&key)?, Some(destination_value));
+    assert!(matches!(error, Error::Corruption(_)));
+    assert_eq!(
+        destination.fetch_one(&destination_key)?,
+        Some(destination_value)
+    );
+    assert_eq!(destination.fetch_one(&source_key)?, None);
     Ok(())
 }

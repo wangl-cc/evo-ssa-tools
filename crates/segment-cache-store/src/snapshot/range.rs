@@ -2,18 +2,19 @@
 
 use std::{cmp::Ordering, sync::Arc};
 
+use super::CorruptionHandling;
 #[cfg(feature = "value-compression")]
 use crate::block::ValuePayloadDecoder;
 use crate::{
     block::{DecodedBlock, ParsedRecord},
-    error::Result,
+    error::{CorruptionError, Result},
     segment::{Segment, SegmentGeometry},
 };
 
 /// Streaming cursor over records in key order.
 pub struct RangeCursor {
     runs: Vec<SegmentRunCursor>,
-    merge_duplicate_indices: Vec<usize>,
+    current_run_index: Option<usize>,
 }
 
 /// One non-overlapping run of segments traversed with only its current segment loaded.
@@ -23,6 +24,7 @@ struct SegmentRunCursor {
     verify_block_checksums: bool,
     start: Option<Vec<u8>>,
     end: Option<Vec<u8>>,
+    corruption_handling: CorruptionHandling,
     next_segment_index: usize,
     current: Option<SegmentRangeCursor>,
 }
@@ -37,6 +39,45 @@ impl RangeCursor {
         start: Option<Vec<u8>>,
         end: Option<Vec<u8>>,
     ) -> Self {
+        Self::new(
+            main_segments,
+            patch_segments,
+            geometry,
+            verify_block_checksums,
+            start,
+            end,
+            CorruptionHandling::AsCacheMiss,
+        )
+    }
+
+    pub(crate) fn strict_from_segment_sets(
+        main_segments: Vec<Arc<Segment>>,
+        patch_segments: Vec<Arc<Segment>>,
+        geometry: SegmentGeometry,
+        verify_block_checksums: bool,
+        start: Option<Vec<u8>>,
+        end: Option<Vec<u8>>,
+    ) -> Self {
+        Self::new(
+            main_segments,
+            patch_segments,
+            geometry,
+            verify_block_checksums,
+            start,
+            end,
+            CorruptionHandling::Strict,
+        )
+    }
+
+    fn new(
+        main_segments: Vec<Arc<Segment>>,
+        patch_segments: Vec<Arc<Segment>>,
+        geometry: SegmentGeometry,
+        verify_block_checksums: bool,
+        start: Option<Vec<u8>>,
+        end: Option<Vec<u8>>,
+        corruption_handling: CorruptionHandling,
+    ) -> Self {
         let mut runs =
             Vec::with_capacity(usize::from(!main_segments.is_empty()) + patch_segments.len());
         if !main_segments.is_empty() {
@@ -46,6 +87,7 @@ impl RangeCursor {
                 verify_block_checksums,
                 start.clone(),
                 end.clone(),
+                corruption_handling,
             ));
         }
         for segment in patch_segments {
@@ -55,35 +97,35 @@ impl RangeCursor {
                 verify_block_checksums,
                 start.clone(),
                 end.clone(),
+                corruption_handling,
             ));
         }
-        let merge_duplicate_indices = Vec::with_capacity(runs.len());
         Self {
             runs,
-            merge_duplicate_indices,
+            current_run_index: None,
         }
     }
 
     pub(crate) fn current_record(&mut self) -> Result<Option<ParsedRecord<'_, '_>>> {
-        self.ensure_runs_positioned()?;
-        let Some(winner_index) = self.refresh_merge_winner_indices()? else {
+        if self.current_run_index.is_none() {
+            self.ensure_runs_positioned()?;
+            self.current_run_index = self.next_run_index()?;
+        }
+        let Some(run_index) = self.current_run_index else {
             return Ok(None);
         };
-        self.runs[winner_index].current_record()
+        self.runs[run_index].current_record()
     }
 
     pub(crate) fn advance_record(&mut self) -> Result<()> {
-        if self.merge_duplicate_indices.is_empty() {
+        if self.current_run_index.is_none() {
             self.ensure_runs_positioned()?;
-            if self.refresh_merge_winner_indices()?.is_none() {
-                return Ok(());
-            }
+            self.current_run_index = self.next_run_index()?;
         }
-        let mut duplicate_indices = std::mem::take(&mut self.merge_duplicate_indices);
-        for index in duplicate_indices.drain(..) {
-            self.runs[index].advance()?;
-        }
-        self.merge_duplicate_indices = duplicate_indices;
+        let Some(run_index) = self.current_run_index.take() else {
+            return Ok(());
+        };
+        self.runs[run_index].advance()?;
         Ok(())
     }
 
@@ -92,21 +134,16 @@ impl RangeCursor {
         F: FnOnce(&[u8], &[u8]) -> Result<()>,
     {
         self.ensure_runs_positioned()?;
-        let mut duplicate_indices = std::mem::take(&mut self.merge_duplicate_indices);
-        let Some(winner_index) = self.next_merged_indices_into(&mut duplicate_indices)? else {
-            self.merge_duplicate_indices = duplicate_indices;
+        let Some(run_index) = self.next_run_index()? else {
             return Ok(false);
         };
         {
-            let record = self.runs[winner_index]
+            let record = self.runs[run_index]
                 .current_record()?
-                .expect("winner run has a current record");
+                .expect("selected run has a current record");
             visitor(record.key, record.value)?;
         }
-        for index in duplicate_indices.drain(..) {
-            self.runs[index].advance()?;
-        }
-        self.merge_duplicate_indices = duplicate_indices;
+        self.runs[run_index].advance()?;
         Ok(true)
     }
 
@@ -131,51 +168,28 @@ impl RangeCursor {
         Ok(())
     }
 
-    fn refresh_merge_winner_indices(&mut self) -> Result<Option<usize>> {
-        let mut duplicate_indices = std::mem::take(&mut self.merge_duplicate_indices);
-        let winner_index = self.next_merged_indices_into(&mut duplicate_indices)?;
-        self.merge_duplicate_indices = duplicate_indices;
-        Ok(winner_index)
-    }
-
-    fn next_merged_indices_into(
-        &self,
-        duplicate_indices: &mut Vec<usize>,
-    ) -> Result<Option<usize>> {
-        duplicate_indices.clear();
-        let mut winner_index = None;
-        let mut winner_key = None;
-        let mut winner_value = None;
+    fn next_run_index(&self) -> Result<Option<usize>> {
+        let mut selected_index = None;
+        let mut selected_key = None;
         for (index, run) in self.runs.iter().enumerate() {
             let Some(record) = run.current_record()? else {
                 continue;
             };
-            let Some(key) = winner_key else {
-                winner_index = Some(index);
-                winner_key = Some(record.key);
-                winner_value = Some(record.value);
-                duplicate_indices.push(index);
+            let Some(key) = selected_key else {
+                selected_index = Some(index);
+                selected_key = Some(record.key);
                 continue;
             };
             match record.key.cmp(key) {
-                std::cmp::Ordering::Less => {
-                    winner_index = Some(index);
-                    winner_key = Some(record.key);
-                    winner_value = Some(record.value);
-                    duplicate_indices.clear();
-                    duplicate_indices.push(index);
+                Ordering::Less => {
+                    selected_index = Some(index);
+                    selected_key = Some(record.key);
                 }
-                std::cmp::Ordering::Equal => {
-                    duplicate_indices.push(index);
-                    if record.value < winner_value.expect("winner value is set with winner key") {
-                        winner_index = Some(index);
-                        winner_value = Some(record.value);
-                    }
-                }
-                std::cmp::Ordering::Greater => {}
+                Ordering::Equal => return Err(CorruptionError::DuplicateVisibleKey.into()),
+                Ordering::Greater => {}
             }
         }
-        Ok(winner_index)
+        Ok(selected_index)
     }
 }
 
@@ -186,6 +200,7 @@ impl SegmentRunCursor {
         verify_block_checksums: bool,
         start: Option<Vec<u8>>,
         end: Option<Vec<u8>>,
+        corruption_handling: CorruptionHandling,
     ) -> Self {
         Self {
             segments,
@@ -193,6 +208,7 @@ impl SegmentRunCursor {
             verify_block_checksums,
             start,
             end,
+            corruption_handling,
             next_segment_index: 0,
             current: None,
         }
@@ -218,6 +234,7 @@ impl SegmentRunCursor {
                 self.verify_block_checksums,
                 self.start.clone(),
                 self.end.clone(),
+                self.corruption_handling,
             )?);
         }
     }
@@ -232,7 +249,7 @@ impl SegmentRunCursor {
     fn advance(&mut self) -> Result<()> {
         self.current
             .as_mut()
-            .expect("winner run is positioned")
+            .expect("selected run is positioned")
             .advance()
     }
 }
@@ -259,6 +276,7 @@ pub(crate) struct SegmentRangeCursor {
     verify_block_checksums: bool,
     start: Option<Vec<u8>>,
     end: Option<Vec<u8>>,
+    corruption_handling: CorruptionHandling,
     block_index: usize,
     position: Option<SegmentCursorPosition>,
     key_scratch: Vec<u8>,
@@ -282,6 +300,7 @@ impl SegmentRangeCursor {
         verify_block_checksums: bool,
         start: Option<Vec<u8>>,
         end: Option<Vec<u8>>,
+        corruption_handling: CorruptionHandling,
     ) -> Result<Self> {
         let mut exhausted = false;
         let start = match start {
@@ -313,6 +332,7 @@ impl SegmentRangeCursor {
             verify_block_checksums,
             start,
             end,
+            corruption_handling,
             block_index,
             position: None,
             key_scratch: vec![0; geometry.key_len],
@@ -409,7 +429,7 @@ impl SegmentRangeCursor {
                 buffer,
             ) {
                 Ok(block) => block,
-                Err(error) if error.is_cache_miss_corruption() => continue,
+                Err(error) if self.corruption_handling.degrades(&error) => continue,
                 Err(error) => return Err(error),
             };
 
@@ -435,7 +455,7 @@ impl SegmentRangeCursor {
                     &block,
                     self.verify_block_checksums,
                 ) {
-                    if error.is_cache_miss_corruption() {
+                    if self.corruption_handling.degrades(&error) {
                         self.spare_block_bytes = block.into_bytes();
                         continue;
                     }
@@ -445,10 +465,11 @@ impl SegmentRangeCursor {
                 let decoded_payload =
                     match block.decode_payload_if_needed(&mut self.payload_decoder) {
                         Ok(decoded_payload) => decoded_payload,
-                        Err(_) => {
+                        Err(_) if self.corruption_handling.degrades_corruption() => {
                             self.spare_block_bytes = block.into_bytes();
                             continue;
                         }
+                        Err(error) => return Err(error.into()),
                     };
                 block.write_key_at_index(
                     self.segment.segment_prefix(),

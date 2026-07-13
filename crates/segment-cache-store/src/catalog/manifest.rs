@@ -265,6 +265,9 @@ impl StoreManifest {
             max_segment_id =
                 Some(max_segment_id.map_or(entry.segment_id, |max| max.max(entry.segment_id)));
         }
+        let main_count = self.segments.partition_point(SegmentManifestEntry::is_main);
+        let (main_entries, patch_entries) = self.segments.split_at(main_count);
+        validate_patch_components(main_entries, patch_entries)?;
         if let Some(max_segment_id) = max_segment_id
             && self.next_segment_id <= max_segment_id
         {
@@ -272,6 +275,50 @@ impl StoreManifest {
         }
         Ok(())
     }
+}
+
+fn validate_patch_components(
+    main_entries: &[SegmentManifestEntry],
+    patch_entries: &[SegmentManifestEntry],
+) -> std::result::Result<(), CatalogMismatch> {
+    let mut main_index = 0;
+    let mut patch_index = 0;
+    let mut component_max: Option<&[u8]> = None;
+    let mut component_has_patch = false;
+
+    while main_index < main_entries.len() || patch_index < patch_entries.len() {
+        let take_main = match (main_entries.get(main_index), patch_entries.get(patch_index)) {
+            (Some(main), Some(patch)) => main.min_key <= patch.min_key,
+            (Some(_), None) => true,
+            (None, Some(_)) => false,
+            (None, None) => break,
+        };
+        let (entry, is_patch) = if take_main {
+            let entry = &main_entries[main_index];
+            main_index += 1;
+            (entry, false)
+        } else {
+            let entry = &patch_entries[patch_index];
+            patch_index += 1;
+            (entry, true)
+        };
+
+        let joins_component = component_max.is_some_and(|max| entry.min_key.as_slice() <= max);
+        if !joins_component {
+            component_max = Some(&entry.max_key);
+            component_has_patch = is_patch;
+            continue;
+        }
+        if is_patch && component_has_patch {
+            return Err(CatalogMismatch::MultiplePatchesInComponent);
+        }
+        component_has_patch |= is_patch;
+        if component_max.is_none_or(|max| entry.max_key.as_slice() > max) {
+            component_max = Some(&entry.max_key);
+        }
+    }
+
+    Ok(())
 }
 
 fn manifest_entry_len(key_len: usize) -> Option<usize> {
@@ -582,6 +629,52 @@ mod tests {
             assert!(matches!(
                 descending_id.validate_structure(16),
                 Err(CatalogError::Mismatch(CatalogMismatch::SegmentPatchOrder))
+            ));
+        }
+
+        #[test]
+        fn rejects_multiple_patches_connected_by_one_main_segment() {
+            let manifest = manifest_with_segments(vec![
+                entry(0, 0, 10),
+                patch_entry(1, 2, 3),
+                patch_entry(2, 7, 8),
+            ]);
+
+            assert!(matches!(
+                manifest.validate_structure(16),
+                Err(CatalogError::Mismatch(
+                    CatalogMismatch::MultiplePatchesInComponent
+                ))
+            ));
+        }
+
+        #[test]
+        fn allows_one_patch_in_each_disjoint_component() {
+            let manifest = manifest_with_segments(vec![
+                entry(0, 0, 10),
+                entry(1, 20, 30),
+                patch_entry(2, 2, 3),
+                patch_entry(3, 22, 23),
+            ]);
+
+            manifest
+                .validate_structure(16)
+                .expect("disjoint components may each contain one patch");
+        }
+
+        #[test]
+        fn rejects_directly_overlapping_patch_ranges() {
+            let manifest = manifest_with_segments(vec![
+                entry(0, 0, 1),
+                patch_entry(1, 2, 5),
+                patch_entry(2, 4, 7),
+            ]);
+
+            assert!(matches!(
+                manifest.validate_structure(16),
+                Err(CatalogError::Mismatch(
+                    CatalogMismatch::MultiplePatchesInComponent
+                ))
             ));
         }
 

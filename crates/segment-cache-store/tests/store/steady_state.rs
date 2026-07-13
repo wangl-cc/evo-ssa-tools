@@ -94,11 +94,28 @@ fn interleaving_commit_spans_two_segments_and_a_tail_as_patch() -> Result<()> {
         make_key(2, 0, 2),
         make_key(3, 0, 0),
     ]);
+
+    // Touching one end of the patch-connected component must normalize the
+    // entire transitive component, including both main segments.
+    let stats = commit_entries(&store, &[(make_key(1, 1, 0), make_value(8, 8))])?;
+    assert_eq!(stats.output_records, 8);
+    assert_eq!(stats.segments_retired, 3);
+    assert_eq!(stats.segments_published, 1);
+    assert_eq!(store.iter_all()?.collect::<Result<Vec<_>>>()?, vec![
+        (make_key(1, 0, 0), make_value(1, 8)),
+        (make_key(1, 0, 1), make_value(5, 8)),
+        (make_key(1, 0, 2), make_value(2, 8)),
+        (make_key(1, 1, 0), make_value(8, 8)),
+        (make_key(2, 0, 0), make_value(3, 8)),
+        (make_key(2, 0, 1), make_value(6, 8)),
+        (make_key(2, 0, 2), make_value(4, 8)),
+        (make_key(3, 0, 0), make_value(7, 8)),
+    ]);
     Ok(())
 }
 
 #[test]
-fn patch_segments_normalize_after_limit() -> Result<()> {
+fn second_interleaving_commit_normalizes_its_component() -> Result<()> {
     let tempdir = tempfile::tempdir()?;
     let store = create_store(&tempdir)?;
     commit_entries(&store, &[
@@ -106,16 +123,15 @@ fn patch_segments_normalize_after_limit() -> Result<()> {
         (make_key(1, 0, 20), make_value(20, 8)),
     ])?;
 
-    for rep in 1..=8 {
-        let stats = commit_entries(&store, &[(make_key(1, 0, rep), make_value(rep as u8, 8))])?;
-        assert_eq!(stats.output_records, 1);
-        assert_eq!(stats.segments_retired, 0);
-    }
+    let stats = commit_entries(&store, &[(make_key(1, 0, 1), make_value(1, 8))])?;
+    assert_eq!(stats.output_records, 1);
+    assert_eq!(stats.segments_retired, 0);
+    assert_eq!(stats.segments_published, 1);
 
-    let stats = commit_entries(&store, &[(make_key(1, 0, 9), make_value(9, 8))])?;
+    let stats = commit_entries(&store, &[(make_key(1, 0, 2), make_value(2, 8))])?;
     assert_eq!(stats.input_records, 1);
-    assert_eq!(stats.output_records, 11);
-    assert_eq!(stats.segments_retired, 9);
+    assert_eq!(stats.output_records, 4);
+    assert_eq!(stats.segments_retired, 2);
     assert_eq!(stats.segments_published, 1);
 
     let keys: Vec<_> = store
@@ -124,37 +140,47 @@ fn patch_segments_normalize_after_limit() -> Result<()> {
         .into_iter()
         .map(|(key, _)| key)
         .collect();
-    let mut expected = (0..=9).map(|rep| make_key(1, 0, rep)).collect::<Vec<_>>();
-    expected.push(make_key(1, 0, 20));
-    assert_eq!(keys, expected);
+    assert_eq!(keys, vec![
+        make_key(1, 0, 0),
+        make_key(1, 0, 1),
+        make_key(1, 0, 2),
+        make_key(1, 0, 20),
+    ]);
     Ok(())
 }
 
 #[test]
-fn patch_segment_limit_is_configurable() -> Result<()> {
+fn disjoint_components_can_each_keep_one_patch() -> Result<()> {
     let tempdir = tempfile::tempdir()?;
     let store = create_store(&tempdir)?;
-    let options = commit_options().with_patch_segment_limit(1);
-    commit_entries_with_options(
-        &store,
-        &[
-            (make_key(1, 0, 0), make_value(0, 8)),
-            (make_key(1, 0, 20), make_value(20, 8)),
-        ],
-        &options,
-    )?;
+    commit_entries(&store, &[
+        (make_key(1, 0, 0), make_value(0, 8)),
+        (make_key(1, 0, 20), make_value(20, 8)),
+    ])?;
+    commit_entries(&store, &[
+        (make_key(2, 0, 0), make_value(0, 8)),
+        (make_key(2, 0, 20), make_value(20, 8)),
+    ])?;
 
-    let stats =
-        commit_entries_with_options(&store, &[(make_key(1, 0, 1), make_value(1, 8))], &options)?;
+    let stats = commit_entries(&store, &[(make_key(1, 0, 1), make_value(1, 8))])?;
+    assert_eq!(stats.output_records, 1);
+    assert_eq!(stats.segments_retired, 0);
+    let stats = commit_entries(&store, &[(make_key(2, 0, 1), make_value(1, 8))])?;
     assert_eq!(stats.output_records, 1);
     assert_eq!(stats.segments_retired, 0);
 
-    let stats =
-        commit_entries_with_options(&store, &[(make_key(1, 0, 2), make_value(2, 8))], &options)?;
-    assert_eq!(stats.input_records, 1);
-    assert_eq!(stats.output_records, 4);
-    assert_eq!(stats.segments_retired, 2);
-    assert_eq!(stats.segments_published, 1);
+    let stats = store.normalize()?;
+    assert_eq!(stats.output_records, 6);
+    assert_eq!(stats.segments_retired, 4);
+    assert_eq!(stats.segments_published, 2);
+    assert_eq!(store.iter_all()?.collect::<Result<Vec<_>>>()?, vec![
+        (make_key(1, 0, 0), make_value(0, 8)),
+        (make_key(1, 0, 1), make_value(1, 8)),
+        (make_key(1, 0, 20), make_value(20, 8)),
+        (make_key(2, 0, 0), make_value(0, 8)),
+        (make_key(2, 0, 1), make_value(1, 8)),
+        (make_key(2, 0, 20), make_value(20, 8)),
+    ]);
     Ok(())
 }
 
@@ -182,6 +208,27 @@ fn patch_direct_record_limit_can_force_immediate_normalization() -> Result<()> {
 }
 
 #[test]
+fn oversized_interleaving_record_normalizes_instead_of_becoming_a_patch() -> Result<()> {
+    let tempdir = tempfile::tempdir()?;
+    let store = create_store(&tempdir)?;
+    commit_entries(&store, &[
+        (make_key(1, 0, 0), make_value(0, 8)),
+        (make_key(1, 0, 2), make_value(2, 8)),
+    ])?;
+    let options = commit_options()
+        .with_flush_threshold_bytes(NonZeroUsize::new(64).expect("non-zero literal"));
+
+    let stats =
+        commit_entries_with_options(&store, &[(make_key(1, 0, 1), make_value(1, 64))], &options)?;
+
+    assert_eq!(stats.output_records, 3);
+    assert_eq!(stats.segments_retired, 1);
+    assert_eq!(stats.segments_published, 3);
+    assert_eq!(store.normalize()?, CommitStats::default());
+    Ok(())
+}
+
+#[test]
 fn immediate_normalization_streams_into_record_bounded_segments() -> Result<()> {
     let tempdir = tempfile::tempdir()?;
     let store = create_store(&tempdir)?;
@@ -195,9 +242,9 @@ fn immediate_normalization_streams_into_record_bounded_segments() -> Result<()> 
 
     let incoming = vec![
         (make_key(1, 0, 1), make_value(1, 8)),
-        (make_key(1, 0, 2), make_value(1, 8)),
         (make_key(1, 0, 3), make_value(3, 8)),
         (make_key(1, 0, 5), make_value(5, 8)),
+        (make_key(1, 0, 7), make_value(7, 8)),
     ];
     let options = commit_options()
         .with_patch_direct_record_limit(0)
@@ -205,18 +252,19 @@ fn immediate_normalization_streams_into_record_bounded_segments() -> Result<()> 
     let stats = commit_entries_with_options(&store, &incoming, &options)?;
 
     assert_eq!(stats.input_records, 4);
-    assert_eq!(stats.output_records, 7);
+    assert_eq!(stats.output_records, 8);
     assert_eq!(stats.segments_retired, 1);
     assert_eq!(stats.segments_published, 4);
 
     let expected = vec![
         (make_key(1, 0, 0), make_value(9, 8)),
         (make_key(1, 0, 1), make_value(1, 8)),
-        (make_key(1, 0, 2), make_value(1, 8)),
+        (make_key(1, 0, 2), make_value(9, 8)),
         (make_key(1, 0, 3), make_value(3, 8)),
         (make_key(1, 0, 4), make_value(9, 8)),
         (make_key(1, 0, 5), make_value(5, 8)),
         (make_key(1, 0, 6), make_value(9, 8)),
+        (make_key(1, 0, 7), make_value(7, 8)),
     ];
     assert_eq!(store.iter_all()?.collect::<Result<Vec<_>>>()?, expected);
     drop(store);
@@ -238,13 +286,12 @@ fn explicit_normalize_folds_patch_segments_into_main() -> Result<()> {
         (make_key(1, 0, 20), make_value(20, 8)),
     ])?;
     commit_entries(&store, &[(make_key(1, 0, 1), make_value(1, 8))])?;
-    commit_entries(&store, &[(make_key(1, 0, 2), make_value(2, 8))])?;
 
     let stats = store.normalize_with_options(&commit_options())?;
     assert_eq!(stats.input_records, 0);
     assert_eq!(stats.input_bytes, 0);
-    assert_eq!(stats.output_records, 4);
-    assert_eq!(stats.segments_retired, 3);
+    assert_eq!(stats.output_records, 3);
+    assert_eq!(stats.segments_retired, 2);
     assert_eq!(stats.segments_published, 1);
 
     let keys: Vec<_> = store
@@ -256,7 +303,6 @@ fn explicit_normalize_folds_patch_segments_into_main() -> Result<()> {
     assert_eq!(keys, vec![
         make_key(1, 0, 0),
         make_key(1, 0, 1),
-        make_key(1, 0, 2),
         make_key(1, 0, 20),
     ]);
 
@@ -264,7 +310,7 @@ fn explicit_normalize_folds_patch_segments_into_main() -> Result<()> {
         .filter_map(std::result::Result::ok)
         .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "seg"))
         .count();
-    assert_eq!(segments, 4);
+    assert_eq!(segments, 3);
 
     store.garbage_collect()?;
     let segments = fs::read_dir(tempdir.path().join("segments"))?
@@ -305,18 +351,70 @@ fn read_only_handle_rejects_explicit_normalize() -> Result<()> {
 }
 
 #[test]
-fn duplicate_key_commit_keeps_lexicographically_smallest_value() -> Result<()> {
+fn identical_recommit_is_idempotent() -> Result<()> {
     let tempdir = tempfile::tempdir()?;
     let store = create_store(&tempdir)?;
     let key = make_key(1, 0, 0);
+    let value = make_value(5, 8);
 
-    commit_entries(&store, &[(key.clone(), make_value(5, 8))])?;
-    // A smaller-byte copy wins.
-    commit_entries(&store, &[(key.clone(), make_value(1, 8))])?;
-    assert_eq!(store.fetch_one(&key)?, Some(make_value(1, 8)));
-    // A larger-byte copy does not displace the existing winner.
-    commit_entries(&store, &[(key.clone(), make_value(9, 8))])?;
-    assert_eq!(store.fetch_one(&key)?, Some(make_value(1, 8)));
+    commit_entries(&store, &[(key.clone(), value.clone())])?;
+    let stats = commit_entries(&store, &[(key.clone(), value.clone())])?;
+
+    assert_eq!(stats.input_records, 1);
+    assert_eq!(stats.input_bytes, key.len() + value.len());
+    assert_eq!(stats.output_records, 0);
+    assert_eq!(stats.segments_retired, 0);
+    assert_eq!(stats.segments_published, 0);
+    assert_eq!(store.fetch_one(&key)?, Some(value));
+    Ok(())
+}
+
+#[test]
+fn idempotent_entries_are_filtered_while_new_entries_publish() -> Result<()> {
+    let tempdir = tempfile::tempdir()?;
+    let store = create_store(&tempdir)?;
+    let existing_key = make_key(1, 0, 0);
+    let new_key = make_key(1, 0, 1);
+    let existing_value = make_value(5, 8);
+    let new_value = make_value(6, 8);
+    commit_entries(&store, &[(existing_key.clone(), existing_value.clone())])?;
+
+    let stats = commit_entries(&store, &[
+        (existing_key.clone(), existing_value.clone()),
+        (new_key.clone(), new_value.clone()),
+    ])?;
+
+    assert_eq!(stats.input_records, 2);
+    assert_eq!(stats.input_bytes, 48);
+    assert_eq!(stats.output_records, 1);
+    assert_eq!(stats.segments_retired, 0);
+    assert_eq!(stats.segments_published, 1);
+    assert_eq!(store.iter_all()?.collect::<Result<Vec<_>>>()?, vec![
+        (existing_key, existing_value),
+        (new_key, new_value),
+    ]);
+    Ok(())
+}
+
+#[test]
+fn conflicting_recommit_is_rejected_atomically() -> Result<()> {
+    let tempdir = tempfile::tempdir()?;
+    let store = create_store(&tempdir)?;
+    let existing_key = make_key(1, 0, 0);
+    let new_key = make_key(1, 0, 1);
+    let existing_value = make_value(5, 8);
+    commit_entries(&store, &[(existing_key.clone(), existing_value.clone())])?;
+
+    let error = commit_entries(&store, &[
+        (existing_key.clone(), make_value(1, 8)),
+        (new_key.clone(), make_value(2, 8)),
+    ])
+    .expect_err("a conflicting key must reject the whole batch");
+
+    assert!(matches!(error, Error::Input(InputError::KeyConflict)));
+    assert_eq!(store.fetch_one(&existing_key)?, Some(existing_value));
+    assert_eq!(store.fetch_one(&new_key)?, None);
+    assert_eq!(store.iter_all()?.count(), 1);
     Ok(())
 }
 
@@ -449,17 +547,21 @@ fn commit_keeps_unreferenced_files_until_explicit_gc() -> Result<()> {
 fn commit_keeps_retired_segments_until_explicit_gc() -> Result<()> {
     let tempdir = tempfile::tempdir()?;
     let store = create_store(&tempdir)?;
-    commit_entries(&store, &[(make_key(1, 0, 0), make_value(1, 8))])?;
+    commit_entries(&store, &[
+        (make_key(1, 0, 0), make_value(1, 8)),
+        (make_key(1, 0, 2), make_value(2, 8)),
+    ])?;
     let retired = first_segment_path(tempdir.path())?;
 
     let stats = commit_entries_with_options(
         &store,
-        &[(make_key(1, 0, 0), make_value(2, 8))],
-        &commit_options().with_patch_segment_limit(0),
+        &[(make_key(1, 0, 1), make_value(3, 8))],
+        &commit_options().with_patch_direct_record_limit(0),
     )?;
     assert_eq!(stats.segments_retired, 1);
     assert!(retired.exists());
     assert_eq!(store.fetch_one(&make_key(1, 0, 0))?, Some(make_value(1, 8)));
+    assert_eq!(store.fetch_one(&make_key(1, 0, 1))?, Some(make_value(3, 8)));
 
     store.garbage_collect()?;
     assert!(!retired.exists());
@@ -467,20 +569,34 @@ fn commit_keeps_retired_segments_until_explicit_gc() -> Result<()> {
 }
 
 #[test]
-fn normalization_keeps_smaller_batch_value_for_duplicate_key() -> Result<()> {
+fn conflicting_batch_does_not_publish_new_keys() -> Result<()> {
     let tempdir = tempfile::tempdir()?;
     let store = create_store(&tempdir)?;
-    let key = make_key(1, 0, 0);
-    let options = commit_options().with_patch_segment_limit(0);
+    let existing_key = make_key(1, 0, 0);
+    let new_key = make_key(1, 0, 1);
+    let options = commit_options().with_patch_direct_record_limit(0);
 
-    commit_entries_with_options(&store, &[(key.clone(), make_value(9, 8))], &options)?;
-    let stats = commit_entries_with_options(&store, &[(key.clone(), make_value(1, 8))], &options)?;
+    commit_entries_with_options(
+        &store,
+        &[(existing_key.clone(), make_value(9, 8))],
+        &options,
+    )?;
+    let error = commit_entries_with_options(
+        &store,
+        &[
+            (existing_key.clone(), make_value(1, 8)),
+            (new_key.clone(), make_value(2, 8)),
+        ],
+        &options,
+    )
+    .expect_err("conflicting input must fail before publication");
 
-    assert_eq!(stats.segments_retired, 1);
-    assert_eq!(store.fetch_one(&key)?, Some(make_value(1, 8)));
+    assert!(matches!(error, Error::Input(InputError::KeyConflict)));
+    assert_eq!(store.fetch_one(&existing_key)?, Some(make_value(9, 8)));
+    assert_eq!(store.fetch_one(&new_key)?, None);
     assert_eq!(store.iter_all()?.collect::<Result<Vec<_>>>()?, vec![(
-        key,
-        make_value(1, 8)
+        existing_key,
+        make_value(9, 8)
     )]);
     Ok(())
 }

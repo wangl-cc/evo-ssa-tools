@@ -6,14 +6,14 @@ use super::{
     Committer,
     batch::{PreparedBatch, WriteBatch},
     options::CommitOptions,
-    plan::{CommitPlan, CommitPublicationStats, StagedSegment},
+    plan::{CommitPlan, CommitPublicationStats, NormalizationComponent, StagedSegment},
 };
 use crate::{
     catalog::{SegmentManifestEntry, SegmentTier},
-    error::{InputError, Result},
+    error::{CorruptionError, InputError, Result},
     record::EntrySource,
     segment::{Segment, SegmentWriter},
-    snapshot::RangeCursor,
+    snapshot::{OrderedLookup, RangeCursor},
 };
 
 /// Summary returned after a successful batch commit.
@@ -39,6 +39,7 @@ pub struct CommitStats {
 pub(super) enum RecordStreamStep {
     Pushed,
     ChunkFull,
+    ComponentBoundary,
     Done,
 }
 
@@ -103,6 +104,11 @@ struct NormalizationRecords<'a> {
     existing: RangeCursor,
 }
 
+struct NormalizationComponents {
+    current: Option<RangeCursor>,
+    remaining: std::vec::IntoIter<RangeCursor>,
+}
+
 impl<'a> NormalizationRecords<'a> {
     fn new(batch: &'a PreparedBatch, existing: RangeCursor) -> Self {
         Self {
@@ -118,7 +124,6 @@ impl SortedRecordStream for NormalizationRecords<'_> {
         enum Advance {
             Batch,
             Existing,
-            Both,
             Done,
         }
 
@@ -141,15 +146,7 @@ impl SortedRecordStream for NormalizationRecords<'_> {
                             Advance::Existing
                         }
                         Ordering::Equal => {
-                            let winner = if entry.value() <= existing_record.value {
-                                entry.value()
-                            } else {
-                                existing_record.value
-                            };
-                            if !chunk.try_push(entry.key(), winner) {
-                                return Ok(RecordStreamStep::ChunkFull);
-                            }
-                            Advance::Both
+                            return Err(CorruptionError::DuplicateVisibleKey.into());
                         }
                     }
                 }
@@ -173,13 +170,39 @@ impl SortedRecordStream for NormalizationRecords<'_> {
         match advance {
             Advance::Batch => self.batch_index += 1,
             Advance::Existing => self.existing.advance_record()?,
-            Advance::Both => {
-                self.batch_index += 1;
-                self.existing.advance_record()?;
-            }
             Advance::Done => return Ok(RecordStreamStep::Done),
         }
         Ok(RecordStreamStep::Pushed)
+    }
+}
+
+impl NormalizationComponents {
+    fn new(cursors: Vec<RangeCursor>) -> Self {
+        let mut remaining = cursors.into_iter();
+        let current = remaining.next();
+        Self { current, remaining }
+    }
+}
+
+impl SortedRecordStream for NormalizationComponents {
+    fn push_next_into(&mut self, chunk: &mut SegmentChunk) -> Result<RecordStreamStep> {
+        loop {
+            let Some(current) = &mut self.current else {
+                return Ok(RecordStreamStep::Done);
+            };
+            if let Some(record) = current.current_record()? {
+                if !chunk.try_push(record.key, record.value) {
+                    return Ok(RecordStreamStep::ChunkFull);
+                }
+                current.advance_record()?;
+                return Ok(RecordStreamStep::Pushed);
+            }
+
+            self.current = self.remaining.next();
+            if self.current.is_some() {
+                return Ok(RecordStreamStep::ComponentBoundary);
+            }
+        }
     }
 }
 
@@ -205,6 +228,14 @@ impl Committer<'_> {
         let input_bytes = batch.byte_len();
 
         let _commit_guard = self.inner.commit_lock.lock();
+        let batch = self.remove_idempotent_records(batch)?;
+        if batch.is_empty() {
+            return Ok(CommitStats {
+                input_records,
+                input_bytes,
+                ..CommitStats::default()
+            });
+        }
 
         let (manifest, main_segments, patch_segments) = {
             let state = self.inner.state.read();
@@ -215,17 +246,19 @@ impl Committer<'_> {
             )
         };
 
+        let new_records = batch.len();
+        let new_bytes = batch.byte_len();
         let batch_min = batch.key_at(0).to_vec();
-        let batch_max = batch.key_at(input_records - 1).to_vec();
+        let batch_max = batch.key_at(new_records - 1).to_vec();
         let mut plan = CommitPlan::from_snapshot(manifest, main_segments, patch_segments);
-        let affected_main = plan.affected_main_range(&batch_min, &batch_max);
+        let component = plan.component_for_range(&batch_min, &batch_max);
         let direct_ranges = batch.flush_ranges(
             key_len,
             options.flush_threshold_records(),
             options.flush_threshold_bytes(),
         );
 
-        let (written, output_records) = if affected_main.is_empty() {
+        let (written, output_records) = if !component.has_main() && !component.has_patches() {
             let written = self.write_batch_segments(
                 &batch,
                 direct_ranges,
@@ -233,8 +266,8 @@ impl Committer<'_> {
                 &mut plan,
                 options,
             )?;
-            (written, input_records)
-        } else if plan.should_publish_patch(input_records, direct_ranges.len(), options) {
+            (written, new_records)
+        } else if component.allows_patch(new_records, new_bytes, direct_ranges.len(), options) {
             let written = self.write_batch_segments(
                 &batch,
                 direct_ranges,
@@ -242,14 +275,10 @@ impl Committer<'_> {
                 &mut plan,
                 options,
             )?;
-            (written, input_records)
+            (written, new_records)
         } else {
-            let (written, merged_len) = self.write_normalized_segments(
-                &mut plan,
-                &batch,
-                Some((batch_min.as_slice(), batch_max.as_slice())),
-                options,
-            )?;
+            let (written, merged_len) =
+                self.write_normalized_component(&mut plan, &batch, component, options)?;
             (written, merged_len)
         };
 
@@ -262,6 +291,24 @@ impl Committer<'_> {
             segments_retired: publication_stats.segments_retired,
             output_records,
         })
+    }
+
+    fn remove_idempotent_records(&self, batch: PreparedBatch) -> Result<PreparedBatch> {
+        let keys: Vec<&[u8]> = (0..batch.len()).map(|index| batch.key_at(index)).collect();
+        let mut retain = vec![true; batch.len()];
+        let mut lookup = OrderedLookup::new(Arc::clone(self.inner));
+        lookup.visit_many_strict(&keys, |index, existing| {
+            let Some(existing) = existing else {
+                return Ok(());
+            };
+            if existing != batch.entry(index).value() {
+                return Err(InputError::KeyConflict.into());
+            }
+            retain[index] = false;
+            Ok(())
+        })?;
+        drop(keys);
+        Ok(batch.retain_mask(&retain))
     }
 
     /// Normalizes every live patch segment into the main tier.
@@ -289,8 +336,22 @@ impl Committer<'_> {
             return Ok(CommitStats::default());
         }
 
+        let components = plan.patch_components();
+        let mut cursors = Vec::with_capacity(components.len());
+        for component in components {
+            let affected_live = plan.retire_component(component);
+            cursors.push(RangeCursor::strict_from_segment_sets(
+                affected_live.main,
+                affected_live.patches,
+                self.inner.geometry,
+                self.inner.verify_block_checksums,
+                None,
+                None,
+            ));
+        }
+        let mut records = NormalizationComponents::new(cursors);
         let (written, output_records) =
-            self.write_normalized_segments(&mut plan, &PreparedBatch::default(), None, options)?;
+            self.write_record_segments(&mut records, &mut plan, options)?;
         let publication_stats = self.publish_plan(plan, written, key_len)?;
         Ok(CommitStats {
             input_records: 0,
@@ -301,23 +362,15 @@ impl Committer<'_> {
         })
     }
 
-    fn write_normalized_segments(
+    fn write_normalized_component(
         &self,
         plan: &mut CommitPlan,
         batch: &PreparedBatch,
-        batch_bounds: Option<(&[u8], &[u8])>,
+        component: NormalizationComponent,
         options: &CommitOptions,
     ) -> Result<(Vec<StagedSegment>, usize)> {
-        let affected_live = if let Some((batch_min, batch_max)) = batch_bounds {
-            plan.retire_normalized_segments(batch_min, batch_max)
-        } else {
-            let Some(affected_live) = plan.retire_patch_normalization_segments() else {
-                return Ok((Vec::new(), 0));
-            };
-            affected_live
-        };
-
-        let existing = RangeCursor::from_segment_sets(
+        let affected_live = plan.retire_component(component);
+        let existing = RangeCursor::strict_from_segment_sets(
             affected_live.main,
             affected_live.patches,
             self.inner.geometry,
@@ -394,7 +447,9 @@ impl Committer<'_> {
             loop {
                 match records.push_next_into(&mut chunk)? {
                     RecordStreamStep::Pushed => output_records += 1,
-                    RecordStreamStep::ChunkFull => stage_chunk(&mut chunk)?,
+                    RecordStreamStep::ChunkFull | RecordStreamStep::ComponentBoundary => {
+                        stage_chunk(&mut chunk)?;
+                    }
                     RecordStreamStep::Done => break,
                 }
             }
