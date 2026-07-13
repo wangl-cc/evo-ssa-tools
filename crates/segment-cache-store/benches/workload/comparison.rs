@@ -5,12 +5,42 @@ use criterion::{BatchSize, Criterion, Throughput};
 use crate::{
     backends::{
         Fjall3Backend, RedbBackend, commit_options_with_block_size, create_filled_segment_store,
-        create_segment_store, fill_segment_store, run_segment_axis_changes, sum_segment_fetches,
-        sum_segment_iter,
+        create_segment_store, fill_segment_store_with_options, run_segment_axis_changes,
+        sum_segment_fetches, sum_segment_iter,
     },
     data::{AxisChangeDataset, Dataset, build_axis_change_dataset, build_dataset},
     profile::{PROFILES, ValueProfile},
 };
+
+const DEFAULT_SEGMENT_VARIANTS: &[SegmentVariant] = &[SegmentVariant::new("segment", 16 * 1024)];
+const LARGE_SEGMENT_VARIANTS: &[SegmentVariant] = &[
+    SegmentVariant::new("segment", 16 * 1024),
+    SegmentVariant::new("segment_256k", 256 * 1024),
+    SegmentVariant::new("segment_512k", 512 * 1024),
+];
+
+#[derive(Clone, Copy)]
+struct SegmentVariant {
+    benchmark_name: &'static str,
+    block_size: usize,
+}
+
+impl SegmentVariant {
+    const fn new(benchmark_name: &'static str, block_size: usize) -> Self {
+        Self {
+            benchmark_name,
+            block_size,
+        }
+    }
+
+    fn for_profile(profile: ValueProfile) -> &'static [Self] {
+        if profile.uses_large_value_tuning() {
+            LARGE_SEGMENT_VARIANTS
+        } else {
+            DEFAULT_SEGMENT_VARIANTS
+        }
+    }
+}
 
 pub(crate) fn workload(c: &mut Criterion) {
     for &profile in PROFILES {
@@ -30,17 +60,19 @@ fn bench_ordered_fetch(c: &mut Criterion, profile: ValueProfile, dataset: &Datas
     let mut group = c.benchmark_group(format!("{}/comparison_ordered_fetch", profile.name()));
     group.throughput(Throughput::Elements(dataset.ordered_keys.len() as u64));
 
-    let tempdir = tempfile::tempdir().expect("tempdir should work");
-    let store = create_filled_segment_store(
-        tempdir.path(),
-        profile,
-        &dataset.entries,
-        &commit_options_with_block_size(16 * 1024),
-        true,
-    );
-    group.bench_function("segment", |b| {
-        b.iter(|| black_box(sum_segment_fetches(&store, &dataset.ordered_keys)))
-    });
+    for variant in SegmentVariant::for_profile(profile) {
+        let tempdir = tempfile::tempdir().expect("tempdir should work");
+        let store = create_filled_segment_store(
+            tempdir.path(),
+            profile,
+            &dataset.entries,
+            &commit_options_with_block_size(variant.block_size),
+            true,
+        );
+        group.bench_function(variant.benchmark_name, |b| {
+            b.iter(|| black_box(sum_segment_fetches(&store, &dataset.ordered_keys)))
+        });
+    }
 
     let tempdir = tempfile::tempdir().expect("tempdir should work");
     let fjall = Fjall3Backend::open(tempdir.path(), profile);
@@ -72,22 +104,24 @@ fn bench_clustered_sparse_ordered_fetch(
         dataset.clustered_sparse_ordered_keys.len() as u64,
     ));
 
-    let tempdir = tempfile::tempdir().expect("tempdir should work");
-    let store = create_filled_segment_store(
-        tempdir.path(),
-        profile,
-        &dataset.entries,
-        &commit_options_with_block_size(16 * 1024),
-        true,
-    );
-    group.bench_function("segment", |b| {
-        b.iter(|| {
-            black_box(sum_segment_fetches(
-                &store,
-                &dataset.clustered_sparse_ordered_keys,
-            ))
-        })
-    });
+    for variant in SegmentVariant::for_profile(profile) {
+        let tempdir = tempfile::tempdir().expect("tempdir should work");
+        let store = create_filled_segment_store(
+            tempdir.path(),
+            profile,
+            &dataset.entries,
+            &commit_options_with_block_size(variant.block_size),
+            true,
+        );
+        group.bench_function(variant.benchmark_name, |b| {
+            b.iter(|| {
+                black_box(sum_segment_fetches(
+                    &store,
+                    &dataset.clustered_sparse_ordered_keys,
+                ))
+            })
+        });
+    }
 
     let tempdir = tempfile::tempdir().expect("tempdir should work");
     let fjall = Fjall3Backend::open(tempdir.path(), profile);
@@ -110,17 +144,19 @@ fn bench_iter_all(c: &mut Criterion, profile: ValueProfile, dataset: &Dataset) {
     let mut group = c.benchmark_group(format!("{}/comparison_iter_all", profile.name()));
     group.throughput(Throughput::Elements(dataset.entries.len() as u64));
 
-    let tempdir = tempfile::tempdir().expect("tempdir should work");
-    let store = create_filled_segment_store(
-        tempdir.path(),
-        profile,
-        &dataset.entries,
-        &commit_options_with_block_size(16 * 1024),
-        true,
-    );
-    group.bench_function("segment", |b| {
-        b.iter(|| black_box(sum_segment_iter(&store)))
-    });
+    for variant in SegmentVariant::for_profile(profile) {
+        let tempdir = tempfile::tempdir().expect("tempdir should work");
+        let store = create_filled_segment_store(
+            tempdir.path(),
+            profile,
+            &dataset.entries,
+            &commit_options_with_block_size(variant.block_size),
+            true,
+        );
+        group.bench_function(variant.benchmark_name, |b| {
+            b.iter(|| black_box(sum_segment_iter(&store)))
+        });
+    }
 
     let tempdir = tempfile::tempdir().expect("tempdir should work");
     let fjall = Fjall3Backend::open(tempdir.path(), profile);
@@ -139,16 +175,19 @@ fn bench_append_commit(c: &mut Criterion, profile: ValueProfile, dataset: &Datas
     let mut group = c.benchmark_group(format!("{}/comparison_append_publish", profile.name()));
     group.throughput(Throughput::Elements(dataset.entries.len() as u64));
 
-    group.bench_function("segment", |b| {
-        b.iter_batched(
-            || tempfile::tempdir().expect("tempdir should work"),
-            |tempdir| {
-                let store = create_segment_store(tempdir.path(), profile);
-                fill_segment_store(&store, &dataset.entries);
-            },
-            BatchSize::LargeInput,
-        )
-    });
+    for variant in SegmentVariant::for_profile(profile) {
+        let options = commit_options_with_block_size(variant.block_size);
+        group.bench_function(variant.benchmark_name, |b| {
+            b.iter_batched(
+                || tempfile::tempdir().expect("tempdir should work"),
+                |tempdir| {
+                    let store = create_segment_store(tempdir.path(), profile);
+                    fill_segment_store_with_options(&store, &dataset.entries, &options);
+                },
+                BatchSize::LargeInput,
+            )
+        });
+    }
 
     group.bench_function("fjall3", |b| {
         b.iter_batched(

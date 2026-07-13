@@ -14,7 +14,7 @@ One benchmark target is used for horizontal comparison against other embedded st
 - `parameter_evolution`: segment-only cache-evolution benchmark with checksum verification enabled. It measures rebuild-vs-L0 behavior for middle inserts and repeated axis changes.
 - `compression`: segment-only value-payload compression benchmark, available with `--features value-compression-lz4,value-compression-zstd`. It compares uncompressed stores against LZ4-created and Zstandard-level-1-created stores using the default writer-side compression policy, reports store bytes, and measures ordered fetch, full iteration, and append publish.
 
-`segment_no_crc` appears only in `comparison`. It opens the segment store read-only with block checksum verification disabled, so it is an explicit upper-bound variant for comparing against engines that do not validate user value bytes on read. All segment-only diagnostics keep checksum verification enabled because they are meant to measure the cache-safe implementation.
+All current segment variants keep block checksum verification enabled, including the cross-backend comparison. The suite therefore measures the cache-safe implementation rather than an unchecked upper bound.
 
 ## Dataset Shape
 
@@ -41,19 +41,19 @@ Each profile currently uses `16,384` records for the standard dataset. The param
 
 ### `comparison_ordered_fetch`
 
-Fetches the full ordered stream of known keys and touches every returned value. This is the primary hot-path comparison. Variants: `segment`, `segment_no_crc`, `fjall3`, and `redb`.
+Fetches the full ordered stream of known keys and touches every returned value. This is the primary hot-path comparison. Variants: `segment`, `fjall3`, and `redb`; the large profile additionally registers `segment_256k` and `segment_512k` to measure block-size sensitivity against the other backends in the same run.
 
 ### `comparison_clustered_sparse_ordered_fetch`
 
-Fetches a clustered ordered 1/16 subset of known keys: each 256-record window contributes one contiguous 16-record burst. This keeps the sparse ratio comparable to the old evenly-spaced stress test while better modeling bursty parameter subsets where some blocks have multiple hits and others have none. Variants: `segment`, `segment_no_crc`, `fjall3`, and `redb`.
+Fetches a clustered ordered 1/16 subset of known keys: each 256-record window contributes one contiguous 16-record burst. This keeps the sparse ratio comparable to the old evenly-spaced stress test while better modeling bursty parameter subsets where some blocks have multiple hits and others have none. Variants: `segment`, `fjall3`, and `redb`; the large profile also measures the 256 and 512 KiB segment variants to expose sparse read amplification.
 
 ### `comparison_iter_all`
 
-Scans every visible record in order and touches every value. This represents export, migration, and full ordered readback. Variants: `segment`, `segment_no_crc`, `fjall3`, and `redb`.
+Scans every visible record in order and touches every value. This represents export, migration, and full ordered readback. Variants: `segment`, `fjall3`, and `redb`; the large profile also measures 256 and 512 KiB segment blocks.
 
 ### `comparison_append_publish`
 
-Publishes one sorted batch into a fresh store. This is the cleanest cross-backend write comparison for append-style cache materialization. Variants: `segment`, `fjall3`, and `redb`.
+Publishes one sorted batch into a fresh store. This is the cleanest cross-backend write comparison for append-style cache materialization. Variants: `segment`, `fjall3`, and `redb`; the large profile also records the 256 and 512 KiB segment block policies.
 
 ### `comparison_axis_change_rounds`
 
@@ -161,6 +161,7 @@ Space amplification is treated as a first-class metric. The measurement script l
 
 - [`b093515-m1`](../benchmark-baselines/b093515-m1/README.md): Apple M1 baseline for commit `b093515`, covering all five Criterion targets and the space-usage report.
 - [`9f8b2e6-m1`](../benchmark-baselines/9f8b2e6-m1/README.md): targeted Apple M1 baseline for the read, publication, normalization, and compression optimizations in commit `9f8b2e6`.
+- [`4cdc470-m1-large-blocks`](../benchmark-baselines/4cdc470-m1-large-blocks/README.md): same-run large-profile cross-backend comparison of 16, 256, and 512 KiB segment block policies.
 
 ## Historical Snapshot
 
