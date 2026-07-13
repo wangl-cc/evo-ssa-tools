@@ -14,19 +14,27 @@ use super::{
     BlockChecksumKind, ValuePayloadCompressionKind,
     layout::{BLOCK_METADATA_HEADER_LEN, BlockLookupLayout, BlockValueRegion},
 };
-use crate::{error::CorruptionError, value::ValueLayout};
+use crate::{
+    error::CorruptionError,
+    key::{CompositeKey, SegmentKeyPrefix},
+    limits::MAX_VALUE_PAYLOAD_LEN,
+    value::ValueLayout,
+};
 
 /// Raw block bytes plus derived offsets needed for borrowed record access.
 ///
-/// Prefix-compressed keys remain split in the block. Scan cursors reconstruct
-/// only their current key into caller-owned scratch, while compressed values
-/// borrow from a decoder-owned buffer supplied by the read session.
+/// The segment and block prefixes are combined once per loaded block for the
+/// hot comparison path. Suffixes remain in raw block bytes, scan cursors
+/// reconstruct only their current key into caller-owned scratch, and
+/// compressed values borrow from a decoder-owned buffer supplied by the read
+/// session.
 #[derive(Debug)]
 pub(crate) struct DecodedBlock {
     bytes: Vec<u8>,
     record_count: usize,
     key_len: usize,
-    key_prefix_len: usize,
+    key_prefix: Vec<u8>,
+    extra_prefix_len: usize,
     suffix_len: usize,
     key_section_len: usize,
     #[cfg(any(feature = "block-checksum", feature = "value-compression"))]
@@ -50,14 +58,15 @@ pub(crate) struct ParsedRecord<'key, 'value> {
     pub(crate) value: &'value [u8],
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub(crate) struct BlockKeyRangeRef<'a> {
-    pub(crate) prefix: &'a [u8],
+    pub(crate) segment_prefix: SegmentKeyPrefix,
+    pub(crate) extra_prefix: &'a [u8],
     pub(crate) min_suffix: &'a [u8],
     pub(crate) max_suffix: &'a [u8],
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub(crate) struct BlockDecodeOptions<'a> {
     pub(crate) expected_key_range: BlockKeyRangeRef<'a>,
     pub(crate) key_len: usize,
@@ -76,6 +85,7 @@ impl DecodedBlock {
         let layout = BlockLayout::from_block_bytes(
             &bytes,
             options.key_len,
+            options.expected_key_range.segment_prefix.len(),
             options.value_layout,
             options.block_checksum,
             options.value_payload_compression,
@@ -93,11 +103,23 @@ impl DecodedBlock {
         expected_key_range: BlockKeyRangeRef<'_>,
     ) -> Result<Self, CorruptionError> {
         layout.validate_key_section(&bytes)?;
+        let extra_prefix_end = BLOCK_METADATA_HEADER_LEN
+            .checked_add(layout.lookup.key_prefix_len)
+            .ok_or(CorruptionError::Block)?;
+        let extra_prefix = bytes
+            .get(BLOCK_METADATA_HEADER_LEN..extra_prefix_end)
+            .ok_or(CorruptionError::Block)?;
+        let mut key_prefix = Vec::with_capacity(
+            expected_key_range.segment_prefix.len() + layout.lookup.key_prefix_len,
+        );
+        key_prefix.extend_from_slice(expected_key_range.segment_prefix.as_slice());
+        key_prefix.extend_from_slice(extra_prefix);
         let block = Self {
             bytes,
             record_count: layout.record_count,
             key_len: layout.key_len,
-            key_prefix_len: layout.lookup.key_prefix_len,
+            key_prefix,
+            extra_prefix_len: layout.lookup.key_prefix_len,
             suffix_len: layout.suffix_len,
             key_section_len: layout.lookup.key_section_len,
             #[cfg(any(feature = "block-checksum", feature = "value-compression"))]
@@ -171,12 +193,10 @@ impl DecodedBlock {
         if destination.len() != self.key_len {
             return Err(CorruptionError::Block);
         }
-        let prefix = self.key_prefix()?;
-        let suffix = self.key_suffix_at(index)?;
-        let (destination_prefix, destination_suffix) = destination.split_at_mut(prefix.len());
-        destination_prefix.copy_from_slice(prefix);
-        destination_suffix.copy_from_slice(suffix);
-        Ok(())
+        let key = CompositeKey::new(&[], &self.key_prefix, self.key_suffix_at(index)?);
+        key.write_to(destination)
+            .then_some(())
+            .ok_or(CorruptionError::Block)
     }
 
     pub(crate) fn lower_bound_index(&self, key: &[u8]) -> usize {
@@ -275,20 +295,15 @@ impl DecodedBlock {
         if index >= self.record_count || key.len() != self.key_len {
             return Err(CorruptionError::Block);
         }
-        let prefix_start = BLOCK_METADATA_HEADER_LEN;
-        let prefix_end = prefix_start
-            .checked_add(self.key_prefix_len)
-            .ok_or(CorruptionError::Block)?;
-        let prefix = self
-            .metadata()
-            .get(prefix_start..prefix_end)
-            .ok_or(CorruptionError::Block)?;
-        let prefix_order = prefix.cmp(&key[..self.key_prefix_len]);
+        let prefix_order = self
+            .key_prefix
+            .as_slice()
+            .cmp(&key[..self.key_prefix.len()]);
         if prefix_order != Ordering::Equal {
             return Ok(prefix_order);
         }
         self.key_suffix_at(index)
-            .map(|suffix| suffix.cmp(&key[self.key_prefix_len..]))
+            .map(|suffix| suffix.cmp(&key[self.key_prefix.len()..]))
     }
 
     fn key_suffix_at(&self, index: usize) -> Result<&[u8], CorruptionError> {
@@ -296,7 +311,7 @@ impl DecodedBlock {
             return Err(CorruptionError::Block);
         }
         let suffix_table_start = BLOCK_METADATA_HEADER_LEN
-            .checked_add(self.key_prefix_len)
+            .checked_add(self.extra_prefix_len)
             .ok_or(CorruptionError::Block)?;
         let start = suffix_table_start
             .checked_add(
@@ -315,7 +330,7 @@ impl DecodedBlock {
     }
 
     fn validate_key_ordering(&self, expected: BlockKeyRangeRef<'_>) -> Result<(), CorruptionError> {
-        if self.key_prefix()? != expected.prefix
+        if self.extra_key_prefix()? != expected.extra_prefix
             || self.key_suffix_at(0)? != expected.min_suffix
             || self.key_suffix_at(self.record_count - 1)? != expected.max_suffix
         {
@@ -332,9 +347,9 @@ impl DecodedBlock {
         Ok(())
     }
 
-    fn key_prefix(&self) -> Result<&[u8], CorruptionError> {
+    fn extra_key_prefix(&self) -> Result<&[u8], CorruptionError> {
         self.metadata()
-            .get(BLOCK_METADATA_HEADER_LEN..BLOCK_METADATA_HEADER_LEN + self.key_prefix_len)
+            .get(BLOCK_METADATA_HEADER_LEN..BLOCK_METADATA_HEADER_LEN + self.extra_prefix_len)
             .ok_or(CorruptionError::Block)
     }
 }
@@ -364,6 +379,7 @@ impl BlockLayout {
     fn from_block_bytes(
         bytes: &[u8],
         key_len: usize,
+        segment_prefix_len: usize,
         value_layout: ValueLayout,
         block_checksum: BlockChecksumKind,
         value_payload_compression: ValuePayloadCompressionKind,
@@ -371,6 +387,7 @@ impl BlockLayout {
         let mut layout = Self::from_metadata_prefix(
             bytes,
             key_len,
+            segment_prefix_len,
             value_layout,
             block_checksum,
             value_payload_compression,
@@ -385,6 +402,7 @@ impl BlockLayout {
     fn from_metadata_prefix(
         bytes: &[u8],
         key_len: usize,
+        segment_prefix_len: usize,
         value_layout: ValueLayout,
         block_checksum: BlockChecksumKind,
         value_payload_compression: ValuePayloadCompressionKind,
@@ -393,8 +411,16 @@ impl BlockLayout {
         if record_count == 0 {
             return Err(CorruptionError::Block);
         }
-        let key_prefix_len = BlockLookupLayout::read_key_prefix_len(bytes)?;
-        let lookup = BlockLookupLayout::new(record_count, key_len, value_layout, key_prefix_len)?;
+        let relative_key_len = key_len
+            .checked_sub(segment_prefix_len)
+            .ok_or(CorruptionError::Block)?;
+        let extra_prefix_len = BlockLookupLayout::read_key_prefix_len(bytes)?;
+        let lookup = BlockLookupLayout::new(
+            record_count,
+            relative_key_len,
+            value_layout,
+            extra_prefix_len,
+        )?;
         let lookup_metadata_len = lookup.lookup_metadata_len;
         let metadata_with_checksum_len = lookup.metadata_with_checksum_len(block_checksum)?;
         if metadata_with_checksum_len > bytes.len() {
@@ -411,6 +437,9 @@ impl BlockLayout {
         )
         .ok_or(CorruptionError::Block)?;
         let payload_len = value_region.payload_len();
+        if payload_len > MAX_VALUE_PAYLOAD_LEN {
+            return Err(CorruptionError::Block);
+        }
         if payload_offset > bytes.len() {
             return Err(CorruptionError::Block);
         }
@@ -428,7 +457,7 @@ impl BlockLayout {
         Ok(Self {
             record_count,
             key_len,
-            suffix_len: key_len - key_prefix_len,
+            suffix_len: relative_key_len - extra_prefix_len,
             lookup,
             #[cfg(feature = "block-checksum")]
             lookup_metadata_len,
@@ -543,6 +572,7 @@ mod tests {
         BlockBuilder::new(
             entries,
             key_len,
+            0,
             value_layout,
             checksum,
             compression,
@@ -558,7 +588,7 @@ mod tests {
         checksum: BlockChecksumKind,
         compression: ValuePayloadCompressionKind,
     ) -> BlockBuilder<'a, Entries<'a>> {
-        BlockBuilder::new(entries, key_len, value_layout, checksum, compression)
+        BlockBuilder::new(entries, key_len, 0, value_layout, checksum, compression)
     }
 
     #[cfg(feature = "value-compression")]
@@ -591,7 +621,8 @@ mod tests {
     fn key_range<'a>(min_key: &'a [u8], max_key: &'a [u8]) -> BlockKeyRangeRef<'a> {
         let prefix_len = crate::key::common_prefix_len(min_key, max_key);
         BlockKeyRangeRef {
-            prefix: &min_key[..prefix_len],
+            segment_prefix: SegmentKeyPrefix::from_owned(Vec::new()),
+            extra_prefix: &min_key[..prefix_len],
             min_suffix: &min_key[prefix_len..],
             max_suffix: &max_key[prefix_len..],
         }
@@ -648,6 +679,70 @@ mod tests {
                 .write_key_at_index(1, &mut key_scratch)
                 .expect("scratch should be reusable for the last key");
             assert_eq!(key_scratch, b"aa02");
+        }
+
+        #[test]
+        fn stores_long_block_keys_relative_to_the_segment_prefix() {
+            let mut first_key = vec![b'x'; 512];
+            let mut last_key = first_key.clone();
+            first_key[510..].copy_from_slice(b"01");
+            last_key[510..].copy_from_slice(b"09");
+            let entry_data = [
+                (first_key.as_slice(), b"first".as_slice()),
+                (last_key.as_slice(), b"last".as_slice()),
+            ];
+            let entries = Entries {
+                entries: &entry_data,
+            };
+            let checksum = BlockChecksumKind::None;
+            let compression = ValuePayloadCompressionKind::None;
+            #[cfg(feature = "value-compression")]
+            let builder = BlockBuilder::new(
+                &entries,
+                512,
+                510,
+                ValueLayout::VARIABLE,
+                checksum,
+                compression,
+                ValuePayloadCompressionPolicy::DEFAULT,
+            );
+            #[cfg(not(feature = "value-compression"))]
+            let builder = BlockBuilder::new(
+                &entries,
+                512,
+                510,
+                ValueLayout::VARIABLE,
+                checksum,
+                compression,
+            );
+            let block = encode_block(builder, compression);
+
+            assert_eq!(
+                u32::from_le_bytes(block[4..8].try_into().expect("extra prefix len")),
+                1
+            );
+            assert_eq!(&block[8..11], b"019");
+
+            let decoded = DecodedBlock::decode(block, BlockDecodeOptions {
+                expected_key_range: BlockKeyRangeRef {
+                    segment_prefix: SegmentKeyPrefix::from_owned(first_key[..510].to_vec()),
+                    extra_prefix: b"0",
+                    min_suffix: b"1",
+                    max_suffix: b"9",
+                },
+                key_len: 512,
+                value_layout: ValueLayout::VARIABLE,
+                block_checksum: checksum,
+                value_payload_compression: compression,
+                #[cfg(feature = "block-checksum")]
+                verify_lookup_checksum: true,
+            })
+            .expect("relative block should decode");
+            let mut key = vec![0; 512];
+            decoded
+                .write_key_at_index(1, &mut key)
+                .expect("key should materialize");
+            assert_eq!(key, last_key);
         }
 
         #[test]
@@ -829,6 +924,7 @@ mod tests {
             let block = BlockBuilder::new(
                 &entries,
                 4,
+                0,
                 ValueLayout::VARIABLE,
                 checksum,
                 compression,

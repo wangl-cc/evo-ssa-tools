@@ -840,6 +840,7 @@ mod tests {
         block::{
             BlockChecksumKind, BlockDecodeOptions, BlockKeyRangeRef, ValuePayloadCompressionKind,
         },
+        key::SegmentKeyPrefix,
         value::ValueLayout,
     };
 
@@ -906,7 +907,8 @@ mod tests {
 
         DecodedBlock::decode(bytes, BlockDecodeOptions {
             expected_key_range: BlockKeyRangeRef {
-                prefix: b"aa0",
+                segment_prefix: SegmentKeyPrefix::from_owned(Vec::new()),
+                extra_prefix: b"aa0",
                 min_suffix: b"1",
                 max_suffix: b"3",
             },

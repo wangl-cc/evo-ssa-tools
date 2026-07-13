@@ -95,7 +95,7 @@ fn manifest_is_binary_v1_snapshot() -> Result<()> {
         u32::from_le_bytes(manifest[16..20].try_into().expect("segment count")),
         1
     );
-    assert_eq!(manifest.len(), 20 + 4 + 1 + 8 + 8 + 16 + 16 + 4);
+    assert_eq!(manifest.len(), 20 + 4 + 1 + 8 + 32 + 16 + 16 + 4);
     Ok(())
 }
 

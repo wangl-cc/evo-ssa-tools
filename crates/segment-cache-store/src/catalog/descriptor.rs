@@ -8,7 +8,10 @@ use super::{
     CatalogError, CatalogMismatch,
     metadata::{MetadataParseError, StoreMetadata},
 };
-use crate::value::ValueLayout;
+use crate::{
+    limits::{MAX_KEY_LEN, MAX_VALUE_LEN},
+    value::ValueLayout,
+};
 
 const STORE_VERSION: u32 = 1;
 
@@ -116,8 +119,15 @@ impl StoreDescriptor {
         if self.key_len == 0 {
             return Err(CatalogMismatch::StoreKeyLenZero.into());
         }
-        if self.key_len > u32::MAX as usize {
+        if self.key_len > MAX_KEY_LEN {
             return Err(CatalogMismatch::StoreKeyLenTooLarge.into());
+        }
+        if self
+            .value_layout
+            .fixed_value_len()
+            .is_some_and(|len| len.get() as usize > MAX_VALUE_LEN)
+        {
+            return Err(CatalogMismatch::StoreValueLenTooLarge.into());
         }
         Ok(())
     }

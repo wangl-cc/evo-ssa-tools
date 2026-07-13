@@ -8,21 +8,26 @@
 use std::{fs::File, path::PathBuf};
 
 use super::{
-    Segment, SegmentFingerprint, SegmentGeometry,
+    Segment, SegmentContentId, SegmentGeometry,
     format::{SEGMENT_FOOTER_TRAILER_LEN, SEGMENT_HEADER_LEN, SegmentFooter, SegmentHeader},
-    index::BlockIndexEntry,
+    index::SegmentIndex,
     io::read_exact_at,
 };
+#[cfg(feature = "value-compression")]
+use crate::block::ValuePayloadDecoder;
 use crate::{
     binary::BinaryCursor,
     block::{BlockDecodeOptions, BlockKeyRangeRef, DecodedBlock},
     error::{CorruptionError, Result},
+    limits::{MAX_ENCODED_BLOCK_LEN, MAX_FOOTER_LEN},
 };
 
 #[derive(Clone, Copy)]
 pub(crate) struct SegmentOpenOptions<'a> {
     pub(crate) geometry: SegmentGeometry,
-    pub(crate) expected_fingerprint: SegmentFingerprint,
+    pub(crate) expected_segment_len: u64,
+    pub(crate) expected_content_id: SegmentContentId,
+    pub(crate) verify_content_id: bool,
     pub(crate) expected_min_key: &'a [u8],
     pub(crate) expected_max_key: &'a [u8],
 }
@@ -40,7 +45,7 @@ pub(super) struct OpenedSegment {
     pub(crate) file: File,
     pub(crate) min_key: Vec<u8>,
     pub(crate) max_key: Vec<u8>,
-    pub(crate) block_index: Vec<BlockIndexEntry>,
+    pub(crate) block_index: SegmentIndex,
 }
 
 impl OpenedSegment {
@@ -55,6 +60,9 @@ impl OpenedSegment {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
             Err(error) => return Err(error.into()),
         };
+        if file.metadata()?.len() != options.expected_segment_len {
+            return Ok(None);
+        }
         let header = match read_header(&file) {
             Ok(header) => header,
             Err(error) if error.is_cache_miss_corruption() => return Ok(None),
@@ -78,12 +86,18 @@ impl OpenedSegment {
             Err(error) if error.is_cache_miss_corruption() => return Ok(None),
             Err(error) => return Err(error),
         };
-        let fingerprint = match SegmentFingerprint::from_file(&file) {
-            Ok(fingerprint) => fingerprint,
-            Err(error) if error.is_cache_miss_corruption() => return Ok(None),
-            Err(error) => return Err(error),
-        };
-        if fingerprint != options.expected_fingerprint {
+        if options.verify_content_id
+            && match Self::verify_file(
+                &file,
+                &footer.block_index,
+                options.geometry,
+                options.expected_content_id,
+            ) {
+                Ok(verified) => !verified,
+                Err(error) if error.is_cache_miss_corruption() => return Ok(None),
+                Err(error) => return Err(error),
+            }
+        {
             return Ok(None);
         }
         Ok(Some(Self {
@@ -93,6 +107,39 @@ impl OpenedSegment {
             block_index: footer.block_index,
         }))
     }
+
+    /// Verifies one externally materialized segment before it is trusted.
+    fn verify_file(
+        file: &File,
+        index: &SegmentIndex,
+        geometry: SegmentGeometry,
+        expected_content_id: SegmentContentId,
+    ) -> Result<bool> {
+        if SegmentContentId::from_file(file)? != expected_content_id {
+            return Ok(false);
+        }
+        verify_blocks(file, index, geometry)?;
+        Ok(true)
+    }
+}
+
+fn verify_blocks(file: &File, index: &SegmentIndex, geometry: SegmentGeometry) -> Result<()> {
+    #[cfg(feature = "value-compression")]
+    let mut payload_decoder = ValuePayloadDecoder::new(geometry.value_payload_compression);
+    for block_index in 0..index.len() {
+        let block = read_block(file, index, block_index, BlockReadOptions {
+            geometry,
+            #[cfg(feature = "block-checksum")]
+            verify_lookup_checksum: true,
+        })?;
+        #[cfg(feature = "block-checksum")]
+        block.verify_payload_checksum()?;
+        #[cfg(feature = "value-compression")]
+        let _decoded_payload = block.decode_payload_if_needed(&mut payload_decoder)?;
+        #[cfg(not(feature = "value-compression"))]
+        let _payload = block.payload_bytes()?;
+    }
+    Ok(())
 }
 
 impl Segment {
@@ -135,15 +182,22 @@ fn read_footer(
     let footer_len = footer_body_len
         .checked_add(trailer_len)
         .ok_or(CorruptionError::SegmentFormat)?;
+    if footer_len > MAX_FOOTER_LEN as u64 {
+        return Err(CorruptionError::SegmentFormat.into());
+    }
     if file_len < footer_len {
         return Err(CorruptionError::SegmentFormat.into());
     }
     let data_end = file_len - footer_len;
     let footer_len = usize::try_from(footer_len).map_err(|_| CorruptionError::SegmentFormat)?;
-    let mut bytes = vec![0u8; footer_len];
+    let mut bytes = Vec::new();
+    bytes
+        .try_reserve_exact(footer_len)
+        .map_err(|_| CorruptionError::SegmentFormat)?;
+    bytes.resize(footer_len, 0);
     read_exact_at(file, data_end, &mut bytes)?;
     Ok(SegmentFooter::from_bytes(
-        &bytes,
+        bytes,
         key_len,
         data_end,
         expected_min_key,
@@ -154,32 +208,45 @@ fn read_footer(
 /// Reads and decodes one block, allocating a fresh buffer.
 pub(super) fn read_block(
     file: &File,
-    entry: &BlockIndexEntry,
+    index: &SegmentIndex,
+    block_index: usize,
     options: BlockReadOptions,
 ) -> Result<DecodedBlock> {
-    read_block_reusing(file, entry, options, Vec::new())
+    read_block_reusing(file, index, block_index, options, Vec::new())
 }
 
 /// Reads and decodes one block while reusing a caller-owned backing buffer.
 pub(super) fn read_block_reusing(
     file: &File,
-    entry: &BlockIndexEntry,
+    index: &SegmentIndex,
+    block_index: usize,
     options: BlockReadOptions,
     mut bytes: Vec<u8>,
 ) -> Result<DecodedBlock> {
+    let entry = index.entry(block_index);
     let block_len = usize::try_from(entry.byte_range.end - entry.byte_range.start)
         .map_err(|_| CorruptionError::SegmentFormat)?;
+    if block_len > MAX_ENCODED_BLOCK_LEN {
+        return Err(CorruptionError::SegmentFormat.into());
+    }
+    if bytes.capacity() < block_len {
+        bytes
+            .try_reserve_exact(block_len - bytes.len())
+            .map_err(|_| CorruptionError::SegmentFormat)?;
+    }
     if bytes.len() < block_len {
         bytes.resize(block_len, 0);
     } else {
         bytes.truncate(block_len);
     }
     read_exact_at(file, entry.byte_range.start, &mut bytes)?;
+    let expected = index.key_range(block_index);
     Ok(DecodedBlock::decode(bytes, BlockDecodeOptions {
         expected_key_range: BlockKeyRangeRef {
-            prefix: entry.key_range.prefix(),
-            min_suffix: entry.key_range.min_suffix(),
-            max_suffix: entry.key_range.max_suffix(),
+            segment_prefix: index.segment_prefix().clone(),
+            extra_prefix: expected.extra_prefix,
+            min_suffix: expected.min_suffix,
+            max_suffix: expected.max_suffix,
         },
         key_len: options.geometry.key_len,
         value_layout: options.geometry.value_layout,
@@ -188,4 +255,85 @@ pub(super) fn read_block_reusing(
         #[cfg(feature = "block-checksum")]
         verify_lookup_checksum: options.verify_lookup_checksum,
     })?)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::{Read, Seek, SeekFrom, Write};
+
+    use super::*;
+    #[cfg(feature = "value-compression")]
+    use crate::block::ValuePayloadCompressionPolicy;
+    use crate::{
+        block::{BlockChecksumKind, ValuePayloadCompressionKind},
+        record::{EntryRef, EntrySource},
+        segment::SegmentWriter,
+        value::ValueLayout,
+    };
+
+    struct OneEntry;
+
+    impl EntrySource for OneEntry {
+        fn len(&self) -> usize {
+            1
+        }
+
+        fn entry(&self, index: usize) -> EntryRef<'_> {
+            assert_eq!(index, 0);
+            EntryRef::new(b"key1", b"value")
+        }
+    }
+
+    #[test]
+    fn explicit_single_segment_verification_detects_same_length_corruption() -> Result<()> {
+        let tempdir = tempfile::tempdir()?;
+        let path = tempdir.path().join("segment.seg");
+        let geometry = SegmentGeometry {
+            key_len: 4,
+            value_layout: ValueLayout::VARIABLE,
+            block_checksum: BlockChecksumKind::None,
+            value_payload_compression: ValuePayloadCompressionKind::None,
+        };
+        let mut file = File::options()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(&path)?;
+        let metadata = segment_writer(geometry).write(&mut file, &OneEntry)?;
+        file.sync_all()?;
+        drop(file);
+        let options = SegmentOpenOptions {
+            geometry,
+            expected_segment_len: metadata.segment_len(),
+            expected_content_id: metadata.content_id(),
+            verify_content_id: true,
+            expected_min_key: &metadata.min_key,
+            expected_max_key: &metadata.max_key,
+        };
+
+        assert!(OpenedSegment::open(path.clone(), options)?.is_some());
+
+        let payload_byte = metadata.footer.block_index.entry(0).byte_range.end - 1;
+        let mut file = File::options().read(true).write(true).open(&path)?;
+        file.seek(SeekFrom::Start(payload_byte))?;
+        let mut byte = [0];
+        file.read_exact(&mut byte)?;
+        byte[0] ^= 0xff;
+        file.seek(SeekFrom::Start(payload_byte))?;
+        file.write_all(&byte)?;
+        file.sync_all()?;
+
+        assert!(OpenedSegment::open(path, options)?.is_none());
+        Ok(())
+    }
+
+    #[cfg(feature = "value-compression")]
+    fn segment_writer(geometry: SegmentGeometry) -> SegmentWriter {
+        SegmentWriter::new(geometry, ValuePayloadCompressionPolicy::DEFAULT, 16 * 1024)
+    }
+
+    #[cfg(not(feature = "value-compression"))]
+    fn segment_writer(geometry: SegmentGeometry) -> SegmentWriter {
+        SegmentWriter::new(geometry, 16 * 1024)
+    }
 }

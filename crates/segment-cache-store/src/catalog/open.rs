@@ -85,7 +85,7 @@ impl OpenOptions {
     /// Disabling verification is only accepted for read-only opens; writable
     /// handles must keep verification enabled so corrupt bytes cannot be merged
     /// into freshly checksummed replacement segments. Open-time catalog,
-    /// segment-structure, and manifest fingerprint checks still run either way.
+    /// segment-structure and manifest length checks still run either way.
     pub fn with_block_checksum_verification(mut self, verify: bool) -> Self {
         self.verify_block_checksums = verify;
         self
@@ -207,7 +207,9 @@ impl Catalog {
             let path = paths.final_segment(entry.segment_id);
             let segment = match Segment::open(entry.segment_id, path, SegmentOpenOptions {
                 geometry,
-                expected_fingerprint: entry.fingerprint,
+                expected_segment_len: entry.segment_len,
+                expected_content_id: entry.content_id,
+                verify_content_id: false,
                 expected_min_key: &entry.min_key,
                 expected_max_key: &entry.max_key,
             })? {

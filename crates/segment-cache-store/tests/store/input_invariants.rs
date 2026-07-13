@@ -41,6 +41,23 @@ fn invalid_create_options_are_rejected() {
     ));
 }
 
+#[test]
+fn fixed_value_layout_rejects_lengths_above_64_mib() {
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let options = create_options().with_fixed_value_len(non_zero_u32(64 * 1024 * 1024 + 1));
+    let error = match create_store_with(&tempdir, options) {
+        Ok(_) => panic!("oversized fixed values should be rejected"),
+        Err(error) => error,
+    };
+
+    assert!(matches!(
+        error,
+        Error::Input(InputError::InvalidOptions(
+            OptionsError::FixedValueLenTooLarge
+        ))
+    ));
+}
+
 #[cfg(feature = "value-compression")]
 #[test]
 fn compression_policy_rejects_invalid_saved_percentage() {

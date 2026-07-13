@@ -108,6 +108,9 @@ pub enum InputError {
     #[error("value length mismatch: expected fixed {expected}, got {actual}")]
     WrongValueLength { expected: u32, actual: usize },
 
+    #[error("value exceeds the {max}-byte implementation limit: got {actual}")]
+    ValueTooLarge { max: usize, actual: usize },
+
     #[error(transparent)]
     InvalidOptions(#[from] OptionsError),
 
@@ -143,8 +146,11 @@ pub enum OptionsError {
     #[error("key_len must be greater than zero")]
     KeyLenZero,
 
-    #[error("key_len must fit in u32")]
+    #[error("key_len exceeds the implementation limit")]
     KeyLenTooLarge,
+
+    #[error("fixed value length exceeds the implementation limit")]
+    FixedValueLenTooLarge,
 
     #[cfg(feature = "value-compression")]
     #[error(transparent)]

@@ -10,13 +10,18 @@ use std::collections::BTreeSet;
 use crc32c::crc32c;
 
 use super::{CatalogError, CatalogMismatch};
-use crate::{binary::BinaryCursor, segment::SegmentFingerprint};
+use crate::{
+    binary::BinaryCursor,
+    limits::{MAX_KEY_LEN, MAX_MANIFEST_LEN},
+    segment::{SEGMENT_CONTENT_ID_LEN, SegmentContentId},
+};
 
 const MANIFEST_VERSION: u32 = 1;
 
 const MANIFEST_MAGIC: &[u8; 4] = b"SCSM";
 const MANIFEST_HEADER_LEN: usize = 20;
 const MANIFEST_TRAILER_LEN: usize = 4;
+const MANIFEST_ENTRY_FIXED_LEN: usize = 4 + 1 + 8 + SEGMENT_CONTENT_ID_LEN;
 
 /// Encoding would exceed the v1 binary `MANIFEST` envelope.
 #[derive(thiserror::Error, Debug, Eq, PartialEq)]
@@ -28,11 +33,14 @@ pub enum ManifestEncodeError {
     #[error("MANIFEST exceeds v1 format limits: length overflow")]
     Length,
 
-    #[error("MANIFEST exceeds v1 format limits: key length exceeds u32")]
+    #[error("MANIFEST key length exceeds the implementation limit")]
     KeyLength,
 
     #[error("MANIFEST exceeds v1 format limits: segment count exceeds u32")]
     SegmentCount,
+
+    #[error("MANIFEST exceeds the implementation size limit")]
+    TooLarge,
 }
 
 /// Malformed or corrupt binary `MANIFEST` bytes.
@@ -41,6 +49,15 @@ pub enum ManifestEncodeError {
 pub enum ManifestParseError {
     #[error("malformed MANIFEST file: too short")]
     TooShort,
+
+    #[error("malformed MANIFEST file: exceeds the implementation size limit")]
+    TooLarge,
+
+    #[error("malformed MANIFEST file: key length exceeds the implementation limit")]
+    KeyLengthTooLarge,
+
+    #[error("malformed MANIFEST file: allocation failed")]
+    Allocation,
 
     #[error("malformed MANIFEST file: checksum mismatch")]
     ChecksumMismatch,
@@ -72,7 +89,8 @@ pub enum ManifestParseError {
 pub(crate) struct SegmentManifestEntry {
     pub(crate) segment_id: u32,
     pub(crate) tier: SegmentTier,
-    pub(crate) fingerprint: SegmentFingerprint,
+    pub(crate) segment_len: u64,
+    pub(crate) content_id: SegmentContentId,
     pub(crate) min_key: Vec<u8>,
     pub(crate) max_key: Vec<u8>,
 }
@@ -87,14 +105,16 @@ impl SegmentManifestEntry {
     pub(crate) fn new(
         segment_id: u32,
         tier: SegmentTier,
-        fingerprint: SegmentFingerprint,
+        segment_len: u64,
+        content_id: SegmentContentId,
         min_key: Vec<u8>,
         max_key: Vec<u8>,
     ) -> Self {
         Self {
             segment_id,
             tier,
-            fingerprint,
+            segment_len,
+            content_id,
             min_key,
             max_key,
         }
@@ -153,6 +173,9 @@ impl StoreManifest {
     }
 
     pub(crate) fn encode(&self) -> std::result::Result<Vec<u8>, ManifestEncodeError> {
+        if self.key_len > MAX_KEY_LEN {
+            return Err(ManifestEncodeError::KeyLength);
+        }
         let entry_len = manifest_entry_len(self.key_len).ok_or(ManifestEncodeError::EntryLength)?;
         let capacity = MANIFEST_HEADER_LEN
             .checked_add(
@@ -163,6 +186,9 @@ impl StoreManifest {
             )
             .and_then(|len| len.checked_add(MANIFEST_TRAILER_LEN))
             .ok_or(ManifestEncodeError::Length)?;
+        if capacity > MAX_MANIFEST_LEN {
+            return Err(ManifestEncodeError::TooLarge);
+        }
         let mut out = Vec::with_capacity(capacity);
         out.extend_from_slice(MANIFEST_MAGIC);
         out.extend_from_slice(&self.version.to_le_bytes());
@@ -180,8 +206,8 @@ impl StoreManifest {
         for entry in &self.segments {
             out.extend_from_slice(&entry.segment_id.to_le_bytes());
             out.push(entry.tier.to_u8());
-            out.extend_from_slice(&entry.fingerprint.len.to_le_bytes());
-            out.extend_from_slice(&entry.fingerprint.hash.to_le_bytes());
+            out.extend_from_slice(&entry.segment_len.to_le_bytes());
+            out.extend_from_slice(entry.content_id.as_bytes());
             out.extend_from_slice(&entry.min_key);
             out.extend_from_slice(&entry.max_key);
         }
@@ -210,6 +236,7 @@ impl StoreManifest {
         let mut seen_ids = BTreeSet::new();
         let mut max_segment_id: Option<u32> = None;
         let mut previous_max: Option<&[u8]> = None;
+        let mut previous_patch: Option<(&[u8], u32)> = None;
         let mut seen_patch = false;
         for entry in &self.segments {
             entry.validate_shape(key_len)?;
@@ -225,6 +252,12 @@ impl StoreManifest {
                 previous_max = Some(&entry.max_key);
             } else {
                 seen_patch = true;
+                if previous_patch.is_some_and(|previous| {
+                    previous >= (entry.min_key.as_slice(), entry.segment_id)
+                }) {
+                    return Err(CatalogMismatch::SegmentPatchOrder.into());
+                }
+                previous_patch = Some((&entry.min_key, entry.segment_id));
             }
             if !seen_ids.insert(entry.segment_id) {
                 return Err(CatalogMismatch::DuplicateSegmentId.into());
@@ -242,7 +275,7 @@ impl StoreManifest {
 }
 
 fn manifest_entry_len(key_len: usize) -> Option<usize> {
-    21usize.checked_add(key_len.checked_mul(2)?)
+    MANIFEST_ENTRY_FIXED_LEN.checked_add(key_len.checked_mul(2)?)
 }
 
 struct ManifestParser<'a> {
@@ -259,6 +292,9 @@ impl<'a> ManifestParser<'a> {
     }
 
     fn parse(mut self) -> std::result::Result<StoreManifest, ManifestParseError> {
+        if self.input.len() > MAX_MANIFEST_LEN {
+            return Err(ManifestParseError::TooLarge);
+        }
         if self.input.len() < MANIFEST_HEADER_LEN + MANIFEST_TRAILER_LEN {
             return Err(ManifestParseError::TooShort);
         }
@@ -277,6 +313,9 @@ impl<'a> ManifestParser<'a> {
         }
         let version = self.read_u32("version")?;
         let key_len = self.read_u32("key_len")? as usize;
+        if key_len > MAX_KEY_LEN {
+            return Err(ManifestParseError::KeyLengthTooLarge);
+        }
         let next_segment_id = self.read_u32("next_segment_id")?;
         let segment_count = self.read_u32("segment_count")? as usize;
         let entry_len =
@@ -293,21 +332,25 @@ impl<'a> ManifestParser<'a> {
             return Err(ManifestParseError::LengthMismatch);
         }
 
-        let mut segments = Vec::with_capacity(segment_count);
+        let mut segments = Vec::new();
+        segments
+            .try_reserve_exact(segment_count)
+            .map_err(|_| ManifestParseError::Allocation)?;
         for _ in 0..segment_count {
             let segment_id = self.read_u32("segment_id")?;
             let tier = SegmentTier::from_u8(self.read_u8("tier")?)
                 .ok_or(ManifestParseError::UnsupportedSegmentTier)?;
-            let fingerprint = SegmentFingerprint {
-                len: self.read_u64("segment_len")?,
-                hash: self.read_u64("segment_hash")?,
-            };
+            let segment_len = self.read_u64("segment_len")?;
+            let content_id = SegmentContentId::from_bytes(
+                self.read_array::<SEGMENT_CONTENT_ID_LEN>("segment_content_id")?,
+            );
             let min_key = self.read_vec("min_key", key_len)?;
             let max_key = self.read_vec("max_key", key_len)?;
             segments.push(SegmentManifestEntry::new(
                 segment_id,
                 tier,
-                fingerprint,
+                segment_len,
+                content_id,
                 min_key,
                 max_key,
             ));
@@ -351,6 +394,16 @@ impl<'a> ManifestParser<'a> {
             .read_vec(len)
             .ok_or(ManifestParseError::TruncatedField { field })
     }
+
+    fn read_array<const N: usize>(
+        &mut self,
+        field: &'static str,
+    ) -> std::result::Result<[u8; N], ManifestParseError> {
+        self.cursor
+            .read_slice(N)
+            .and_then(|bytes| bytes.try_into().ok())
+            .ok_or(ManifestParseError::TruncatedField { field })
+    }
 }
 
 #[cfg(test)]
@@ -378,7 +431,8 @@ mod tests {
         SegmentManifestEntry::new(
             segment_id,
             SegmentTier::Main,
-            fingerprint(segment_id),
+            1024 + u64::from(segment_id),
+            content_id(segment_id),
             key(min),
             key(max),
         )
@@ -388,17 +442,17 @@ mod tests {
         SegmentManifestEntry::new(
             segment_id,
             SegmentTier::Patch,
-            fingerprint(segment_id),
+            1024 + u64::from(segment_id),
+            content_id(segment_id),
             key(min),
             key(max),
         )
     }
 
-    fn fingerprint(seed: u32) -> SegmentFingerprint {
-        SegmentFingerprint {
-            len: 1024 + u64::from(seed),
-            hash: u64::from(seed),
-        }
+    fn content_id(seed: u32) -> SegmentContentId {
+        let mut bytes = [0u8; SEGMENT_CONTENT_ID_LEN];
+        bytes[..4].copy_from_slice(&seed.to_le_bytes());
+        SegmentContentId::from_bytes(bytes)
     }
 
     mod manifest_format {
@@ -416,7 +470,25 @@ mod tests {
             assert_eq!(parsed.next_segment_id, 12);
             assert_eq!(parsed.segments.len(), 2);
             assert_eq!(parsed.segments[0].segment_id, 7);
+            assert_eq!(parsed.segments[0].segment_len, 1031);
+            assert_eq!(parsed.segments[0].content_id, content_id(7));
             assert_eq!(parsed.segments[1].min_key, key(2));
+        }
+
+        #[test]
+        fn encodes_v1_content_id_at_its_exact_width() {
+            let manifest = manifest_with_segments(vec![entry(7, 0, 1)]);
+            let bytes = manifest.encode().expect("manifest should encode");
+            let entry_start = MANIFEST_HEADER_LEN;
+
+            assert_eq!(
+                bytes.len(),
+                MANIFEST_HEADER_LEN + MANIFEST_ENTRY_FIXED_LEN + 32 + MANIFEST_TRAILER_LEN
+            );
+            assert_eq!(
+                &bytes[entry_start + 13..entry_start + 45],
+                content_id(7).as_bytes()
+            );
         }
 
         #[test]
@@ -493,6 +565,23 @@ mod tests {
             assert!(matches!(
                 manifest.validate_structure(16),
                 Err(CatalogError::Mismatch(CatalogMismatch::SegmentTierOrder))
+            ));
+        }
+
+        #[test]
+        fn patch_entries_must_use_canonical_key_and_id_order() {
+            let descending_key =
+                manifest_with_segments(vec![patch_entry(1, 4, 5), patch_entry(2, 3, 4)]);
+            assert!(matches!(
+                descending_key.validate_structure(16),
+                Err(CatalogError::Mismatch(CatalogMismatch::SegmentPatchOrder))
+            ));
+
+            let descending_id =
+                manifest_with_segments(vec![patch_entry(2, 3, 4), patch_entry(1, 3, 5)]);
+            assert!(matches!(
+                descending_id.validate_structure(16),
+                Err(CatalogError::Mismatch(CatalogMismatch::SegmentPatchOrder))
             ));
         }
 

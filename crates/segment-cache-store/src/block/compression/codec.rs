@@ -11,7 +11,10 @@ use super::{
     ValuePayloadCompressionKind, ValuePayloadCompressionPolicy,
     frame::{PayloadFrame, PayloadStorage},
 };
-use crate::error::{CorruptionError, FormatError};
+use crate::{
+    error::{CorruptionError, FormatError},
+    limits::MAX_VALUE_PAYLOAD_LEN,
+};
 
 pub(crate) struct ValuePayloadEncoder {
     state: EncoderState,
@@ -65,6 +68,9 @@ impl ValuePayloadCompressionKind {
         _bytes: &[u8],
         expected_raw_len: usize,
     ) -> Result<PayloadFrame, CorruptionError> {
+        if expected_raw_len > MAX_VALUE_PAYLOAD_LEN {
+            return Err(CorruptionError::Block);
+        }
         match self {
             Self::None => {
                 if _bytes.len() != expected_raw_len {
@@ -118,6 +124,9 @@ impl ValuePayloadEncoder {
     where
         F: FnOnce(&mut Vec<u8>),
     {
+        if raw_len > MAX_VALUE_PAYLOAD_LEN {
+            return Err(FormatError::limit("block value payload length"));
+        }
         match &mut self.state {
             EncoderState::None => {
                 let start = out.len();
@@ -323,7 +332,7 @@ mod tests {
         #[test]
         fn oversized_compressed_payload_is_rejected_before_allocation() {
             let compression = ValuePayloadCompressionKind::Lz4;
-            let raw_len = frame::MAX_DECODED_PAYLOAD_LEN + 1;
+            let raw_len = MAX_VALUE_PAYLOAD_LEN + 1;
             let bytes = vec![1];
             let mut decoder = ValuePayloadDecoder::new(compression);
 
@@ -450,7 +459,7 @@ mod tests {
         #[test]
         fn oversized_compressed_payload_is_rejected_before_allocation() {
             let compression = ValuePayloadCompressionKind::ZstdLevel1;
-            let raw_len = frame::MAX_DECODED_PAYLOAD_LEN + 1;
+            let raw_len = MAX_VALUE_PAYLOAD_LEN + 1;
             let bytes = vec![1];
             let mut decoder = ValuePayloadDecoder::new(compression);
 

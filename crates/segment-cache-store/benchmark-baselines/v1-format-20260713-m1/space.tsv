@@ -1,0 +1,7 @@
+dataset	mode	before_segment_bytes	after_segment_bytes
+physical_format/open_segment	none	33605824	33571655
+physical_format/key_16	none	1149820	1147844
+physical_format/key_512	none	1225080	1149828
+value_128k/repeated_runs	none	67229070	67149649
+value_128k/repeated_runs	lz4	431908	352487
+value_128k/repeated_runs	zstd_level1	490778	411357

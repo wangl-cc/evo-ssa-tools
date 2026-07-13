@@ -409,13 +409,15 @@ impl Committer<'_> {
             metadata,
         } in pending
         {
-            let fingerprint = metadata.fingerprint();
+            let segment_len = metadata.segment_len();
+            let content_id = metadata.content_id();
             let file = fs::File::open(self.inner.paths.final_segment(segment_id))?;
             let runtime = Arc::new(Segment::from_written(segment_id, file, metadata));
             let entry = SegmentManifestEntry::new(
                 segment_id,
                 tier,
-                fingerprint,
+                segment_len,
+                content_id,
                 runtime.min_key().to_vec(),
                 runtime.max_key().to_vec(),
             );
@@ -456,13 +458,15 @@ impl Committer<'_> {
             metadata,
         } in pending
         {
-            let fingerprint = metadata.fingerprint();
+            let segment_len = metadata.segment_len();
+            let content_id = metadata.content_id();
             let file = fs::File::open(self.inner.paths.final_segment(segment_id))?;
             let runtime = Arc::new(Segment::from_written(segment_id, file, metadata));
             let entry = SegmentManifestEntry::new(
                 segment_id,
                 tier,
-                fingerprint,
+                segment_len,
+                content_id,
                 runtime.min_key().to_vec(),
                 runtime.max_key().to_vec(),
             );

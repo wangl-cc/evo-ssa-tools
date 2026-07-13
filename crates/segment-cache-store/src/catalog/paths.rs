@@ -6,15 +6,16 @@
 
 use std::{
     fs::{self, File},
+    io::Read,
     path::{Path, PathBuf},
 };
 
 use super::{
-    StoreManifest,
+    ManifestParseError, StoreManifest,
     descriptor::StoreDescriptor,
     io::{AtomicFilePublish, StagedFileBatch, temp_path_for},
 };
-use crate::Result;
+use crate::{Result, limits::MAX_MANIFEST_LEN};
 
 const STORE_FILE_NAME: &str = "STORE";
 const MANIFEST_FILE_NAME: &str = "MANIFEST";
@@ -99,7 +100,21 @@ impl StorePaths {
         if !self.manifest.exists() {
             return Ok(None);
         }
-        Ok(Some(StoreManifest::parse(&fs::read(&self.manifest)?)?))
+        let file = File::open(&self.manifest)?;
+        let file_len = file.metadata()?.len();
+        if file_len > MAX_MANIFEST_LEN as u64 {
+            return Err(ManifestParseError::TooLarge.into());
+        }
+        let mut bytes = Vec::new();
+        bytes
+            .try_reserve_exact(file_len as usize)
+            .map_err(|_| ManifestParseError::Allocation)?;
+        file.take(MAX_MANIFEST_LEN as u64 + 1)
+            .read_to_end(&mut bytes)?;
+        if bytes.len() > MAX_MANIFEST_LEN {
+            return Err(ManifestParseError::TooLarge.into());
+        }
+        Ok(Some(StoreManifest::parse(&bytes)?))
     }
 
     pub(crate) fn publish_manifest(&self, manifest: &StoreManifest) -> Result<()> {

@@ -8,7 +8,7 @@ use parking_lot::Mutex;
 use super::{
     SegmentGeometry,
     file::{BlockReadOptions, OpenedSegment, read_block, read_block_reusing},
-    index::BlockIndexEntry,
+    index::SegmentIndex,
     writer::SegmentFileMetadata,
 };
 use crate::{block::DecodedBlock, error::Result};
@@ -19,7 +19,7 @@ pub(crate) struct Segment {
     file: File,
     min_key: Vec<u8>,
     max_key: Vec<u8>,
-    block_index: Vec<BlockIndexEntry>,
+    block_index: SegmentIndex,
     #[cfg(feature = "block-checksum")]
     block_verifications: Mutex<BlockVerificationCache>,
 }
@@ -62,15 +62,15 @@ impl Segment {
     }
 
     pub(crate) fn block_contains(&self, index: usize, key: &[u8]) -> bool {
-        self.block_index[index].key_range.contains(key)
+        self.block_index.contains(index, key)
     }
 
     pub(crate) fn block_min_cmp(&self, index: usize, key: &[u8]) -> Ordering {
-        self.block_index[index].key_range.min_cmp(key)
+        self.block_index.min_cmp(index, key)
     }
 
     pub(crate) fn block_max_cmp(&self, index: usize, key: &[u8]) -> Ordering {
-        self.block_index[index].key_range.max_cmp(key)
+        self.block_index.max_cmp(index, key)
     }
 
     /// Converts a verified on-disk segment into the state used by readers.
@@ -109,10 +109,7 @@ impl Segment {
 
     /// Finds the sparse block-index entry that may contain `key`.
     pub(crate) fn find_block_index(&self, key: &[u8]) -> usize {
-        let idx = self
-            .block_index
-            .partition_point(|entry| entry.key_range.min_cmp(key) != Ordering::Greater);
-        idx.saturating_sub(1)
+        self.block_index.find_block(key)
     }
 
     /// Reads and decodes a block by sparse block-index position.
@@ -122,7 +119,6 @@ impl Segment {
         geometry: SegmentGeometry,
         _verify_checksum: bool,
     ) -> Result<DecodedBlock> {
-        let entry = &self.block_index[block_index];
         #[cfg(feature = "block-checksum")]
         let verify_lookup = self.needs_verification(
             block_index,
@@ -133,7 +129,8 @@ impl Segment {
         let verify_lookup = false;
         let block = read_block(
             &self.file,
-            entry,
+            &self.block_index,
+            block_index,
             Self::block_read_options(geometry, verify_lookup),
         )?;
         #[cfg(feature = "block-checksum")]
@@ -151,7 +148,6 @@ impl Segment {
         _verify_checksum: bool,
         buffer: Vec<u8>,
     ) -> Result<DecodedBlock> {
-        let entry = &self.block_index[block_index];
         #[cfg(feature = "block-checksum")]
         let verify_lookup = self.needs_verification(
             block_index,
@@ -162,7 +158,8 @@ impl Segment {
         let verify_lookup = false;
         let block = read_block_reusing(
             &self.file,
-            entry,
+            &self.block_index,
+            block_index,
             Self::block_read_options(geometry, verify_lookup),
             buffer,
         )?;

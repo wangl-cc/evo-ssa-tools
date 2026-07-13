@@ -39,8 +39,11 @@ pub(crate) fn block_offset(path: &Path, block_index: usize) -> Result<u64> {
 
 pub(crate) fn block_index_offset(path: &Path) -> Result<u64> {
     let mut file = FsOpenOptions::new().read(true).open(path)?;
-    let (footer_start, _) = read_footer_bytes(&mut file)?;
-    Ok(footer_start + 8 + 4)
+    let (footer_start, footer) = read_footer_bytes(&mut file)?;
+    let segment_prefix_len = u64::from(u32::from_le_bytes(
+        footer[..4].try_into().expect("segment prefix length"),
+    ));
+    Ok(footer_start + 4 + segment_prefix_len + 4)
 }
 
 pub(crate) fn mutate_footer_payload(path: &Path, mutate: impl FnOnce(&mut [u8])) -> Result<()> {
@@ -76,19 +79,20 @@ pub(crate) fn truncate_first_block_to_len(path: &Path, block_len: u64) -> Result
 pub(crate) fn mutate_block_metadata(
     path: &Path,
     block_index: usize,
-    mutate: impl FnOnce(&mut [u8]),
+    mutate: impl FnOnce(&mut [u8], usize),
 ) -> Result<()> {
     let (block_offset, block_len) = block_index_entry(path, block_index)?;
     let mut file = FsOpenOptions::new().read(true).write(true).open(path)?;
-    let key_len = read_key_len(&mut file)?;
+    let relative_key_len = read_relative_key_len(&mut file)?;
     let value_len = read_value_len(&mut file)?;
     let block_checksum = read_block_checksum(&mut file)?;
     let mut block = vec![0u8; usize::try_from(block_len).expect("block len")];
     file.seek(SeekFrom::Start(block_offset))?;
     file.read_exact(&mut block)?;
 
-    let metadata_len = block_lookup_metadata_len(&block, key_len, value_len, block_checksum)?;
-    mutate(&mut block[..metadata_len]);
+    let metadata_len =
+        block_lookup_metadata_len(&block, relative_key_len, value_len, block_checksum)?;
+    mutate(&mut block[..metadata_len], relative_key_len);
     let checksum = block_checksum_digest(block_checksum, &block[..metadata_len]);
     block[metadata_len..metadata_len + checksum.len()].copy_from_slice(&checksum);
     file.seek(SeekFrom::Start(block_offset))?;
@@ -100,13 +104,14 @@ pub(crate) fn mutate_block_metadata(
 pub(crate) fn corrupt_block_value_payload(path: &Path, block_index: usize) -> Result<()> {
     let (block_offset, block_len) = block_index_entry(path, block_index)?;
     let mut file = FsOpenOptions::new().read(true).write(true).open(path)?;
-    let key_len = read_key_len(&mut file)?;
+    let relative_key_len = read_relative_key_len(&mut file)?;
     let value_len = read_value_len(&mut file)?;
     let block_checksum = read_block_checksum(&mut file)?;
     let mut block = vec![0u8; usize::try_from(block_len).expect("block len")];
     file.seek(SeekFrom::Start(block_offset))?;
     file.read_exact(&mut block)?;
-    let payload_range = block_value_payload_range(&block, key_len, value_len, block_checksum)?;
+    let payload_range =
+        block_value_payload_range(&block, relative_key_len, value_len, block_checksum)?;
     let first_payload_byte = payload_range.start;
     block[first_payload_byte] ^= 0xFF;
     file.seek(SeekFrom::Start(block_offset))?;
@@ -119,13 +124,14 @@ pub(crate) fn corrupt_block_value_payload(path: &Path, block_index: usize) -> Re
 pub(crate) fn corrupt_block_value_frame_start(path: &Path, block_index: usize) -> Result<()> {
     let (block_offset, block_len) = block_index_entry(path, block_index)?;
     let mut file = FsOpenOptions::new().read(true).write(true).open(path)?;
-    let key_len = read_key_len(&mut file)?;
+    let relative_key_len = read_relative_key_len(&mut file)?;
     let value_len = read_value_len(&mut file)?;
     let block_checksum = read_block_checksum(&mut file)?;
     let mut block = vec![0u8; usize::try_from(block_len).expect("block len")];
     file.seek(SeekFrom::Start(block_offset))?;
     file.read_exact(&mut block)?;
-    let metadata_len = block_lookup_metadata_len(&block, key_len, value_len, block_checksum)?;
+    let metadata_len =
+        block_lookup_metadata_len(&block, relative_key_len, value_len, block_checksum)?;
     let frame_offset = metadata_len
         .checked_add(block_checksum_digest_len(block_checksum))
         .ok_or(CorruptionError::Block)?;
@@ -159,16 +165,24 @@ fn block_index_entry(path: &Path, block_index: usize) -> Result<(u64, u64)> {
     let (footer_start, footer) = read_footer_bytes(&mut file)?;
     let payload_len = footer.len() - usize::try_from(FOOTER_TRAILER_LEN).expect("trailer len");
     let payload = &footer[..payload_len];
-    let mut cursor = 8;
+    let mut cursor = 0;
+    let segment_prefix_len =
+        usize::try_from(read_u32(payload, &mut cursor)?).expect("segment prefix len");
+    cursor = cursor
+        .checked_add(segment_prefix_len)
+        .filter(|&end| end <= payload.len())
+        .ok_or(CorruptionError::SegmentFormat)?;
     let block_count = usize::try_from(read_u32(payload, &mut cursor)?).expect("block count");
     assert!(block_index < block_count);
     let mut offsets = Vec::with_capacity(block_count);
     for _ in 0..block_count {
-        let prefix_len = usize::try_from(read_u32(payload, &mut cursor)?).expect("prefix len");
+        let extra_prefix_len =
+            usize::try_from(read_u32(payload, &mut cursor)?).expect("prefix len");
         let suffix_len = key_len
-            .checked_sub(prefix_len)
+            .checked_sub(segment_prefix_len)
+            .and_then(|len| len.checked_sub(extra_prefix_len))
             .ok_or(CorruptionError::SegmentFormat)?;
-        let range_len = prefix_len
+        let range_len = extra_prefix_len
             .checked_add(
                 suffix_len
                     .checked_mul(2)
@@ -191,6 +205,18 @@ fn block_index_entry(path: &Path, block_index: usize) -> Result<(u64, u64)> {
 
 fn read_key_len(file: &mut fs::File) -> Result<usize> {
     Ok(usize::try_from(read_u32_at(file, SEGMENT_KEY_LEN_OFFSET)?).expect("key len"))
+}
+
+fn read_relative_key_len(file: &mut fs::File) -> Result<usize> {
+    let key_len = read_key_len(file)?;
+    let (_, footer) = read_footer_bytes(file)?;
+    let segment_prefix_len = usize::try_from(u32::from_le_bytes(
+        footer[..4].try_into().expect("segment prefix length"),
+    ))
+    .expect("segment prefix length fits usize");
+    key_len
+        .checked_sub(segment_prefix_len)
+        .ok_or(CorruptionError::SegmentFormat.into())
 }
 
 fn read_value_len(file: &mut fs::File) -> Result<u32> {
@@ -232,15 +258,16 @@ fn read_u32(bytes: &[u8], cursor: &mut usize) -> Result<u32> {
 
 fn block_value_payload_range(
     block: &[u8],
-    key_len: usize,
+    relative_key_len: usize,
     value_len: u32,
     block_checksum: BlockChecksumKind,
 ) -> Result<Range<usize>> {
-    let metadata_len = block_lookup_metadata_len(block, key_len, value_len, block_checksum)?;
+    let metadata_len =
+        block_lookup_metadata_len(block, relative_key_len, value_len, block_checksum)?;
     let payload_offset = metadata_len
         .checked_add(block_checksum_digest_len(block_checksum))
         .ok_or(CorruptionError::Block)?;
-    let payload_len = block_value_payload_len(block, key_len, value_len, block_checksum)?;
+    let payload_len = block_value_payload_len(block, relative_key_len, value_len, block_checksum)?;
     let payload_end = payload_offset
         .checked_add(payload_len)
         .ok_or(CorruptionError::Block)?;
@@ -257,7 +284,7 @@ fn block_value_payload_range(
 
 fn block_lookup_metadata_len(
     block: &[u8],
-    key_len: usize,
+    relative_key_len: usize,
     value_len: u32,
     block_checksum: BlockChecksumKind,
 ) -> Result<usize> {
@@ -270,11 +297,11 @@ fn block_lookup_metadata_len(
             .try_into()
             .expect("prefix length width"),
     ) as usize;
-    if prefix_len > key_len {
+    if prefix_len > relative_key_len {
         return Err(CorruptionError::Block.into());
     }
     let record_count = usize::try_from(record_count).expect("record count fits usize");
-    let suffix_len = key_len - prefix_len;
+    let suffix_len = relative_key_len - prefix_len;
     let key_section_len = BLOCK_METADATA_HEADER_LEN
         .checked_add(prefix_len)
         .and_then(|len| len.checked_add(record_count.checked_mul(suffix_len)?))

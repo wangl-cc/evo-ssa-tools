@@ -326,7 +326,7 @@ fn no_checksum_open_handle_does_not_detect_payload_corruption() -> Result<()> {
     drop(store);
 
     let reopened = reopen_store_read_only(&tempdir)?;
-    assert_eq!(reopened.fetch_one(&key)?, None);
+    assert_eq!(reopened.fetch_one(&key)?, Some(corrupted));
     Ok(())
 }
 
@@ -370,7 +370,7 @@ fn store_round_trips_with_global_segments() -> Result<()> {
 }
 
 #[test]
-fn manifest_fingerprint_rejects_same_range_replacement_segment() -> Result<()> {
+fn trusted_local_open_does_not_rescan_same_shape_replacement_segment() -> Result<()> {
     let tempdir = tempfile::tempdir()?;
     let store = create_store(&tempdir)?;
     let key = make_key(1, 1, 0);
@@ -387,8 +387,8 @@ fn manifest_fingerprint_rejects_same_range_replacement_segment() -> Result<()> {
     fs::copy(replacement_path, original_path)?;
 
     let reopened = reopen_store_read_only(&tempdir)?;
-    assert_eq!(reopened.fetch_one(&key)?, None);
-    assert_eq!(reopened.iter_all()?.count(), 0);
+    assert_eq!(reopened.fetch_one(&key)?, Some(make_value(2, 16)));
+    assert_eq!(reopened.iter_all()?.count(), 1);
     Ok(())
 }
 
@@ -563,16 +563,15 @@ fn variable_value_index_must_start_at_zero_without_block_checksums() -> Result<(
     ];
     commit_entries(&store, &entries)?;
     let path = first_segment_path(tempdir.path())?;
-    let key_len = entries[0].0.len();
     let record_count = entries.len();
-    mutate_block_metadata(&path, 0, |metadata| {
-        let prefix_len = u32::from_le_bytes(
+    mutate_block_metadata(&path, 0, |metadata, relative_key_len| {
+        let extra_prefix_len = u32::from_le_bytes(
             metadata[4..8]
                 .try_into()
                 .expect("prefix length field should exist"),
         ) as usize;
-        let suffix_len = key_len - prefix_len;
-        let value_index_offset = 8 + prefix_len + record_count * suffix_len;
+        let suffix_len = relative_key_len - extra_prefix_len;
+        let value_index_offset = 8 + extra_prefix_len + record_count * suffix_len;
         metadata[value_index_offset..value_index_offset + 4].copy_from_slice(&1u32.to_le_bytes());
     })?;
 
@@ -604,18 +603,18 @@ fn block_last_key_must_stay_within_segment_bounds_without_block_checksums() -> R
     ];
     commit_entries(&store, &entries)?;
     let path = first_segment_path(tempdir.path())?;
-    let key_len = entries[0].0.len();
     let replacement_key = make_key(1, 1, 2);
-    mutate_block_metadata(&path, 0, |metadata| {
-        let prefix_len = u32::from_le_bytes(
+    mutate_block_metadata(&path, 0, |metadata, relative_key_len| {
+        let extra_prefix_len = u32::from_le_bytes(
             metadata[4..8]
                 .try_into()
                 .expect("prefix length field should exist"),
         ) as usize;
-        let suffix_len = key_len - prefix_len;
-        let last_suffix_offset = 8 + prefix_len + suffix_len;
+        let suffix_len = relative_key_len - extra_prefix_len;
+        let last_suffix_offset = 8 + extra_prefix_len + suffix_len;
+        let full_prefix_len = replacement_key.len() - suffix_len;
         metadata[last_suffix_offset..last_suffix_offset + suffix_len]
-            .copy_from_slice(&replacement_key[prefix_len..]);
+            .copy_from_slice(&replacement_key[full_prefix_len..]);
     })?;
 
     let key_refs = entries
@@ -667,9 +666,12 @@ fn corrupted_middle_block_only_loses_that_block_for_open_handle() -> Result<()> 
     let reopened = reopen_store_read_only(&tempdir)?;
     assert_eq!(
         reopened.fetch_many_ordered(key_refs.iter().copied())?,
-        vec![None, None, None]
+        vec![Some(entries[0].1.clone()), None, Some(entries[2].1.clone())]
     );
-    assert!(reopened.iter_all()?.collect::<Result<Vec<_>>>()?.is_empty());
+    assert_eq!(reopened.iter_all()?.collect::<Result<Vec<_>>>()?, vec![
+        entries[0].clone(),
+        entries[2].clone()
+    ]);
     Ok(())
 }
 
@@ -683,12 +685,16 @@ fn corrupted_block_key_ordering_becomes_miss_in_ordered_reads() -> Result<()> {
     ];
     commit_entries(&store, &entries)?;
     let path = first_segment_path(tempdir.path())?;
-    let key_len = entries[0].0.len();
-    mutate_block_metadata(&path, 0, |metadata| {
-        let prefix_len = key_len - 1;
-        let suffix_start = 8 + prefix_len;
+    mutate_block_metadata(&path, 0, |metadata, relative_key_len| {
+        let extra_prefix_len = u32::from_le_bytes(
+            metadata[4..8]
+                .try_into()
+                .expect("extra prefix length field should exist"),
+        ) as usize;
+        let suffix_len = relative_key_len - extra_prefix_len;
+        let suffix_start = 8 + extra_prefix_len;
         let first_suffix = suffix_start;
-        let second_suffix = suffix_start + 1;
+        let second_suffix = suffix_start + suffix_len;
         metadata[second_suffix] = metadata[first_suffix];
     })?;
 
@@ -717,7 +723,11 @@ fn malformed_footer_block_index_metadata_hides_whole_segment() -> Result<()> {
     commit_entries(&store, &[(key.clone(), make_value(9, 16))])?;
     let path = first_segment_path(tempdir.path())?;
     mutate_footer_payload(&path, |payload| {
-        let block_count_offset = 8;
+        let segment_prefix_len = usize::try_from(u32::from_le_bytes(
+            payload[..4].try_into().expect("segment prefix length"),
+        ))
+        .expect("segment prefix length fits usize");
+        let block_count_offset = 4 + segment_prefix_len;
         payload[block_count_offset..block_count_offset + 4].copy_from_slice(&0u32.to_le_bytes());
     })?;
 

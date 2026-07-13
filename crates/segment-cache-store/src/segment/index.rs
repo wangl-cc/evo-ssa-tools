@@ -1,110 +1,306 @@
-//! Validated sparse index entries for immutable segment blocks.
+//! Compact validated sparse index for immutable segment blocks.
 
-use std::{cmp::Ordering, ops::Range};
+use std::{cmp::Ordering, ops::Range, sync::Arc};
 
-use crate::key::common_prefix_len;
+use crate::key::{CompositeKey, SegmentKeyPrefix, SegmentRelativeKey, common_prefix_len};
 
+/// One backing allocation containing the segment prefix and every block range.
 #[derive(Clone, Debug)]
-pub(crate) struct BlockKeyRange {
-    encoded: Vec<u8>,
-    prefix_len: usize,
-    suffix_len: usize,
+pub(crate) struct SegmentIndex {
+    backing: Arc<[u8]>,
+    segment_prefix: SegmentKeyPrefix,
+    entries: Vec<BlockIndexEntry>,
 }
 
 #[derive(Clone, Debug)]
 pub(crate) struct BlockIndexEntry {
-    pub(crate) key_range: BlockKeyRange,
+    key_range: BlockKeyRange,
     pub(crate) byte_range: Range<u64>,
 }
 
-impl BlockKeyRange {
+/// Byte ranges parsed from one encoded footer entry before index ownership is established.
+pub(super) struct EncodedBlockIndexEntry {
+    pub(super) extra_prefix: Range<usize>,
+    pub(super) min_suffix: Range<usize>,
+    pub(super) max_suffix: Range<usize>,
+    pub(super) byte_range: Range<u64>,
+}
+
+#[derive(Clone, Debug)]
+struct BlockKeyRange {
+    extra_prefix: Range<usize>,
+    min_suffix: Range<usize>,
+    max_suffix: Range<usize>,
+}
+
+/// Borrowed physical parts of one validated block range.
+#[derive(Clone, Copy)]
+pub(crate) struct BlockKeyRangeRef<'a> {
+    pub(crate) extra_prefix: &'a [u8],
+    pub(crate) min_suffix: &'a [u8],
+    pub(crate) max_suffix: &'a [u8],
+}
+
+/// Constructs a compact index while a segment is being written.
+pub(crate) struct SegmentIndexBuilder {
+    key_len: usize,
+    segment_prefix_len: usize,
+    backing: Vec<u8>,
+    entries: Vec<BlockIndexEntry>,
+}
+
+impl SegmentIndexBuilder {
     pub(crate) fn new(min_key: &[u8], max_key: &[u8]) -> Option<Self> {
-        if min_key.len() != max_key.len() || min_key > max_key {
+        if min_key.is_empty() || min_key.len() != max_key.len() || min_key > max_key {
             return None;
         }
-        let prefix_len = common_prefix_len(min_key, max_key);
-        let suffix_len = min_key.len() - prefix_len;
-        let encoded_len = prefix_len.checked_add(suffix_len.checked_mul(2)?)?;
-        let mut encoded = Vec::with_capacity(encoded_len);
-        encoded.extend_from_slice(&min_key[..prefix_len]);
-        encoded.extend_from_slice(&min_key[prefix_len..]);
-        encoded.extend_from_slice(&max_key[prefix_len..]);
+        let segment_prefix_len = common_prefix_len(min_key, max_key);
         Some(Self {
-            encoded,
-            prefix_len,
-            suffix_len,
+            key_len: min_key.len(),
+            segment_prefix_len,
+            backing: min_key[..segment_prefix_len].to_vec(),
+            entries: Vec::new(),
         })
     }
 
-    pub(crate) fn from_encoded(
-        encoded: Vec<u8>,
-        prefix_len: usize,
-        key_len: usize,
-    ) -> Option<Self> {
-        let suffix_len = key_len.checked_sub(prefix_len)?;
-        let encoded_len = prefix_len.checked_add(suffix_len.checked_mul(2)?)?;
-        if encoded.len() != encoded_len {
-            return None;
-        }
-        let range = Self {
-            encoded,
-            prefix_len,
-            suffix_len,
-        };
-        if range.min_suffix() > range.max_suffix()
-            || common_prefix_len(range.min_suffix(), range.max_suffix()) != 0
+    pub(crate) fn segment_prefix_len(&self) -> usize {
+        self.segment_prefix_len
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    pub(crate) fn push(
+        &mut self,
+        min_key: &[u8],
+        max_key: &[u8],
+        byte_range: Range<u64>,
+    ) -> Option<()> {
+        if min_key.len() != self.key_len
+            || max_key.len() != self.key_len
+            || min_key > max_key
+            || min_key[..self.segment_prefix_len] != self.backing[..self.segment_prefix_len]
+            || max_key[..self.segment_prefix_len] != self.backing[..self.segment_prefix_len]
         {
             return None;
         }
-        Some(range)
+        let min_relative = &min_key[self.segment_prefix_len..];
+        let max_relative = &max_key[self.segment_prefix_len..];
+        let extra_prefix_len = common_prefix_len(min_relative, max_relative);
+        let extra_prefix = self.append(&min_relative[..extra_prefix_len]);
+        let min_suffix = self.append(&min_relative[extra_prefix_len..]);
+        let max_suffix = self.append(&max_relative[extra_prefix_len..]);
+        self.entries.push(BlockIndexEntry {
+            key_range: BlockKeyRange {
+                extra_prefix,
+                min_suffix,
+                max_suffix,
+            },
+            byte_range,
+        });
+        Some(())
     }
 
-    pub(crate) fn prefix(&self) -> &[u8] {
-        &self.encoded[..self.prefix_len]
-    }
-
-    pub(crate) fn min_suffix(&self) -> &[u8] {
-        &self.encoded[self.prefix_len..self.prefix_len + self.suffix_len]
-    }
-
-    pub(crate) fn max_suffix(&self) -> &[u8] {
-        &self.encoded[self.prefix_len + self.suffix_len..]
-    }
-
-    pub(crate) fn min_cmp(&self, key: &[u8]) -> Ordering {
-        self.bound_cmp(self.min_suffix(), key)
-    }
-
-    pub(crate) fn max_cmp(&self, key: &[u8]) -> Ordering {
-        self.bound_cmp(self.max_suffix(), key)
-    }
-
-    pub(crate) fn contains(&self, key: &[u8]) -> bool {
-        self.min_cmp(key) != Ordering::Greater && self.max_cmp(key) != Ordering::Less
-    }
-
-    pub(crate) fn min_equals(&self, key: &[u8]) -> bool {
-        self.min_cmp(key) == Ordering::Equal
-    }
-
-    pub(crate) fn max_equals(&self, key: &[u8]) -> bool {
-        self.max_cmp(key) == Ordering::Equal
-    }
-
-    pub(crate) fn ends_before(&self, next: &Self) -> bool {
-        self.prefix()
-            .iter()
-            .chain(self.max_suffix())
-            .cmp(next.prefix().iter().chain(next.min_suffix()))
-            == Ordering::Less
-    }
-
-    fn bound_cmp(&self, suffix: &[u8], key: &[u8]) -> Ordering {
-        debug_assert_eq!(self.prefix_len + suffix.len(), key.len());
-        match self.prefix().cmp(&key[..self.prefix_len]) {
-            Ordering::Equal => suffix.cmp(&key[self.prefix_len..]),
-            ordering => ordering,
+    pub(crate) fn finish(self) -> SegmentIndex {
+        let segment_prefix_range = 0..self.segment_prefix_len;
+        let backing: Arc<[u8]> = self.backing.into();
+        let segment_prefix =
+            SegmentKeyPrefix::from_backing(Arc::clone(&backing), segment_prefix_range)
+                .expect("builder owns the segment prefix range");
+        SegmentIndex {
+            backing,
+            segment_prefix,
+            entries: self.entries,
         }
+    }
+
+    fn append(&mut self, bytes: &[u8]) -> Range<usize> {
+        let start = self.backing.len();
+        self.backing.extend_from_slice(bytes);
+        start..self.backing.len()
+    }
+}
+
+impl SegmentIndex {
+    pub(super) fn from_encoded_parts(
+        backing: Arc<[u8]>,
+        segment_prefix: Range<usize>,
+        entries: Vec<EncodedBlockIndexEntry>,
+    ) -> Option<Self> {
+        let segment_prefix = SegmentKeyPrefix::from_backing(Arc::clone(&backing), segment_prefix)?;
+        let mut block_entries = Vec::new();
+        block_entries.try_reserve_exact(entries.len()).ok()?;
+        for entry in entries {
+            backing.get(entry.extra_prefix.clone())?;
+            backing.get(entry.min_suffix.clone())?;
+            backing.get(entry.max_suffix.clone())?;
+            block_entries.push(BlockIndexEntry {
+                key_range: BlockKeyRange {
+                    extra_prefix: entry.extra_prefix,
+                    min_suffix: entry.min_suffix,
+                    max_suffix: entry.max_suffix,
+                },
+                byte_range: entry.byte_range,
+            });
+        }
+        Some(Self {
+            backing,
+            segment_prefix,
+            entries: block_entries,
+        })
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    pub(crate) fn segment_prefix(&self) -> &SegmentKeyPrefix {
+        &self.segment_prefix
+    }
+
+    pub(crate) fn entry(&self, index: usize) -> &BlockIndexEntry {
+        &self.entries[index]
+    }
+
+    pub(crate) fn key_range(&self, index: usize) -> BlockKeyRangeRef<'_> {
+        let range = &self.entries[index].key_range;
+        BlockKeyRangeRef {
+            extra_prefix: &self.backing[range.extra_prefix.clone()],
+            min_suffix: &self.backing[range.min_suffix.clone()],
+            max_suffix: &self.backing[range.max_suffix.clone()],
+        }
+    }
+
+    pub(crate) fn contains(&self, index: usize, key: &[u8]) -> bool {
+        if let Some(key) = self.segment_prefix.strip(key) {
+            return self.relative_min_cmp(index, key) != Ordering::Greater
+                && self.relative_max_cmp(index, key) != Ordering::Less;
+        }
+        self.min_cmp(index, key) != Ordering::Greater && self.max_cmp(index, key) != Ordering::Less
+    }
+
+    pub(crate) fn find_block(&self, key: &[u8]) -> usize {
+        if let Some(key) = self.segment_prefix.strip(key) {
+            return self.find_relative_block(key);
+        }
+        let mut left = 0;
+        let mut right = self.len();
+        while left < right {
+            let middle = left + (right - left) / 2;
+            if self.min_cmp(middle, key) != Ordering::Greater {
+                left = middle + 1;
+            } else {
+                right = middle;
+            }
+        }
+        left.saturating_sub(1)
+    }
+
+    fn find_relative_block(&self, key: SegmentRelativeKey<'_>) -> usize {
+        let mut left = 0;
+        let mut right = self.len();
+        while left < right {
+            let middle = left + (right - left) / 2;
+            if self.relative_min_cmp(middle, key) != Ordering::Greater {
+                left = middle + 1;
+            } else {
+                right = middle;
+            }
+        }
+        left.saturating_sub(1)
+    }
+
+    pub(crate) fn min_cmp(&self, index: usize, key: &[u8]) -> Ordering {
+        self.bound(index, false).cmp_slice(key)
+    }
+
+    pub(crate) fn max_cmp(&self, index: usize, key: &[u8]) -> Ordering {
+        self.bound(index, true).cmp_slice(key)
+    }
+
+    fn relative_min_cmp(&self, index: usize, key: SegmentRelativeKey<'_>) -> Ordering {
+        self.relative_bound(index, false).cmp_slice(key.as_slice())
+    }
+
+    fn relative_max_cmp(&self, index: usize, key: SegmentRelativeKey<'_>) -> Ordering {
+        self.relative_bound(index, true).cmp_slice(key.as_slice())
+    }
+
+    pub(super) fn entries(&self) -> impl Iterator<Item = (&BlockIndexEntry, BlockKeyRangeRef<'_>)> {
+        self.entries
+            .iter()
+            .enumerate()
+            .map(|(index, entry)| (entry, self.key_range(index)))
+    }
+
+    pub(super) fn validate_ranges(
+        &self,
+        key_len: usize,
+        expected_min_key: &[u8],
+        expected_max_key: &[u8],
+    ) -> bool {
+        if self.is_empty()
+            || expected_min_key.len() != key_len
+            || expected_max_key.len() != key_len
+            || self.segment_prefix.len() > key_len
+            || common_prefix_len(expected_min_key, expected_max_key) != self.segment_prefix.len()
+            || !expected_min_key.starts_with(self.segment_prefix.as_slice())
+        {
+            return false;
+        }
+        for index in 0..self.len() {
+            let range = self.key_range(index);
+            let relative_len = key_len - self.segment_prefix.len();
+            if range.extra_prefix.len() > relative_len
+                || range.min_suffix.len() != relative_len - range.extra_prefix.len()
+                || range.max_suffix.len() != range.min_suffix.len()
+                || range.min_suffix > range.max_suffix
+                || common_prefix_len(range.min_suffix, range.max_suffix) != 0
+            {
+                return false;
+            }
+        }
+        if self.min_cmp(0, expected_min_key) != Ordering::Equal
+            || self.max_cmp(self.len() - 1, expected_max_key) != Ordering::Equal
+        {
+            return false;
+        }
+        (1..self.len()).all(|index| {
+            self.bound(index - 1, true)
+                .cmp_key(self.bound(index, false))
+                == Ordering::Less
+        })
+    }
+
+    fn bound(&self, index: usize, max: bool) -> CompositeKey<'_> {
+        let range = self.key_range(index);
+        CompositeKey::new(
+            self.segment_prefix.as_slice(),
+            range.extra_prefix,
+            if max {
+                range.max_suffix
+            } else {
+                range.min_suffix
+            },
+        )
+    }
+
+    fn relative_bound(&self, index: usize, max: bool) -> CompositeKey<'_> {
+        let range = self.key_range(index);
+        CompositeKey::new(
+            &[],
+            range.extra_prefix,
+            if max {
+                range.max_suffix
+            } else {
+                range.min_suffix
+            },
+        )
     }
 }
 
@@ -113,33 +309,41 @@ mod tests {
     use super::*;
 
     #[test]
-    fn stores_shared_prefix_once_and_compares_without_materializing_bounds() {
-        let range = BlockKeyRange::new(b"shared-001", b"shared-099").expect("valid range");
-
-        assert_eq!(range.prefix(), b"shared-0");
-        assert_eq!(range.min_suffix(), b"01");
-        assert_eq!(range.max_suffix(), b"99");
-        assert_eq!(range.encoded.len(), b"shared-0".len() + 2 * b"01".len());
-        assert!(range.contains(b"shared-050"));
-        assert!(!range.contains(b"shared-100"));
-    }
-
-    #[test]
-    fn long_keys_store_one_copy_of_their_shared_prefix() {
+    fn stores_segment_prefix_once_and_routes_composite_ranges() {
         let mut min = vec![b'x'; 512];
         let mut max = min.clone();
-        min[510..].copy_from_slice(b"01");
-        max[510..].copy_from_slice(b"99");
+        min[508..].copy_from_slice(b"0001");
+        max[508..].copy_from_slice(b"9999");
+        let mut builder = SegmentIndexBuilder::new(&min, &max).expect("valid segment range");
+        let mut block_max = min.clone();
+        block_max[508..].copy_from_slice(b"0999");
+        builder
+            .push(&min, &block_max, 20..40)
+            .expect("valid block range");
+        let mut second_min = min.clone();
+        second_min[508..].copy_from_slice(b"9000");
+        builder
+            .push(&second_min, &max, 40..60)
+            .expect("valid second block range");
+        let index = builder.finish();
 
-        let range = BlockKeyRange::new(&min, &max).expect("valid range");
-
-        assert_eq!(range.prefix().len(), 510);
-        assert_eq!(range.encoded.len(), 514);
-        assert!(range.contains(&[vec![b'x'; 510], b"50".to_vec()].concat()));
+        assert_eq!(index.segment_prefix().len(), 508);
+        assert_eq!(index.key_range(0).extra_prefix, b"0");
+        assert!(index.contains(0, &min));
+        assert!(index.validate_ranges(512, &min, &max));
     }
 
     #[test]
-    fn rejects_noncanonical_encoded_prefix() {
-        assert!(BlockKeyRange::from_encoded(b"aa0a9".to_vec(), 1, 3).is_none());
+    fn rejects_nonmaximal_block_prefix() {
+        let backing: Arc<[u8]> = b"a00a9".as_slice().into();
+        let index = SegmentIndex::from_encoded_parts(backing, 0..0, vec![EncodedBlockIndexEntry {
+            extra_prefix: 0..1,
+            min_suffix: 1..3,
+            max_suffix: 3..5,
+            byte_range: 20..40,
+        }])
+        .expect("ranges are in bounds");
+
+        assert!(!index.validate_ranges(3, b"a00", b"a99"));
     }
 }

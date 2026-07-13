@@ -8,6 +8,7 @@ use std::ops::Range;
 
 use crate::{
     error::{InputError, Result},
+    limits::MAX_VALUE_LEN,
     record::{EntryRef, EntrySource, EntryView},
     value::ValueLayout,
 };
@@ -114,6 +115,13 @@ impl WriteBatch {
                 return Err(InputError::WrongKeyLength {
                     expected: key_len,
                     actual: entry.key.len,
+                }
+                .into());
+            }
+            if entry.value.len > MAX_VALUE_LEN {
+                return Err(InputError::ValueTooLarge {
+                    max: MAX_VALUE_LEN,
+                    actual: entry.value.len,
                 }
                 .into());
             }
@@ -256,6 +264,26 @@ mod tests {
             assert!(matches!(
                 error,
                 crate::Error::Input(InputError::DuplicateKeyInBatch)
+            ));
+        }
+
+        #[test]
+        fn rejects_variable_values_above_the_implementation_limit() {
+            let batch = WriteBatch {
+                entries: vec![BufferedEntry {
+                    key: ByteSpan::new(0, 4),
+                    value: ByteSpan::new(0, MAX_VALUE_LEN + 1),
+                }],
+                key_bytes: b"key1".to_vec(),
+                value_bytes: Vec::new(),
+            };
+
+            assert!(matches!(
+                batch.validate_lengths(4, ValueLayout::VARIABLE),
+                Err(crate::Error::Input(InputError::ValueTooLarge {
+                    max: MAX_VALUE_LEN,
+                    actual
+                })) if actual == MAX_VALUE_LEN + 1
             ));
         }
     }

@@ -9,8 +9,6 @@ use crate::{
 #[cfg(any(feature = "value-compression-lz4", feature = "value-compression-zstd"))]
 pub(super) const HEADER_LEN: usize = 1;
 #[cfg(any(feature = "value-compression-lz4", feature = "value-compression-zstd"))]
-pub(super) const MAX_DECODED_PAYLOAD_LEN: usize = 64 * 1024 * 1024;
-
 #[cfg(any(feature = "value-compression-lz4", feature = "value-compression-zstd"))]
 const STORAGE_RAW: u8 = 0;
 #[cfg(any(feature = "value-compression-lz4", feature = "value-compression-zstd"))]
@@ -82,9 +80,6 @@ pub(super) fn parse(
         _ => return Err(CorruptionError::Block),
     };
     if storage == PayloadStorage::Raw && payload.len() != expected_raw_len {
-        return Err(CorruptionError::Block);
-    }
-    if storage == PayloadStorage::Compressed && expected_raw_len > MAX_DECODED_PAYLOAD_LEN {
         return Err(CorruptionError::Block);
     }
     Ok(PayloadFrame {
@@ -188,7 +183,7 @@ impl PendingPayloadFrame {
 
 #[cfg(any(feature = "value-compression-lz4", feature = "value-compression-zstd"))]
 fn should_store_raw(raw_payload: &[u8], policy: ValuePayloadCompressionPolicy) -> bool {
-    raw_payload.len() > MAX_DECODED_PAYLOAD_LEN || raw_payload.len() < policy.min_try_len()
+    raw_payload.len() < policy.min_try_len()
 }
 
 #[cfg(any(feature = "value-compression-lz4", feature = "value-compression-zstd"))]

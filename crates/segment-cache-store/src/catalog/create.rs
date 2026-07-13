@@ -9,6 +9,7 @@ use super::{
 use crate::{
     block::{BlockChecksumKind, ValuePayloadCompressionKind},
     error::{InputError, OptionsError, Result},
+    limits::{MAX_KEY_LEN, MAX_VALUE_LEN},
     value::ValueLayout,
 };
 
@@ -38,7 +39,7 @@ impl CreateOptions {
     /// # Errors
     ///
     /// Returns [`OptionsError::KeyLenZero`] when `key_len` is zero or
-    /// [`OptionsError::KeyLenTooLarge`] when it does not fit the v1 format.
+    /// [`OptionsError::KeyLenTooLarge`] when it exceeds the implementation limit.
     pub fn new(
         key_len: usize,
         metadata: StoreMetadata,
@@ -47,7 +48,7 @@ impl CreateOptions {
         if key_len == 0 {
             return Err(OptionsError::KeyLenZero);
         }
-        if key_len > u32::MAX as usize {
+        if key_len > MAX_KEY_LEN {
             return Err(OptionsError::KeyLenTooLarge);
         }
         Ok(Self {
@@ -57,6 +58,17 @@ impl CreateOptions {
             value_payload_compression: ValuePayloadCompressionKind::DEFAULT,
             metadata,
         })
+    }
+
+    fn validate(&self) -> std::result::Result<(), OptionsError> {
+        if self
+            .value_layout
+            .fixed_value_len()
+            .is_some_and(|len| len.get() as usize > MAX_VALUE_LEN)
+        {
+            return Err(OptionsError::FixedValueLenTooLarge);
+        }
+        Ok(())
     }
 
     /// Selects the physical value layout used by all visible segments.
@@ -83,6 +95,7 @@ impl CreateOptions {
 
 impl Catalog {
     pub(crate) fn create(self, options: CreateOptions) -> Result<super::OpenedStore> {
+        options.validate()?;
         let paths = &self.paths;
         paths.ensure_root()?;
         let writer_lock = WriterLock::acquire(paths.lock_file())?;

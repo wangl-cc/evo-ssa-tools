@@ -46,8 +46,11 @@ pub enum CatalogMismatch {
     #[error("STORE key length is zero")]
     StoreKeyLenZero,
 
-    #[error("STORE key length exceeds u32")]
+    #[error("STORE key length exceeds the implementation limit")]
     StoreKeyLenTooLarge,
+
+    #[error("STORE fixed value length exceeds the implementation limit")]
+    StoreValueLenTooLarge,
 
     #[error("STORE block checksum algorithm is unsupported: format id {format_id}")]
     UnsupportedBlockChecksum { format_id: u8 },
@@ -69,6 +72,9 @@ pub enum CatalogMismatch {
 
     #[error("MANIFEST patch entries must follow main entries")]
     SegmentTierOrder,
+
+    #[error("MANIFEST patch entries are not sorted by key and segment id")]
+    SegmentPatchOrder,
 
     #[error("MANIFEST segment key length does not match STORE")]
     SegmentKeyLen,

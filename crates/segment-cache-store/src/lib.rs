@@ -28,6 +28,7 @@ mod catalog;
 mod commit;
 mod error;
 mod key;
+mod limits;
 mod record;
 mod segment;
 mod snapshot;

@@ -20,9 +20,9 @@ const KEY_PREFIX_LEN_OFFSET: usize = size_of::<u32>();
 ///
 /// ```text
 /// record_count:u32
-/// key_prefix_len:u32
-/// key_prefix
-/// key_suffixes
+/// extra_prefix_len:u32
+/// extra_prefix
+/// key_suffixes relative to the footer-owned segment prefix
 /// optional value_offsets
 /// lookup_checksum
 /// ```

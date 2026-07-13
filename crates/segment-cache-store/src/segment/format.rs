@@ -8,11 +8,12 @@
 
 use crc32c::crc32c;
 
-use super::index::{BlockIndexEntry, BlockKeyRange};
+use super::index::{EncodedBlockIndexEntry, SegmentIndex};
 use crate::{
     binary::{BinaryCursor, format_u32},
     block::{BLOCK_METADATA_HEADER_LEN, BlockChecksumKind, ValuePayloadCompressionKind},
     error::{CorruptionError, FormatError},
+    limits::{MAX_BLOCK_COUNT, MAX_FOOTER_LEN},
     value::ValueLayout,
 };
 
@@ -118,19 +119,24 @@ impl SegmentHeader {
 /// The footer is the completion gate for a segment and owns the block index.
 #[derive(Clone, Debug)]
 pub(crate) struct SegmentFooter {
-    pub(crate) record_count: u64,
-    pub(crate) block_index: Vec<BlockIndexEntry>,
+    pub(crate) block_index: SegmentIndex,
 }
 
 impl SegmentFooter {
     pub(crate) fn write_to(&self, key_len: usize, buffer: &mut Vec<u8>) -> Result<(), FormatError> {
         let footer_body_start = buffer.len();
-        buffer.extend_from_slice(&self.record_count.to_le_bytes());
-        BlockIndexCodec::new(key_len).write_to(&self.block_index, buffer)?;
+        if self.block_index.len() > MAX_BLOCK_COUNT {
+            return Err(FormatError::limit("segment block count"));
+        }
+        let codec = BlockIndexCodec::new(key_len);
+        codec.write_to(&self.block_index, buffer)?;
         let footer_body_len = format_u32(
             buffer.len() - footer_body_start,
             "segment footer body length",
         )?;
+        if buffer.len() - footer_body_start + SEGMENT_FOOTER_TRAILER_LEN > MAX_FOOTER_LEN {
+            return Err(FormatError::limit("segment footer length"));
+        }
         buffer.extend_from_slice(&footer_body_len.to_le_bytes());
         let crc = crc32c(&buffer[footer_body_start..]);
         buffer.extend_from_slice(&crc.to_le_bytes());
@@ -141,18 +147,18 @@ impl SegmentFooter {
     /// segment file. `data_end` is the absolute file offset where the footer
     /// starts (the end of the data blocks), used to validate the block index.
     pub(crate) fn from_bytes(
-        bytes: &[u8],
+        bytes: Vec<u8>,
         key_len: usize,
         data_end: u64,
         expected_min_key: &[u8],
         expected_max_key: &[u8],
     ) -> Result<Self, CorruptionError> {
-        if bytes.len() < SEGMENT_FOOTER_TRAILER_LEN {
+        if bytes.len() < SEGMENT_FOOTER_TRAILER_LEN || bytes.len() > MAX_FOOTER_LEN {
             return Err(CorruptionError::SegmentFormat);
         }
         let footer_body_len_offset = bytes.len() - SEGMENT_FOOTER_TRAILER_LEN;
         let crc_offset = footer_body_len_offset + 4;
-        let mut trailer_cursor = BinaryCursor::at(bytes, footer_body_len_offset);
+        let mut trailer_cursor = BinaryCursor::at(&bytes, footer_body_len_offset);
         let footer_body_len = trailer_cursor
             .read::<u32>()
             .ok_or(CorruptionError::SegmentFormat)? as usize;
@@ -167,26 +173,19 @@ impl SegmentFooter {
             return Err(CorruptionError::SegmentFormat);
         }
 
-        let footer_body = &bytes[..footer_body_len];
-        let mut cursor = BinaryCursor::new(footer_body);
-        let record_count = cursor.read::<u64>().ok_or(CorruptionError::SegmentFormat)?;
         let codec = BlockIndexCodec::new(key_len);
-        let block_index = codec.read_entries(&mut cursor, record_count)?;
-        let block_index =
-            codec.validate_entries(block_index, expected_min_key, expected_max_key, data_end)?;
-        Ok(Self {
-            record_count,
-            block_index,
-        })
+        let block_index = codec.read_and_validate(
+            bytes,
+            footer_body_len,
+            expected_min_key,
+            expected_max_key,
+            data_end,
+        )?;
+        Ok(Self { block_index })
     }
 }
 
 // Block index entry and codec.
-
-struct RawBlockIndexEntry {
-    key_range: BlockKeyRange,
-    block_offset: u64,
-}
 
 struct BlockIndexCodec {
     key_len: usize,
@@ -197,127 +196,134 @@ impl BlockIndexCodec {
         Self { key_len }
     }
 
-    fn write_to(
-        &self,
-        entries: &[BlockIndexEntry],
-        buffer: &mut Vec<u8>,
-    ) -> Result<(), FormatError> {
+    fn write_to(&self, index: &SegmentIndex, buffer: &mut Vec<u8>) -> Result<(), FormatError> {
         buffer.extend_from_slice(
-            &format_u32(entries.len(), "block index entry count")?.to_le_bytes(),
+            &format_u32(index.segment_prefix().len(), "segment key prefix length")?.to_le_bytes(),
         );
-        for entry in entries {
+        buffer.extend_from_slice(index.segment_prefix().as_slice());
+        buffer
+            .extend_from_slice(&format_u32(index.len(), "block index entry count")?.to_le_bytes());
+        for (entry, range) in index.entries() {
             buffer.extend_from_slice(
-                &format_u32(entry.key_range.prefix().len(), "block key prefix length")?
+                &format_u32(range.extra_prefix.len(), "block extra key prefix length")?
                     .to_le_bytes(),
             );
-            buffer.extend_from_slice(entry.key_range.prefix());
-            buffer.extend_from_slice(entry.key_range.min_suffix());
-            buffer.extend_from_slice(entry.key_range.max_suffix());
+            buffer.extend_from_slice(range.extra_prefix);
+            buffer.extend_from_slice(range.min_suffix);
+            buffer.extend_from_slice(range.max_suffix);
             buffer.extend_from_slice(&entry.byte_range.start.to_le_bytes());
         }
         Ok(())
     }
 
-    fn read_entries(
+    fn read_and_validate(
         &self,
-        cursor: &mut BinaryCursor<'_>,
-        record_count: u64,
-    ) -> Result<Vec<RawBlockIndexEntry>, CorruptionError> {
+        bytes: Vec<u8>,
+        footer_body_len: usize,
+        expected_min_key: &[u8],
+        expected_max_key: &[u8],
+        data_end: u64,
+    ) -> Result<SegmentIndex, CorruptionError> {
+        if expected_min_key.len() != self.key_len || expected_max_key.len() != self.key_len {
+            return Err(CorruptionError::SegmentFormat);
+        }
+        let mut cursor = BinaryCursor::new(&bytes[..footer_body_len]);
+        let segment_prefix_len =
+            cursor.read::<u32>().ok_or(CorruptionError::SegmentFormat)? as usize;
+        if segment_prefix_len > self.key_len {
+            return Err(CorruptionError::SegmentFormat);
+        }
+        let segment_prefix_start = cursor.position();
+        cursor
+            .read_slice(segment_prefix_len)
+            .ok_or(CorruptionError::SegmentFormat)?;
+        let segment_prefix = segment_prefix_start..cursor.position();
         let count = cursor.read::<u32>().ok_or(CorruptionError::SegmentFormat)?;
         let count = count as usize;
+        let relative_key_len = self.key_len - segment_prefix_len;
         let minimum_entry_len = self
             .key_len
-            .checked_add(4 + 8)
+            .checked_sub(segment_prefix_len)
+            .and_then(|len| len.checked_add(4 + 8))
             .ok_or(CorruptionError::SegmentFormat)?;
         if count == 0
-            || record_count == 0
-            || u64::try_from(count).map_err(|_| CorruptionError::SegmentFormat)? > record_count
+            || count > MAX_BLOCK_COUNT
             || count
                 .checked_mul(minimum_entry_len)
                 .is_none_or(|minimum_len| minimum_len > cursor.remaining())
         {
             return Err(CorruptionError::SegmentFormat);
         }
-        let mut entries = Vec::with_capacity(count);
+        let mut entries = Vec::new();
+        entries
+            .try_reserve_exact(count)
+            .map_err(|_| CorruptionError::SegmentFormat)?;
         for _ in 0..count {
-            let prefix_len = cursor.read::<u32>().ok_or(CorruptionError::SegmentFormat)? as usize;
-            let suffix_len = self
-                .key_len
-                .checked_sub(prefix_len)
+            let extra_prefix_len =
+                cursor.read::<u32>().ok_or(CorruptionError::SegmentFormat)? as usize;
+            let suffix_len = relative_key_len
+                .checked_sub(extra_prefix_len)
                 .ok_or(CorruptionError::SegmentFormat)?;
-            let encoded_range_len = prefix_len
-                .checked_add(
-                    suffix_len
-                        .checked_mul(2)
-                        .ok_or(CorruptionError::SegmentFormat)?,
-                )
-                .ok_or(CorruptionError::SegmentFormat)?;
-            let encoded_range = cursor
-                .read_vec(encoded_range_len)
-                .ok_or(CorruptionError::SegmentFormat)?;
+            let extra_prefix = Self::read_range(&mut cursor, extra_prefix_len)?;
+            let min_suffix = Self::read_range(&mut cursor, suffix_len)?;
+            let max_suffix = Self::read_range(&mut cursor, suffix_len)?;
             let block_offset = cursor.read::<u64>().ok_or(CorruptionError::SegmentFormat)?;
-            entries.push(RawBlockIndexEntry {
-                key_range: BlockKeyRange::from_encoded(encoded_range, prefix_len, self.key_len)
-                    .ok_or(CorruptionError::SegmentFormat)?,
-                block_offset,
-            });
+            entries.push((extra_prefix, min_suffix, max_suffix, block_offset));
         }
         if cursor.remaining() != 0 {
             return Err(CorruptionError::SegmentFormat);
         }
-        Ok(entries)
-    }
-
-    fn validate_entries(
-        &self,
-        entries: Vec<RawBlockIndexEntry>,
-        expected_min_key: &[u8],
-        expected_max_key: &[u8],
-        data_end: u64,
-    ) -> Result<Vec<BlockIndexEntry>, CorruptionError> {
-        if expected_min_key.len() != self.key_len || expected_max_key.len() != self.key_len {
-            return Err(CorruptionError::SegmentFormat);
-        }
-        if !entries[0].key_range.min_equals(expected_min_key)
-            || !entries
-                .last()
-                .is_some_and(|entry| entry.key_range.max_equals(expected_max_key))
-        {
-            return Err(CorruptionError::SegmentFormat);
-        }
-
-        let mut validated: Vec<BlockIndexEntry> = Vec::with_capacity(entries.len());
-        let mut block_end = data_end;
-        for entry in entries.into_iter().rev() {
-            if entry.block_offset < SEGMENT_HEADER_LEN as u64
-                || block_end <= entry.block_offset
-                || block_end - entry.block_offset < BLOCK_METADATA_HEADER_LEN as u64
+        let mut encoded_entries = Vec::new();
+        encoded_entries
+            .try_reserve_exact(entries.len())
+            .map_err(|_| CorruptionError::SegmentFormat)?;
+        for index in 0..entries.len() {
+            let (extra_prefix, min_suffix, max_suffix, block_offset) = &entries[index];
+            let block_end = entries.get(index + 1).map_or(data_end, |entry| entry.3);
+            if *block_offset < SEGMENT_HEADER_LEN as u64
+                || block_end <= *block_offset
+                || block_end - *block_offset < BLOCK_METADATA_HEADER_LEN as u64
             {
                 return Err(CorruptionError::SegmentFormat);
             }
-            validated.push(BlockIndexEntry {
-                key_range: entry.key_range,
-                byte_range: entry.block_offset..block_end,
+            encoded_entries.push(EncodedBlockIndexEntry {
+                extra_prefix: extra_prefix.clone(),
+                min_suffix: min_suffix.clone(),
+                max_suffix: max_suffix.clone(),
+                byte_range: *block_offset..block_end,
             });
-            block_end = entry.block_offset;
         }
-        validated.reverse();
-        if validated[0].byte_range.start != SEGMENT_HEADER_LEN as u64
-            || validated.last().map(|entry| entry.byte_range.end) != Some(data_end)
-            || validated
-                .windows(2)
-                .any(|entries| !entries[0].key_range.ends_before(&entries[1].key_range))
-        {
+        if entries[0].3 != SEGMENT_HEADER_LEN as u64 {
             return Err(CorruptionError::SegmentFormat);
         }
-        Ok(validated)
+        let backing = bytes.into();
+        let index = SegmentIndex::from_encoded_parts(backing, segment_prefix, encoded_entries)
+            .ok_or(CorruptionError::SegmentFormat)?;
+        if !index.validate_ranges(self.key_len, expected_min_key, expected_max_key) {
+            return Err(CorruptionError::SegmentFormat);
+        }
+        Ok(index)
+    }
+
+    fn read_range(
+        cursor: &mut BinaryCursor<'_>,
+        len: usize,
+    ) -> Result<std::ops::Range<usize>, CorruptionError> {
+        let start = cursor.position();
+        cursor
+            .read_slice(len)
+            .ok_or(CorruptionError::SegmentFormat)?;
+        Ok(start..cursor.position())
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::block::{BlockChecksumKind, ValuePayloadCompressionKind};
+    use crate::{
+        block::{BlockChecksumKind, ValuePayloadCompressionKind},
+        segment::index::SegmentIndexBuilder,
+    };
 
     mod header {
         use super::*;
@@ -381,38 +387,35 @@ mod tests {
 
         #[test]
         fn derives_block_ranges_from_offsets_and_footer_start() {
+            let mut builder = SegmentIndexBuilder::new(b"a0", b"b9").expect("valid range");
+            builder
+                .push(b"a0", b"a9", SEGMENT_HEADER_LEN as u64..40)
+                .expect("valid first block");
+            builder
+                .push(b"b0", b"b9", 40..64)
+                .expect("valid second block");
             let footer = SegmentFooter {
-                record_count: 2,
-                block_index: vec![
-                    BlockIndexEntry {
-                        key_range: BlockKeyRange::new(b"a0", b"a9").expect("valid range"),
-                        byte_range: SEGMENT_HEADER_LEN as u64..40,
-                    },
-                    BlockIndexEntry {
-                        key_range: BlockKeyRange::new(b"b0", b"b9").expect("valid range"),
-                        byte_range: 40..64,
-                    },
-                ],
+                block_index: builder.finish(),
             };
             let mut bytes = Vec::new();
             footer
                 .write_to(2, &mut bytes)
                 .expect("footer should encode");
-            assert_eq!(bytes.len(), 8 + 4 + 2 * (4 + 1 + 1 + 1 + 8) + 8);
+            assert_eq!(bytes.len(), 4 + 4 + 2 * (4 + 1 + 1 + 1 + 8) + 8);
 
-            let decoded = SegmentFooter::from_bytes(&bytes, 2, 64, b"a0", b"b9")
+            let decoded = SegmentFooter::from_bytes(bytes, 2, 64, b"a0", b"b9")
                 .expect("footer offsets should define valid ranges");
             assert_eq!(
-                decoded.block_index[0].byte_range,
+                decoded.block_index.entry(0).byte_range,
                 SEGMENT_HEADER_LEN as u64..40
             );
-            assert_eq!(decoded.block_index[1].byte_range, 40..64);
+            assert_eq!(decoded.block_index.entry(1).byte_range, 40..64);
         }
 
         #[test]
-        fn rejects_block_count_that_exceeds_record_count() {
+        fn rejects_impossible_block_count_before_allocating_entries() {
             let mut bytes = Vec::new();
-            bytes.extend_from_slice(&1u64.to_le_bytes());
+            bytes.extend_from_slice(&0u32.to_le_bytes());
             bytes.extend_from_slice(&u32::MAX.to_le_bytes());
             let footer_body_len = u32::try_from(bytes.len()).expect("small test footer");
             bytes.extend_from_slice(&footer_body_len.to_le_bytes());
@@ -420,7 +423,7 @@ mod tests {
             bytes.extend_from_slice(&crc.to_le_bytes());
 
             assert!(matches!(
-                SegmentFooter::from_bytes(&bytes, 2, SEGMENT_HEADER_LEN as u64, b"a0", b"a0"),
+                SegmentFooter::from_bytes(bytes, 2, SEGMENT_HEADER_LEN as u64, b"a0", b"a0"),
                 Err(CorruptionError::SegmentFormat)
             ));
         }

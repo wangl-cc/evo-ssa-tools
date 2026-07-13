@@ -12,6 +12,7 @@ One benchmark target is used for horizontal comparison against other embedded st
 - `ordered_lookup`: segment-only read-path benchmark with checksum verification enabled. It measures dense ordered lookup, clustered/random sparse ordered lookup, cold process-local checksum verification, large-value borrowed-vs-owned fetch APIs, large-value block-size sensitivity, L0 overlay ordered lookup, and L0 overlay scan amplification.
 - `append_publish`: segment-only write-path benchmark with checksum verification enabled. It measures sorted and unsorted batch publish into fresh stores.
 - `parameter_evolution`: segment-only cache-evolution benchmark with checksum verification enabled. It measures rebuild-vs-L0 behavior for middle inserts and repeated axis changes.
+- `physical_format`: segment-only trusted-open and short/long-key sparse-routing benchmark. It also reports segment bytes for each key width.
 - `compression`: segment-only value-payload compression benchmark, available with `--features value-compression-lz4,value-compression-zstd`. It compares uncompressed stores against LZ4-created and Zstandard-level-1-created stores using the default writer-side compression policy, reports store bytes, and measures ordered fetch, full iteration, and append publish.
 
 All current segment variants keep block checksum verification enabled, including the cross-backend comparison. The suite therefore measures the cache-safe implementation rather than an unchecked upper bound.
@@ -32,6 +33,8 @@ Value profiles are narrow within one namespace:
 Each profile currently uses `16,384` records for the standard dataset. The parameter-evolution datasets are separate structured grids that repeatedly change active `x` and `y` axes.
 
 ## Baselines
+
+The latest focused v1 format comparison is [v1-format-20260713-m1](../benchmark-baselines/v1-format-20260713-m1/README.md). It records same-session before/after results for trusted open, 16/512-byte key routing, existing ordered workloads, and compressed reads.
 
 `fjall3` uses a workload-shaped, no-compression configuration derived from the surrounding project: large cache, higher cached-file limit, point-read-hit expectation, profile-sensitive data block tuning, and key-value separation for large values. Compression is omitted because benchmark values are synthetic bytes and the goal is to measure storage layout rather than compression ratio.
 
