@@ -1,11 +1,14 @@
 use rand::Rng;
 
 use crate::{
-    Result,
+    Error, Result,
     model::{ChannelEditor, EvolvingModel},
+    random::SsaRngs,
     scheduler::{
-        SsaScheduler,
-        direct::{DenseDirectScheduler, DirectScheduler},
+        FamilyAlgorithm, FamilyUpdateContext, SsaScheduler,
+        direct::DirectScheduler,
+        family::{FamilyReactionSet, StaticFamilyModel},
+        update::{FamilyLocalUpdateWriter, FamilyUpdateBuffer},
     },
 };
 
@@ -19,6 +22,7 @@ where
     state: M::State,
     scheduler: S,
     time: f64,
+    poisoned: bool,
 }
 
 impl<M> Simulation<M, DirectScheduler<M::ChannelKey, M::ChannelPayload>>
@@ -31,21 +35,12 @@ where
     }
 }
 
-impl<M> Simulation<M, DenseDirectScheduler<M::ChannelPayload>>
-where
-    M: EvolvingModel<ChannelKey = usize>,
-{
-    /// Create a simulation using the cached Direct Method scheduler for dense `usize` channels.
-    pub fn dense_direct(model: M) -> Result<Self> {
-        Self::with_scheduler(model, DenseDirectScheduler::new())
-    }
-}
-
 impl<M, S> Simulation<M, S>
 where
     M: EvolvingModel,
     S: SsaScheduler<M>,
 {
+    /// Create a simulation from a model and compatible scheduler.
     pub fn with_scheduler(model: M, mut scheduler: S) -> Result<Self> {
         let state = model.initial_state();
         let time = 0.0;
@@ -58,54 +53,81 @@ where
             state,
             scheduler,
             time,
+            poisoned: false,
         })
     }
 
+    /// Return the current simulation time.
     pub fn time(&self) -> f64 {
         self.time
     }
 
+    /// Borrow the current model state.
     pub fn state(&self) -> &M::State {
         &self.state
     }
 
+    /// Borrow the model definition.
     pub fn model(&self) -> &M {
         &self.model
     }
 
+    /// Borrow the installed scheduler and its cached state.
     pub fn scheduler(&self) -> &S {
         &self.scheduler
     }
 
     /// Execute one SSA event.
-    pub fn step<R: Rng + ?Sized>(&mut self, rng: &mut R) -> Result<Option<M::Event>> {
-        let Some(next) = self.scheduler.next_event(rng)? else {
+    pub fn step<C, Q, E>(&mut self, rngs: &mut SsaRngs<C, Q, E>) -> Result<Option<M::Event>>
+    where
+        C: Rng,
+        Q: Rng,
+        E: Rng,
+    {
+        if self.poisoned {
+            return Err(Error::SimulationPoisoned);
+        }
+
+        let (clock_rng, selection_rng, event_rng) = rngs.streams();
+        let Some(next) = self.scheduler.next_event(clock_rng, selection_rng)? else {
             return Ok(None);
         };
 
         self.time += next.dt;
         let event = self
             .model
-            .fire(&mut self.state, next.key, &next.payload, rng);
+            .fire(&mut self.state, next.key, &next.payload, event_rng);
 
         let mut updates = ChannelEditor::new();
         self.model
             .refresh_after_event(&self.state, &event, &mut updates);
-        self.scheduler.apply_updates(
+        if let Err(error) = self.scheduler.apply_updates(
             &self.model,
             &self.state,
             self.time,
             updates.into_updates(),
-        )?;
+        ) {
+            self.poisoned = true;
+            return Err(error);
+        }
 
         Ok(Some(event))
     }
 
     /// Run until `max_events` has fired or no active channel has positive propensity.
-    pub fn run<R: Rng + ?Sized>(&mut self, rng: &mut R, max_events: usize) -> Result<RunStatus> {
+    pub fn run<C, Q, E>(
+        &mut self,
+        rngs: &mut SsaRngs<C, Q, E>,
+        max_events: usize,
+    ) -> Result<RunStatus>
+    where
+        C: Rng,
+        Q: Rng,
+        E: Rng,
+    {
         let mut fired_events = 0;
         while fired_events < max_events {
-            if self.step(rng)?.is_none() {
+            if self.step(rngs)?.is_none() {
                 return Ok(RunStatus::NoActiveChannels { fired_events });
             }
             fired_events += 1;
@@ -115,10 +137,160 @@ where
     }
 }
 
+/// A running static-family simulation with a monomorphized scheduling algorithm.
+///
+/// Public scheduler aliases such as [`FamilyDirect`](crate::scheduler::direct::FamilyDirect) and
+/// [`FamilyNrm`](crate::scheduler::nrm::FamilyNrm) select the algorithm and update-buffer strategy.
+#[doc(hidden)]
+#[derive(Debug, Clone)]
+pub struct FamilySimulation<M, F, A, U>
+where
+    M: StaticFamilyModel,
+{
+    model: M,
+    state: M::State,
+    families: F,
+    algorithm: A,
+    updates: U,
+    time: f64,
+    poisoned: bool,
+}
+
+impl<M, F, A, U> FamilySimulation<M, F, A, U>
+where
+    M: StaticFamilyModel<Families = F>,
+    F: FamilyReactionSet<M>,
+    A: FamilyAlgorithm<M, F>,
+    U: FamilyUpdateBuffer,
+{
+    pub(crate) fn from_initialized(
+        model: M,
+        state: M::State,
+        families: F,
+        algorithm: A,
+        updates: U,
+    ) -> Self {
+        Self {
+            model,
+            state,
+            families,
+            algorithm,
+            updates,
+            time: 0.0,
+            poisoned: false,
+        }
+    }
+
+    /// Return the current simulation time.
+    pub fn time(&self) -> f64 {
+        self.time
+    }
+
+    /// Borrow the current model state.
+    pub fn state(&self) -> &M::State {
+        &self.state
+    }
+
+    /// Borrow the model definition.
+    pub fn model(&self) -> &M {
+        &self.model
+    }
+
+    /// Borrow the compile-time family bundle.
+    pub fn families(&self) -> &F {
+        &self.families
+    }
+
+    /// Execute one event and return its model-defined description.
+    pub fn step<C, S, E>(&mut self, rngs: &mut SsaRngs<C, S, E>) -> Result<Option<M::Event>>
+    where
+        C: Rng,
+        S: Rng,
+        E: Rng,
+    {
+        if self.poisoned {
+            return Err(Error::SimulationPoisoned);
+        }
+
+        let (clock_rng, selection_rng, event_rng) = rngs.streams();
+        let Some(fired) = self
+            .algorithm
+            .next_event(self.time, clock_rng, selection_rng)?
+        else {
+            return Ok(None);
+        };
+
+        self.time = fired.time;
+        let event = self
+            .families
+            .fire(
+                &self.model,
+                &mut self.state,
+                fired.family.index(),
+                fired.local_channel,
+                event_rng,
+            )
+            .ok_or(Error::MissingSelectedChannel)?;
+
+        self.updates.clear();
+        {
+            let current_family = fired.family;
+            let mut writer = FamilyLocalUpdateWriter::new(current_family, &mut self.updates);
+            self.model
+                .refresh_after_event(&self.state, &event, &mut writer);
+        }
+
+        let context = FamilyUpdateContext {
+            model: &self.model,
+            state: &self.state,
+            families: &self.families,
+            time: self.time,
+            fired,
+            clock_rng,
+        };
+        if let Err(error) = self.algorithm.apply_updates(context, &mut self.updates) {
+            self.poisoned = true;
+            return Err(error);
+        }
+
+        Ok(Some(event))
+    }
+
+    /// Run until `max_events` has fired or no active channel has positive propensity.
+    pub fn run<C, S, E>(
+        &mut self,
+        rngs: &mut SsaRngs<C, S, E>,
+        max_events: usize,
+    ) -> Result<RunStatus>
+    where
+        C: Rng,
+        S: Rng,
+        E: Rng,
+    {
+        let mut fired_events = 0;
+        while fired_events < max_events {
+            if self.step(rngs)?.is_none() {
+                return Ok(RunStatus::NoActiveChannels { fired_events });
+            }
+            fired_events += 1;
+        }
+        Ok(RunStatus::MaxEvents { fired_events })
+    }
+}
+
+/// Reason a bounded simulation run returned to its caller.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RunStatus {
-    MaxEvents { fired_events: usize },
-    NoActiveChannels { fired_events: usize },
+    /// The requested event limit was reached.
+    MaxEvents {
+        /// Number of events fired during this call to `run`.
+        fired_events: usize,
+    },
+    /// No channel with positive propensity remained.
+    NoActiveChannels {
+        /// Number of events fired during this call to `run`.
+        fired_events: usize,
+    },
 }
 
 #[cfg(test)]
@@ -128,6 +300,14 @@ mod tests {
 
     use super::*;
     use crate::scheduler::direct::DirectSchedulerStats;
+
+    fn rngs(seed: u64) -> SsaRngs<SmallRng, SmallRng, SmallRng> {
+        SsaRngs::new(
+            SmallRng::seed_from_u64(seed),
+            SmallRng::seed_from_u64(seed + 1),
+            SmallRng::seed_from_u64(seed + 2),
+        )
+    }
 
     #[derive(Debug, Clone)]
     struct MultiSpeciesBirthDeath {
@@ -231,8 +411,8 @@ mod tests {
         assert_eq!(stats.allocated_slot_count, 256);
         assert_eq!(stats.total_propensity, 160.0);
 
-        let mut rng = SmallRng::seed_from_u64(7);
-        let status = simulation.run(&mut rng, 32)?;
+        let mut rngs = rngs(7);
+        let status = simulation.run(&mut rngs, 32)?;
 
         assert_eq!(status, RunStatus::MaxEvents { fired_events: 32 });
         assert!(simulation.time() > 0.0);
@@ -335,8 +515,8 @@ mod tests {
         let mut simulation = Simulation::direct(model)?;
         assert_eq!(simulation.scheduler().stats().active_channel_count, 1);
 
-        let mut rng = SmallRng::seed_from_u64(11);
-        simulation.step(&mut rng)?;
+        let mut rngs = rngs(11);
+        simulation.step(&mut rngs)?;
 
         assert_eq!(simulation.state(), &[0, 1]);
         assert_eq!(simulation.scheduler().stats().active_channel_count, 2);

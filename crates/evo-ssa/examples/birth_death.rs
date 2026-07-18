@@ -89,8 +89,12 @@ fn main() -> evo_ssa::Result<()> {
         death_rate: 0.25,
     };
     let mut simulation = Simulation::direct(model)?;
-    let mut rng = SmallRng::seed_from_u64(42);
-    let status = simulation.run(&mut rng, 1_000)?;
+    let mut rngs = SsaRngs::new(
+        SmallRng::seed_from_u64(42),
+        SmallRng::seed_from_u64(43),
+        SmallRng::seed_from_u64(44),
+    );
+    let status = simulation.run(&mut rngs, 1_000)?;
 
     println!(
         "status={status:?}, time={:.4}, final_count={}",

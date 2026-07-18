@@ -4,6 +4,7 @@ A collection of tools for evolutionary stochastic simulation and analysis.
 
 ## Crates
 
+- [evo-ssa](./crates/evo-ssa/README.md): exact Direct and Next Reaction Method schedulers for evolving reaction-channel systems.
 - [evo-marker](./crates/evo-marker/README.md): a crate for evolutionary marker tracking the cell lineage or other genetic markers.
 - [frequency](./crates/frequency/README.md): a crate for calculating the frequency of unique elements in iterators.
 - [ssa-workflow](./crates/ssa-workflow/README.md): a demand-driven SSA analysis workflow layer with reusable intermediate results.

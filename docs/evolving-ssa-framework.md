@@ -1,5 +1,7 @@
 # Evolving SSA Framework Research Notes
 
+This document records the research and design path. The implemented crate contract is documented in [`crates/evo-ssa/docs/design.md`](../crates/evo-ssa/docs/design.md).
+
 ## Problem Shape
 
 This repository is aimed at evolutionary stochastic simulations rather than fixed chemical reaction networks. The important difference is that the set of species is part of the simulated state: a reaction can create a new species, remove the last individual of an existing species, or alter which concrete reaction instances are enabled. The reaction families themselves can still be fixed. For example, a model may always have birth, death, mutation, and interaction families, while each family contains many concrete instances such as `birth(species_i)`, `death(species_i)`, or `mutation(species_i -> species_j)`. A useful framework therefore should not ask model authors to pre-enumerate all possible concrete instances over all possible species. It should let them describe fixed reaction families and let the engine maintain the currently active concrete instances under those families.
@@ -73,7 +75,7 @@ struct Clock {
 
 Between events at `t_prev` and `t`, the scheduler advances `T_i += a_i * (t - t_prev)` for updated or fired channels. The next firing time is `t + (P_i - T_i) / a_i` when `a_i > 0`. When a channel fires, set `P_i += Exp(1)` and reschedule it. When a channel's propensity changes, keep `T_i` and `P_i`, update `a_i`, and recompute `scheduled_time`. This is the cleanest way to cache hazard without biasing the process. For pure piecewise-constant hazards, the equivalent Gibson-Bruck residual update is `t + (old_a / new_a) * (old_scheduled_time - t)` for non-fired channels whose propensity changes from `old_a` to `new_a`.
 
-This suggests the scheduler API should expose channel updates as changes to cached concrete instances, not as a request to rebuild all clocks for a reaction family. For fixed reaction families, family-separated schedulers should keep updates in `(family, local_channel)` form instead of flattening them through one global channel id and mapping them back on every event. Hot static schedulers should receive dependency updates through a typed callback sink so the compiler can monomorphize the update writer; a small fixed buffer is enough for unary birth/death/mutation events whose update fanout is known.
+This suggests the scheduler API should expose channel updates as changes to cached concrete instances, not as a request to rebuild all clocks for a reaction family. For fixed reaction families, family-separated schedulers should keep updates in `(family, local_channel)` form instead of flattening them through one global channel id and mapping them back on every event. Hot static schedulers should receive dependency updates through a typed callback sink so the compiler can monomorphize the update writer; a caller-selected inline capacity can keep known small dependency fanout off the heap while reusable spill storage handles larger events.
 
 ## Scheduler Interface
 
@@ -159,33 +161,30 @@ The first production framework should implement Tier 1 and design the clock trai
 
 `evo-marker` is useful for optional lineage metadata. The new state layer should allow marker-bearing species or individuals, but the scheduler should only need counts, channel keys, and propensities.
 
-## Suggested Crate Layout
+## Implemented Crate Layout
 
 ```text
 crates/evo-ssa/
   src/lib.rs
-  src/model.rs          # EvolvingModel, StateDelta, ChannelUpdate
-  src/state.rs          # SpeciesId, SpeciesRegistry, sparse count helpers
-  src/channel.rs        # ChannelKey helpers and active channel table
-  src/scheduler/mod.rs  # SsaScheduler trait
-  src/scheduler/direct.rs
-  src/scheduler/first_reaction.rs
-  src/scheduler/next_reaction.rs
-  src/engine.rs         # run loop, observers, termination
-  src/observer.rs       # trajectory, final state, custom callbacks
+  src/model.rs              # EvolvingModel, ChannelUpdate, ChannelEditor
+  src/engine.rs             # Dynamic and shared static-family simulation loops
+  src/random.rs             # Independent clock, selection, and event RNG streams
+  src/scheduler/mod.rs      # Scheduler contracts
+  src/scheduler/family.rs   # Arbitrary-length static family lists and typed ids
+  src/scheduler/direct.rs   # Dynamic Direct and family-separated Direct
+  src/scheduler/nrm.rs      # Generic and statically dispatched family NRM
+  src/scheduler/update.rs   # Typed dependency-update sinks
+  src/scheduler/weighted.rs # Cached segment-tree sampler
+  src/scheduler/nrm_clock.rs
 ```
 
 Keep `evo-ssa` independent of `ssa-workflow`. Then add examples or integration tests showing how to wrap an `evo-ssa` simulation as an `ssa-workflow::StochasticTask`.
 
-## Minimal Prototype Plan
+## Implementation Status and Next Steps
 
-1. Implement `SpeciesId`, sparse count state, `ChannelUpdate`, `EvolvingModel`, `SsaScheduler`, and `Engine`.
-2. Implement `DirectScheduler` with a Fenwick tree weighted sampler and dynamic insert/remove/update.
-3. Port a simple birth-death-mutation model where mutation can create new species at runtime.
-4. Add validation tests against analytical or brute-force small systems: pure birth-death, two-species switching, and mutation creating a new species.
-5. Add a reference `FirstReactionScheduler` for small models and parity tests against `DirectScheduler`.
-6. Implement `NextReactionScheduler` with an indexed heap and explicit dependency updates.
-7. Benchmark dynamic species workloads at 1,000, 10,000, and 100,000 active species, measuring event throughput and update fanout.
+The current crate implements cached dynamic Direct, two-level family Direct, generic family NRM, and statically dispatched family NRM. It includes dynamic species creation, arbitrary-length typed family lists, fail-closed dependency updates, independent random streams, analytical distribution tests, and handwritten benchmark baselines.
+
+The next validation milestones are a randomized internal-time oracle for NRM, event-throughput benchmarks at 1,000 to 100,000 active species, and explicit measurements across dependency fanout. A nonhomogeneous clock API and approximate tau-leaping remain separate future layers.
 
 The prototype should avoid pairwise all-to-all interactions at first. Unary birth/death/mutation is enough to validate dynamic species creation, active channel bookkeeping, and scheduler independence. Pair interactions should be the second milestone because they force the dependency-index design to become explicit.
 

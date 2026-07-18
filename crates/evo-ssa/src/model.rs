@@ -9,9 +9,13 @@ use rand::Rng;
 /// the biological semantics and tells the scheduler which concrete channels changed after an
 /// event.
 pub trait EvolvingModel {
+    /// Mutable biological state advanced by reaction events.
     type State;
+    /// Stable identity of one active concrete reaction channel.
     type ChannelKey: Copy + Eq + Hash;
+    /// Scheduler-owned data needed to evaluate or fire a channel.
     type ChannelPayload: Clone;
+    /// Compact description of one fired reaction and its affected state.
     type Event;
 
     /// Build the initial simulation state.
@@ -25,6 +29,11 @@ pub trait EvolvingModel {
     );
 
     /// Return the current propensity of one concrete channel.
+    ///
+    /// Schedulers cache this value until the model emits a matching update from
+    /// [`refresh_after_event`](Self::refresh_after_event). Propensities must therefore be
+    /// piecewise-constant between emitted updates; time-dependent hazards need to emit updates at
+    /// every point where cached propensities change.
     fn propensity(
         &self,
         state: &Self::State,
@@ -55,11 +64,22 @@ pub trait EvolvingModel {
 #[derive(Debug, Clone, PartialEq)]
 pub enum ChannelUpdate<K, P> {
     /// Insert a channel or replace the payload of an existing channel, then recompute propensity.
-    Upsert { key: K, payload: P },
+    Upsert {
+        /// Stable channel identity.
+        key: K,
+        /// Payload used for propensity evaluation and firing.
+        payload: P,
+    },
     /// Recompute propensity for an existing channel, keeping its payload.
-    Recompute { key: K },
+    Recompute {
+        /// Existing channel to recompute.
+        key: K,
+    },
     /// Remove a channel from the active set.
-    Remove { key: K },
+    Remove {
+        /// Existing channel to remove, if present.
+        key: K,
+    },
 }
 
 /// Collects channel updates without exposing scheduler internals to the model.
@@ -77,34 +97,42 @@ impl<K, P> Default for ChannelEditor<K, P> {
 }
 
 impl<K, P> ChannelEditor<K, P> {
+    /// Create an empty update collector.
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// Insert a channel or replace its payload, then recompute its propensity.
     pub fn upsert(&mut self, key: K, payload: P) {
         self.updates.push(ChannelUpdate::Upsert { key, payload });
     }
 
+    /// Request propensity recomputation for an existing channel.
     pub fn recompute(&mut self, key: K) {
         self.updates.push(ChannelUpdate::Recompute { key });
     }
 
+    /// Remove a channel if it is active.
     pub fn remove(&mut self, key: K) {
         self.updates.push(ChannelUpdate::Remove { key });
     }
 
+    /// Return whether no updates have been collected.
     pub fn is_empty(&self) -> bool {
         self.updates.is_empty()
     }
 
+    /// Return the number of collected updates.
     pub fn len(&self) -> usize {
         self.updates.len()
     }
 
+    /// Drain collected updates in insertion order while retaining allocated capacity.
     pub fn drain(&mut self) -> impl Iterator<Item = ChannelUpdate<K, P>> + '_ {
         self.updates.drain(..)
     }
 
+    /// Consume the editor and return its updates in insertion order.
     pub fn into_updates(self) -> Vec<ChannelUpdate<K, P>> {
         self.updates
     }
