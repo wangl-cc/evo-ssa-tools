@@ -1,269 +1,161 @@
-# Remote Blob Backend Design
+# Remote Repository Design
 
 ## Status
 
-This is a future design note. It is not implemented by the current local filesystem backend and should be treated as a catalog/backend revision, not as an incremental change to the v1 local `MANIFEST` format.
+This document specifies a future provider-neutral remote repository for `segment-cache-store`. None of this behavior is implemented by the current local store.
+
+Remote support adds a separate catalog and publication protocol. It does not change local `STORE`, `MANIFEST`, or segment v1 bytes. The companion documents define the [remote version format](remote-version-format.md) and the [implementation plan](remote-implementation.md).
 
 ## Purpose
 
-The segment cache store is a good fit for object storage because visible data already consists of immutable segments plus a small manifest snapshot. A remote backend should preserve that shape instead of trying to emulate a mutable local filesystem. Segments become immutable blob objects, manifests become immutable versioned snapshots, and one small mutable reference object points to the latest manifest.
+The local store already publishes immutable segment files through a small manifest. A remote repository preserves that shape: segment and manifest objects are immutable, while small compare-and-swap refs select visible manifests.
 
-The target use case is distributed computation caching: workers can publish batches at coarse granularity, readers can download and cache immutable segments locally, and later merge/normalization can converge duplicate key copies through the existing deterministic winner rule.
+The primary workflow is distributed computation caching:
 
-## Goals
+1. Workers commit locally.
+2. Each worker explicitly publishes one normalized main-only snapshot to its worker ref.
+3. An aggregator strictly merges selected worker heads and the current remote head in one k-way pass.
+4. The aggregator publishes one main-only manifest and advances `refs/current` with compare-and-swap.
+5. Readers materialize a selected manifest into a local content cache and use the existing local read engine.
 
-- Use object storage as a shared durable blob layer for immutable segment bytes.
-- Keep reads coarse grained and local-cache friendly.
-- Support optimistic multi-writer publication through compare-and-swap on a small reference object.
-- Support pinned historical reads by manifest id.
-- Preserve corruption-as-miss semantics for segment data.
-- Avoid relying on object listing for visibility or latest-version discovery.
-- Keep provider-specific APIs behind a small backend abstraction.
+Remote state is a phase-boundary exchange format, not the hot execution backend and not a continuously synchronized LSM level.
+
+## V1 Decisions
+
+- Keep local execution and hot reads in `Store`.
+- Make push, pull, and aggregation explicit operations.
+- Keep local and remote catalog wire formats independent.
+- Reuse the existing BLAKE3 `SegmentContentId` for complete segment bytes.
+- Address immutable remote manifests by a BLAKE3 content ID.
+- Keep logical store identity separate from physical checksum and compression policy.
+- Require every remote manifest to contain a main-only, sorted, non-overlapping segment set.
+- Collapse equal keys only when value bytes are identical; differing values abort publication.
+- Upload immutable objects before publishing the ref that makes them visible.
+- Use only complete IDs in the v1 API and CLI.
+- Stream segment upload and download through files or readers and writers; do not require whole segments in memory.
+- Let `scs` call only public repository APIs.
 
 ## Non-Goals
 
 - A general-purpose remote database.
-- Low-latency single-key reads from a cold cache.
-- Cross-object transactions beyond publish ordering plus conditional reference update.
-- Emulating POSIX rename, directory listing, or advisory locks on object storage.
-- Background LSM-style compaction as the default write path.
+- Low-latency point reads directly from cold object storage.
+- POSIX filesystem emulation over an object provider.
+- Automatic publication of every local commit.
+- A generic storage trait shared by local rename and remote compare-and-swap.
+- History traversal, parent DAGs, tags, pin leases, rollback, logical diff, abbreviated IDs, or destructive remote garbage collection in v1.
+- Authenticated range reads before a range-authentication format exists.
+
+## Architecture
+
+```text
+application or scs
+        |
+public remote repository API
+        |
+repository protocol: validate, push, pull, aggregate, publish
+        |
+immutable object stream + mutable ref compare-and-swap
+        |
+provider adapter
+```
+
+The provider-neutral repository engine may live in `segment-cache-store` behind an optional `remote-repository` feature so it can reuse private segment readers, writers, and the strict snapshot builder. Provider SDKs and their dependency trees belong in adapter crates.
+
+The local catalog is not generalized into a backend-independent catalog. Local publication owns local IDs, patches, locks, rename, and directory synchronization. Remote publication owns content IDs, immutable objects, and conditional ref updates.
+
+## Identity And Physical Policy
+
+`StoreIdentity` answers one question: whether two snapshots represent the same logical cache namespace. It covers key geometry, value layout, and caller metadata. It does not include block checksum or value compression choices.
+
+Each remote root also has one v1 `RepositoryConfig` that selects the physical checksum and compression used for remote segment objects. The config is immutable for v1, but it is not part of logical identity. A future config migration may rewrite physical objects without creating a new logical cache namespace.
+
+Publishing a local store whose codec differs from the repository config requires rebuilding its visible records with the repository config. Reusing complete segment objects is valid only when the bytes already satisfy the target config and their ranges remain non-overlapping in the output.
 
 ## Object Model
 
-The remote backend should use three object classes:
-
-- Segment objects are immutable blobs containing one segment file's bytes.
-- Manifest objects are immutable snapshots describing visible segment references.
-- Reference objects are small mutable pointers to manifest objects.
-
-Recommended object layout:
+The portable object layout is:
 
 ```text
 <root>/
   store/identity
+  store/config
   refs/current
-  refs/tags/<name>
-  refs/pins/<pin-id>
+  refs/workers/<worker-name>
   manifests/<manifest-id>.manifest
-  segments/<segment-key>.seg
+  segments/<segment-content-id>.seg
 ```
 
-`store/identity` is the remote equivalent of `STORE`: it defines the namespace metadata, key length, value layout, checksum kind, compression kind, and remote catalog format. It should be created with "put if absent" semantics and never mutated after creation.
+Identity and config are bounded root metadata. Segment and manifest objects are immutable. Refs are bounded mutable objects updated with provider compare-and-swap tokens.
 
-`refs/current` is the only object whose value defines the latest visible version. Readers must not scan `manifests/` and pick the highest generation, because object listing can be expensive, incomplete under failures, or semantically weaker than point reads. The latest version is whatever `refs/current` names.
+Object listing is not part of visibility, resolution, push, pull, or aggregation. A future maintenance protocol may add listing and deletion without changing ordinary publication semantics.
 
-## Latest Pointer
+## Worker Publication
 
-The current pointer should be a compact binary or JSON object with at least:
+A worker publication:
 
-```text
-RemoteRef {
-  format_version
-  store_identity_hash
-  manifest_id
-  manifest_hash
-  generation
-}
-```
+1. Captures one stable local visible snapshot.
+2. Validates logical identity against the remote root.
+3. Normalizes local patches into staged main-only output without mutating the live local root.
+4. Re-encodes output when the local physical policy differs from the repository config.
+5. Streams missing segment objects to immutable storage while checking length and content ID.
+6. Uploads the immutable manifest object.
+7. Advances only that worker's ref with compare-and-swap.
 
-The storage provider's conditional-write token for `refs/current` is separate from this payload. On S3-like systems it may be an ETag or version id; on generation-based systems it may be object generation/metageneration. Internally call this token `ref_token`.
+Each worker owns its ref name. Workers do not contend on `refs/current` during normal execution.
 
-Reading the latest version is:
+## Aggregation
 
-1. Read `refs/current` and capture both payload and `ref_token`.
-2. Read `manifests/<manifest_id>.manifest`.
-3. Verify `manifest_hash`, `store_identity_hash`, and manifest generation.
-4. Build a runtime snapshot from the manifest's segment references.
+Aggregation captures `refs/current` and all selected worker refs, then performs one strict k-way merge. It emits a bounded sequence of main segments using the repository config and publishes one immutable manifest.
 
-Pinned reads skip step 1 and read a known manifest id directly. This is useful for long jobs, debugging, reproduction, and safe garbage-collection leases.
+The operation follows these rules:
 
-## Manifest Snapshots
+- Identical records collapse to one output record.
+- Equal keys with different values return a conflict and leave `refs/current` unchanged.
+- Missing, malformed, or hash-mismatched input objects are hard aggregation errors.
+- Existing segment objects are reused only when their complete ranges remain non-overlapping and their physical config matches.
+- Otherwise records are streamed through the same strict snapshot builder used by local cross-store merge.
+- A compare-and-swap conflict causes the aggregator to capture the new current head and recompute logical intent; it never overwrites the new head with a stale candidate.
 
-Manifest snapshots should be immutable and self-describing. A remote manifest needs more identity than the current local v1 manifest because blob names should not depend on one process-local monotone `segment_id`.
+V1 manifests are content snapshots and contain no parent list. Exact source provenance belongs in operation logs or a future history object rather than making arbitrary worker fan-in part of the snapshot format.
 
-Suggested manifest fields:
+## Pull And Materialization
 
-```text
-RemoteManifest {
-  format_version
-  store_identity_hash
-  manifest_id
-  parent_manifest_id
-  generation
-  created_by
-  entries[]
-}
+A pull:
 
-RemoteSegmentEntry {
-  tier
-  object_key
-  content_hash
-  segment_len
-  segment_hash
-  min_key
-  max_key
-}
-```
+1. Resolves `refs/current`, one worker ref, or one complete manifest ID.
+2. Fetches and verifies the immutable manifest.
+3. Streams each missing segment into a temporary local file.
+4. Verifies length, complete `SegmentContentId`, header, footer, and range invariants before atomic cache publication.
+5. Builds or replaces a local root using local v1 publication rules.
 
-`generation` is a human- and machine-friendly sequence number for a single reference history. It is not the authoritative latest selector by itself; `refs/current` is. `parent_manifest_id` records the optimistic update base and gives GC and debugging a version chain.
+The remote manifest is never copied into local `MANIFEST`. Local segment IDs and publication state are assigned locally. If the destination's physical options differ from the repository config, pull rebuilds records through the strict snapshot builder instead of linking incompatible segment bytes.
 
-`manifest_id` should be content-derived when practical, for example a cryptographic hash over canonical manifest bytes. A UUID plus manifest hash also works, but content-addressed ids make retries and deduplication simpler.
+## Concurrency And Visibility
 
-## Segment Blob Identity
+Immutable insertion is idempotent. A manifest becomes discoverable only after all referenced segment objects exist. A ref update is conditional on the exact provider token returned by the preceding ref read.
 
-Remote segment object keys should be globally unique without requiring a central segment id allocator. Two reasonable strategies are:
-
-- Content-addressed: `segments/<hash>.seg`, where `hash` is computed over full segment bytes.
-- Writer-unique: `segments/<writer-id>/<uuid>.seg`, with `content_hash` stored in the manifest entry.
-
-Content-addressed keys are preferred because upload retries are idempotent, local caches can key by content, and independently produced byte-identical segments deduplicate naturally. The existing non-cryptographic `segment_hash` is still useful for fast accidental replacement detection, but remote object identity should use a stronger content hash when blobs cross trust or failure boundaries.
-
-The local `segment_id` concept can remain a logical ordering/debug field if needed, but it should not allocate remote object names. Remote writers should not coordinate only to obtain object names.
-
-## Publish Protocol
-
-Remote publication is "upload immutable objects, then CAS the current ref".
-
-```text
-read refs/current -> old_ref, old_ref_token
-read old manifest
-build candidate manifest from old manifest plus local changes
-upload all new segment objects with put-if-absent semantics
-upload immutable candidate manifest with put-if-absent semantics
-conditional-put refs/current from old_ref_token to candidate ref
-```
-
-If the conditional reference update succeeds, the candidate manifest is the new latest version. If it fails, another writer won the race. The failed writer must read the new latest manifest, merge its still-unpublished logical changes with that latest snapshot, and retry. The already uploaded segment and manifest objects are harmless orphans until referenced or collected.
-
-The important ordering invariant is that every segment object referenced by a manifest must be uploaded and verified before the manifest can become reachable from `refs/current`.
-
-## Versioning Model
-
-There are two distinct kinds of version:
-
-- Provider object versions are storage-provider metadata for `refs/current` and possibly other objects. They are used as CAS tokens but should not be part of the portable catalog format.
-- Store manifest generations are logical cache versions. They are stored in remote ref and manifest payloads and increment on successful publication.
-
-Historical versions are simply old manifest objects. A snapshot is stable if the caller knows its `manifest_id`; it does not depend on the mutable current ref. Optional named references can make selected historical manifests discoverable:
-
-```text
-refs/tags/<name>      # human-named immutable or mutable tag
-refs/pins/<pin-id>   # temporary GC pin for a long reader/job
-refs/workers/<id>    # optional per-worker publication head
-```
-
-`refs/current` answers "what is latest now?" A manifest id answers "what exact snapshot do I want?" This split is the main reason not to overwrite a single `MANIFEST` object in place.
-
-## Compare-And-Swap Requirements
-
-Safe multi-writer publication requires a conditional update primitive on `refs/current`:
-
-```text
-compare_and_set_ref(name, expected_ref_token, new_ref_payload) -> Published | Conflict
-```
-
-The expected token must come from the exact ref version used to build the candidate manifest. If the backend cannot provide this primitive, it must not claim optimistic multi-writer safety. Valid alternatives are:
-
-- A single writer per remote root.
-- An external coordinator or lock service.
-- A database-backed reference store for refs while object storage holds only immutable blobs.
-
-Trying to discover conflicts by reading the current generation and then unconditionally overwriting `refs/current` is not sufficient; two writers can both read generation `N` and both publish `N + 1`, losing one update.
-
-## Read Path
-
-The remote read path should build a local runtime snapshot from a manifest, then use a local segment cache:
-
-1. Resolve latest or pinned manifest.
-2. Validate the manifest and store identity.
-3. For each needed segment, check the local cache by `content_hash` or object key plus immutable version.
-4. If absent, download the full segment object or a range containing the required block.
-5. Verify segment fingerprint/content hash and ordinary block checksums before returning values.
-
-The first implementation should prefer whole-segment downloads because it matches the current file-oriented reader and makes local cache behavior simple. Range reads can be added later for cold sparse lookups, but the segment/view layer should still treat the downloaded bytes as immutable backing data.
-
-## Local Cache
-
-The local cache is an optimization, not a correctness boundary. Cache entries should be keyed by immutable identity:
-
-```text
-LocalSegmentCacheKey {
-  content_hash
-  segment_len
-}
-```
-
-When reading from cache, verify size and either the strong content hash or the existing segment fingerprint before accepting bytes. A corrupt or missing cache entry is a cache miss and should trigger a re-download or become a store miss according to the ordinary corruption policy.
-
-Because segment objects are immutable, cached entries do not need invalidation when `refs/current` advances. Only reachability changes; object contents do not.
-
-## Merge And Normalization
-
-Remote writes should avoid turning every small local cache fill into a remote segment. Small writes can accumulate locally and flush as larger remote segments. Patch-tier segments are acceptable remotely as long as their count is bounded.
-
-Normalization should be explicit or threshold-driven, not continuous background compaction. A remote normalizer reads a manifest snapshot, writes replacement segment objects for the normalized ranges, writes a candidate manifest, and publishes it through the same CAS protocol. If the CAS fails, the normalizer discards or retries from the new latest manifest.
-
-This keeps object storage usage closer to a snapshot store than a high-churn LSM. It trades some temporary read amplification for fewer remote rewrites and lower coordination pressure.
-
-## Garbage Collection
-
-Garbage collection must be conservative because old readers may hold manifest ids that are no longer current.
-
-Recommended policy:
-
-- Treat every manifest reachable from `refs/current`, `refs/tags/*`, and `refs/pins/*` as live.
-- Retain a configurable history window of parent manifests by generation or age.
-- Mark every segment object referenced by retained manifests as live.
-- Delete unreferenced manifest and segment objects only after a grace period.
-- Never use directory/listing contents to decide visibility; listing is only a sweep mechanism.
-
-Failed publications create two common orphan types: segment objects uploaded before a failed CAS, and manifest objects uploaded before a failed CAS. Both are invisible unless a later successful manifest references them.
-
-Long-running jobs that need stable remote snapshots should create a temporary pin ref and delete it when done. If they do not pin, they must tolerate that very old manifest ids may eventually become unavailable after GC.
+If compare-and-swap fails, the candidate manifest is not visible through that ref. Its immutable objects remain safe to reuse in a retry and may become collectible when a future maintenance protocol exists.
 
 ## Failure Semantics
 
-| Failure | Visibility Result | Recovery |
-| --- | --- | --- |
-| Segment upload fails before manifest upload | No new data is visible | Retry upload or recompute |
-| Segment upload succeeds but manifest upload fails | Uploaded segment is orphaned | Retry or later GC |
-| Manifest upload succeeds but ref CAS fails | Manifest is orphaned | Merge with latest and retry |
-| Ref CAS succeeds | New manifest is latest | Readers can discover it through `refs/current` |
-| Referenced segment is missing or corrupt | That segment is miss space | Drop dead entry on next successful publication |
-| Local cache entry is corrupt | Local cache miss | Redownload or treat as cache miss |
+Failure handling depends on the operation boundary:
 
-The remote backend should never return wrong data to hide these failures. If a remote object cannot be authenticated against the manifest reference, it is absent or corrupt, not a valid cache hit.
+| Boundary | Missing or corrupt segment behavior |
+| --- | --- |
+| Push, pull, aggregation, or publication | Hard error; do not publish a new ref |
+| Verification while filling the local content cache | Remove the temporary or corrupt cache entry and report failure or retry |
+| Ordinary reads from an already opened local cache store | Preserve the existing corruption-as-miss contract; never return unverified bytes |
 
-## Backend Abstraction Sketch
+Malformed identity, config, manifest, or ref bytes are always hard repository errors because they define namespace, interpretation, or visibility.
 
-The storage abstraction should separate mutable refs from immutable objects:
+Content IDs detect accidental corruption and object substitution. They do not authenticate who is allowed to update a ref. Authorization remains the responsibility of authenticated transport and provider access control.
 
-```rust
-trait RemoteBlobStore {
-    fn get_ref(&self, name: &str) -> Result<RemoteRefRead>;
-    fn compare_and_set_ref(
-        &self,
-        name: &str,
-        expected: &RefToken,
-        payload: &[u8],
-    ) -> Result<RefUpdate>;
+## Deferred Work
 
-    fn get_object(&self, key: &str, range: Option<ByteRange>) -> Result<Bytes>;
-    fn put_object_if_absent(&self, key: &str, bytes: &[u8]) -> Result<PutObjectResult>;
-}
-```
-
-Provider-specific ETags, generation numbers, retries, multipart uploads, and authentication should live behind this trait. The store logic should only see immutable object keys, verified bytes, ref payloads, and conflict results.
-
-## Open Questions
-
-- Which strong content hash should remote segment and manifest ids use.
-- Whether range reads are worth implementing before whole-segment caching is benchmarked.
-- Whether remote manifests should preserve the local main/patch tier shape exactly or introduce a remote-specific tier optimized for worker imports.
-- How long GC should retain unpinned historical manifests by default.
-- Whether named branch refs are useful, or whether `refs/current` plus temporary pins are enough.
-- Whether remote publication should be implemented as a new backend under the same public `Store` API or as an explicit `RemoteStore` with synchronization APIs.
-
-## Summary
-
-The remote backend should be modeled as an object-storage snapshot system: immutable segments, immutable manifests, and a CAS-updated latest pointer. `refs/current` tracks the latest version; manifest ids provide stable historical versions; optional pin/tag refs make selected versions discoverable and GC-safe. This design fits object storage because it avoids in-place mutation, amortizes remote IO over segment-sized blobs, and lets local caches reuse immutable bytes across readers and workflow phases.
+- History and source-provenance objects.
+- Tags and retention leases.
+- Rollback and physical or logical diff APIs.
+- Abbreviated ID resolution.
+- Listing-based remote garbage collection and deletion.
+- Async repository APIs.
+- Authenticated range reads and mmap-backed local materialization.

@@ -43,6 +43,9 @@ The default feature set enables `checksum-rapidhash`, which exposes `BlockChecks
 Internal design and evaluation notes live in:
 
 - [docs/design.md](docs/design.md)
+- [docs/remote-blob-design.md](docs/remote-blob-design.md)
+- [docs/remote-version-format.md](docs/remote-version-format.md)
+- [docs/remote-implementation.md](docs/remote-implementation.md)
 - [docs/benchmark.md](docs/benchmark.md)
 
 Useful commands:
