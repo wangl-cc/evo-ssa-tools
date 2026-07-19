@@ -1,0 +1,5 @@
+error: CacheSchema derive does not support unions
+ --> tests/ui/fail_union.rs:4:1
+  |
+4 | union Bad {
+  | ^^^^^
