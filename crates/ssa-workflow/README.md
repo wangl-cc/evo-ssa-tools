@@ -152,11 +152,22 @@ let task = DeterministicTask::builder("summary-statistics-v1")
 # }
 ```
 
-Identifiers use stable segments with ASCII letters, digits, and `-`; `_` is reserved for derived cache names. Prefer lowercase kebab-case and bump the version when the meaning of a result changes. Persistent namespace names use `_` between path or codec segments and `__` between the computation path and codec format.
+Identifiers use stable segments with ASCII letters, digits, and `-`; `_` is reserved for derived cache names. Prefer lowercase kebab-case and bump the version when the meaning of a result changes. Persistent namespace names use `_` between path or codec segments and `__` between the computation path, canonical key format, and codec format.
 
 Dependent computation paths render from the current result back to their roots. For example, a transform id `summary-v1` built from a task id `trajectory-v1` renders as `summary-v1_trajectory-v1`, read as "summary of trajectory". Persistent namespaces and RNG seed material use this same segment order.
 
 If you change compute logic, output type, or persistent encoding incompatibly, use a new computation id or codec format so old cached bytes are not reused as a different result.
+
+## Canonical Key Encoding
+
+Canonical input bytes serve as persistent cache keys and as input to stochastic RNG derivation. Built-in numeric encodings are lexicographically order-preserving: if `a < b` numerically, then `encode(a) < encode(b)` in unsigned byte order. This allows ordered storage backends to preserve numeric sweep locality when walking keys.
+
+- Unsigned integers: big-endian bytes.
+- Signed integers: big-endian two's-complement with the sign bit flipped.
+- Floats: NaN normalized to one canonical payload, `-0.0` treated as `+0.0`, then sign-magnitude transformed so the canonical order is `-inf < finite negatives < 0 < finite positives < +inf < NaN`.
+- Tuples and arrays: field concatenation; lexicographic ordering is inherited from component encodings.
+
+Persistent namespaces include a canonical-key-format version (`keyfmt-v2`) so that different key encoding formats are always isolated into separate namespaces.
 
 ## Transforms
 
