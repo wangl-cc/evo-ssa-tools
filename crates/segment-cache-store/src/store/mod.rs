@@ -1,0 +1,378 @@
+//! Public store facade.
+//!
+//! `Store` is a cheaply cloneable shared handle over its runtime
+//! state ([`StoreInner`]). This file is the single place that shows the whole
+//! operational API — point and range reads, and batched writes — as thin
+//! delegators. Ordered and range reads belong to [`crate::snapshot`], atomic
+//! manifest transitions to [`crate::commit`], and lifecycle operations to
+//! [`crate::catalog`].
+
+mod state;
+
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+};
+
+pub(crate) use state::StoreInner;
+
+use crate::{
+    block::{BlockChecksumKind, ValuePayloadCompressionKind},
+    catalog::{
+        Catalog, CreateOptions, OpenOptions, OpenedStore, StoreInfo, StoreMetadata,
+        StoreStorageStats,
+    },
+    commit::{CommitOptions, CommitStats, Committer, WriteBatch},
+    error::{InputError, Result},
+    segment::Segment,
+    snapshot::{
+        CorruptionHandling, LookupReadOptions, OrderedLookup, RangeCursor, SegmentSetReader,
+    },
+    value::ValueLayout,
+};
+
+/// Persistent append-only cache store.
+#[derive(Clone)]
+pub struct Store {
+    pub(crate) inner: Arc<StoreInner>,
+}
+
+impl Store {
+    fn from_opened(opened: OpenedStore) -> Self {
+        Self {
+            inner: Arc::new(StoreInner::from_opened(opened)),
+        }
+    }
+
+    /// Creates a new empty store rooted at `root`.
+    ///
+    /// Creation fails if persistent store state already exists. Use
+    /// [`Store::open`] for an existing store.
+    ///
+    /// Creation takes the same stable writer lock used by ordinary writer opens,
+    /// so two cooperating creators cannot publish different `STORE` files for
+    /// one root. A creator racing an existing writer fails with `WriterLocked`;
+    /// once the writer is gone, creating over an existing root fails with
+    /// `StoreAlreadyExists`.
+    pub fn create(root: impl Into<PathBuf>, options: CreateOptions) -> Result<Self> {
+        Catalog::at(root.into())
+            .create(options)
+            .map(Self::from_opened)
+    }
+
+    /// Reads persistent store identity from `STORE` without opening segment files.
+    ///
+    /// This does not acquire the writer lock, validate `MANIFEST`, or run any
+    /// catalog housekeeping. It is intended for tools that need to discover the
+    /// metadata required by [`OpenOptions::read_write`] or [`OpenOptions::read_only`].
+    pub fn inspect(root: impl AsRef<Path>) -> Result<StoreInfo> {
+        Catalog::at(root.as_ref()).inspect()
+    }
+
+    /// Opens an existing store rooted at `root`.
+    pub fn open(root: impl Into<PathBuf>, options: OpenOptions) -> Result<Self> {
+        Catalog::at(root.into())
+            .open(options)
+            .map(Self::from_opened)
+    }
+}
+
+impl Store {
+    /// Returns the caller-defined compatibility metadata persisted for this store.
+    #[must_use]
+    pub fn metadata(&self) -> &StoreMetadata {
+        &self.inner.metadata
+    }
+
+    /// Returns the fixed key length used by every record in this store.
+    #[must_use]
+    pub fn key_len(&self) -> usize {
+        self.inner.geometry.key_len
+    }
+
+    /// Returns the persisted value layout used by this store.
+    #[must_use]
+    pub fn value_layout(&self) -> ValueLayout {
+        self.inner.geometry.value_layout
+    }
+
+    /// Returns the block checksum implementation used by this store.
+    #[must_use]
+    pub fn block_checksum(&self) -> BlockChecksumKind {
+        self.inner.geometry.block_checksum
+    }
+
+    /// Returns the value-payload compression kind used by this store.
+    #[must_use]
+    pub fn value_payload_compression(&self) -> ValuePayloadCompressionKind {
+        self.inner.geometry.value_payload_compression
+    }
+
+    /// Returns physical file usage for this store root.
+    ///
+    /// This is an operational convenience for tools and diagnostics. It reports
+    /// files under the opened root; visible logical record statistics are
+    /// intentionally left to read APIs such as [`Store::iter_all`].
+    pub fn storage_stats(&self) -> Result<StoreStorageStats> {
+        self.inner.paths.storage_stats()
+    }
+}
+
+impl Store {
+    /// Publishes a write batch with default segment write options.
+    pub fn commit_batch(&self, batch: WriteBatch) -> Result<CommitStats> {
+        Committer::new(&self.inner).commit_with_options(batch, &CommitOptions::default())
+    }
+
+    /// Publishes a write batch using explicit segment write options.
+    ///
+    /// Recommitting byte-identical key/value pairs is idempotent. Reusing a
+    /// visible key for different value bytes fails with
+    /// [`InputError::KeyConflict`] before publication. A small batch that
+    /// interleaves with main-tier segments may become the sole patch in its
+    /// interval-connected component. A later interleaving commit touching that
+    /// component normalizes the patch, intersecting main segments, and new
+    /// records into replacement main segments. Publication also drops dead
+    /// manifest entries whose segment files no longer open.
+    ///
+    /// # Cost of interleaving batches
+    ///
+    /// Direct main and patch publishes write only new records. Normalization
+    /// rewrites the interval-connected component reached by the remaining new
+    /// records; unrelated main and patch segments remain unchanged.
+    /// [`CommitStats::output_records`] reports the amplification actually paid.
+    ///
+    /// Returns [`InputError::ReadOnlyStore`] on a read-only handle.
+    pub fn commit_batch_with_options(
+        &self,
+        batch: WriteBatch,
+        options: &CommitOptions,
+    ) -> Result<CommitStats> {
+        Committer::new(&self.inner).commit_with_options(batch, options)
+    }
+
+    /// Folds all live patch segments into the main tier with default options.
+    ///
+    /// This is a foreground operation. It is useful after several small
+    /// interleaving writes when the caller is about to run a long read-heavy
+    /// phase and wants to remove L0 overlay read amplification.
+    pub fn normalize(&self) -> Result<CommitStats> {
+        self.normalize_with_options(&CommitOptions::default())
+    }
+
+    /// Folds all live patch segments into the main tier using explicit segment
+    /// write options.
+    ///
+    /// If no patch segments or dead manifest entries are visible, this is a
+    /// no-op and returns default stats. Returns [`InputError::ReadOnlyStore`]
+    /// on a read-only handle.
+    pub fn normalize_with_options(&self, options: &CommitOptions) -> Result<CommitStats> {
+        Committer::new(&self.inner).normalize_patches_with_options(options)
+    }
+
+    /// Merges another compatible store into this store with default segment write options.
+    ///
+    /// The destination handle is modified; `source` is only read. Both stores
+    /// must have the same caller metadata, key length, and value layout. The
+    /// source may use different physical block checksum or value-payload
+    /// compression settings because records are decoded and re-written into
+    /// the destination format.
+    ///
+    /// Equal keys with byte-identical values are emitted once. Equal keys with
+    /// different values fail with [`InputError::KeyConflict`]. The complete
+    /// logical union is rewritten as main-tier segments and published with one
+    /// manifest update, so a failed merge does not make a partial result visible.
+    ///
+    /// Returns [`InputError::ReadOnlyStore`] on a read-only destination handle.
+    pub fn merge_from(&self, source: &Store) -> Result<CommitStats> {
+        self.merge_from_with_options(source, &CommitOptions::default())
+    }
+
+    /// Merges another compatible store into this store using explicit segment write options.
+    ///
+    /// `options` controls newly written destination segments only; it does not
+    /// have to match the source store's physical format.
+    pub fn merge_from_with_options(
+        &self,
+        source: &Store,
+        options: &CommitOptions,
+    ) -> Result<CommitStats> {
+        Committer::new(&self.inner).merge_store_with_options(&source.inner, options)
+    }
+
+    /// Deletes segment files not referenced by the current manifest.
+    ///
+    /// Garbage collection is explicit rather than automatic. Commits publish a
+    /// new manifest and keep retired segment files in place so a concurrent
+    /// read-only open that already read the previous manifest can still open
+    /// every file it references. Call this only when the caller accepts that
+    /// older manifest snapshots may no longer be openable after the method
+    /// returns.
+    ///
+    /// Returns [`InputError::ReadOnlyStore`] on a read-only handle.
+    pub fn garbage_collect(&self) -> Result<()> {
+        if self.inner.writer_lock.is_none() {
+            return Err(InputError::ReadOnlyStore.into());
+        }
+        let _commit_guard = self.inner.commit_lock.lock();
+        let manifest = {
+            let state = self.inner.state.read();
+            state.manifest.clone()
+        };
+        self.inner.paths.garbage_collect_unreferenced(&manifest)
+    }
+}
+
+impl Store {
+    /// Checks an ordered key stream and returns a cache-safe hit bitmap.
+    ///
+    /// This is not an index-only probe: normal block checksum verification still
+    /// applies, so corrupted blocks report misses.
+    pub fn contains_many_ordered<'a, I>(&self, keys: I) -> Result<Vec<bool>>
+    where
+        I: IntoIterator<Item = &'a [u8]>,
+    {
+        let mut lookup = self.lookup_session();
+        lookup.contains_many(keys)
+    }
+
+    /// Fetches an ordered key stream, allocating an owned `Vec<u8>` for each hit.
+    pub fn fetch_many_ordered<'a, I>(&self, keys: I) -> Result<Vec<Option<Vec<u8>>>>
+    where
+        I: IntoIterator<Item = &'a [u8]>,
+    {
+        let mut lookup = self.lookup_session();
+        lookup.fetch_many(keys)
+    }
+
+    /// Visits ordered keys with borrowed value slices.
+    pub fn visit_many_ordered<K, F>(&self, keys: &[K], visitor: F) -> Result<()>
+    where
+        K: AsRef<[u8]>,
+        F: FnMut(usize, Option<&[u8]>),
+    {
+        let mut lookup = self.lookup_session();
+        lookup.visit_many(keys, visitor)
+    }
+
+    /// Creates a reusable ordered lookup session with cursor state.
+    #[must_use]
+    pub fn lookup_session(&self) -> OrderedLookup {
+        OrderedLookup::new(Arc::clone(&self.inner))
+    }
+
+    /// Fetches one key.
+    ///
+    /// This exists for completeness; ordered batch lookup is the optimized path.
+    pub fn fetch_one(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {
+        self.validate_key_len(key)?;
+        let (main_segments, patch_segments) = {
+            let state = self.inner.state.read();
+            (
+                Arc::clone(&state.main_segments),
+                Arc::clone(&state.patch_segments),
+            )
+        };
+        SegmentSetReader::new(
+            main_segments.as_ref(),
+            patch_segments.as_ref(),
+            self.lookup_read_options(),
+        )
+        .fetch_one(key)
+    }
+
+    /// Returns an owned iterator over the half-open range `[start, end)`.
+    pub fn range(&self, start: &[u8], end: &[u8]) -> Result<RangeCursor> {
+        self.validate_key_len(start)?;
+        self.validate_key_len(end)?;
+        self.range_cursor(Some(start), Some(end))
+    }
+
+    /// Visits the half-open range `[start, end)` with borrowed key/value slices.
+    pub fn visit_range<F>(&self, start: &[u8], end: &[u8], visitor: F) -> Result<()>
+    where
+        F: FnMut(&[u8], &[u8]),
+    {
+        self.validate_key_len(start)?;
+        self.validate_key_len(end)?;
+        self.range_cursor(Some(start), Some(end))?
+            .visit_all(visitor)
+    }
+
+    /// Returns an owned iterator over all visible records in key order.
+    pub fn iter_all(&self) -> Result<RangeCursor> {
+        self.range_cursor(None, None)
+    }
+
+    /// Visits all visible records in key order with borrowed key/value slices.
+    pub fn visit_all<F>(&self, visitor: F) -> Result<()>
+    where
+        F: FnMut(&[u8], &[u8]),
+    {
+        self.range_cursor(None, None)?.visit_all(visitor)
+    }
+}
+
+impl Store {
+    pub(crate) fn lookup_read_options(&self) -> LookupReadOptions {
+        LookupReadOptions {
+            geometry: self.inner.geometry,
+            verify_block_checksums: self.inner.verify_block_checksums,
+            corruption_handling: CorruptionHandling::AsCacheMiss,
+        }
+    }
+
+    fn range_cursor(&self, start: Option<&[u8]>, end: Option<&[u8]>) -> Result<RangeCursor> {
+        let visible = {
+            let state = self.inner.state.read();
+            (
+                Arc::clone(&state.main_segments),
+                Arc::clone(&state.patch_segments),
+            )
+        };
+        let (main_segments, patch_segments) = visible;
+        let intersects_range = |segment: &&Arc<Segment>| {
+            if let Some(start) = start
+                && segment.max_key() < start
+            {
+                return false;
+            }
+            if let Some(end) = end
+                && segment.min_key() >= end
+            {
+                return false;
+            }
+            true
+        };
+        let main_segments = main_segments
+            .iter()
+            .filter(intersects_range)
+            .map(Arc::clone)
+            .collect();
+        let patch_segments = patch_segments
+            .iter()
+            .filter(intersects_range)
+            .map(Arc::clone)
+            .collect();
+
+        Ok(RangeCursor::from_segment_sets(
+            main_segments,
+            patch_segments,
+            self.inner.geometry,
+            self.inner.verify_block_checksums,
+            start.map(ToOwned::to_owned),
+            end.map(ToOwned::to_owned),
+        ))
+    }
+
+    fn validate_key_len(&self, key: &[u8]) -> Result<()> {
+        if key.len() != self.inner.geometry.key_len {
+            return Err(InputError::WrongKeyLength {
+                expected: self.inner.geometry.key_len,
+                actual: key.len(),
+            }
+            .into());
+        }
+        Ok(())
+    }
+}

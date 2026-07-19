@@ -1,0 +1,42 @@
+coverage:
+  precision: 2
+  round: down
+  status:
+    project:
+      # Keep project coverage as one repository-level trend signal. Patch
+      # coverage below carries the stricter component-specific gates.
+      default:
+        target: auto
+        threshold: 2%
+        informational: true
+    patch:
+      default: false
+      # Storage engine: require meaningful patch coverage without forcing
+      # artificial tests for every filesystem branch.
+      storage:
+        target: 85%
+        threshold: 5%
+        paths:
+          - "crates/segment-cache-store/**"
+      # Workflow integration layer: keep pressure on behavior tests while
+      # allowing feature/backend combinations to vary.
+      workflow:
+        target: 70%
+        threshold: 15%
+        paths:
+          - "crates/ssa-workflow/**"
+      # Pure libraries: deterministic logic should have high patch coverage.
+      pure-libs:
+        target: 90%
+        threshold: 5%
+        paths:
+          - "crates/evo-marker/**"
+          - "crates/frequency/**"
+          - "crates/validate/**"
+      # CLI/debug tooling: useful to test parsing and core behavior, but text
+      # presentation branches are intentionally lower priority.
+      cli:
+        target: 50%
+        threshold: 20%
+        paths:
+          - "crates/scs/**"

@@ -1,0 +1,6 @@
+policy	segment_files	segment_bytes	average_segment_bytes	normalization_input_records	normalization_output_records	segments_retired	segments_published
+records_4k_bytes_8m	32	9205568	287674	1	4097	1	2
+records_16k_bytes_16m	8	9200736	1150092	1	16385	1	2
+records_32k_bytes_32m	4	9200504	2300126	1	32769	1	2
+records_64k_bytes_32m	2	9201634	4600817	1	65537	1	2
+records_128k_bytes_32m	1	9201789	9201789	1	131073	1	2

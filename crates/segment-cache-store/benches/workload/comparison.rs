@@ -1,0 +1,293 @@
+use std::hint::black_box;
+
+use criterion::{BatchSize, Criterion, Throughput};
+
+use crate::{
+    backends::{
+        Fjall3Backend, RedbBackend, commit_options_with_block_size, create_filled_segment_store,
+        create_segment_store, fill_segment_store_with_options, run_segment_axis_changes,
+        sum_segment_fetches, sum_segment_iter,
+    },
+    data::{AxisChangeDataset, Dataset, build_axis_change_dataset, build_dataset},
+    profile::{PROFILES, ValueProfile},
+};
+
+const DEFAULT_SEGMENT_VARIANTS: &[SegmentVariant] = &[SegmentVariant::new("segment", 16 * 1024)];
+const LARGE_SEGMENT_VARIANTS: &[SegmentVariant] = &[
+    SegmentVariant::new("segment", 16 * 1024),
+    SegmentVariant::new("segment_256k", 256 * 1024),
+    SegmentVariant::new("segment_512k", 512 * 1024),
+];
+
+#[derive(Clone, Copy)]
+struct SegmentVariant {
+    benchmark_name: &'static str,
+    block_size: usize,
+}
+
+impl SegmentVariant {
+    const fn new(benchmark_name: &'static str, block_size: usize) -> Self {
+        Self {
+            benchmark_name,
+            block_size,
+        }
+    }
+
+    fn for_profile(profile: ValueProfile) -> &'static [Self] {
+        if profile.uses_large_value_tuning() {
+            LARGE_SEGMENT_VARIANTS
+        } else {
+            DEFAULT_SEGMENT_VARIANTS
+        }
+    }
+}
+
+pub(crate) fn workload(c: &mut Criterion) {
+    for &profile in PROFILES {
+        let dataset = build_dataset(16_384, profile);
+        bench_ordered_fetch(c, profile, &dataset);
+        bench_clustered_sparse_ordered_fetch(c, profile, &dataset);
+        bench_iter_all(c, profile, &dataset);
+        bench_append_commit(c, profile, &dataset);
+    }
+
+    let profile = ValueProfile::Small;
+    let axis_change_dataset = build_axis_change_dataset(profile);
+    bench_axis_change_rounds(c, profile, &axis_change_dataset);
+}
+
+fn bench_ordered_fetch(c: &mut Criterion, profile: ValueProfile, dataset: &Dataset) {
+    let mut group = c.benchmark_group(format!("{}/comparison_ordered_fetch", profile.name()));
+    group.throughput(Throughput::Elements(dataset.ordered_keys.len() as u64));
+
+    for variant in SegmentVariant::for_profile(profile) {
+        let tempdir = tempfile::tempdir().expect("tempdir should work");
+        let store = create_filled_segment_store(
+            tempdir.path(),
+            profile,
+            &dataset.entries,
+            &commit_options_with_block_size(variant.block_size),
+            true,
+        );
+        group.bench_function(variant.benchmark_name, |b| {
+            b.iter(|| black_box(sum_segment_fetches(&store, &dataset.ordered_keys)))
+        });
+    }
+
+    let tempdir = tempfile::tempdir().expect("tempdir should work");
+    let fjall = Fjall3Backend::open(tempdir.path(), profile);
+    fjall.fill(&dataset.entries);
+    group.bench_function("fjall3", |b| {
+        b.iter(|| black_box(fjall.sum_fetches(&dataset.ordered_keys)))
+    });
+
+    let tempdir = tempfile::tempdir().expect("tempdir should work");
+    let redb = RedbBackend::open(tempdir.path());
+    redb.fill(&dataset.entries);
+    group.bench_function("redb", |b| {
+        b.iter(|| black_box(redb.sum_fetches(&dataset.ordered_keys)))
+    });
+
+    group.finish();
+}
+
+fn bench_clustered_sparse_ordered_fetch(
+    c: &mut Criterion,
+    profile: ValueProfile,
+    dataset: &Dataset,
+) {
+    let mut group = c.benchmark_group(format!(
+        "{}/comparison_clustered_sparse_ordered_fetch",
+        profile.name()
+    ));
+    group.throughput(Throughput::Elements(
+        dataset.clustered_sparse_ordered_keys.len() as u64,
+    ));
+
+    for variant in SegmentVariant::for_profile(profile) {
+        let tempdir = tempfile::tempdir().expect("tempdir should work");
+        let store = create_filled_segment_store(
+            tempdir.path(),
+            profile,
+            &dataset.entries,
+            &commit_options_with_block_size(variant.block_size),
+            true,
+        );
+        group.bench_function(variant.benchmark_name, |b| {
+            b.iter(|| {
+                black_box(sum_segment_fetches(
+                    &store,
+                    &dataset.clustered_sparse_ordered_keys,
+                ))
+            })
+        });
+    }
+
+    let tempdir = tempfile::tempdir().expect("tempdir should work");
+    let fjall = Fjall3Backend::open(tempdir.path(), profile);
+    fjall.fill(&dataset.entries);
+    group.bench_function("fjall3", |b| {
+        b.iter(|| black_box(fjall.sum_fetches(&dataset.clustered_sparse_ordered_keys)))
+    });
+
+    let tempdir = tempfile::tempdir().expect("tempdir should work");
+    let redb = RedbBackend::open(tempdir.path());
+    redb.fill(&dataset.entries);
+    group.bench_function("redb", |b| {
+        b.iter(|| black_box(redb.sum_fetches(&dataset.clustered_sparse_ordered_keys)))
+    });
+
+    group.finish();
+}
+
+fn bench_iter_all(c: &mut Criterion, profile: ValueProfile, dataset: &Dataset) {
+    let mut group = c.benchmark_group(format!("{}/comparison_iter_all", profile.name()));
+    group.throughput(Throughput::Elements(dataset.entries.len() as u64));
+
+    for variant in SegmentVariant::for_profile(profile) {
+        let tempdir = tempfile::tempdir().expect("tempdir should work");
+        let store = create_filled_segment_store(
+            tempdir.path(),
+            profile,
+            &dataset.entries,
+            &commit_options_with_block_size(variant.block_size),
+            true,
+        );
+        group.bench_function(variant.benchmark_name, |b| {
+            b.iter(|| black_box(sum_segment_iter(&store)))
+        });
+    }
+
+    let tempdir = tempfile::tempdir().expect("tempdir should work");
+    let fjall = Fjall3Backend::open(tempdir.path(), profile);
+    fjall.fill(&dataset.entries);
+    group.bench_function("fjall3", |b| b.iter(|| black_box(fjall.sum_iter())));
+
+    let tempdir = tempfile::tempdir().expect("tempdir should work");
+    let redb = RedbBackend::open(tempdir.path());
+    redb.fill(&dataset.entries);
+    group.bench_function("redb", |b| b.iter(|| black_box(redb.sum_iter())));
+
+    group.finish();
+}
+
+fn bench_append_commit(c: &mut Criterion, profile: ValueProfile, dataset: &Dataset) {
+    let mut group = c.benchmark_group(format!("{}/comparison_append_publish", profile.name()));
+    group.throughput(Throughput::Elements(dataset.entries.len() as u64));
+
+    for variant in SegmentVariant::for_profile(profile) {
+        let options = commit_options_with_block_size(variant.block_size);
+        group.bench_function(variant.benchmark_name, |b| {
+            b.iter_batched(
+                || tempfile::tempdir().expect("tempdir should work"),
+                |tempdir| {
+                    let store = create_segment_store(tempdir.path(), profile);
+                    fill_segment_store_with_options(&store, &dataset.entries, &options);
+                },
+                BatchSize::LargeInput,
+            )
+        });
+    }
+
+    group.bench_function("fjall3", |b| {
+        b.iter_batched(
+            || tempfile::tempdir().expect("tempdir should work"),
+            |tempdir| {
+                let fjall = Fjall3Backend::open(tempdir.path(), profile);
+                fjall.fill(&dataset.entries);
+            },
+            BatchSize::LargeInput,
+        )
+    });
+
+    group.bench_function("redb", |b| {
+        b.iter_batched(
+            || tempfile::tempdir().expect("tempdir should work"),
+            |tempdir| {
+                let redb = RedbBackend::open(tempdir.path());
+                redb.fill(&dataset.entries);
+            },
+            BatchSize::LargeInput,
+        )
+    });
+
+    group.finish();
+}
+
+fn bench_axis_change_rounds(c: &mut Criterion, profile: ValueProfile, dataset: &AxisChangeDataset) {
+    validate_axis_change_rounds(profile, dataset);
+
+    let mut group = c.benchmark_group(format!("{}/comparison_axis_change_rounds", profile.name()));
+    group.throughput(Throughput::Elements(dataset.total_queries as u64));
+
+    group.bench_function("segment", |b| {
+        b.iter_batched(
+            || tempfile::tempdir().expect("tempdir should work"),
+            |tempdir| {
+                black_box(run_segment_axis_changes(tempdir.path(), profile, dataset).score());
+            },
+            BatchSize::LargeInput,
+        )
+    });
+
+    group.bench_function("fjall3", |b| {
+        b.iter_batched(
+            || tempfile::tempdir().expect("tempdir should work"),
+            |tempdir| {
+                let fjall = Fjall3Backend::open(tempdir.path(), profile);
+                black_box(fjall.run_axis_changes(dataset).score());
+            },
+            BatchSize::LargeInput,
+        )
+    });
+
+    group.bench_function("redb", |b| {
+        b.iter_batched(
+            || tempfile::tempdir().expect("tempdir should work"),
+            |tempdir| {
+                let redb = RedbBackend::open(tempdir.path());
+                black_box(redb.run_axis_changes(dataset).score());
+            },
+            BatchSize::LargeInput,
+        )
+    });
+
+    group.finish();
+}
+
+fn validate_axis_change_rounds(profile: ValueProfile, dataset: &AxisChangeDataset) {
+    let tempdir = tempfile::tempdir().expect("tempdir should work");
+    let segment = run_segment_axis_changes(tempdir.path(), profile, dataset);
+
+    let tempdir = tempfile::tempdir().expect("tempdir should work");
+    let fjall = Fjall3Backend::open(tempdir.path(), profile);
+    let fjall = fjall.run_axis_changes(dataset);
+
+    let tempdir = tempfile::tempdir().expect("tempdir should work");
+    let redb = RedbBackend::open(tempdir.path());
+    let redb = redb.run_axis_changes(dataset);
+
+    assert_eq!(segment.queries, fjall.queries);
+    assert_eq!(segment.queries, redb.queries);
+    assert_eq!(segment.hits, fjall.hits);
+    assert_eq!(segment.hits, redb.hits);
+    assert_eq!(segment.misses, fjall.misses);
+    assert_eq!(segment.misses, redb.misses);
+    assert_eq!(segment.inserted, fjall.inserted);
+    assert_eq!(segment.inserted, redb.inserted);
+    assert_eq!(segment.checksum, fjall.checksum);
+    assert_eq!(segment.checksum, redb.checksum);
+
+    eprintln!(
+        "{}/comparison_axis_change_rounds dry-run: queries={} hits={} misses={} inserted={} output_records={} rewrite_amp={:.2} retired={} published={}",
+        profile.name(),
+        segment.queries,
+        segment.hits,
+        segment.misses,
+        segment.inserted,
+        segment.output_records,
+        segment.rewrite_amplification(),
+        segment.segments_retired,
+        segment.segments_published
+    );
+}
