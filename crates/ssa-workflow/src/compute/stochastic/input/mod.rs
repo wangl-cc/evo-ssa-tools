@@ -109,4 +109,54 @@ mod tests {
         assert_eq!(encoded_new, encoded_tuple);
         assert_eq!(encoded_new, encoded_fields);
     }
+
+    fn encode<T: CanonicalEncode>(value: &T) -> Vec<u8> {
+        let mut buffer = vec![0u8; T::SIZE];
+        unsafe { value.encode_into(&mut buffer) };
+        buffer
+    }
+
+    #[test]
+    fn stochastic_input_inherits_order_from_signed_param_and_repetition() {
+        // Parameter-major order: all repetitions for param[0], then param[1], etc.
+        let inputs: Vec<StochasticInput<i32>> = vec![
+            StochasticInput::new(i32::MIN, 0),
+            StochasticInput::new(i32::MIN, 1),
+            StochasticInput::new(-1, 0),
+            StochasticInput::new(-1, u64::MAX),
+            StochasticInput::new(0, 0),
+            StochasticInput::new(0, 1),
+            StochasticInput::new(1, 0),
+            StochasticInput::new(i32::MAX, u64::MAX),
+        ];
+        let encoded: Vec<Vec<u8>> = inputs.iter().map(encode).collect();
+        for (i, window) in encoded.windows(2).enumerate() {
+            assert!(
+                window[0] < window[1],
+                "StochasticInput order violated at index {i}: {:?} !< {:?}",
+                inputs[i],
+                inputs[i + 1]
+            );
+        }
+    }
+
+    #[test]
+    fn stochastic_input_inherits_order_from_float_param() {
+        let inputs: Vec<StochasticInput<f64>> = vec![
+            StochasticInput::new(f64::NEG_INFINITY, 0),
+            StochasticInput::new(-1.5, 0),
+            StochasticInput::new(-1.5, 1),
+            StochasticInput::new(0.0, 0),
+            StochasticInput::new(1.5, 0),
+            StochasticInput::new(f64::INFINITY, 0),
+            StochasticInput::new(f64::NAN, 0),
+        ];
+        let encoded: Vec<Vec<u8>> = inputs.iter().map(encode).collect();
+        for (i, window) in encoded.windows(2).enumerate() {
+            assert!(
+                window[0] < window[1],
+                "StochasticInput<f64> order violated at index {i}"
+            );
+        }
+    }
 }

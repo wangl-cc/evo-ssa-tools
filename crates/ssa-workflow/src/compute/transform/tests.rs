@@ -131,6 +131,56 @@ fn dependent_stochastic_input_encodes_param_source_then_repetition() {
     assert_eq!(encoded, &[0x01, 0x02, 0x03, 0x04, 0, 0, 0, 0, 0, 0, 0, 5]);
 }
 
+fn encode_canonical<T: crate::cache::CanonicalEncode>(value: &T) -> Vec<u8> {
+    let mut buffer = vec![0u8; T::SIZE];
+    unsafe { value.encode_into(&mut buffer) };
+    buffer
+}
+
+#[test]
+fn dependent_input_inherits_lexicographic_order() {
+    let inputs: Vec<DependentInput<i32, i32>> = vec![
+        DependentInput::new(i32::MIN, 0),
+        DependentInput::new(-1, i32::MAX),
+        DependentInput::new(0, i32::MIN),
+        DependentInput::new(0, 0),
+        DependentInput::new(0, 1),
+        DependentInput::new(1, i32::MIN),
+        DependentInput::new(i32::MAX, i32::MAX),
+    ];
+    let encoded: Vec<Vec<u8>> = inputs.iter().map(encode_canonical).collect();
+    for (i, window) in encoded.windows(2).enumerate() {
+        assert!(
+            window[0] < window[1],
+            "DependentInput order violated at index {i}: {:?} !< {:?}",
+            inputs[i],
+            inputs[i + 1]
+        );
+    }
+}
+
+#[test]
+fn dependent_stochastic_input_inherits_lexicographic_order() {
+    let inputs: Vec<DependentStochasticInput<i16, f64>> = vec![
+        DependentStochasticInput::new(i16::MIN, f64::NEG_INFINITY, 0),
+        DependentStochasticInput::new(-1, -1.0, u64::MAX),
+        DependentStochasticInput::new(0, 0.0, 0),
+        DependentStochasticInput::new(0, 0.0, 1),
+        DependentStochasticInput::new(0, 1.0, 0),
+        DependentStochasticInput::new(1, f64::INFINITY, 0),
+        DependentStochasticInput::new(i16::MAX, f64::NAN, u64::MAX),
+    ];
+    let encoded: Vec<Vec<u8>> = inputs.iter().map(encode_canonical).collect();
+    for (i, window) in encoded.windows(2).enumerate() {
+        assert!(
+            window[0] < window[1],
+            "DependentStochasticInput order violated at index {i}: {:?} !< {:?}",
+            inputs[i],
+            inputs[i + 1]
+        );
+    }
+}
+
 #[test]
 fn parameterized_transform_recomputes_only_transform_for_param_changes() -> Result<()> {
     let source_calls = Arc::new(AtomicUsize::new(0));

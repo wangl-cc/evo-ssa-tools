@@ -424,7 +424,19 @@ mod tests {
 
         #[test]
         fn signed_i8_encoding_preserves_numeric_order() {
-            let values: Vec<i8> = vec![i8::MIN, -100, -2, -1, 0, 1, 2, 100, i8::MAX];
+            let values: Vec<i8> = vec![
+                i8::MIN,
+                i8::MIN + 1,
+                -100,
+                -2,
+                -1,
+                0,
+                1,
+                2,
+                100,
+                i8::MAX - 1,
+                i8::MAX,
+            ];
             let encoded: Vec<Vec<u8>> = values.iter().map(encode).collect();
             for window in encoded.windows(2) {
                 assert!(window[0] < window[1], "order violated");
@@ -433,7 +445,19 @@ mod tests {
 
         #[test]
         fn signed_i16_encoding_preserves_numeric_order() {
-            let values: Vec<i16> = vec![i16::MIN, -1000, -2, -1, 0, 1, 2, 1000, i16::MAX];
+            let values: Vec<i16> = vec![
+                i16::MIN,
+                i16::MIN + 1,
+                -1000,
+                -2,
+                -1,
+                0,
+                1,
+                2,
+                1000,
+                i16::MAX - 1,
+                i16::MAX,
+            ];
             let encoded: Vec<Vec<u8>> = values.iter().map(encode).collect();
             for window in encoded.windows(2) {
                 assert!(window[0] < window[1], "order violated");
@@ -442,7 +466,19 @@ mod tests {
 
         #[test]
         fn signed_i32_encoding_preserves_numeric_order() {
-            let values: Vec<i32> = vec![i32::MIN, -100_000, -2, -1, 0, 1, 2, 100_000, i32::MAX];
+            let values: Vec<i32> = vec![
+                i32::MIN,
+                i32::MIN + 1,
+                -100_000,
+                -2,
+                -1,
+                0,
+                1,
+                2,
+                100_000,
+                i32::MAX - 1,
+                i32::MAX,
+            ];
             let encoded: Vec<Vec<u8>> = values.iter().map(encode).collect();
             for window in encoded.windows(2) {
                 assert!(window[0] < window[1], "order violated");
@@ -453,6 +489,7 @@ mod tests {
         fn signed_i64_encoding_preserves_numeric_order() {
             let values: Vec<i64> = vec![
                 i64::MIN,
+                i64::MIN + 1,
                 -1_000_000_000,
                 -2,
                 -1,
@@ -460,6 +497,7 @@ mod tests {
                 1,
                 2,
                 1_000_000_000,
+                i64::MAX - 1,
                 i64::MAX,
             ];
             let encoded: Vec<Vec<u8>> = values.iter().map(encode).collect();
@@ -472,6 +510,7 @@ mod tests {
         fn signed_i128_encoding_preserves_numeric_order() {
             let values: Vec<i128> = vec![
                 i128::MIN,
+                i128::MIN + 1,
                 -1_000_000_000_000_000_000,
                 -2,
                 -1,
@@ -479,6 +518,7 @@ mod tests {
                 1,
                 2,
                 1_000_000_000_000_000_000,
+                i128::MAX - 1,
                 i128::MAX,
             ];
             let encoded: Vec<Vec<u8>> = values.iter().map(encode).collect();
@@ -559,12 +599,15 @@ mod tests {
 
         #[test]
         fn f32_encoding_preserves_canonical_order() {
+            let smallest_subnormal = f32::from_bits(1);
             let values: Vec<f32> = vec![
                 f32::NEG_INFINITY,
                 -1e30,
                 -1.5,
                 -f32::MIN_POSITIVE,
+                -smallest_subnormal,
                 0.0,
+                smallest_subnormal,
                 f32::MIN_POSITIVE,
                 1.5,
                 1e30,
@@ -584,12 +627,15 @@ mod tests {
 
         #[test]
         fn f64_encoding_preserves_canonical_order() {
+            let smallest_subnormal = f64::from_bits(1);
             let values: Vec<f64> = vec![
                 f64::NEG_INFINITY,
                 -1e300,
                 -1.5,
                 -f64::MIN_POSITIVE,
+                -smallest_subnormal,
                 0.0,
+                smallest_subnormal,
                 f64::MIN_POSITIVE,
                 1.5,
                 1e300,
@@ -615,6 +661,7 @@ mod tests {
 
         #[test]
         fn all_nan_payloads_encode_identically() {
+            // Positive quiet NaNs with different payloads.
             let nan_a = f32::from_bits(0x7fc0_0001);
             let nan_b = f32::from_bits(0x7fc0_dead);
             assert_eq!(encode(&nan_a), encode(&nan_b));
@@ -624,6 +671,20 @@ mod tests {
             let nan_d = f64::from_bits(0x7ff8_dead_beef_0000);
             assert_eq!(encode(&nan_c), encode(&nan_d));
             assert_eq!(encode(&nan_c), encode(&f64::NAN));
+
+            // Signaling NaNs (exponent all-ones, mantissa nonzero but quiet bit clear).
+            let snan_f32 = f32::from_bits(0x7f80_0001);
+            assert_eq!(encode(&snan_f32), encode(&f32::NAN));
+
+            let snan_f64 = f64::from_bits(0x7ff0_0000_0000_0001);
+            assert_eq!(encode(&snan_f64), encode(&f64::NAN));
+
+            // Negative NaNs (sign bit set).
+            let neg_nan_f32 = f32::from_bits(0xffc0_0001);
+            assert_eq!(encode(&neg_nan_f32), encode(&f32::NAN));
+
+            let neg_nan_f64 = f64::from_bits(0xfff8_0000_0000_0001);
+            assert_eq!(encode(&neg_nan_f64), encode(&f64::NAN));
         }
     }
 
