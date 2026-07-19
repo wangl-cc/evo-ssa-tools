@@ -286,6 +286,26 @@ mod tests {
         T::SIZE
     }
 
+    fn encode<T: CanonicalEncode>(value: &T) -> Vec<u8> {
+        let mut buffer = vec![0u8; T::SIZE];
+        unsafe { value.encode_into(&mut buffer) };
+        buffer
+    }
+
+    /// Assert that encoding `values` in order produces strictly increasing byte sequences.
+    #[track_caller]
+    fn assert_order_preserving<T: CanonicalEncode + std::fmt::Debug>(values: &[T]) {
+        let encoded: Vec<Vec<u8>> = values.iter().map(encode).collect();
+        for (i, window) in encoded.windows(2).enumerate() {
+            assert!(
+                window[0] < window[1],
+                "order violated at index {i}: {:?} !< {:?}",
+                values[i],
+                values[i + 1]
+            );
+        }
+    }
+
     macro_rules! assert_size {
         ($t:ty, $size:literal) => {
             assert_eq!(<$t as CanonicalEncode>::SIZE, $size);
@@ -417,15 +437,9 @@ mod tests {
             ]);
         }
 
-        fn encode<T: CanonicalEncode>(value: &T) -> Vec<u8> {
-            let mut buffer = vec![0u8; T::SIZE];
-            unsafe { value.encode_into(&mut buffer) };
-            buffer
-        }
-
         #[test]
         fn signed_i8_encoding_preserves_numeric_order() {
-            let values: Vec<i8> = vec![
+            assert_order_preserving(&[
                 i8::MIN,
                 i8::MIN + 1,
                 -100,
@@ -437,16 +451,12 @@ mod tests {
                 100,
                 i8::MAX - 1,
                 i8::MAX,
-            ];
-            let encoded: Vec<Vec<u8>> = values.iter().map(encode).collect();
-            for window in encoded.windows(2) {
-                assert!(window[0] < window[1], "order violated");
-            }
+            ]);
         }
 
         #[test]
         fn signed_i16_encoding_preserves_numeric_order() {
-            let values: Vec<i16> = vec![
+            assert_order_preserving(&[
                 i16::MIN,
                 i16::MIN + 1,
                 -1000,
@@ -458,16 +468,12 @@ mod tests {
                 1000,
                 i16::MAX - 1,
                 i16::MAX,
-            ];
-            let encoded: Vec<Vec<u8>> = values.iter().map(encode).collect();
-            for window in encoded.windows(2) {
-                assert!(window[0] < window[1], "order violated");
-            }
+            ]);
         }
 
         #[test]
         fn signed_i32_encoding_preserves_numeric_order() {
-            let values: Vec<i32> = vec![
+            assert_order_preserving(&[
                 i32::MIN,
                 i32::MIN + 1,
                 -100_000,
@@ -479,16 +485,12 @@ mod tests {
                 100_000,
                 i32::MAX - 1,
                 i32::MAX,
-            ];
-            let encoded: Vec<Vec<u8>> = values.iter().map(encode).collect();
-            for window in encoded.windows(2) {
-                assert!(window[0] < window[1], "order violated");
-            }
+            ]);
         }
 
         #[test]
         fn signed_i64_encoding_preserves_numeric_order() {
-            let values: Vec<i64> = vec![
+            assert_order_preserving(&[
                 i64::MIN,
                 i64::MIN + 1,
                 -1_000_000_000,
@@ -500,16 +502,12 @@ mod tests {
                 1_000_000_000,
                 i64::MAX - 1,
                 i64::MAX,
-            ];
-            let encoded: Vec<Vec<u8>> = values.iter().map(encode).collect();
-            for window in encoded.windows(2) {
-                assert!(window[0] < window[1], "order violated");
-            }
+            ]);
         }
 
         #[test]
         fn signed_i128_encoding_preserves_numeric_order() {
-            let values: Vec<i128> = vec![
+            assert_order_preserving(&[
                 i128::MIN,
                 i128::MIN + 1,
                 -1_000_000_000_000_000_000,
@@ -521,20 +519,12 @@ mod tests {
                 1_000_000_000_000_000_000,
                 i128::MAX - 1,
                 i128::MAX,
-            ];
-            let encoded: Vec<Vec<u8>> = values.iter().map(encode).collect();
-            for window in encoded.windows(2) {
-                assert!(window[0] < window[1], "order violated");
-            }
+            ]);
         }
 
         #[test]
         fn unsigned_encoding_preserves_numeric_order() {
-            let values: Vec<u64> = vec![0, 1, 2, 255, 256, u64::MAX - 1, u64::MAX];
-            let encoded: Vec<Vec<u8>> = values.iter().map(encode).collect();
-            for window in encoded.windows(2) {
-                assert!(window[0] < window[1], "order violated");
-            }
+            assert_order_preserving(&[0u64, 1, 2, 255, 256, u64::MAX - 1, u64::MAX]);
         }
     }
 
@@ -592,16 +582,10 @@ mod tests {
             ]);
         }
 
-        fn encode<T: CanonicalEncode>(value: &T) -> Vec<u8> {
-            let mut buffer = vec![0u8; T::SIZE];
-            unsafe { value.encode_into(&mut buffer) };
-            buffer
-        }
-
         #[test]
         fn f32_encoding_preserves_canonical_order() {
             let smallest_subnormal = f32::from_bits(1);
-            let values: Vec<f32> = vec![
+            assert_order_preserving(&[
                 f32::NEG_INFINITY,
                 -1e30,
                 -1.5,
@@ -614,22 +598,13 @@ mod tests {
                 1e30,
                 f32::INFINITY,
                 f32::NAN,
-            ];
-            let encoded: Vec<Vec<u8>> = values.iter().map(encode).collect();
-            for (i, window) in encoded.windows(2).enumerate() {
-                assert!(
-                    window[0] < window[1],
-                    "f32 order violated at index {i}: {:?} !< {:?}",
-                    values[i],
-                    values[i + 1]
-                );
-            }
+            ]);
         }
 
         #[test]
         fn f64_encoding_preserves_canonical_order() {
             let smallest_subnormal = f64::from_bits(1);
-            let values: Vec<f64> = vec![
+            assert_order_preserving(&[
                 f64::NEG_INFINITY,
                 -1e300,
                 -1.5,
@@ -642,16 +617,7 @@ mod tests {
                 1e300,
                 f64::INFINITY,
                 f64::NAN,
-            ];
-            let encoded: Vec<Vec<u8>> = values.iter().map(encode).collect();
-            for (i, window) in encoded.windows(2).enumerate() {
-                assert!(
-                    window[0] < window[1],
-                    "f64 order violated at index {i}: {:?} !< {:?}",
-                    values[i],
-                    values[i + 1]
-                );
-            }
+            ]);
         }
 
         #[test]
@@ -707,15 +673,9 @@ mod tests {
             ]);
         }
 
-        fn encode<T: CanonicalEncode>(value: &T) -> Vec<u8> {
-            let mut buffer = vec![0u8; T::SIZE];
-            unsafe { value.encode_into(&mut buffer) };
-            buffer
-        }
-
         #[test]
         fn tuple_inherits_lexicographic_order_from_signed_components() {
-            let values: Vec<(i32, i32)> = vec![
+            assert_order_preserving(&[
                 (i32::MIN, 0),
                 (-1, 0),
                 (-1, i32::MAX),
@@ -724,38 +684,20 @@ mod tests {
                 (0, 1),
                 (1, i32::MIN),
                 (i32::MAX, i32::MAX),
-            ];
-            let encoded: Vec<Vec<u8>> = values.iter().map(encode).collect();
-            for (i, window) in encoded.windows(2).enumerate() {
-                assert!(
-                    window[0] < window[1],
-                    "tuple order violated at index {i}: {:?} !< {:?}",
-                    values[i],
-                    values[i + 1]
-                );
-            }
+            ]);
         }
 
         #[test]
         fn tuple_inherits_lexicographic_order_from_float_components() {
-            let values: Vec<(f64, u32)> = vec![
-                (f64::NEG_INFINITY, 0),
+            assert_order_preserving(&[
+                (f64::NEG_INFINITY, 0u32),
                 (-1.0, 0),
                 (-1.0, u32::MAX),
                 (0.0, 0),
                 (0.0, 1),
                 (1.0, 0),
                 (f64::INFINITY, 0),
-            ];
-            let encoded: Vec<Vec<u8>> = values.iter().map(encode).collect();
-            for (i, window) in encoded.windows(2).enumerate() {
-                assert!(
-                    window[0] < window[1],
-                    "tuple order violated at index {i}: {:?} !< {:?}",
-                    values[i],
-                    values[i + 1]
-                );
-            }
+            ]);
         }
     }
 
@@ -774,15 +716,9 @@ mod tests {
             assert_encode!([(); 8], []);
         }
 
-        fn encode<T: CanonicalEncode>(value: &T) -> Vec<u8> {
-            let mut buffer = vec![0u8; T::SIZE];
-            unsafe { value.encode_into(&mut buffer) };
-            buffer
-        }
-
         #[test]
         fn array_inherits_lexicographic_order_from_signed_elements() {
-            let values: Vec<[i16; 3]> = vec![
+            assert_order_preserving(&[
                 [i16::MIN, 0, 0],
                 [-1, 0, 0],
                 [-1, i16::MAX, i16::MAX],
@@ -791,16 +727,7 @@ mod tests {
                 [0, 0, 1],
                 [1, i16::MIN, i16::MIN],
                 [i16::MAX, i16::MAX, i16::MAX],
-            ];
-            let encoded: Vec<Vec<u8>> = values.iter().map(encode).collect();
-            for (i, window) in encoded.windows(2).enumerate() {
-                assert!(
-                    window[0] < window[1],
-                    "array order violated at index {i}: {:?} !< {:?}",
-                    values[i],
-                    values[i + 1]
-                );
-            }
+            ]);
         }
     }
 
