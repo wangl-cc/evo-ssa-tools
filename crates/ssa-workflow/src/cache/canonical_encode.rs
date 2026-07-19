@@ -227,11 +227,10 @@ macro_rules! impl_encode_for_float {
     };
 }
 
-// Canonical NaN bit patterns: positive quiet NaN (sign=0, exponent=all-ones, quiet bit=1,
-// payload=0).
+// Positive quiet NaN with zero payload (IEEE 754 field layout: sign_exponent_quiet_payload).
 impl_encode_for_float!(
-    f32 => 4 => 0x7fc0_0000u32,
-    f64 => 8 => 0x7ff8_0000_0000_0000u64,
+    f32 => 4 => 0b0_11111111_1_0000000000000000000000u32,
+    f64 => 8 => 0b0_11111111111_1_000000000000000000000000000000000000000000000000000u64,
 );
 
 macro_rules! impl_encode_for_tuple {
