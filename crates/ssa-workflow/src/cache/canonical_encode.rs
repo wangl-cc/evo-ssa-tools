@@ -1,9 +1,7 @@
 /// Canonical key format version embedded in every persistent namespace.
 ///
 /// Bumping this constant isolates all new cache entries from namespaces written under an older
-/// key encoding. The current version (`keyfmt-v2`) corresponds to the order-preserving numeric
-/// encoding introduced for signed integers and floating-point values. The legacy raw big-endian
-/// encoding is implicitly `keyfmt-v1` and is no longer produced.
+/// key encoding.
 pub(crate) const CANONICAL_KEY_FORMAT: &str = "keyfmt-v2";
 
 /// Encode a key into canonical bytes.
@@ -30,14 +28,8 @@ pub(crate) const CANONICAL_KEY_FORMAT: &str = "keyfmt-v2";
 /// - Tuples and arrays: concatenation of element encodings; lexicographic ordering is inherited
 ///   whenever every component encoding is order-preserving.
 ///
-/// User-defined `CanonicalEncode` implementations are not required to define a natural order.
-///
-/// # Breaking change (key format v2)
-///
-/// The order-preserving encoding for signed integers and floats is incompatible with the legacy
-/// raw big-endian encoding. Canonical bytes also feed RNG derivation, so signed-integer and
-/// floating-point inputs produce new stochastic streams. Persistent namespaces include a
-/// canonical-key-format version that isolates new entries from old ones.
+/// User-defined `CanonicalEncode` implementations are not required to be order-preserving, but
+/// should prefer it when the type has a natural order.
 pub trait CanonicalEncode {
     const SIZE: usize;
 
@@ -191,6 +183,8 @@ impl_encode_for_signed!(i8 => 1, i16 => 2, i32 => 4, i64 => 8, isize => 8, i128 
 macro_rules! impl_encode_for_float {
     ($($t:ident => $size:literal => $canonical_nan_bits:expr),+ $(,)?) => {
         $(
+            // Grouped by IEEE 754 fields (sign, exponent, quiet bit, payload), not nibbles.
+            #[allow(clippy::unusual_byte_groupings)]
             impl CanonicalEncode for $t {
                 const SIZE: usize = $size;
 

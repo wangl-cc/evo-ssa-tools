@@ -167,7 +167,7 @@ Canonical input bytes serve as persistent cache keys and as input to stochastic 
 - Floats: NaN normalized to one canonical payload, `-0.0` treated as `+0.0`, then sign-magnitude transformed so the canonical order is `-inf < finite negatives < 0 < finite positives < +inf < NaN`.
 - Tuples and arrays: field concatenation; lexicographic ordering is inherited from component encodings.
 
-Persistent namespaces include a canonical-key-format version (`keyfmt-v2`). The order-preserving encoding is incompatible with the legacy raw big-endian format: signed-integer and floating-point inputs produce new cache keys and new stochastic RNG streams. Old namespaces are isolated and cannot be read through the new format.
+Persistent namespaces include a canonical-key-format version (`keyfmt-v2`) so that different key encoding formats are always isolated into separate namespaces.
 
 ## Transforms
 
