@@ -189,16 +189,19 @@ macro_rules! impl_encode_for_signed {
 impl_encode_for_signed!(i8 => 1, i16 => 2, i32 => 4, i64 => 8, isize => 8, i128 => 16);
 
 macro_rules! impl_encode_for_float {
-    ($($t:ident => $size:literal),+ $(,)?) => {
+    ($($t:ident => $size:literal => $canonical_nan_bits:expr),+ $(,)?) => {
         $(
             impl CanonicalEncode for $t {
                 const SIZE: usize = $size;
 
                 #[inline]
                 unsafe fn encode_into(&self, buffer: &mut [u8]) {
-                    // Normalize: all NaN payloads to one canonical NaN, -0.0 to +0.0.
+                    // Normalize: all NaN payloads to one canonical positive quiet NaN,
+                    // -0.0 to +0.0. We use an explicit bit pattern rather than `$t::NAN.to_bits()`
+                    // because the Rust std docs state that NAN's sign and payload are arbitrary
+                    // and may change across versions and targets.
                     let bits = if self.is_nan() {
-                        $t::NAN.to_bits()
+                        $canonical_nan_bits
                     } else if *self == 0.0 {
                         0
                     } else {
@@ -224,7 +227,12 @@ macro_rules! impl_encode_for_float {
     };
 }
 
-impl_encode_for_float!(f32 => 4, f64 => 8);
+// Canonical NaN bit patterns: positive quiet NaN (sign=0, exponent=all-ones, quiet bit=1,
+// payload=0).
+impl_encode_for_float!(
+    f32 => 4 => 0x7fc0_0000u32,
+    f64 => 8 => 0x7ff8_0000_0000_0000u64,
+);
 
 macro_rules! impl_encode_for_tuple {
     ($($T:ident $idx:tt),+) => {
