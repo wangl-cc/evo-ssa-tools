@@ -7,7 +7,7 @@ use std::{any::type_name, marker::PhantomData};
 ///
 /// Persistent stores should include this value in their namespace identity. A future change to
 /// any built-in encoded bytes must also change this value.
-pub const CANONICAL_INPUT_ENCODING_VERSION: &str = "keyfmt-v2";
+pub const CANONICAL_INPUT_ENCODING_VERSION: u32 = 2;
 
 /// Encode a computation input into canonical bytes.
 ///
