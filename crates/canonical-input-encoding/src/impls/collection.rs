@@ -4,6 +4,10 @@ impl<T: CanonicalEncode, const N: usize> CanonicalEncode for [T; N] {
     const SIZE: usize = T::SIZE * N;
 
     fn encode(&self, writer: &mut CanonicalWriter<'_>) {
+        if T::SIZE == 0 {
+            return;
+        }
+
         for item in self {
             writer.write(item);
         }
@@ -47,7 +51,19 @@ impl_encode_for_tuple!(T0 0, T1 1, T2 2, T3 3, T4 4, T5 5, T6 6, T7 7, T8 8, T9 
 #[cfg(test)]
 mod tests {
     mod array {
-        use crate::impls::test_support::*;
+        use std::cell::Cell;
+
+        use crate::{CanonicalEncode, CanonicalWriter, impls::test_support::*};
+
+        struct CountedZeroWidth<'a>(&'a Cell<usize>);
+
+        impl CanonicalEncode for CountedZeroWidth<'_> {
+            const SIZE: usize = 0;
+
+            fn encode(&self, _: &mut CanonicalWriter<'_>) {
+                self.0.set(self.0.get() + 1);
+            }
+        }
 
         #[test]
         fn concatenates_elements() {
@@ -59,6 +75,16 @@ mod tests {
         #[test]
         fn zero_sized_array_is_empty() {
             assert_encode!([(); 8], []);
+        }
+
+        #[test]
+        fn zero_width_elements_are_not_visited() {
+            let calls = Cell::new(0);
+            let values: [CountedZeroWidth<'_>; 1_024] =
+                std::array::from_fn(|_| CountedZeroWidth(&calls));
+
+            assert!(encode(&values).is_empty());
+            assert_eq!(calls.get(), 0);
         }
 
         #[test]
