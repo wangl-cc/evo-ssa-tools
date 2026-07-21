@@ -229,6 +229,7 @@ impl<T: CanonicalEncode> Default for CanonicalBuffer<T> {
 mod impls;
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
     use crate::impls::test_support::*;
@@ -297,6 +298,34 @@ mod tests {
         }
     }
 
+    struct ParentTooSmall;
+
+    impl CanonicalEncode for ParentTooSmall {
+        const SIZE: usize = 1;
+
+        fn encode(&self, writer: &mut CanonicalWriter<'_>) {
+            writer.write(&0u16);
+        }
+    }
+
+    struct MaximumWidth;
+
+    impl CanonicalEncode for MaximumWidth {
+        const SIZE: usize = usize::MAX;
+
+        fn encode(&self, _: &mut CanonicalWriter<'_>) {}
+    }
+
+    struct NestedSizeOverflow;
+
+    impl CanonicalEncode for NestedSizeOverflow {
+        const SIZE: usize = 1;
+
+        fn encode(&self, writer: &mut CanonicalWriter<'_>) {
+            writer.write_bytes(&[0x01]).write(&MaximumWidth);
+        }
+    }
+
     #[test]
     #[should_panic(expected = "CanonicalEncode implementation for")]
     fn buffer_rejects_short_encoding() {
@@ -313,6 +342,18 @@ mod tests {
     #[should_panic(expected = "CanonicalEncode implementation for")]
     fn nested_field_is_validated_before_parent_continues() {
         CanonicalBuffer::<NestedTooShort>::new().encode(&NestedTooShort);
+    }
+
+    #[test]
+    #[should_panic(expected = "canonical encoder wrote past its declared size")]
+    fn nested_field_cannot_exceed_parent_width() {
+        CanonicalBuffer::<ParentTooSmall>::new().encode(&ParentTooSmall);
+    }
+
+    #[test]
+    #[should_panic(expected = "canonical encoding length overflow")]
+    fn nested_field_size_cannot_overflow_position() {
+        CanonicalBuffer::<NestedSizeOverflow>::new().encode(&NestedSizeOverflow);
     }
 
     struct SometimesShort(bool);
@@ -348,5 +389,11 @@ mod tests {
     fn zero_sized_buffer_encodes_without_special_cases() {
         let mut buffer = CanonicalBuffer::<()>::new();
         assert_eq!(buffer.encode(&()), []);
+    }
+
+    #[test]
+    fn default_buffer_encodes_value() {
+        let mut buffer = CanonicalBuffer::<u16>::default();
+        assert_eq!(buffer.encode(&0x0102), [0x01, 0x02]);
     }
 }

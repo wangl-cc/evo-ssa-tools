@@ -49,6 +49,7 @@ impl_encode_for_tuple!(T0 0, T1 1, T2 2, T3 3, T4 4, T5 5, T6 6, T7 7, T8 8, T9 
 impl_encode_for_tuple!(T0 0, T1 1, T2 2, T3 3, T4 4, T5 5, T6 6, T7 7, T8 8, T9 9, T10 10, T11 11);
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
     use crate::impls::test_support::*;
@@ -126,6 +127,16 @@ mod tests {
             assert_encode!((0x0102u16, 0x0304_0506_0708_090au64), [
                 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a,
             ]);
+        }
+
+        #[test]
+        fn encodes_maximum_supported_arity() {
+            assert_encode!(
+                (
+                    1u8, 2u8, 3u8, 4u8, 5u8, 6u8, 7u8, 8u8, 9u8, 10u8, 11u8, 12u8
+                ),
+                [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12,]
+            );
         }
 
         #[test]

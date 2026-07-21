@@ -2,6 +2,7 @@ mod collection;
 mod primitive;
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub(crate) mod test_support {
     use crate::{CanonicalBuffer, CanonicalEncode};
 

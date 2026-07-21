@@ -98,6 +98,7 @@ impl_encode_for_float!(
 );
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     mod boolean {
         use crate::impls::test_support::*;
