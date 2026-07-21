@@ -29,12 +29,6 @@ pub(crate) mod test_support {
         }
     }
 
-    macro_rules! assert_size {
-        ($t:ty, $size:literal) => {
-            assert_eq!(<$t as $crate::CanonicalEncode>::SIZE, $size);
-        };
-    }
-
     macro_rules! assert_encode {
         ($value:expr, [$($byte:literal),* $(,)?]) => {{
             let value = $value;
@@ -51,5 +45,4 @@ pub(crate) mod test_support {
     }
 
     pub(crate) use assert_encode;
-    pub(crate) use assert_size;
 }

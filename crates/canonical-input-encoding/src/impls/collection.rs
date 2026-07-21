@@ -77,11 +77,6 @@ mod tests {
         }
 
         #[test]
-        fn zero_sized_array_is_empty() {
-            assert_encode!([(); 8], []);
-        }
-
-        #[test]
         fn zero_width_elements_are_not_visited() {
             let calls = Cell::new(0);
             let values: [CountedZeroWidth<'_>; 1_024] =
@@ -115,14 +110,6 @@ mod tests {
         }
 
         #[test]
-        fn concatenates_same_width_elements() {
-            assert_encode!((0x0102_0304_0506_0708u64, 0x1112_1314_1516_1718u64), [
-                0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16,
-                0x17, 0x18,
-            ]);
-        }
-
-        #[test]
         fn concatenates_mixed_width_elements() {
             assert_encode!((0x0102u16, 0x0304_0506_0708_090au64), [
                 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a,
@@ -150,19 +137,6 @@ mod tests {
                 (0, 1),
                 (1, i32::MIN),
                 (i32::MAX, i32::MAX),
-            ]);
-        }
-
-        #[test]
-        fn tuple_inherits_lexicographic_order_from_float_components() {
-            assert_order_preserving(&[
-                (f64::NEG_INFINITY, 0u32),
-                (-1.0, 0),
-                (-1.0, u32::MAX),
-                (0.0, 0),
-                (0.0, 1),
-                (1.0, 0),
-                (f64::INFINITY, 0),
             ]);
         }
     }

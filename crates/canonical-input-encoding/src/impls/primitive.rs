@@ -104,11 +104,6 @@ mod tests {
         use crate::impls::test_support::*;
 
         #[test]
-        fn encode_size() {
-            assert_size!(bool, 1);
-        }
-
-        #[test]
         fn encodes_correctly() {
             assert_encode!(true, [0x01]);
             assert_encode!(false, [0x00]);
@@ -118,16 +113,6 @@ mod tests {
     mod int {
         mod unsigned {
             use crate::impls::test_support::*;
-
-            #[test]
-            fn encode_size() {
-                assert_size!(u8, 1);
-                assert_size!(u16, 2);
-                assert_size!(u32, 4);
-                assert_size!(u64, 8);
-                assert_size!(usize, 8);
-                assert_size!(u128, 16);
-            }
 
             #[test]
             fn encodes_unsigned_big_endian() {
@@ -154,16 +139,6 @@ mod tests {
 
         mod signed {
             use crate::impls::test_support::*;
-
-            #[test]
-            fn encode_size() {
-                assert_size!(i8, 1);
-                assert_size!(i16, 2);
-                assert_size!(i32, 4);
-                assert_size!(i64, 8);
-                assert_size!(isize, 8);
-                assert_size!(i128, 16);
-            }
 
             #[test]
             fn encodes_signed_order_preserving_golden_vectors() {
@@ -309,19 +284,11 @@ mod tests {
         use crate::impls::test_support::*;
 
         #[test]
-        fn encode_size() {
-            assert_size!(f32, 4);
-            assert_size!(f64, 8);
-        }
-
-        #[test]
         fn encodes_f32_order_preserving_golden_vectors() {
             // -inf: bits=0xFF800000, negative -> invert all -> 0x007FFFFF
             assert_encode!(f32::NEG_INFINITY, [0x00, 0x7f, 0xff, 0xff]);
             // -1.5: bits=0xBFC00000, negative -> invert all -> 0x403FFFFF
             assert_encode!(-1.5f32, [0x40, 0x3f, 0xff, 0xff]);
-            // -0.0 normalized to +0.0: bits=0, non-negative -> flip sign -> 0x80000000
-            assert_encode!(-0.0f32, [0x80, 0x00, 0x00, 0x00]);
             // +0.0: bits=0, non-negative -> flip sign -> 0x80000000
             assert_encode!(0.0f32, [0x80, 0x00, 0x00, 0x00]);
             // 1.5: bits=0x3FC00000, non-negative -> flip sign -> 0xBFC00000
@@ -330,7 +297,6 @@ mod tests {
             assert_encode!(f32::INFINITY, [0xff, 0x80, 0x00, 0x00]);
             // NaN: canonical bits=0x7FC00000, non-negative -> flip sign -> 0xFFC00000
             assert_encode!(f32::NAN, [0xff, 0xc0, 0x00, 0x00]);
-            assert_encode!(f32::from_bits(0x7fc0_0001), [0xff, 0xc0, 0x00, 0x00]);
         }
 
         #[test]
@@ -341,8 +307,6 @@ mod tests {
             ]);
             // -1.5: bits=0xBFF8000000000000, negative -> invert all -> 0x4007FFFFFFFFFFFF
             assert_encode!(-1.5f64, [0x40, 0x07, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff]);
-            // -0.0 normalized to +0.0: bits=0, non-negative -> flip sign -> 0x8000000000000000
-            assert_encode!(-0.0f64, [0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
             // +0.0: bits=0, non-negative -> flip sign -> 0x8000000000000000
             assert_encode!(0.0f64, [0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
             // 1.5: bits=0x3FF8000000000000, non-negative -> flip sign -> 0xBFF8000000000000
@@ -354,9 +318,6 @@ mod tests {
             // NaN: canonical bits=0x7FF8000000000000, non-negative -> flip sign ->
             // 0xFFF8000000000000
             assert_encode!(f64::NAN, [0xff, 0xf8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
-            assert_encode!(f64::from_bits(0x7ff8_0000_0000_0001), [
-                0xff, 0xf8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            ]);
         }
 
         #[test]

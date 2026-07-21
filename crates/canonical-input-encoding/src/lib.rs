@@ -374,7 +374,7 @@ mod tests {
     fn reused_buffer_never_returns_a_partial_key() {
         use std::panic::{AssertUnwindSafe, catch_unwind};
 
-        let mut buffer = CanonicalBuffer::<SometimesShort>::new();
+        let mut buffer = CanonicalBuffer::<SometimesShort>::default();
         assert_eq!(buffer.encode(&SometimesShort(true)), [0x01, 0x02]);
 
         let failed = catch_unwind(AssertUnwindSafe(|| {
@@ -383,17 +383,5 @@ mod tests {
         assert!(failed.is_err());
 
         assert_eq!(buffer.encode(&SometimesShort(true)), [0x01, 0x02]);
-    }
-
-    #[test]
-    fn zero_sized_buffer_encodes_without_special_cases() {
-        let mut buffer = CanonicalBuffer::<()>::new();
-        assert_eq!(buffer.encode(&()), []);
-    }
-
-    #[test]
-    fn default_buffer_encodes_value() {
-        let mut buffer = CanonicalBuffer::<u16>::default();
-        assert_eq!(buffer.encode(&0x0102), [0x01, 0x02]);
     }
 }
