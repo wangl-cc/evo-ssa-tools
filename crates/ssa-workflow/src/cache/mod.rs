@@ -9,7 +9,7 @@ macro_rules! warn {
 macro_rules! warn {
     ($($arg:tt)*) => { eprintln!($($arg)*) };
 }
-pub use canonical_encode::{CanonicalEncode, CanonicalEncodeWriter};
+pub use canonical_input_encoding::{CanonicalBuffer, CanonicalEncode, CanonicalWriter};
 pub use encoded::EncodedCache;
 #[cfg(feature = "lru")]
 pub use memory::ManagedLruCache;
@@ -69,7 +69,6 @@ impl CloneShared for () {
     fn clone_shared(&self) -> Self {}
 }
 
-mod canonical_encode;
 pub mod codec;
 mod encoded;
 pub mod memory;

@@ -1,10 +1,9 @@
-use crate::{
-    cache::{canonical_encode::CANONICAL_KEY_FORMAT, codec::ValueFormat},
-    identity::ComputationPath,
-};
+use canonical_input_encoding::BUILTIN_ENCODING_VERSION;
 
-/// Physical storage namespace derived from a computation path, canonical key format, and value
-/// format.
+use crate::{cache::codec::ValueFormat, identity::ComputationPath};
+
+/// Physical storage namespace derived from a computation path, canonical input encoding, and
+/// value format.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct StorageNamespace {
     name: String,
@@ -13,10 +12,10 @@ pub struct StorageNamespace {
 impl StorageNamespace {
     /// Create a storage namespace from a computation path and value format.
     ///
-    /// The namespace includes the canonical key format version so that persistent caches written
-    /// under an older key encoding are never read through the new namespace.
+    /// The namespace includes the canonical input encoding version so that persistent caches
+    /// written under an older encoding are never read through the new namespace.
     pub fn new(path: &ComputationPath, value_format: ValueFormat) -> Self {
-        let name = format!("{path}__{CANONICAL_KEY_FORMAT}__{value_format}");
+        let name = format!("{path}__keyfmt-v{BUILTIN_ENCODING_VERSION}__{value_format}");
 
         Self { name }
     }
@@ -37,7 +36,7 @@ mod tests {
     const FORMAT: ValueFormat = ValueFormat::new("bitcode06-v1");
 
     #[test]
-    fn storage_namespace_includes_key_format_and_value_format() {
+    fn storage_namespace_includes_input_encoding_and_value_format() {
         let path = ComputationPath::root_from_str(COMPUTATION_A);
         let namespace = StorageNamespace::new(&path, FORMAT);
 

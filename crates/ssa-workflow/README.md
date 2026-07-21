@@ -156,7 +156,7 @@ Identifiers use stable segments with ASCII letters, digits, and `-`; `_` is rese
 
 Dependent computation paths render from the current result back to their roots. For example, a transform id `summary-v1` built from a task id `trajectory-v1` renders as `summary-v1_trajectory-v1`, read as "summary of trajectory". Persistent namespaces and RNG seed material use this same segment order.
 
-If you change compute logic, output type, or persistent encoding incompatibly, use a new computation id or codec format so old cached bytes are not reused as a different result.
+If compute logic or the meaning or bytes of a user-defined `CanonicalEncode` implementation changes incompatibly, use a new computation id. If persistent output encoding changes incompatibly, use a new codec format. This prevents old cached bytes from being reused as a different result.
 
 ## Canonical Key Encoding
 
@@ -167,7 +167,7 @@ Canonical input bytes serve as persistent cache keys and as input to stochastic 
 - Floats: NaN normalized to one canonical payload, `-0.0` treated as `+0.0`, then sign-magnitude transformed so the canonical order is `-inf < finite negatives < 0 < finite positives < +inf < NaN`.
 - Tuples and arrays: field concatenation; lexicographic ordering is inherited from component encodings.
 
-Persistent namespaces include a canonical-key-format version (`keyfmt-v2`) so that different key encoding formats are always isolated into separate namespaces.
+Persistent namespaces include the built-in encoding version (`keyfmt-v2`), which isolates changes to primitive and collection encodings supplied by `canonical-input-encoding`. Application-defined encodings are versioned by the computation id instead.
 
 ## Transforms
 

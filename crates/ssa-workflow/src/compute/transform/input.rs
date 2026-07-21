@@ -1,4 +1,4 @@
-use crate::cache::CanonicalEncode;
+use crate::cache::{CanonicalEncode, CanonicalWriter};
 
 /// Input for a parameterized dependent transform.
 ///
@@ -22,11 +22,8 @@ impl<P, S> DependentInput<P, S> {
 impl<P: CanonicalEncode, S: CanonicalEncode> CanonicalEncode for DependentInput<P, S> {
     const SIZE: usize = P::SIZE + S::SIZE;
 
-    unsafe fn encode_into(&self, buffer: &mut [u8]) {
-        unsafe {
-            self.param.encode_into(&mut buffer[..P::SIZE]);
-            self.source.encode_into(&mut buffer[P::SIZE..Self::SIZE]);
-        }
+    fn encode(&self, writer: &mut CanonicalWriter<'_>) {
+        writer.write(&self.param).write(&self.source);
     }
 }
 
@@ -68,13 +65,10 @@ impl<S> DependentStochasticInput<(), S> {
 impl<P: CanonicalEncode, S: CanonicalEncode> CanonicalEncode for DependentStochasticInput<P, S> {
     const SIZE: usize = P::SIZE + S::SIZE + u64::SIZE;
 
-    unsafe fn encode_into(&self, buffer: &mut [u8]) {
-        unsafe {
-            self.param.encode_into(&mut buffer[..P::SIZE]);
-            self.source
-                .encode_into(&mut buffer[P::SIZE..P::SIZE + S::SIZE]);
-            self.repetition_index
-                .encode_into(&mut buffer[P::SIZE + S::SIZE..Self::SIZE]);
-        }
+    fn encode(&self, writer: &mut CanonicalWriter<'_>) {
+        writer
+            .write(&self.param)
+            .write(&self.source)
+            .write(&self.repetition_index);
     }
 }

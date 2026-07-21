@@ -17,6 +17,7 @@ parking_lot = { workspace = true }
 postcard = { workspace = true, optional = true }
 rand = { workspace = true }
 rayon = { workspace = true }
+canonical-input-encoding = { workspace = true }
 serde = { workspace = true, optional = true }
 thiserror = { workspace = true }
 zstd = { workspace = true, optional = true }

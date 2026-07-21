@@ -1,0 +1,143 @@
+use crate::{CanonicalEncode, CanonicalWriter};
+
+impl<T: CanonicalEncode, const N: usize> CanonicalEncode for [T; N] {
+    const SIZE: usize = T::SIZE * N;
+
+    fn encode(&self, writer: &mut CanonicalWriter<'_>) {
+        if T::SIZE == 0 {
+            return;
+        }
+
+        for item in self {
+            writer.write(item);
+        }
+    }
+}
+
+impl CanonicalEncode for () {
+    const SIZE: usize = 0;
+
+    #[inline]
+    fn encode(&self, _: &mut CanonicalWriter<'_>) {}
+}
+
+macro_rules! impl_encode_for_tuple {
+    ($($T:ident $idx:tt),*) => {
+        impl<$($T: CanonicalEncode),*> CanonicalEncode for ($($T,)*) {
+            const SIZE: usize = 0 $(+ $T::SIZE)*;
+
+            fn encode(&self, writer: &mut CanonicalWriter<'_>) {
+                $(
+                    writer.write(&self.$idx);
+                )*
+            }
+        }
+    };
+}
+
+impl_encode_for_tuple!(T0 0);
+impl_encode_for_tuple!(T0 0, T1 1);
+impl_encode_for_tuple!(T0 0, T1 1, T2 2);
+impl_encode_for_tuple!(T0 0, T1 1, T2 2, T3 3);
+impl_encode_for_tuple!(T0 0, T1 1, T2 2, T3 3, T4 4);
+impl_encode_for_tuple!(T0 0, T1 1, T2 2, T3 3, T4 4, T5 5);
+impl_encode_for_tuple!(T0 0, T1 1, T2 2, T3 3, T4 4, T5 5, T6 6);
+impl_encode_for_tuple!(T0 0, T1 1, T2 2, T3 3, T4 4, T5 5, T6 6, T7 7);
+impl_encode_for_tuple!(T0 0, T1 1, T2 2, T3 3, T4 4, T5 5, T6 6, T7 7, T8 8);
+impl_encode_for_tuple!(T0 0, T1 1, T2 2, T3 3, T4 4, T5 5, T6 6, T7 7, T8 8, T9 9);
+impl_encode_for_tuple!(T0 0, T1 1, T2 2, T3 3, T4 4, T5 5, T6 6, T7 7, T8 8, T9 9, T10 10);
+impl_encode_for_tuple!(T0 0, T1 1, T2 2, T3 3, T4 4, T5 5, T6 6, T7 7, T8 8, T9 9, T10 10, T11 11);
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod tests {
+    use super::*;
+    use crate::impls::test_support::*;
+
+    mod array {
+        use std::cell::Cell;
+
+        use super::*;
+
+        struct CountedZeroWidth<'a>(&'a Cell<usize>);
+
+        impl CanonicalEncode for CountedZeroWidth<'_> {
+            const SIZE: usize = 0;
+
+            fn encode(&self, _: &mut CanonicalWriter<'_>) {
+                self.0.set(self.0.get() + 1);
+            }
+        }
+
+        #[test]
+        fn concatenates_elements() {
+            assert_encode!([0x0102u16, 0x0304u16, 0x0506u16], [
+                0x01, 0x02, 0x03, 0x04, 0x05, 0x06,
+            ]);
+        }
+
+        #[test]
+        fn zero_width_elements_are_not_visited() {
+            let calls = Cell::new(0);
+            let values: [CountedZeroWidth<'_>; 1_024] =
+                std::array::from_fn(|_| CountedZeroWidth(&calls));
+
+            assert!(encode(&values).is_empty());
+            assert_eq!(calls.get(), 0);
+        }
+
+        #[test]
+        fn array_inherits_lexicographic_order_from_signed_elements() {
+            assert_order_preserving(&[
+                [i16::MIN, 0, 0],
+                [-1, 0, 0],
+                [-1, i16::MAX, i16::MAX],
+                [0, i16::MIN, 0],
+                [0, 0, 0],
+                [0, 0, 1],
+                [1, i16::MIN, i16::MIN],
+                [i16::MAX, i16::MAX, i16::MAX],
+            ]);
+        }
+    }
+
+    mod tuple {
+        use super::*;
+
+        #[test]
+        fn empty_tuple_encodes_empty() {
+            assert_encode!((), []);
+        }
+
+        #[test]
+        fn concatenates_mixed_width_elements() {
+            assert_encode!((0x0102u16, 0x0304_0506_0708_090au64), [
+                0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a,
+            ]);
+        }
+
+        #[test]
+        fn encodes_maximum_supported_arity() {
+            assert_encode!(
+                (
+                    1u8, 2u8, 3u8, 4u8, 5u8, 6u8, 7u8, 8u8, 9u8, 10u8, 11u8, 12u8
+                ),
+                [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12,]
+            );
+        }
+
+        #[test]
+        fn tuple_inherits_lexicographic_order_from_signed_components() {
+            assert_order_preserving(&[
+                (i32::MIN, 0),
+                (-1, 0),
+                (-1, i32::MAX),
+                (0, i32::MIN),
+                (0, 0),
+                (0, 1),
+                (1, i32::MIN),
+                (i32::MAX, i32::MAX),
+            ]);
+        }
+    }
+}

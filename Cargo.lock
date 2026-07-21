@@ -131,6 +131,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1c53ba0f290bfc610084c05582d9c5d421662128fc69f4bf236707af6fd321b9"
 
 [[package]]
+name = "canonical-input-encoding"
+version = "0.1.0"
+
+[[package]]
 name = "cast"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1093,6 +1097,7 @@ version = "0.6.0"
 dependencies = [
  "bitcode",
  "blake3",
+ "canonical-input-encoding",
  "crc32c",
  "fjall",
  "log",

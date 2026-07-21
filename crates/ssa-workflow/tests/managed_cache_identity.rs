@@ -229,7 +229,7 @@ fn cloned_task_shares_managed_lru_eviction_state() -> Result<()> {
 mod persistent_fjall3 {
     use ssa_workflow::{
         cache::{
-            CanonicalEncode, PersistentCacheProvider, StorageProviderExt,
+            CanonicalBuffer, PersistentCacheProvider, StorageProviderExt,
             codec::{Bitcode06, CheckedCodec, CodecEngine},
             storage::{EncodedStorage, Fjall3StorageProvider, Fjall3Store, StorageNamespace},
         },
@@ -426,8 +426,8 @@ mod persistent_fjall3 {
 
         let namespace = StorageNamespace::new(task.computation_path(), layout);
         let store = Fjall3Store::open(db, namespace.as_str())?;
-        let mut key_buffer = vec![0u8; StochasticInput::<()>::SIZE];
-        let key = unsafe { input.encode_with_buffer(&mut key_buffer) };
+        let mut key_buffer = CanonicalBuffer::new();
+        let key = key_buffer.encode(&input);
 
         assert!(store.fetch_encoded(key)?.is_some());
         Ok(())
