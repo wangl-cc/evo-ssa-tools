@@ -16,7 +16,10 @@ pub use crate::cache::memory::ManagedLruCache;
 pub use crate::cache::storage::Fjall3StorageProvider;
 pub use crate::{
     BatchProgress, BatchProgressSnapshot, Compute, InterruptSignal,
-    cache::{CanonicalEncode, StorageProviderExt, memory::ManagedHashCache},
+    cache::{
+        CanonicalBuffer, CanonicalEncode, CanonicalWriter, StorageProviderExt,
+        memory::ManagedHashCache,
+    },
     compute::{
         DependentInput, DependentStochasticInput, DeterministicTask, RandomVariable,
         RepeatedStochasticInputs, RngBundle, StochasticComputeExt, StochasticInput, StochasticTask,

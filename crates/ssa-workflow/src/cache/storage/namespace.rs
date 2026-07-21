@@ -1,7 +1,6 @@
-use crate::{
-    cache::{canonical_encode::CANONICAL_KEY_FORMAT, codec::ValueFormat},
-    identity::ComputationPath,
-};
+use ssa_canonical_key::CANONICAL_KEY_FORMAT_VERSION;
+
+use crate::{cache::codec::ValueFormat, identity::ComputationPath};
 
 /// Physical storage namespace derived from a computation path, canonical key format, and value
 /// format.
@@ -16,7 +15,7 @@ impl StorageNamespace {
     /// The namespace includes the canonical key format version so that persistent caches written
     /// under an older key encoding are never read through the new namespace.
     pub fn new(path: &ComputationPath, value_format: ValueFormat) -> Self {
-        let name = format!("{path}__{CANONICAL_KEY_FORMAT}__{value_format}");
+        let name = format!("{path}__{CANONICAL_KEY_FORMAT_VERSION}__{value_format}");
 
         Self { name }
     }

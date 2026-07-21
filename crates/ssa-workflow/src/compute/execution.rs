@@ -7,7 +7,7 @@ use rayon::prelude::{
 };
 
 use crate::{
-    cache::CanonicalEncode,
+    cache::{CanonicalBuffer, CanonicalEncode},
     error::{Error, Result},
     identity::ComputationPath,
 };
@@ -40,23 +40,19 @@ pub trait Compute {
         encoded: &[u8],
     ) -> Result<Self::Output>;
 
-    /// Low-level API for single execution with a pre-allocated encode buffer.
+    /// Execute one input with a reusable canonical buffer.
     ///
     /// Most users should prefer [`Self::execute_one`].
     ///
-    /// # Safety
+    /// # Panics
     ///
-    /// The buffer must have length at least `Self::Input::SIZE`.
-    /// Implementations should only access `buffer[..Self::Input::SIZE]`.
-    ///
-    /// See [`CanonicalEncode`] for more details.
-    unsafe fn execute_one_with_buffer(
+    /// Panics if `Self::Input` violates its [`CanonicalEncode`] byte-count contract.
+    fn execute_one_with_buffer(
         &mut self,
         input: Self::Input,
-        encode_buffer: &mut [u8],
+        encode_buffer: &mut CanonicalBuffer<Self::Input>,
     ) -> Result<Self::Output> {
-        // Safety: The safety is guaranteed by the caller.
-        let encoded = unsafe { input.encode_with_buffer(encode_buffer) };
+        let encoded = encode_buffer.encode(&input);
         self.execute_with_encoded_input(input, encoded)
     }
 
@@ -65,10 +61,13 @@ pub trait Compute {
     /// This is the safe, single-item counterpart to [`Self::execute_one_with_buffer`].
     ///
     /// If you need to execute multiple inputs, use [`Self::with_inputs`] instead.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `Self::Input` violates its [`CanonicalEncode`] byte-count contract.
     fn execute_one(&mut self, input: Self::Input) -> Result<Self::Output> {
-        let mut encode_buffer = vec![0u8; Self::Input::SIZE];
-        // Safety: The buffer is initialized with length Self::Input::SIZE.
-        unsafe { self.execute_one_with_buffer(input, &mut encode_buffer) }
+        let mut encode_buffer = CanonicalBuffer::new();
+        self.execute_one_with_buffer(input, &mut encode_buffer)
     }
 
     /// Create a batch execution for `inputs`.
@@ -187,7 +186,7 @@ where
         self.inputs.into_par_iter().map_init(
             move || {
                 (
-                    vec![0u8; C::Input::SIZE],
+                    CanonicalBuffer::<C::Input>::new(),
                     compute.clone(),
                     signal.clone(),
                     progress.clone(),
@@ -202,8 +201,7 @@ where
 
                 let _in_flight = progress.as_ref().map(BatchProgress::begin_item);
 
-                // Safety: The buffer is initialized with length Self::Input::SIZE.
-                unsafe { compute.execute_one_with_buffer(input, buffer) }
+                compute.execute_one_with_buffer(input, buffer)
             },
         )
     }
@@ -258,7 +256,7 @@ where
     fn into_serial_iter(self) -> impl Iterator<Item = Result<C::Output>> + 'a {
         let signal = self.interrupt_signal;
         let mut compute = self.compute.clone();
-        let mut buffer = vec![0u8; C::Input::SIZE];
+        let mut buffer = CanonicalBuffer::<C::Input>::new();
         let progress = self.progress;
 
         self.inputs.into_iter().map(move |input| {
@@ -270,8 +268,7 @@ where
 
             let _in_flight = progress.as_ref().map(BatchProgress::begin_item);
 
-            // Safety: The buffer is initialized with length Self::Input::SIZE.
-            unsafe { compute.execute_one_with_buffer(input, &mut buffer) }
+            compute.execute_one_with_buffer(input, &mut buffer)
         })
     }
 }
@@ -450,13 +447,10 @@ mod tests {
             let mut compute = EncodedEcho {
                 calls: Arc::clone(&calls),
             };
-            let mut buffer = vec![0xAA; u16::SIZE + 1];
-
-            // Safety: the buffer is longer than the required u16 canonical encoding.
-            let output = unsafe { compute.execute_one_with_buffer(0x1234, &mut buffer) }?;
+            let mut buffer = CanonicalBuffer::<u16>::new();
+            let output = compute.execute_one_with_buffer(0x1234, &mut buffer)?;
 
             assert_eq!(output, [0x12, 0x34]);
-            assert_eq!(buffer, [0x12, 0x34, 0xAA]);
             assert_eq!(calls.load(Ordering::SeqCst), 1);
             Ok(())
         }

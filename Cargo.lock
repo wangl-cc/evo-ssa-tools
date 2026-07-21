@@ -1088,6 +1088,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "ssa-canonical-key"
+version = "0.1.0"
+
+[[package]]
 name = "ssa-workflow"
 version = "0.6.0"
 dependencies = [
@@ -1103,6 +1107,7 @@ dependencies = [
  "rand",
  "rayon",
  "serde",
+ "ssa-canonical-key",
  "tempfile",
  "thiserror",
  "zstd",

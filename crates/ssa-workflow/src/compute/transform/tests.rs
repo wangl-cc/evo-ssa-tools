@@ -116,8 +116,8 @@ fn test_transform_with_different_types() -> Result<()> {
 #[test]
 fn dependent_input_encodes_param_before_source() {
     let input = DependentInput::new(0x0102u16, 0x0304u16);
-    let mut buffer = vec![0u8; DependentInput::<u16, u16>::SIZE];
-    let encoded = unsafe { input.encode_with_buffer(&mut buffer) };
+    let mut buffer = CanonicalBuffer::new();
+    let encoded = buffer.encode(&input);
 
     assert_eq!(encoded, &[0x01, 0x02, 0x03, 0x04]);
 }
@@ -125,16 +125,15 @@ fn dependent_input_encodes_param_before_source() {
 #[test]
 fn dependent_stochastic_input_encodes_param_source_then_repetition() {
     let input = DependentStochasticInput::new(0x0102u16, 0x0304u16, 5);
-    let mut buffer = vec![0u8; DependentStochasticInput::<u16, u16>::SIZE];
-    let encoded = unsafe { input.encode_with_buffer(&mut buffer) };
+    let mut buffer = CanonicalBuffer::new();
+    let encoded = buffer.encode(&input);
 
     assert_eq!(encoded, &[0x01, 0x02, 0x03, 0x04, 0, 0, 0, 0, 0, 0, 0, 5]);
 }
 
 fn encode_canonical<T: crate::cache::CanonicalEncode>(value: &T) -> Vec<u8> {
-    let mut buffer = vec![0u8; T::SIZE];
-    unsafe { value.encode_into(&mut buffer) };
-    buffer
+    let mut buffer = CanonicalBuffer::<T>::new();
+    buffer.encode(value).to_vec()
 }
 
 #[test]

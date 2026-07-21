@@ -6,7 +6,7 @@ mod serial;
 pub use parallel::RepeatedStochasticIntoParIter;
 pub use serial::RepeatedStochasticIntoIter;
 
-use crate::cache::CanonicalEncode;
+use crate::cache::{CanonicalEncode, CanonicalWriter};
 
 /// Input for one stochastic execution.
 ///
@@ -50,12 +50,8 @@ impl<P> From<(P, u64)> for StochasticInput<P> {
 impl<P: CanonicalEncode> CanonicalEncode for StochasticInput<P> {
     const SIZE: usize = P::SIZE + u64::SIZE;
 
-    unsafe fn encode_into(&self, buffer: &mut [u8]) {
-        unsafe {
-            self.param.encode_into(&mut buffer[..P::SIZE]);
-            self.repetition_index
-                .encode_into(&mut buffer[P::SIZE..Self::SIZE]);
-        }
+    fn encode(&self, writer: &mut CanonicalWriter<'_>) {
+        writer.write(&self.param).write(&self.repetition_index);
     }
 }
 
@@ -88,6 +84,7 @@ impl<I> RepeatedStochasticInputs<I> {
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
+    use crate::cache::CanonicalBuffer;
 
     #[test]
     fn stochastic_input_constructors_encode_identically() {
@@ -98,22 +95,21 @@ mod tests {
             repetition_index: 9,
         };
 
-        let mut buffer_new = vec![0u8; StochasticInput::<u64>::SIZE];
-        let mut buffer_tuple = vec![0u8; StochasticInput::<u64>::SIZE];
-        let mut buffer_fields = vec![0u8; StochasticInput::<u64>::SIZE];
+        let mut buffer_new = CanonicalBuffer::new();
+        let mut buffer_tuple = CanonicalBuffer::new();
+        let mut buffer_fields = CanonicalBuffer::new();
 
-        let encoded_new = unsafe { from_new.encode_with_buffer(&mut buffer_new) };
-        let encoded_tuple = unsafe { from_tuple.encode_with_buffer(&mut buffer_tuple) };
-        let encoded_fields = unsafe { from_fields.encode_with_buffer(&mut buffer_fields) };
+        let encoded_new = buffer_new.encode(&from_new);
+        let encoded_tuple = buffer_tuple.encode(&from_tuple);
+        let encoded_fields = buffer_fields.encode(&from_fields);
 
         assert_eq!(encoded_new, encoded_tuple);
         assert_eq!(encoded_new, encoded_fields);
     }
 
     fn encode<T: CanonicalEncode>(value: &T) -> Vec<u8> {
-        let mut buffer = vec![0u8; T::SIZE];
-        unsafe { value.encode_into(&mut buffer) };
-        buffer
+        let mut buffer = CanonicalBuffer::<T>::new();
+        buffer.encode(value).to_vec()
     }
 
     #[test]

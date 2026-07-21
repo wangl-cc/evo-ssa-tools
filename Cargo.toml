@@ -24,6 +24,7 @@ postcard = { version = "1.1", default-features = false }
 rand = { version = "0.10", default-features = false, features = ["alloc"] }
 rapidhash = { version = "4.2.2" }
 rayon = { version = "1.10.0" }
+ssa-canonical-key = { path = "crates/ssa-canonical-key", version = "0.1" }
 serde = { version = "1", default-features = false }
 tempfile = { version = "3.20.0" }
 thiserror = { version = "2" }
