@@ -1,4 +1,4 @@
-use canonical_input_encoding::CANONICAL_INPUT_ENCODING_VERSION;
+use canonical_input_encoding::BUILTIN_ENCODING_VERSION;
 
 use crate::{cache::codec::ValueFormat, identity::ComputationPath};
 
@@ -15,7 +15,7 @@ impl StorageNamespace {
     /// The namespace includes the canonical input encoding version so that persistent caches
     /// written under an older encoding are never read through the new namespace.
     pub fn new(path: &ComputationPath, value_format: ValueFormat) -> Self {
-        let name = format!("{path}__keyfmt-v{CANONICAL_INPUT_ENCODING_VERSION}__{value_format}");
+        let name = format!("{path}__keyfmt-v{BUILTIN_ENCODING_VERSION}__{value_format}");
 
         Self { name }
     }

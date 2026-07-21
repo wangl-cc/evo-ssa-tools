@@ -3,11 +3,12 @@
 
 use std::{any::type_name, marker::PhantomData};
 
-/// Canonical input encoding version for persistent namespace isolation.
+/// Version of the built-in canonical encodings.
 ///
 /// Persistent stores should include this value in their namespace identity. A future change to
-/// any built-in encoded bytes must also change this value.
-pub const CANONICAL_INPUT_ENCODING_VERSION: u32 = 2;
+/// any built-in encoded bytes must also change this value. This constant does not version
+/// user-defined [`CanonicalEncode`] implementations.
+pub const BUILTIN_ENCODING_VERSION: u32 = 2;
 
 /// Encode a computation input into canonical bytes.
 ///
@@ -35,6 +36,11 @@ pub const CANONICAL_INPUT_ENCODING_VERSION: u32 = 2;
 ///
 /// User-defined `CanonicalEncode` implementations are not required to be order-preserving, but
 /// should prefer it when the type has a natural order.
+///
+/// An implementation defines the domain-specific equivalence represented by equal encoded bytes.
+/// The built-in implementations express this crate's default policies. Domains that need different
+/// behavior, such as preserving floating-point NaN payloads or the sign of zero, should use a
+/// wrapper or newtype with its own implementation.
 pub trait CanonicalEncode {
     /// Exact number of bytes written by [`Self::encode`].
     const SIZE: usize;

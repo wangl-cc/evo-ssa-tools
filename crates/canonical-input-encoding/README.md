@@ -10,9 +10,10 @@ Core model crates can implement `CanonicalEncode` for their parameter types with
 - `CanonicalWriter` prevents writes beyond that width and checks that every nested value writes exactly its declared size.
 - `CanonicalBuffer<T>` owns one reusable allocation of exactly `T::SIZE` bytes.
 - Built-in signed integers and floating-point values preserve their natural numeric order under unsigned lexicographic byte comparison.
+- Built-in floats normalize NaN payloads and treat `-0.0` as `+0.0`; domains that require different equivalence should encode a wrapper or newtype.
 - `usize` and `isize` are encoded as 64-bit values; the crate therefore supports only 64-bit targets.
 
-The writer verifies byte counts, not semantic correctness. Implementations remain responsible for deterministic field order and stable meaning, which should be protected with golden-vector tests and explicit input-encoding versioning.
+The writer verifies byte counts, not semantic correctness. Implementations define their domain-specific equivalence and remain responsible for deterministic field order and stable meaning. `BUILTIN_ENCODING_VERSION` tracks only encodings supplied by this crate; owners of user-defined implementations must version their own persisted identities.
 
 ## Example
 
