@@ -6,7 +6,7 @@ A collection of tools for evolutionary stochastic simulation and analysis.
 
 - [evo-marker](./crates/evo-marker/README.md): a crate for evolutionary marker tracking the cell lineage or other genetic markers.
 - [frequency](./crates/frequency/README.md): a crate for calculating the frequency of unique elements in iterators.
-- [ssa-canonical-key](./crates/ssa-canonical-key/README.md): fixed-width, stable, and order-preserving canonical keys for scientific-computing inputs.
+- [canonical-input-encoding](./crates/canonical-input-encoding/README.md): fixed-width canonical encoding with order-preserving built-ins for scientific-computing inputs.
 - [ssa-workflow](./crates/ssa-workflow/README.md): a demand-driven SSA analysis workflow layer with reusable intermediate results.
 
 ## License

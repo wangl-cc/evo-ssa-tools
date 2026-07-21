@@ -1,9 +1,9 @@
-use ssa_canonical_key::CANONICAL_KEY_FORMAT_VERSION;
+use canonical_input_encoding::CANONICAL_INPUT_ENCODING_VERSION;
 
 use crate::{cache::codec::ValueFormat, identity::ComputationPath};
 
-/// Physical storage namespace derived from a computation path, canonical key format, and value
-/// format.
+/// Physical storage namespace derived from a computation path, canonical input encoding, and
+/// value format.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct StorageNamespace {
     name: String,
@@ -12,10 +12,10 @@ pub struct StorageNamespace {
 impl StorageNamespace {
     /// Create a storage namespace from a computation path and value format.
     ///
-    /// The namespace includes the canonical key format version so that persistent caches written
-    /// under an older key encoding are never read through the new namespace.
+    /// The namespace includes the canonical input encoding version so that persistent caches
+    /// written under an older encoding are never read through the new namespace.
     pub fn new(path: &ComputationPath, value_format: ValueFormat) -> Self {
-        let name = format!("{path}__{CANONICAL_KEY_FORMAT_VERSION}__{value_format}");
+        let name = format!("{path}__{CANONICAL_INPUT_ENCODING_VERSION}__{value_format}");
 
         Self { name }
     }

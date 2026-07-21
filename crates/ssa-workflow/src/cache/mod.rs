@@ -9,12 +9,12 @@ macro_rules! warn {
 macro_rules! warn {
     ($($arg:tt)*) => { eprintln!($($arg)*) };
 }
+pub use canonical_input_encoding::{CanonicalBuffer, CanonicalEncode, CanonicalWriter};
 pub use encoded::EncodedCache;
 #[cfg(feature = "lru")]
 pub use memory::ManagedLruCache;
 pub use memory::{ManagedHashCache, ManagedMemoryCache};
 pub use provider::{CacheProvider, PersistentCacheProvider, StorageProvider, StorageProviderExt};
-pub use ssa_canonical_key::{CanonicalBuffer, CanonicalEncode, CanonicalWriter};
 
 use crate::Result;
 

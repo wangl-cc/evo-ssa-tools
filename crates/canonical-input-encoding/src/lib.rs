@@ -3,21 +3,21 @@
 
 use std::{any::type_name, marker::PhantomData};
 
-/// Canonical key format version for persistent namespace isolation.
+/// Canonical input encoding version for persistent namespace isolation.
 ///
 /// Persistent stores should include this value in their namespace identity. A future change to
 /// any built-in encoded bytes must also change this value.
-pub const CANONICAL_KEY_FORMAT_VERSION: &str = "keyfmt-v2";
+pub const CANONICAL_INPUT_ENCODING_VERSION: &str = "keyfmt-v2";
 
-/// Encode a key into canonical bytes.
+/// Encode a computation input into canonical bytes.
 ///
 /// Implementations should be deterministic and consistent across different builds and runs, and
 /// must always write exactly `Self::SIZE` bytes.
 ///
 /// # Portability
 ///
-/// This crate targets 64-bit platforms only. This avoids platform-dependent key encodings such as
-/// `usize` width and makes cache keys stable across builds.
+/// This crate targets 64-bit platforms only. This avoids platform-dependent encodings such as
+/// `usize` width and makes canonical input bytes stable across builds.
 ///
 /// # Order-preserving guarantee
 ///
@@ -42,7 +42,7 @@ pub trait CanonicalEncode {
     /// Write this value's canonical bytes to `writer`.
     ///
     /// Implementations must write exactly [`Self::SIZE`] bytes. The writer enforces this contract
-    /// before an encoded key can be returned, including for nested values.
+    /// before encoded bytes can be returned, including for nested values.
     fn encode(&self, writer: &mut CanonicalWriter<'_>);
 }
 
@@ -55,7 +55,7 @@ pub trait CanonicalEncode {
 /// # Example
 ///
 /// ```
-/// use ssa_canonical_key::{CanonicalBuffer, CanonicalEncode, CanonicalWriter};
+/// use canonical_input_encoding::{CanonicalBuffer, CanonicalEncode, CanonicalWriter};
 ///
 /// struct Params {
 ///     rate: f64,
@@ -166,7 +166,7 @@ impl<'a> CanonicalWriter<'a> {
     /// Validate that the current value wrote its exact declared width.
     ///
     /// This check is intentionally active in release builds so a malformed implementation cannot
-    /// return a stale or ambiguous cache key.
+    /// return a stale or ambiguous encoding.
     #[inline]
     fn finish<T: CanonicalEncode>(self) {
         assert_eq!(
@@ -203,7 +203,7 @@ impl<T: CanonicalEncode> CanonicalBuffer<T> {
     ///
     /// # Panics
     ///
-    /// Panics before returning a key if the implementation writes fewer or more than `T::SIZE`
+    /// Panics before returning bytes if the implementation writes fewer or more than `T::SIZE`
     /// bytes. The buffer remains reusable after catching such a panic, but no bytes from the failed
     /// encoding should be used.
     pub fn encode(&mut self, value: &T) -> &[u8] {

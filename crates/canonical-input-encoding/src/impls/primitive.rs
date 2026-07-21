@@ -10,7 +10,7 @@ impl CanonicalEncode for bool {
 }
 
 #[cfg(not(target_pointer_width = "64"))]
-compile_error!("ssa-canonical-key supports only 64-bit targets");
+compile_error!("canonical-input-encoding supports only 64-bit targets");
 
 macro_rules! impl_encode_for_unsigned {
     ($($t:path => $size:literal),+ $(,)?) => {
