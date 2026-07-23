@@ -43,6 +43,14 @@ impl MergeSourceSnapshot {
         })
     }
 
+    fn segment_ranges(&self) -> Vec<(&[u8], &[u8])> {
+        self.main_segments
+            .iter()
+            .chain(self.patch_segments.iter())
+            .map(|segment| (segment.min_key(), segment.max_key()))
+            .collect()
+    }
+
     fn cursor(&self, geometry: SegmentGeometry, verify_block_checksums: bool) -> RangeCursor {
         RangeCursor::strict_from_segment_sets(
             self.main_segments.clone(),
@@ -204,7 +212,8 @@ impl Committer<'_> {
             )
         };
         let mut plan = CommitPlan::from_snapshot(manifest, main_segments, patch_segments);
-        let affected_live = plan.retire_all_live_segments();
+        let source_ranges = source_snapshot.segment_ranges();
+        let affected_live = plan.retire_components_for_ranges(&source_ranges);
 
         let destination_cursor = RangeCursor::strict_from_segment_sets(
             affected_live.main,

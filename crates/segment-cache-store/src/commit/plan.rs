@@ -192,12 +192,34 @@ impl CommitPlan {
         }
     }
 
-    pub(super) fn retire_all_live_segments(&mut self) -> RetiredSegments {
-        let main = self.main_segments.clone();
-        let patches = self.patch_segments.clone();
-        self.retire_segments(&main);
-        self.retire_segments(&patches);
-        RetiredSegments { main, patches }
+    /// Retires the union of all components that intersect any of the given ranges.
+    pub(super) fn retire_components_for_ranges(
+        &mut self,
+        ranges: &[(&[u8], &[u8])],
+    ) -> RetiredSegments {
+        let mut main_ids = HashSet::new();
+        let mut patch_ids = HashSet::new();
+        let mut main_segments = Vec::new();
+        let mut patch_segments = Vec::new();
+        for (min, max) in ranges {
+            let component = self.component_for_range(min, max);
+            for segment in component.main {
+                if main_ids.insert(segment.id()) {
+                    main_segments.push(segment);
+                }
+            }
+            for segment in component.patches {
+                if patch_ids.insert(segment.id()) {
+                    patch_segments.push(segment);
+                }
+            }
+        }
+        self.retire_segments(&main_segments);
+        self.retire_segments(&patch_segments);
+        RetiredSegments {
+            main: main_segments,
+            patches: patch_segments,
+        }
     }
 
     fn retire_segments(&mut self, segments: &[Arc<Segment>]) {
