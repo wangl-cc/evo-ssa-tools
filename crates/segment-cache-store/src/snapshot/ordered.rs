@@ -150,7 +150,7 @@ impl<'a> PatchHitReader<'a> {
 
 impl OrderedLookup {
     pub(crate) fn new(inner: Arc<StoreInner>) -> Self {
-        let value_payload_compression = inner.geometry.value_payload_compression;
+        let value_payload_compression = inner.geometry.encoding.value_payload_compression;
         Self {
             inner,
             state: LookupState::new(value_payload_compression),
@@ -162,7 +162,7 @@ impl OrderedLookup {
     where
         I: IntoIterator<Item = &'a [u8]>,
     {
-        let keys = collect_and_validate_lookup_keys(keys, self.inner.geometry.key_len)?;
+        let keys = collect_and_validate_lookup_keys(keys, self.inner.geometry.schema.key_len)?;
         let mut results = Vec::with_capacity(keys.len());
         self.process_many_slice(&keys, |_, value| {
             results.push(value.map(ToOwned::to_owned));
@@ -175,7 +175,7 @@ impl OrderedLookup {
     where
         I: IntoIterator<Item = &'a [u8]>,
     {
-        let keys = collect_and_validate_lookup_keys(keys, self.inner.geometry.key_len)?;
+        let keys = collect_and_validate_lookup_keys(keys, self.inner.geometry.schema.key_len)?;
         self.process_contains_slice(&keys)
     }
 
@@ -185,7 +185,7 @@ impl OrderedLookup {
         K: AsRef<[u8]>,
         F: FnMut(usize, Option<&[u8]>),
     {
-        validate_lookup_key_slice(keys, self.inner.geometry.key_len)?;
+        validate_lookup_key_slice(keys, self.inner.geometry.schema.key_len)?;
         self.process_many_slice(keys, visitor)
     }
 
@@ -194,7 +194,7 @@ impl OrderedLookup {
         K: AsRef<[u8]>,
         F: FnMut(usize, Option<&[u8]>) -> Result<()>,
     {
-        validate_lookup_key_slice(keys, self.inner.geometry.key_len)?;
+        validate_lookup_key_slice(keys, self.inner.geometry.schema.key_len)?;
         self.process_many_slice_with(keys, CorruptionHandling::Strict, visitor)
     }
 
@@ -278,7 +278,8 @@ impl OrderedLookup {
             if key_range.is_empty() {
                 continue;
             }
-            let mut patch_state = LookupState::new(options.geometry.value_payload_compression);
+            let mut patch_state =
+                LookupState::new(options.geometry.encoding.value_payload_compression);
             let mut collect_hit = |index: usize, hit: Option<LookupHit<'_>>| {
                 if hit.is_some() {
                     if results[index] {
@@ -331,7 +332,8 @@ impl OrderedLookup {
             if key_range.is_empty() {
                 continue;
             }
-            let mut patch_state = LookupState::new(options.geometry.value_payload_compression);
+            let mut patch_state =
+                LookupState::new(options.geometry.encoding.value_payload_compression);
             let mut saw_hit = false;
             let mut collect_hit = |index: usize, hit: Option<LookupHit<'_>>| {
                 if let Some(hit) = hit {

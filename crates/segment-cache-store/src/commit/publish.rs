@@ -222,8 +222,8 @@ impl Committer<'_> {
             return Ok(CommitStats::default());
         }
         let geometry = self.inner.geometry;
-        let key_len = geometry.key_len;
-        let batch = batch.prepare_for(key_len, geometry.value_layout)?;
+        let key_len = geometry.schema.key_len;
+        let batch = batch.prepare_for(key_len, geometry.schema.value_layout)?;
         let input_records = batch.len();
         let input_bytes = batch.byte_len();
 
@@ -322,7 +322,7 @@ impl Committer<'_> {
         let _commit_guard = self.inner.commit_lock.lock();
 
         let geometry = self.inner.geometry;
-        let key_len = geometry.key_len;
+        let key_len = geometry.schema.key_len;
         let (manifest, main_segments, patch_segments) = {
             let state = self.inner.state.read();
             (
@@ -429,8 +429,8 @@ impl Committer<'_> {
                 }
                 let batch = PreparedBatch::from_sorted_unique(
                     chunk.take(),
-                    geometry.key_len,
-                    geometry.value_layout,
+                    geometry.schema.key_len,
+                    geometry.schema.value_layout,
                 );
                 let segment_id = plan.allocate_segment_id()?;
                 let entries = batch.view(0..batch.len());

@@ -194,7 +194,7 @@ impl Committer<'_> {
 
         let _commit_guard = self.inner.commit_lock.lock();
         let geometry = self.inner.geometry;
-        let key_len = geometry.key_len;
+        let key_len = geometry.schema.key_len;
         let (manifest, main_segments, patch_segments) = {
             let state = self.inner.state.read();
             (
@@ -233,14 +233,14 @@ impl Committer<'_> {
         if self.inner.metadata != source.metadata {
             return Err(InputError::SourceMetadataMismatch.into());
         }
-        if self.inner.geometry.key_len != source.geometry.key_len {
+        if self.inner.geometry.schema.key_len != source.geometry.schema.key_len {
             return Err(InputError::SourceKeyLengthMismatch {
-                expected: self.inner.geometry.key_len,
-                actual: source.geometry.key_len,
+                expected: self.inner.geometry.schema.key_len,
+                actual: source.geometry.schema.key_len,
             }
             .into());
         }
-        if self.inner.geometry.value_layout != source.geometry.value_layout {
+        if self.inner.geometry.schema.value_layout != source.geometry.schema.value_layout {
             return Err(InputError::SourceValueLayoutMismatch.into());
         }
         Ok(())

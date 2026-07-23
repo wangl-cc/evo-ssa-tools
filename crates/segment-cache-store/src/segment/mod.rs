@@ -12,6 +12,6 @@ mod writer;
 
 pub(crate) use content_id::{SEGMENT_CONTENT_ID_LEN, SegmentContentId};
 pub(crate) use file::SegmentOpenOptions;
-pub(crate) use geometry::SegmentGeometry;
+pub(crate) use geometry::{SegmentEncoding, SegmentGeometry, StoreSchema};
 pub(crate) use state::Segment;
 pub(crate) use writer::SegmentWriter;

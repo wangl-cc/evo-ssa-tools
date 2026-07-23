@@ -69,16 +69,16 @@ impl OpenedSegment {
             Err(error) => return Err(error),
         };
         if !header.matches_geometry(
-            options.geometry.key_len,
-            options.geometry.value_layout,
-            options.geometry.block_checksum,
-            options.geometry.value_payload_compression,
+            options.geometry.schema.key_len,
+            options.geometry.schema.value_layout,
+            options.geometry.encoding.block_checksum,
+            options.geometry.encoding.value_payload_compression,
         ) {
             return Ok(None);
         }
         let footer = match read_footer(
             &file,
-            options.geometry.key_len,
+            options.geometry.schema.key_len,
             options.expected_min_key,
             options.expected_max_key,
         ) {
@@ -125,7 +125,7 @@ impl OpenedSegment {
 
 fn verify_blocks(file: &File, index: &SegmentIndex, geometry: SegmentGeometry) -> Result<()> {
     #[cfg(feature = "value-compression")]
-    let mut payload_decoder = ValuePayloadDecoder::new(geometry.value_payload_compression);
+    let mut payload_decoder = ValuePayloadDecoder::new(geometry.encoding.value_payload_compression);
     for block_index in 0..index.len() {
         let block = read_block(file, index, block_index, BlockReadOptions {
             geometry,
@@ -248,10 +248,10 @@ pub(super) fn read_block_reusing(
             min_suffix: expected.min_suffix,
             max_suffix: expected.max_suffix,
         },
-        key_len: options.geometry.key_len,
-        value_layout: options.geometry.value_layout,
-        block_checksum: options.geometry.block_checksum,
-        value_payload_compression: options.geometry.value_payload_compression,
+        key_len: options.geometry.schema.key_len,
+        value_layout: options.geometry.schema.value_layout,
+        block_checksum: options.geometry.encoding.block_checksum,
+        value_payload_compression: options.geometry.encoding.value_payload_compression,
         #[cfg(feature = "block-checksum")]
         verify_lookup_checksum: options.verify_lookup_checksum,
     })?)
@@ -267,7 +267,7 @@ mod tests {
     use crate::{
         block::{BlockChecksumKind, ValuePayloadCompressionKind},
         record::{EntryRef, EntrySource},
-        segment::SegmentWriter,
+        segment::{SegmentEncoding, SegmentWriter, StoreSchema},
         value::ValueLayout,
     };
 
@@ -289,10 +289,14 @@ mod tests {
         let tempdir = tempfile::tempdir()?;
         let path = tempdir.path().join("segment.seg");
         let geometry = SegmentGeometry {
-            key_len: 4,
-            value_layout: ValueLayout::VARIABLE,
-            block_checksum: BlockChecksumKind::None,
-            value_payload_compression: ValuePayloadCompressionKind::None,
+            schema: StoreSchema {
+                key_len: 4,
+                value_layout: ValueLayout::VARIABLE,
+            },
+            encoding: SegmentEncoding {
+                block_checksum: BlockChecksumKind::None,
+                value_payload_compression: ValuePayloadCompressionKind::None,
+            },
         };
         let mut file = File::options()
             .read(true)

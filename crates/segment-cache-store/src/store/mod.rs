@@ -87,25 +87,25 @@ impl Store {
     /// Returns the fixed key length used by every record in this store.
     #[must_use]
     pub fn key_len(&self) -> usize {
-        self.inner.geometry.key_len
+        self.inner.geometry.schema.key_len
     }
 
     /// Returns the persisted value layout used by this store.
     #[must_use]
     pub fn value_layout(&self) -> ValueLayout {
-        self.inner.geometry.value_layout
+        self.inner.geometry.schema.value_layout
     }
 
     /// Returns the block checksum implementation used by this store.
     #[must_use]
     pub fn block_checksum(&self) -> BlockChecksumKind {
-        self.inner.geometry.block_checksum
+        self.inner.geometry.encoding.block_checksum
     }
 
     /// Returns the value-payload compression kind used by this store.
     #[must_use]
     pub fn value_payload_compression(&self) -> ValuePayloadCompressionKind {
-        self.inner.geometry.value_payload_compression
+        self.inner.geometry.encoding.value_payload_compression
     }
 
     /// Returns physical file usage for this store root.
@@ -366,9 +366,9 @@ impl Store {
     }
 
     fn validate_key_len(&self, key: &[u8]) -> Result<()> {
-        if key.len() != self.inner.geometry.key_len {
+        if key.len() != self.inner.geometry.schema.key_len {
             return Err(InputError::WrongKeyLength {
-                expected: self.inner.geometry.key_len,
+                expected: self.inner.geometry.schema.key_len,
                 actual: key.len(),
             }
             .into());

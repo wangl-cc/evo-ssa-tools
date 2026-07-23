@@ -82,10 +82,10 @@ impl SegmentWriter {
         let mut out = ContentIdWriter::new(out);
         let mut header = Vec::with_capacity(SEGMENT_HEADER_LEN);
         SegmentHeader::new(
-            self.geometry.key_len,
-            self.geometry.value_layout,
-            self.geometry.block_checksum,
-            self.geometry.value_payload_compression,
+            self.geometry.schema.key_len,
+            self.geometry.schema.value_layout,
+            self.geometry.encoding.block_checksum,
+            self.geometry.encoding.value_payload_compression,
         )?
         .into_bytes(&mut header);
         debug_assert_eq!(header.len(), SEGMENT_HEADER_LEN);
@@ -99,7 +99,7 @@ impl SegmentWriter {
         let block_index = self.write_blocks(&mut out, entries, &min_key, &max_key)?;
         let footer = SegmentFooter { block_index };
         let mut footer_bytes = Vec::new();
-        footer.write_to(self.geometry.key_len, &mut footer_bytes)?;
+        footer.write_to(self.geometry.schema.key_len, &mut footer_bytes)?;
         out.write_all(&footer_bytes)?;
         let segment_len = out.len();
         let content_id = out.content_id();
@@ -125,7 +125,8 @@ impl SegmentWriter {
         let mut offset = SEGMENT_HEADER_LEN as u64;
         let mut start = 0usize;
         #[cfg(feature = "value-compression")]
-        let mut payload_encoder = ValuePayloadEncoder::new(self.geometry.value_payload_compression);
+        let mut payload_encoder =
+            ValuePayloadEncoder::new(self.geometry.encoding.value_payload_compression);
 
         while start < entries.len() {
             if block_index.len() >= MAX_BLOCK_COUNT {
@@ -169,11 +170,11 @@ impl SegmentWriter {
     ) -> BlockBuilder<'a, S> {
         BlockBuilder::new(
             entries,
-            self.geometry.key_len,
+            self.geometry.schema.key_len,
             segment_prefix_len,
-            self.geometry.value_layout,
-            self.geometry.block_checksum,
-            self.geometry.value_payload_compression,
+            self.geometry.schema.value_layout,
+            self.geometry.encoding.block_checksum,
+            self.geometry.encoding.value_payload_compression,
             self.value_payload_compression_policy,
         )
     }
@@ -186,11 +187,11 @@ impl SegmentWriter {
     ) -> BlockBuilder<'a, S> {
         BlockBuilder::new(
             entries,
-            self.geometry.key_len,
+            self.geometry.schema.key_len,
             segment_prefix_len,
-            self.geometry.value_layout,
-            self.geometry.block_checksum,
-            self.geometry.value_payload_compression,
+            self.geometry.schema.value_layout,
+            self.geometry.encoding.block_checksum,
+            self.geometry.encoding.value_payload_compression,
         )
     }
 
@@ -204,7 +205,11 @@ impl SegmentWriter {
         let mut payload_len = 0usize;
         let first_key = entries.entry(start).key();
         #[cfg(feature = "value-compression")]
-        let payload_frame_header_len = self.geometry.value_payload_compression.frame_header_len();
+        let payload_frame_header_len = self
+            .geometry
+            .encoding
+            .value_payload_compression
+            .frame_header_len();
         #[cfg(not(feature = "value-compression"))]
         let payload_frame_header_len = 0;
         while end < entries.len() {
@@ -212,21 +217,21 @@ impl SegmentWriter {
             let prospective_count = end - start + 1;
             let prefix_len = common_prefix_len(first_key, entry.key());
             let extra_prefix_len = prefix_len - segment_prefix_len;
-            let suffix_len = self.geometry.key_len - segment_prefix_len - extra_prefix_len;
+            let suffix_len = self.geometry.schema.key_len - segment_prefix_len - extra_prefix_len;
             let key_region_len =
                 BLOCK_METADATA_HEADER_LEN + extra_prefix_len + prospective_count * suffix_len;
-            let value_index_len = if self.geometry.value_layout.is_variable() {
+            let value_index_len = if self.geometry.schema.value_layout.is_variable() {
                 (prospective_count + 1) * 4
             } else {
                 0
             };
             let prospective_len = key_region_len
                 + value_index_len
-                + self.geometry.block_checksum.digest_len()
+                + self.geometry.encoding.block_checksum.digest_len()
                 + payload_frame_header_len
                 + payload_len
                 + entry.value().len()
-                + self.geometry.block_checksum.digest_len();
+                + self.geometry.encoding.block_checksum.digest_len();
             if end > start && prospective_len > self.target_block_size {
                 break;
             }

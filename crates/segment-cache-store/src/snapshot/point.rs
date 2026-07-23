@@ -59,7 +59,7 @@ impl<'a> SegmentSetReader<'a> {
         let block_key = segment.block_relative_key(block_index, segment_key);
         #[cfg(feature = "value-compression")]
         let mut payload_decoder =
-            ValuePayloadDecoder::new(self.options.geometry.value_payload_compression);
+            ValuePayloadDecoder::new(self.options.geometry.encoding.value_payload_compression);
         let block = match segment.load_block(
             block_index,
             self.options.geometry,

@@ -9,7 +9,7 @@ use super::{
 use crate::{
     block::{BlockChecksumKind, ValuePayloadCompressionKind},
     error::{OptionsError, Result},
-    segment::{Segment, SegmentGeometry, SegmentOpenOptions},
+    segment::{Segment, SegmentEncoding, SegmentGeometry, SegmentOpenOptions, StoreSchema},
     value::ValueLayout,
 };
 
@@ -196,10 +196,14 @@ impl Catalog {
         writer_lock: Option<WriterLock>,
     ) -> Result<OpenedStore> {
         let geometry = SegmentGeometry {
-            key_len: descriptor.key_len,
-            value_layout: descriptor.value_layout,
-            block_checksum,
-            value_payload_compression,
+            schema: StoreSchema {
+                key_len: descriptor.key_len,
+                value_layout: descriptor.value_layout,
+            },
+            encoding: SegmentEncoding {
+                block_checksum,
+                value_payload_compression,
+            },
         };
         let mut main_segment_states = Vec::new();
         let mut patch_segment_states = Vec::new();

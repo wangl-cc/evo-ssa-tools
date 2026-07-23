@@ -335,10 +335,10 @@ impl SegmentRangeCursor {
             corruption_handling,
             block_index,
             position: None,
-            key_scratch: vec![0; geometry.key_len],
+            key_scratch: vec![0; geometry.schema.key_len],
             spare_block_bytes: Vec::new(),
             #[cfg(feature = "value-compression")]
-            payload_decoder: ValuePayloadDecoder::new(geometry.value_payload_compression),
+            payload_decoder: ValuePayloadDecoder::new(geometry.encoding.value_payload_compression),
         };
         cursor.load_next_valid_record()?;
         Ok(cursor)
