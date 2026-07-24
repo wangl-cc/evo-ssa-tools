@@ -8,22 +8,16 @@ use std::{
 #[cfg(any(feature = "value-compression-lz4", feature = "value-compression-zstd"))]
 use segment_cache_store::ValuePayloadCompressionPolicy;
 use segment_cache_store::{
-    BlockChecksumKind, CatalogError, CatalogMismatch, CommitOptions, Error,
-    OpenOptions as StoreOpenOptions, Result, Store, StoreMetadata,
+    CatalogError, CatalogMismatch, CommitOptions, Error, OpenOptions as StoreOpenOptions, Result,
+    Store, StoreMetadata,
 };
 
-#[cfg(any(feature = "value-compression-lz4", feature = "value-compression-zstd"))]
-use crate::support::api::create_options;
-#[cfg(any(feature = "checksum-crc32c", feature = "checksum-rapidhash"))]
-use crate::support::api::metadata;
-#[cfg(feature = "checksum-rapidhash")]
-use crate::support::api::reopen_store;
 #[cfg(any(feature = "value-compression-lz4", feature = "value-compression-zstd"))]
 use crate::support::segment_file::corrupt_block_value_frame_start;
 use crate::support::{
     api::{
-        commit_entries, commit_entries_with_options, create_options_with_block_checksum,
-        create_store, create_store_with, make_key, make_value, reopen_store_read_only,
+        commit_entries, commit_entries_with_options, create_options, create_store,
+        create_store_with, make_key, make_value, metadata, reopen_store, reopen_store_read_only,
     },
     segment_file::{
         FOOTER_TRAILER_LEN, block_index_offset, block_offset, corrupt_block_value_payload,
@@ -32,7 +26,6 @@ use crate::support::{
     },
 };
 
-#[cfg(any(feature = "checksum-crc32c", feature = "checksum-rapidhash"))]
 #[test]
 fn corrupted_block_checksum_becomes_miss() -> Result<()> {
     let tempdir = tempfile::tempdir()?;
@@ -47,7 +40,6 @@ fn corrupted_block_checksum_becomes_miss() -> Result<()> {
     Ok(())
 }
 
-#[cfg(any(feature = "checksum-crc32c", feature = "checksum-rapidhash"))]
 #[test]
 fn point_miss_does_not_cache_payload_verification() -> Result<()> {
     let tempdir = tempfile::tempdir()?;
@@ -66,7 +58,6 @@ fn point_miss_does_not_cache_payload_verification() -> Result<()> {
     Ok(())
 }
 
-#[cfg(any(feature = "checksum-crc32c", feature = "checksum-rapidhash"))]
 #[test]
 fn range_scan_verifies_payload_before_exposing_records() -> Result<()> {
     let tempdir = tempfile::tempdir()?;
@@ -79,7 +70,6 @@ fn range_scan_verifies_payload_before_exposing_records() -> Result<()> {
     Ok(())
 }
 
-#[cfg(any(feature = "checksum-crc32c", feature = "checksum-rapidhash"))]
 #[test]
 fn sparse_ordered_lookup_corrupted_payload_becomes_miss() -> Result<()> {
     let tempdir = tempfile::tempdir()?;
@@ -108,13 +98,9 @@ fn sparse_ordered_lookup_corrupted_payload_becomes_miss() -> Result<()> {
 }
 
 #[test]
-#[cfg(feature = "checksum-rapidhash")]
-fn rapidhash_block_checksum_round_trips() -> Result<()> {
+fn xxh3_128_block_checksum_round_trips() -> Result<()> {
     let tempdir = tempfile::tempdir()?;
-    let store = create_store_with(
-        &tempdir,
-        create_options_with_block_checksum(BlockChecksumKind::RapidHashV3_64),
-    )?;
+    let store = create_store_with(&tempdir, create_options())?;
     let entries = vec![
         (make_key(1, 1, 0), make_value(1, 16)),
         (make_key(1, 1, 1), make_value(2, 16)),
@@ -307,31 +293,6 @@ fn sparse_zstd_frame_header_corruption_becomes_miss() -> Result<()> {
 }
 
 #[test]
-fn no_checksum_open_handle_does_not_detect_payload_corruption() -> Result<()> {
-    let tempdir = tempfile::tempdir()?;
-    let store = create_store_with(
-        &tempdir,
-        create_options_with_block_checksum(BlockChecksumKind::None),
-    )?;
-    let key = make_key(1, 1, 0);
-    let value = make_value(9, 16);
-    commit_entries(&store, &[(key.clone(), value.clone())])?;
-    let path = first_segment_path(tempdir.path())?;
-    corrupt_block_value_payload(&path, 0)?;
-
-    let corrupted = store
-        .fetch_one(&key)?
-        .expect("open no-checksum handle cannot detect corruption");
-    assert_ne!(corrupted, value);
-    drop(store);
-
-    let reopened = reopen_store_read_only(&tempdir)?;
-    assert_eq!(reopened.fetch_one(&key)?, Some(corrupted));
-    Ok(())
-}
-
-#[cfg(any(feature = "checksum-crc32c", feature = "checksum-rapidhash"))]
-#[test]
 fn block_checksum_verification_can_be_disabled_for_benchmarks() -> Result<()> {
     let tempdir = tempfile::tempdir()?;
     let store = create_store(&tempdir)?;
@@ -507,7 +468,6 @@ fn malformed_block_becomes_miss_in_all_read_paths() -> Result<()> {
     Ok(())
 }
 
-#[cfg(any(feature = "checksum-crc32c", feature = "checksum-rapidhash"))]
 #[test]
 fn corrupted_patch_becomes_a_miss_without_hiding_main_records() -> Result<()> {
     let tempdir = tempfile::tempdir()?;
@@ -561,12 +521,9 @@ fn live_segment_truncation_becomes_point_lookup_miss() -> Result<()> {
 }
 
 #[test]
-fn variable_value_index_must_start_at_zero_without_block_checksums() -> Result<()> {
+fn variable_value_index_must_start_at_zero() -> Result<()> {
     let tempdir = tempfile::tempdir()?;
-    let store = create_store_with(
-        &tempdir,
-        create_options_with_block_checksum(BlockChecksumKind::None),
-    )?;
+    let store = create_store(&tempdir)?;
     let entries = vec![
         (make_key(1, 1, 0), make_value(1, 16)),
         (make_key(1, 1, 1), make_value(2, 16)),
@@ -601,12 +558,9 @@ fn variable_value_index_must_start_at_zero_without_block_checksums() -> Result<(
 }
 
 #[test]
-fn block_last_key_must_stay_within_segment_bounds_without_block_checksums() -> Result<()> {
+fn block_last_key_must_stay_within_segment_bounds() -> Result<()> {
     let tempdir = tempfile::tempdir()?;
-    let store = create_store_with(
-        &tempdir,
-        create_options_with_block_checksum(BlockChecksumKind::None),
-    )?;
+    let store = create_store(&tempdir)?;
     let entries = vec![
         (make_key(1, 1, 0), make_value(1, 16)),
         (make_key(1, 1, 1), make_value(2, 16)),
@@ -642,7 +596,6 @@ fn block_last_key_must_stay_within_segment_bounds_without_block_checksums() -> R
     Ok(())
 }
 
-#[cfg(any(feature = "checksum-crc32c", feature = "checksum-rapidhash"))]
 #[test]
 fn corrupted_middle_block_only_loses_that_block_for_open_handle() -> Result<()> {
     let tempdir = tempfile::tempdir()?;

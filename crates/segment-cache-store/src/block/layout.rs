@@ -294,7 +294,6 @@ impl ValueIndex {
     }
 }
 
-#[cfg(feature = "block-checksum")]
 pub(super) fn read_stored_checksum(
     bytes: &[u8],
     offset: usize,

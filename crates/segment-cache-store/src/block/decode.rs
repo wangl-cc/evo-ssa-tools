@@ -8,11 +8,11 @@ use std::cmp::Ordering;
 
 #[cfg(feature = "value-compression")]
 use super::ValuePayloadDecoder;
-#[cfg(feature = "block-checksum")]
-use super::layout::read_stored_checksum;
 use super::{
     BlockChecksumKind, ValuePayloadCompressionKind,
-    layout::{BLOCK_METADATA_HEADER_LEN, BlockLookupLayout, BlockValueRegion},
+    layout::{
+        BLOCK_METADATA_HEADER_LEN, BlockLookupLayout, BlockValueRegion, read_stored_checksum,
+    },
 };
 use crate::{
     error::CorruptionError, key::BlockRelativeKey, limits::MAX_VALUE_PAYLOAD_LEN,
@@ -34,17 +34,14 @@ pub(crate) struct DecodedBlock {
     extra_prefix_len: usize,
     suffix_len: usize,
     key_section_len: usize,
-    #[cfg(any(feature = "block-checksum", feature = "value-compression"))]
     payload_offset: usize,
     payload_len: usize,
     payload_data_offset: usize,
-    #[cfg(any(feature = "block-checksum", feature = "value-compression"))]
     value_checksum_offset: usize,
     #[cfg(feature = "value-compression")]
     payload_is_borrowable: bool,
     #[cfg(feature = "value-compression")]
     value_payload_compression: ValuePayloadCompressionKind,
-    #[cfg(feature = "block-checksum")]
     block_checksum: BlockChecksumKind,
     value_region: BlockValueRegion,
 }
@@ -70,7 +67,6 @@ pub(crate) struct BlockDecodeOptions<'a> {
     pub(crate) value_layout: ValueLayout,
     pub(crate) block_checksum: BlockChecksumKind,
     pub(crate) value_payload_compression: ValuePayloadCompressionKind,
-    #[cfg(feature = "block-checksum")]
     pub(crate) verify_lookup_checksum: bool,
 }
 
@@ -87,7 +83,6 @@ impl DecodedBlock {
             options.block_checksum,
             options.value_payload_compression,
         )?;
-        #[cfg(feature = "block-checksum")]
         if options.verify_lookup_checksum {
             layout.verify_lookup_checksum(&bytes)?;
         }
@@ -107,17 +102,14 @@ impl DecodedBlock {
             extra_prefix_len: layout.lookup.key_prefix_len,
             suffix_len: layout.suffix_len,
             key_section_len: layout.lookup.key_section_len,
-            #[cfg(any(feature = "block-checksum", feature = "value-compression"))]
             payload_offset: layout.payload_offset,
             payload_len: layout.payload_len,
             payload_data_offset: layout.payload_data_offset,
-            #[cfg(any(feature = "block-checksum", feature = "value-compression"))]
             value_checksum_offset: layout.value_checksum_offset,
             #[cfg(feature = "value-compression")]
             payload_is_borrowable: layout.payload_is_borrowable,
             #[cfg(feature = "value-compression")]
             value_payload_compression: layout.value_payload_compression,
-            #[cfg(feature = "block-checksum")]
             block_checksum: layout.block_checksum,
             value_region: layout.value_region,
         };
@@ -145,7 +137,6 @@ impl DecodedBlock {
         self.bytes
     }
 
-    #[cfg(feature = "block-checksum")]
     pub(crate) fn verify_payload_checksum(&self) -> Result<(), CorruptionError> {
         let stored_checksum =
             read_stored_checksum(&self.bytes, self.value_checksum_offset, self.block_checksum)?;
@@ -364,7 +355,6 @@ struct BlockLayout {
     key_len: usize,
     suffix_len: usize,
     lookup: BlockLookupLayout,
-    #[cfg(feature = "block-checksum")]
     lookup_metadata_len: usize,
     payload_offset: usize,
     payload_len: usize,
@@ -463,7 +453,6 @@ impl BlockLayout {
             key_len,
             suffix_len: relative_key_len - extra_prefix_len,
             lookup,
-            #[cfg(feature = "block-checksum")]
             lookup_metadata_len,
             payload_offset,
             payload_len,
@@ -519,7 +508,6 @@ impl BlockLayout {
         Ok(())
     }
 
-    #[cfg(feature = "block-checksum")]
     fn verify_lookup_checksum(&self, bytes: &[u8]) -> Result<(), CorruptionError> {
         let stored_checksum =
             read_stored_checksum(bytes, self.lookup_metadata_len, self.block_checksum)?;
@@ -640,7 +628,7 @@ mod tests {
             let entries = Entries {
                 entries: &[(b"aa01", b"first"), (b"aa02", b"second")],
             };
-            let checksum = BlockChecksumKind::None;
+            let checksum = BlockChecksumKind::Xxh3_128;
             let compression = ValuePayloadCompressionKind::None;
             let block = encode_block(
                 block_builder(&entries, 4, ValueLayout::VARIABLE, checksum, compression),
@@ -663,7 +651,6 @@ mod tests {
                 value_layout: ValueLayout::VARIABLE,
                 block_checksum: checksum,
                 value_payload_compression: compression,
-                #[cfg(feature = "block-checksum")]
                 verify_lookup_checksum: true,
             })
             .expect("block should decode");
@@ -699,7 +686,7 @@ mod tests {
             let entries = Entries {
                 entries: &entry_data,
             };
-            let checksum = BlockChecksumKind::None;
+            let checksum = BlockChecksumKind::Xxh3_128;
             let compression = ValuePayloadCompressionKind::None;
             #[cfg(feature = "value-compression")]
             let builder = BlockBuilder::new(
@@ -740,7 +727,6 @@ mod tests {
                 value_layout: ValueLayout::VARIABLE,
                 block_checksum: checksum,
                 value_payload_compression: compression,
-                #[cfg(feature = "block-checksum")]
                 verify_lookup_checksum: true,
             })
             .expect("relative block should decode");
@@ -756,7 +742,7 @@ mod tests {
             let entries = Entries {
                 entries: &[(b"aa01", b"only")],
             };
-            let checksum = BlockChecksumKind::None;
+            let checksum = BlockChecksumKind::Xxh3_128;
             let compression = ValuePayloadCompressionKind::None;
             let block = encode_block(
                 block_builder(&entries, 4, ValueLayout::VARIABLE, checksum, compression),
@@ -768,7 +754,6 @@ mod tests {
                 value_layout: ValueLayout::VARIABLE,
                 block_checksum: checksum,
                 value_payload_compression: compression,
-                #[cfg(feature = "block-checksum")]
                 verify_lookup_checksum: true,
             })
             .expect("block should decode");
@@ -792,7 +777,7 @@ mod tests {
             let entries = Entries {
                 entries: &[(b"aa01", b"first"), (b"aa02", b"second")],
             };
-            let checksum = BlockChecksumKind::None;
+            let checksum = BlockChecksumKind::Xxh3_128;
             let compression = ValuePayloadCompressionKind::None;
             let block = encode_block(
                 block_builder(&entries, 4, ValueLayout::VARIABLE, checksum, compression),
@@ -804,7 +789,6 @@ mod tests {
                 value_layout: ValueLayout::VARIABLE,
                 block_checksum: checksum,
                 value_payload_compression: compression,
-                #[cfg(feature = "block-checksum")]
                 verify_lookup_checksum: true,
             });
             assert!(matches!(short_range, Err(CorruptionError::Block)));
@@ -815,7 +799,6 @@ mod tests {
                 value_layout: ValueLayout::VARIABLE,
                 block_checksum: checksum,
                 value_payload_compression: compression,
-                #[cfg(feature = "block-checksum")]
                 verify_lookup_checksum: true,
             });
             assert!(matches!(long_range, Err(CorruptionError::Block)));
@@ -830,7 +813,7 @@ mod tests {
             let entries = Entries {
                 entries: &[(b"key1", b"value")],
             };
-            let checksum = BlockChecksumKind::None;
+            let checksum = BlockChecksumKind::Xxh3_128;
             let compression = ValuePayloadCompressionKind::None;
             let mut block = encode_block(
                 block_builder(&entries, 4, ValueLayout::VARIABLE, checksum, compression),
@@ -845,7 +828,6 @@ mod tests {
                     value_layout: ValueLayout::VARIABLE,
                     block_checksum: checksum,
                     value_payload_compression: compression,
-                    #[cfg(feature = "block-checksum")]
                     verify_lookup_checksum: true,
                 }),
                 Err(CorruptionError::Block)
@@ -853,7 +835,6 @@ mod tests {
         }
     }
 
-    #[cfg(any(feature = "checksum-crc32c", feature = "checksum-rapidhash"))]
     mod checksum_phases {
         use super::*;
 
@@ -890,14 +871,7 @@ mod tests {
         }
 
         fn test_checksum() -> BlockChecksumKind {
-            #[cfg(feature = "checksum-crc32c")]
-            {
-                BlockChecksumKind::Crc32c
-            }
-            #[cfg(all(not(feature = "checksum-crc32c"), feature = "checksum-rapidhash"))]
-            {
-                BlockChecksumKind::RapidHashV3_64
-            }
+            BlockChecksumKind::Xxh3_128
         }
     }
 
@@ -924,7 +898,7 @@ mod tests {
             let entries = Entries {
                 entries: &entries_data,
             };
-            let checksum = BlockChecksumKind::None;
+            let checksum = BlockChecksumKind::Xxh3_128;
             let policy =
                 ValuePayloadCompressionPolicy::new(0, 1).expect("compression policy is valid");
             let mut encoder = ValuePayloadEncoder::new(compression);
@@ -945,7 +919,6 @@ mod tests {
                 value_layout: ValueLayout::VARIABLE,
                 block_checksum: checksum,
                 value_payload_compression: compression,
-                #[cfg(feature = "block-checksum")]
                 verify_lookup_checksum: true,
             })
             .expect("block metadata should decode without materializing payload");

@@ -2,7 +2,7 @@ use std::{hint::black_box, path::Path};
 
 use criterion::{BatchSize, Criterion, Throughput};
 use segment_cache_store::{
-    BlockChecksumKind, CommitOptions, CreateOptions, OpenOptions, Store, StoreMetadata, WriteBatch,
+    CommitOptions, CreateOptions, OpenOptions, Store, StoreMetadata, WriteBatch,
 };
 
 const OPEN_RECORD_COUNT: usize = 2_048;
@@ -102,7 +102,7 @@ fn create_filled_store(
 ) -> Store {
     let store = Store::create(
         root,
-        CreateOptions::new(key_len, store_metadata(), benchmark_checksum())
+        CreateOptions::new(key_len, store_metadata())
             .expect("benchmark key length should be valid"),
     )
     .expect("store should create");
@@ -121,15 +121,4 @@ fn create_filled_store(
 
 fn store_metadata() -> StoreMetadata {
     StoreMetadata::from_text("segment-cache-store-physical-format-bench")
-}
-
-fn benchmark_checksum() -> BlockChecksumKind {
-    #[cfg(feature = "checksum-rapidhash")]
-    {
-        BlockChecksumKind::RapidHashV3_64
-    }
-    #[cfg(not(feature = "checksum-rapidhash"))]
-    {
-        BlockChecksumKind::None
-    }
 }

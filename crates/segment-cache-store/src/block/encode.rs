@@ -111,15 +111,11 @@ impl<'a, S: EntrySource + ?Sized> BlockBuilder<'a, S> {
         self.write_keys(&mut block, extra_prefix_len);
         value_region.write_index(self.entries, &mut block)?;
         debug_assert_eq!(block.len(), lookup_layout.lookup_metadata_len);
-        #[cfg(feature = "block-checksum")]
-        {
-            let digest = self
-                .block_checksum
-                .digest(&block[..lookup_layout.lookup_metadata_len]);
-            block.extend_from_slice(digest.as_ref());
-        }
+        let digest = self
+            .block_checksum
+            .digest(&block[..lookup_layout.lookup_metadata_len]);
+        block.extend_from_slice(digest.as_ref());
         debug_assert_eq!(block.len(), value_region.payload_offset());
-        #[cfg(feature = "block-checksum")]
         let payload_start = block.len();
         #[cfg(feature = "value-compression")]
         {
@@ -134,11 +130,8 @@ impl<'a, S: EntrySource + ?Sized> BlockBuilder<'a, S> {
         }
         #[cfg(not(feature = "value-compression"))]
         self.write_values(&mut block);
-        #[cfg(feature = "block-checksum")]
-        {
-            let digest = self.block_checksum.digest(&block[payload_start..]);
-            block.extend_from_slice(digest.as_ref());
-        }
+        let digest = self.block_checksum.digest(&block[payload_start..]);
+        block.extend_from_slice(digest.as_ref());
         Ok(block)
     }
 

@@ -1,45 +1,17 @@
 //! Block checksum calculation and verification.
 
-use super::BlockChecksumKind;
-
-const MAX_DIGEST_LEN: usize = 32;
+use super::{BlockChecksumKind, DIGEST_LEN};
 
 impl BlockChecksumKind {
-    pub(crate) fn digest(self, _bytes: &[u8]) -> impl AsRef<[u8]> + use<> {
+    pub(crate) fn digest(self, bytes: &[u8]) -> [u8; DIGEST_LEN] {
         match self {
-            Self::None => Digest {
-                bytes: [0; MAX_DIGEST_LEN],
-                len: 0,
-            },
-            #[cfg(feature = "checksum-crc32c")]
-            Self::Crc32c => {
-                let mut bytes = [0; MAX_DIGEST_LEN];
-                bytes[..4].copy_from_slice(&crc32c::crc32c(_bytes).to_le_bytes());
-                Digest { bytes, len: 4 }
-            }
-            #[cfg(feature = "checksum-rapidhash")]
-            Self::RapidHashV3_64 => {
-                let mut bytes = [0; MAX_DIGEST_LEN];
-                bytes[..8].copy_from_slice(&rapidhash::v3::rapidhash_v3(_bytes).to_le_bytes());
-                Digest { bytes, len: 8 }
-            }
+            Self::Xxh3_128 => xxhash_rust::xxh3::xxh3_128(bytes).to_be_bytes(),
         }
     }
 
     /// Returns whether `stored` is the checksum digest for `bytes`.
     pub(crate) fn verify(self, bytes: &[u8], expected_digest: &[u8]) -> bool {
-        self.digest(bytes).as_ref() == expected_digest
-    }
-}
-
-struct Digest {
-    bytes: [u8; MAX_DIGEST_LEN],
-    len: usize,
-}
-
-impl AsRef<[u8]> for Digest {
-    fn as_ref(&self) -> &[u8] {
-        &self.bytes[..self.len]
+        self.digest(bytes).as_slice() == expected_digest
     }
 }
 
@@ -47,59 +19,29 @@ impl AsRef<[u8]> for Digest {
 mod tests {
     use super::*;
 
-    mod none {
-        use super::*;
-
-        #[test]
-        fn calculates_empty_digest() {
-            assert_eq!(BlockChecksumKind::None.digest(b"hello").as_ref(), b"");
-        }
-
-        #[test]
-        fn accepts_empty_digest() {
-            assert!(BlockChecksumKind::None.verify(b"changed bytes", &[]));
-        }
+    #[test]
+    fn calculates_canonical_known_digests() {
+        let checksum = BlockChecksumKind::Xxh3_128;
+        // Canonical vectors from the xxHash 0.8.3 reference `xxhsum -H2`.
+        assert_eq!(checksum.digest(b""), [
+            0x99, 0xaa, 0x06, 0xd3, 0x01, 0x47, 0x98, 0xd8, 0x60, 0x01, 0xc3, 0x24, 0x46, 0x8d,
+            0x49, 0x7f,
+        ]);
+        assert_eq!(checksum.digest(b"hello"), [
+            0xb5, 0xe9, 0xc1, 0xad, 0x07, 0x1b, 0x3e, 0x7f, 0xc7, 0x79, 0xcf, 0xaa, 0x5e, 0x52,
+            0x38, 0x18,
+        ]);
+        assert_eq!(checksum.digest(&[0; 256]), [
+            0xbb, 0x03, 0x9d, 0x71, 0xe9, 0x63, 0x0a, 0x91, 0xa6, 0x8d, 0xfb, 0xb1, 0xd7, 0x5c,
+            0x6e, 0x8d,
+        ]);
     }
 
-    #[cfg(feature = "checksum-crc32c")]
-    mod crc32c {
-        use super::*;
-
-        #[test]
-        fn calculates_known_digest() {
-            let checksum = BlockChecksumKind::Crc32c;
-            let digest = checksum.digest(b"hello");
-            assert_eq!(digest.as_ref(), &[0x4c, 0xbb, 0x71, 0x9a]);
-        }
-
-        #[test]
-        fn detects_changed_bytes() {
-            let checksum = BlockChecksumKind::Crc32c;
-            let digest = checksum.digest(b"hello");
-            assert!(checksum.verify(b"hello", digest.as_ref()));
-            assert!(!checksum.verify(b"jello", digest.as_ref()));
-        }
-    }
-
-    #[cfg(feature = "checksum-rapidhash")]
-    mod rapidhash {
-        use super::*;
-
-        #[test]
-        fn calculates_known_digest() {
-            let checksum = BlockChecksumKind::RapidHashV3_64;
-            let digest = checksum.digest(b"hello");
-            assert_eq!(digest.as_ref(), &[
-                0x46, 0x79, 0x5f, 0xb4, 0x51, 0x76, 0x2d, 0x2e
-            ]);
-        }
-
-        #[test]
-        fn detects_changed_bytes() {
-            let checksum = BlockChecksumKind::RapidHashV3_64;
-            let digest = checksum.digest(b"hello");
-            assert!(checksum.verify(b"hello", digest.as_ref()));
-            assert!(!checksum.verify(b"jello", digest.as_ref()));
-        }
+    #[test]
+    fn detects_changed_bytes() {
+        let checksum = BlockChecksumKind::Xxh3_128;
+        let digest = checksum.digest(b"hello");
+        assert!(checksum.verify(b"hello", &digest));
+        assert!(!checksum.verify(b"jello", &digest));
     }
 }

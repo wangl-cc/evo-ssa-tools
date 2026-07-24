@@ -20,6 +20,7 @@ mod decode;
 mod encode;
 mod layout;
 
+pub(crate) use checksum::BLOCK_CHECKSUM;
 pub use checksum::BlockChecksumKind;
 pub use compression::ValuePayloadCompressionKind;
 #[cfg(feature = "value-compression")]

@@ -17,12 +17,10 @@ The crate currently supports Unix targets only. Its positioned reads, directory 
 ## Basic Use
 
 ```rust,no_run
-use segment_cache_store::{
-    BlockChecksumKind, CreateOptions, OpenOptions, Store, StoreMetadata,
-};
+use segment_cache_store::{CreateOptions, OpenOptions, Store, StoreMetadata};
 
 let metadata = StoreMetadata::from_text("my-cache-schema-v1");
-let create_options = CreateOptions::new(16, metadata.clone(), BlockChecksumKind::None)?;
+let create_options = CreateOptions::new(16, metadata.clone())?;
 let store = Store::create("cache-root", create_options)?;
 
 let mut batch = segment_cache_store::WriteBatch::new();
@@ -34,19 +32,16 @@ let value = reopened.fetch_one(&[0; 16])?;
 # Ok::<_, segment_cache_store::Error>(())
 ```
 
-One store root has one fixed key length, one value layout, one block checksum implementation, one value-payload compression kind, and one caller-defined metadata namespace. Callers select the checksum explicitly when constructing `CreateOptions`. Value-payload compression defaults to `ValuePayloadCompressionKind::None`; optional feature flags expose compression-capable kinds such as `ValuePayloadCompressionKind::Lz4` and `ValuePayloadCompressionKind::ZstdLevel1` for `CreateOptions::with_value_payload_compression(kind)`. Per-commit `ValuePayloadCompressionPolicy` thresholds control when newly written compression-capable blocks actually keep compressed frames. Published segment files are immutable. The main tier remains globally non-overlapping; each interval-connected region may temporarily hold one small patch segment so one interleaving commit avoids an immediate rebuild. A second overlapping commit normalizes only that region and atomically publishes a replacement `MANIFEST`. Callers can also run `Store::normalize()` explicitly before a read-heavy phase, `Store::merge_from(&source)` to atomically build a main-only union with a compatible worker store, and `Store::garbage_collect()` explicitly when retired segment files should be reclaimed.
+One store root has one fixed key length, one value layout, one value-payload compression kind, and one caller-defined metadata namespace. Every store uses the same fixed block checksum (`BlockChecksumKind::Xxh3_128`); it is not a per-store choice. Value-payload compression defaults to `ValuePayloadCompressionKind::None`; optional feature flags expose compression-capable kinds such as `ValuePayloadCompressionKind::Lz4` and `ValuePayloadCompressionKind::ZstdLevel1` for `CreateOptions::with_value_payload_compression(kind)`. Per-commit `ValuePayloadCompressionPolicy` thresholds control when newly written compression-capable blocks actually keep compressed frames. Published segment files are immutable. The main tier remains globally non-overlapping; each interval-connected region may temporarily hold one small patch segment so one interleaving commit avoids an immediate rebuild. A second overlapping commit normalizes only that region and atomically publishes a replacement `MANIFEST`. Callers can also run `Store::normalize()` explicitly before a read-heavy phase, `Store::merge_from(&source)` to atomically merge a compatible worker store while rewriting only the intersecting key ranges, and `Store::garbage_collect()` explicitly when retired segment files should be reclaimed.
 
 ## Feature Flags
 
-The default feature set enables `checksum-rapidhash`, which exposes `BlockChecksumKind::RapidHashV3_64`. `BlockChecksumKind::None` is always available; it stores no per-block checksum bytes, but catalog metadata and manifest-to-segment identity checks still use internal integrity checks when a store is opened. `checksum-crc32c` exposes `BlockChecksumKind::Crc32c` as an optional block checksum implementation; CRC32C is still used internally for fixed catalog and segment structural checks. The concrete checksum features transitively enable the `block-checksum` capability marker. `value-compression-lz4` and `value-compression-zstd` expose optional block-level value-payload compression algorithms and transitively enable the `value-compression` capability marker. Enabling either marker alone adds no concrete algorithm. `CreateOptions::new(key_len, metadata, kind)` has the same signature for every feature combination.
+`value-compression-lz4` and `value-compression-zstd` expose optional block-level value-payload compression algorithms and transitively enable the `value-compression` capability marker. Enabling the marker alone adds no concrete algorithm. Block checksums are always compiled in: every block carries an XXH3 128-bit checksum, and CRC32C is used internally for fixed catalog and segment structural checks; neither is feature-gated.
 
 Internal design and evaluation notes live in:
 
-- [docs/design.md](docs/design.md)
-- [docs/remote-blob-design.md](docs/remote-blob-design.md)
-- [docs/remote-version-format.md](docs/remote-version-format.md)
-- [docs/remote-implementation.md](docs/remote-implementation.md)
-- [docs/benchmark.md](docs/benchmark.md)
+- [docs/design/](docs/design/00-overview.md) — current design (00–05: introduction, architecture, format, operations, corruption semantics) plus the agreed future remote direction (06-remote/, not implemented)
+- [docs/benchmark.md](docs/benchmark.md) — benchmark suite and workload definitions; results live in [benchmark-baselines/](benchmark-baselines/README.md)
 
 Useful commands:
 

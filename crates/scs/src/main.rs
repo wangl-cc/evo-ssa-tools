@@ -437,7 +437,7 @@ impl std::fmt::Display for SpaceRatio {
 mod tests {
     use std::path::Path;
 
-    use segment_cache_store::{BlockChecksumKind, CreateOptions, WriteBatch};
+    use segment_cache_store::{CreateOptions, WriteBatch};
 
     use super::*;
 
@@ -530,8 +530,7 @@ mod tests {
     }
 
     fn create_options() -> CreateOptions {
-        CreateOptions::new(4, test_metadata(), BlockChecksumKind::None)
-            .expect("test key length should be valid")
+        CreateOptions::new(4, test_metadata()).expect("test key length should be valid")
     }
 
     fn test_metadata() -> StoreMetadata {

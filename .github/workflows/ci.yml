@@ -94,10 +94,6 @@ jobs:
         include:
           - variant: no-default
             feature_flags: --no-default-features
-          - variant: block-checksum
-            feature_flags: --no-default-features --features block-checksum
-          - variant: checksum-crc32c
-            feature_flags: --no-default-features --features checksum-crc32c
           - variant: value-compression
             feature_flags: --no-default-features --features value-compression
           - variant: value-compression-lz4

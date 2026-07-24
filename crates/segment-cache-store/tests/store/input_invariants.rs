@@ -9,7 +9,7 @@ use segment_cache_store::{
 
 use crate::support::api::{
     commit_entries, create_options, create_options_with_key_len, create_store, create_store_with,
-    make_key, make_value, metadata, open_options, reopen_store, test_block_checksum,
+    make_key, make_value, metadata, open_options, reopen_store,
 };
 
 #[test]
@@ -32,11 +32,11 @@ fn wrong_length_keys_are_rejected() -> Result<()> {
 #[test]
 fn invalid_create_options_are_rejected() {
     assert!(matches!(
-        CreateOptions::new(0, metadata(), test_block_checksum()),
+        CreateOptions::new(0, metadata()),
         Err(OptionsError::KeyLenZero)
     ));
     assert!(matches!(
-        CreateOptions::new(usize::MAX, metadata(), test_block_checksum(),),
+        CreateOptions::new(usize::MAX, metadata()),
         Err(OptionsError::KeyLenTooLarge)
     ));
 }

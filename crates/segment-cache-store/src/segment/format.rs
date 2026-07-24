@@ -334,7 +334,7 @@ mod tests {
             SegmentHeader::new(
                 16,
                 ValueLayout::fixed(std::num::NonZeroU32::new(32).expect("non-zero")),
-                BlockChecksumKind::None,
+                BlockChecksumKind::Xxh3_128,
                 ValuePayloadCompressionKind::None,
             )
             .expect("header should encode")
@@ -343,7 +343,7 @@ mod tests {
             assert_eq!(bytes.len(), SEGMENT_HEADER_LEN);
             assert_eq!(&bytes[..4], HEADER_MAGIC);
             assert_eq!(bytes[4], SEGMENT_FORMAT_VERSION);
-            assert_eq!(bytes[5], BlockChecksumKind::None.format_id());
+            assert_eq!(bytes[5], BlockChecksumKind::Xxh3_128.format_id());
             assert_eq!(bytes[6], ValuePayloadCompressionKind::None.format_id());
             assert_eq!(bytes[7], 0);
             assert_eq!(
@@ -366,7 +366,7 @@ mod tests {
             SegmentHeader::new(
                 16,
                 ValueLayout::VARIABLE,
-                BlockChecksumKind::None,
+                BlockChecksumKind::Xxh3_128,
                 ValuePayloadCompressionKind::None,
             )
             .expect("header should encode")

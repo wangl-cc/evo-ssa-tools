@@ -943,12 +943,18 @@ mod tests {
     }
 
     fn decoded_test_block() -> DecodedBlock {
+        let checksum = BlockChecksumKind::Xxh3_128;
         let mut bytes = Vec::new();
         bytes.extend_from_slice(&2u32.to_le_bytes());
         bytes.extend_from_slice(&3u32.to_le_bytes());
         bytes.extend_from_slice(b"aa0");
         bytes.extend_from_slice(b"13");
+        let lookup_digest = checksum.digest(&bytes);
+        bytes.extend_from_slice(&lookup_digest);
+        let payload_start = bytes.len();
         bytes.extend_from_slice(&[10, 30]);
+        let value_digest = checksum.digest(&bytes[payload_start..]);
+        bytes.extend_from_slice(&value_digest);
 
         DecodedBlock::decode(bytes, BlockDecodeOptions {
             expected_key_range: BlockKeyRangeRef {
@@ -961,9 +967,8 @@ mod tests {
             value_layout: ValueLayout::fixed(
                 NonZeroU32::new(1).expect("fixed test value width is non-zero"),
             ),
-            block_checksum: BlockChecksumKind::None,
+            block_checksum: checksum,
             value_payload_compression: ValuePayloadCompressionKind::None,
-            #[cfg(feature = "block-checksum")]
             verify_lookup_checksum: true,
         })
         .expect("test block should decode")

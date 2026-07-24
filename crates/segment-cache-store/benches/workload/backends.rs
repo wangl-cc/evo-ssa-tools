@@ -11,7 +11,7 @@ use fjall3::{
 };
 use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
 use segment_cache_store::{
-    BlockChecksumKind, CommitOptions, CreateOptions, OpenOptions, Store, StoreMetadata, WriteBatch,
+    CommitOptions, CreateOptions, OpenOptions, Store, StoreMetadata, WriteBatch,
 };
 
 use crate::{
@@ -26,18 +26,7 @@ pub(crate) fn store_metadata() -> StoreMetadata {
 }
 
 pub(crate) fn store_create_options(key_len: usize) -> CreateOptions {
-    let block_checksum = {
-        #[cfg(feature = "checksum-rapidhash")]
-        {
-            BlockChecksumKind::RapidHashV3_64
-        }
-        #[cfg(not(feature = "checksum-rapidhash"))]
-        {
-            BlockChecksumKind::None
-        }
-    };
-    CreateOptions::new(key_len, store_metadata(), block_checksum)
-        .expect("benchmark key length should be valid")
+    CreateOptions::new(key_len, store_metadata()).expect("benchmark key length should be valid")
 }
 
 pub(crate) fn commit_options_with_block_size(block_size: usize) -> CommitOptions {

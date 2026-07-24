@@ -7,7 +7,7 @@ use super::{
     metadata::StoreMetadata,
 };
 use crate::{
-    block::{BlockChecksumKind, ValuePayloadCompressionKind},
+    block::{BLOCK_CHECKSUM, BlockChecksumKind, ValuePayloadCompressionKind},
     error::{InputError, OptionsError, Result},
     limits::{MAX_KEY_LEN, MAX_VALUE_LEN},
     value::ValueLayout,
@@ -34,17 +34,16 @@ pub struct CreateOptions {
 }
 
 impl CreateOptions {
-    /// Creates options for a store with fixed-width keys and an explicit block checksum.
+    /// Creates options for a store with fixed-width keys.
+    ///
+    /// Every store uses the same fixed block checksum; the checksum is not a
+    /// per-store choice.
     ///
     /// # Errors
     ///
     /// Returns [`OptionsError::KeyLenZero`] when `key_len` is zero or
     /// [`OptionsError::KeyLenTooLarge`] when it exceeds the implementation limit.
-    pub fn new(
-        key_len: usize,
-        metadata: StoreMetadata,
-        block_checksum: BlockChecksumKind,
-    ) -> std::result::Result<Self, OptionsError> {
+    pub fn new(key_len: usize, metadata: StoreMetadata) -> std::result::Result<Self, OptionsError> {
         if key_len == 0 {
             return Err(OptionsError::KeyLenZero);
         }
@@ -54,7 +53,7 @@ impl CreateOptions {
         Ok(Self {
             key_len,
             value_layout: ValueLayout::VARIABLE,
-            block_checksum,
+            block_checksum: BLOCK_CHECKSUM,
             value_payload_compression: ValuePayloadCompressionKind::DEFAULT,
             metadata,
         })

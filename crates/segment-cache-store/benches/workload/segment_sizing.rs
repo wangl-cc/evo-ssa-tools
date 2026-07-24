@@ -2,8 +2,8 @@ use std::{hint::black_box, num::NonZeroUsize};
 
 use criterion::{BatchSize, Criterion, Throughput};
 use segment_cache_store::{
-    BlockChecksumKind, CommitOptions, CommitStats, CreateOptions, OpenOptions, Store,
-    StoreMetadata, StoreStorageStats, WriteBatch,
+    CommitOptions, CommitStats, CreateOptions, OpenOptions, Store, StoreMetadata,
+    StoreStorageStats, WriteBatch,
 };
 
 const SPARSE_STRIDE: usize = 16;
@@ -119,7 +119,7 @@ impl SegmentPolicy {
     fn create_store(self, root: &std::path::Path, profile: KvProfile) -> Store {
         Store::create(
             root,
-            CreateOptions::new(profile.key_len, store_metadata(), benchmark_checksum())
+            CreateOptions::new(profile.key_len, store_metadata())
                 .expect("benchmark geometry is valid"),
         )
         .expect("benchmark store should create")
@@ -414,15 +414,4 @@ impl SegmentSizingBenchmark {
 
 fn store_metadata() -> StoreMetadata {
     StoreMetadata::from_text("segment-cache-store-segment-sizing-bench")
-}
-
-fn benchmark_checksum() -> BlockChecksumKind {
-    #[cfg(feature = "checksum-rapidhash")]
-    {
-        BlockChecksumKind::RapidHashV3_64
-    }
-    #[cfg(not(feature = "checksum-rapidhash"))]
-    {
-        BlockChecksumKind::None
-    }
 }

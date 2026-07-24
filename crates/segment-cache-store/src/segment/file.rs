@@ -35,7 +35,6 @@ pub(crate) struct SegmentOpenOptions<'a> {
 #[derive(Clone, Copy)]
 pub(crate) struct BlockReadOptions {
     pub(crate) geometry: SegmentGeometry,
-    #[cfg(feature = "block-checksum")]
     pub(crate) verify_lookup_checksum: bool,
 }
 
@@ -129,10 +128,8 @@ fn verify_blocks(file: &File, index: &SegmentIndex, geometry: SegmentGeometry) -
     for block_index in 0..index.len() {
         let block = read_block(file, index, block_index, BlockReadOptions {
             geometry,
-            #[cfg(feature = "block-checksum")]
             verify_lookup_checksum: true,
         })?;
-        #[cfg(feature = "block-checksum")]
         block.verify_payload_checksum()?;
         #[cfg(feature = "value-compression")]
         let _decoded_payload = block.decode_payload_if_needed(&mut payload_decoder)?;
@@ -252,7 +249,6 @@ pub(super) fn read_block_reusing(
         value_layout: options.geometry.schema.value_layout,
         block_checksum: options.geometry.encoding.block_checksum,
         value_payload_compression: options.geometry.encoding.value_payload_compression,
-        #[cfg(feature = "block-checksum")]
         verify_lookup_checksum: options.verify_lookup_checksum,
     })?)
 }
@@ -294,7 +290,7 @@ mod tests {
                 value_layout: ValueLayout::VARIABLE,
             },
             encoding: SegmentEncoding {
-                block_checksum: BlockChecksumKind::None,
+                block_checksum: BlockChecksumKind::Xxh3_128,
                 value_payload_compression: ValuePayloadCompressionKind::None,
             },
         };

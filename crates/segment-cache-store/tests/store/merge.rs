@@ -1,18 +1,14 @@
 use std::num::{NonZeroU32, NonZeroUsize};
 
-#[cfg(any(feature = "checksum-crc32c", feature = "checksum-rapidhash"))]
-use segment_cache_store::OpenOptions;
 use segment_cache_store::{
-    CommitStats, CreateOptions, Error, InputError, Result, Store, StoreMetadata,
+    CommitStats, CreateOptions, Error, InputError, OpenOptions, Result, Store, StoreMetadata,
 };
 
-use crate::support::api::{
-    commit_entries, commit_options, create_options, create_options_with_key_len, create_store,
-    create_store_with, make_key, make_value, reopen_store_read_only, test_block_checksum,
-};
-#[cfg(any(feature = "checksum-crc32c", feature = "checksum-rapidhash"))]
 use crate::support::{
-    api::metadata,
+    api::{
+        commit_entries, commit_options, create_options, create_options_with_key_len, create_store,
+        create_store_with, make_key, make_value, metadata, reopen_store_read_only,
+    },
     segment_file::{corrupt_block_value_payload, first_segment_path},
 };
 
@@ -150,11 +146,7 @@ fn merge_from_rejects_incompatible_source_metadata() -> Result<()> {
     let destination = create_store(&destination_dir)?;
     let source = Store::create(
         source_dir.path(),
-        CreateOptions::new(
-            16,
-            StoreMetadata::from_text("different-cache-namespace"),
-            test_block_checksum(),
-        )?,
+        CreateOptions::new(16, StoreMetadata::from_text("different-cache-namespace"))?,
     )?;
 
     let error = destination
@@ -219,7 +211,6 @@ fn merge_from_rejects_read_only_destination() -> Result<()> {
     Ok(())
 }
 
-#[cfg(any(feature = "checksum-crc32c", feature = "checksum-rapidhash"))]
 #[test]
 fn merge_from_rejects_corrupt_source_blocks_when_forcing_verification() -> Result<()> {
     let destination_dir = tempfile::tempdir()?;

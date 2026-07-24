@@ -2,7 +2,6 @@
 
 use std::{cmp::Ordering, fs::File};
 
-#[cfg(feature = "block-checksum")]
 use parking_lot::Mutex;
 
 use super::{
@@ -24,7 +23,6 @@ pub(crate) struct Segment {
     min_key: Vec<u8>,
     max_key: Vec<u8>,
     block_index: SegmentIndex,
-    #[cfg(feature = "block-checksum")]
     block_verifications: Mutex<BlockVerificationCache>,
 }
 
@@ -35,13 +33,11 @@ pub(crate) struct Segment {
 /// files are immutable while open, so dropping the [`Segment`] is the only
 /// invalidation required.
 #[derive(Debug)]
-#[cfg(feature = "block-checksum")]
 struct BlockVerificationCache {
     phases: Vec<BlockVerification>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-#[cfg(feature = "block-checksum")]
 enum BlockVerification {
     Unverified,
     LookupVerified,
@@ -97,7 +93,6 @@ impl Segment {
 
     /// Converts a verified on-disk segment into the state used by readers.
     pub(super) fn from_opened(segment_id: u32, opened: OpenedSegment) -> Self {
-        #[cfg(feature = "block-checksum")]
         let block_verifications = BlockVerificationCache::new(opened.block_index.len());
         Self {
             segment_id,
@@ -105,7 +100,6 @@ impl Segment {
             min_key: opened.min_key,
             max_key: opened.max_key,
             block_index: opened.block_index,
-            #[cfg(feature = "block-checksum")]
             block_verifications: Mutex::new(block_verifications),
         }
     }
@@ -116,7 +110,6 @@ impl Segment {
         let max_key = metadata.max_key;
         let footer = metadata.footer;
         let block_index = footer.block_index;
-        #[cfg(feature = "block-checksum")]
         let block_verifications = BlockVerificationCache::new(block_index.len());
         Self {
             segment_id,
@@ -124,7 +117,6 @@ impl Segment {
             min_key,
             max_key,
             block_index,
-            #[cfg(feature = "block-checksum")]
             block_verifications: Mutex::new(block_verifications),
         }
     }
@@ -139,23 +131,19 @@ impl Segment {
         &self,
         block_index: usize,
         geometry: SegmentGeometry,
-        _verify_checksum: bool,
+        verify_checksum: bool,
     ) -> Result<DecodedBlock> {
-        #[cfg(feature = "block-checksum")]
         let verify_lookup = self.needs_verification(
             block_index,
-            _verify_checksum,
+            verify_checksum,
             BlockVerification::LookupVerified,
         );
-        #[cfg(not(feature = "block-checksum"))]
-        let verify_lookup = false;
         let block = read_block(
             &self.file,
             &self.block_index,
             block_index,
             Self::block_read_options(geometry, verify_lookup),
         )?;
-        #[cfg(feature = "block-checksum")]
         if verify_lookup {
             self.mark_verified(block_index, BlockVerification::LookupVerified);
         }
@@ -167,17 +155,14 @@ impl Segment {
         &self,
         block_index: usize,
         geometry: SegmentGeometry,
-        _verify_checksum: bool,
+        verify_checksum: bool,
         buffer: Vec<u8>,
     ) -> Result<DecodedBlock> {
-        #[cfg(feature = "block-checksum")]
         let verify_lookup = self.needs_verification(
             block_index,
-            _verify_checksum,
+            verify_checksum,
             BlockVerification::LookupVerified,
         );
-        #[cfg(not(feature = "block-checksum"))]
-        let verify_lookup = false;
         let block = read_block_reusing(
             &self.file,
             &self.block_index,
@@ -185,14 +170,12 @@ impl Segment {
             Self::block_read_options(geometry, verify_lookup),
             buffer,
         )?;
-        #[cfg(feature = "block-checksum")]
         if verify_lookup {
             self.mark_verified(block_index, BlockVerification::LookupVerified);
         }
         Ok(block)
     }
 
-    #[cfg(feature = "block-checksum")]
     pub(crate) fn verify_block_payload(
         &self,
         block_index: usize,
@@ -210,28 +193,16 @@ impl Segment {
         Ok(())
     }
 
-    #[cfg(not(feature = "block-checksum"))]
-    pub(crate) fn verify_block_payload(
-        &self,
-        _block_index: usize,
-        _block: &DecodedBlock,
-        _verify_checksum: bool,
-    ) -> Result<()> {
-        Ok(())
-    }
-
     fn block_read_options(
         geometry: SegmentGeometry,
-        _verify_lookup_checksum: bool,
+        verify_lookup_checksum: bool,
     ) -> BlockReadOptions {
         BlockReadOptions {
             geometry,
-            #[cfg(feature = "block-checksum")]
-            verify_lookup_checksum: _verify_lookup_checksum,
+            verify_lookup_checksum,
         }
     }
 
-    #[cfg(feature = "block-checksum")]
     fn needs_verification(
         &self,
         block_index: usize,
@@ -245,7 +216,6 @@ impl Segment {
                 .requires(block_index, required)
     }
 
-    #[cfg(feature = "block-checksum")]
     fn mark_verified(&self, block_index: usize, verified: BlockVerification) {
         self.block_verifications
             .lock()
@@ -253,7 +223,6 @@ impl Segment {
     }
 }
 
-#[cfg(feature = "block-checksum")]
 impl BlockVerificationCache {
     fn new(block_count: usize) -> Self {
         Self {
@@ -276,7 +245,7 @@ impl BlockVerificationCache {
     }
 }
 
-#[cfg(all(test, feature = "block-checksum"))]
+#[cfg(test)]
 mod tests {
     use super::*;
 
