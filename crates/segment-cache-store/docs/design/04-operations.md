@@ -218,7 +218,7 @@ Merge is range-limited: only destination normalization components whose key rang
 
 Output segments are cut from the merged record stream by three split triggers: the configured record threshold, the configured byte threshold, and **barriers**. Barriers are the key ranges of every retained destination segment (main and patch), sorted by `(min_key, segment_id)`. Because retirement is component-granular, barriers need not be mutually disjoint: a retained patch overlaps the retained main segments of its own component. No stream record can ever land inside a barrier range, because retained segments are disjoint from the retired-and-merged region by construction; stream records lie entirely to the left or entirely to the right of each barrier. A non-empty output chunk therefore flushes before it would straddle a barrier, which keeps every new main segment disjoint from retained segments and prevents two retained patches from becoming connected through new output into one normalization component.
 
-> v1 implementation note: v1 cuts output chunks by the record and byte thresholds only, so a merge whose output would straddle a retained segment fails loudly at manifest validation (`SegmentOverlap`, or `MultiplePatchesInComponent` across two retained patches) before publication. The destination snapshot is never corrupted by this failure. Barrier splitting is the agreed fix and is tracked in the issue tracker.
+> v1 implementation note: v1 cuts output chunks by the record and byte thresholds only, so a merge whose output would straddle a retained segment fails loudly at manifest validation (`SegmentOverlap`, or `MultiplePatchesInComponent` across two retained patches) before publication. The destination snapshot is never corrupted by this failure. Barrier splitting is the agreed fix and is tracked in [TODO.md](../../TODO.md).
 
 For equal keys, byte-identical values are emitted once and differing values return `InputError::KeyConflict`. The implementation stages and syncs every output segment before one replacing-manifest publication, so conflict, corruption, or I/O failure leaves the prior destination snapshot visible. Retired destination files remain until explicit garbage collection.
 
@@ -235,7 +235,7 @@ Merging several worker stores should use one k-way stream and one publication ra
 
 ### Planned: Source-Segment Adoption
 
-Source main-tier segments that are disjoint from all destination ranges and untouched by source patches are pure inserts, which makes them eligible for byte-level adoption instead of transcoding. The details — including whether adopted bytes are trusted like locally published files or verified through the full single-segment path — are still open and are tracked in the issue tracker rather than specified here.
+Source main-tier segments that are disjoint from all destination ranges and untouched by source patches are pure inserts, which makes them eligible for byte-level adoption instead of transcoding. The details — including whether adopted bytes are trusted like locally published files or verified through the full single-segment path — are still open and are tracked in [TODO.md](../../TODO.md) rather than specified here.
 
 ### Alternatives Considered
 

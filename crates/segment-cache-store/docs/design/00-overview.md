@@ -22,7 +22,7 @@ Related documents outside this set:
 
 ## Conventions
 
-- The numbered documents describe the agreed design of the current store. Where the v1 implementation has not caught up with it, the delta is marked inline as a "v1 implementation note" at the exact spot an implementer would be misled, and the full delta list is tracked in the repository issue tracker.
+- The numbered documents describe the agreed design of the current store. Where the v1 implementation has not caught up with it, the delta is marked inline as a "v1 implementation note" at the exact spot an implementer would be misled, and the full delta list is tracked in [TODO.md](../../TODO.md).
 - [06-remote/](06-remote/) is the one exception: it holds the agreed future direction for the remote repository, each document marked as not implemented. When that work lands, its content promotes into the current-design documents in the same pull request as the code.
 - Design changes land in the same pull request as their implementation (or immediately ahead of it). Agreed-but-unimplemented design does not accumulate in the numbered documents ahead of code.
-- Status, phases, task lists, and open decisions live in issues and pull requests, not in these documents.
+- Status, phases, task lists, and open decisions live in [TODO.md](../../TODO.md) and pull requests, not in these documents.
