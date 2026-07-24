@@ -179,9 +179,11 @@ impl Store {
     /// the destination format.
     ///
     /// Equal keys with byte-identical values are emitted once. Equal keys with
-    /// different values fail with [`InputError::KeyConflict`]. The complete
-    /// logical union is rewritten as main-tier segments and published with one
-    /// manifest update, so a failed merge does not make a partial result visible.
+    /// different values fail with [`InputError::KeyConflict`]. Only destination
+    /// components intersecting the source's key ranges are rewritten; retained
+    /// segments, including patches, survive the merge. The result is published
+    /// with one manifest update, so a failed merge does not make a partial
+    /// result visible.
     ///
     /// Returns [`InputError::ReadOnlyStore`] on a read-only destination handle.
     pub fn merge_from(&self, source: &Store) -> Result<CommitStats> {
