@@ -4,7 +4,7 @@
 
 This plan adds the minimum provider-neutral infrastructure required for explicit worker push, pull, and strict aggregation. It does not implement a provider SDK and does not change the public local `Store` API or local v1 formats.
 
-The [remote repository design](remote-blob-design.md) defines behavior. The [remote version format](remote-version-format.md) defines persistent bytes and identities.
+The [remote repository design](00-design.md) defines behavior. The [remote version format](01-version-format.md) defines persistent bytes and identities.
 
 ## Existing Assets
 
@@ -277,7 +277,7 @@ Publication tests cover idempotent immutable insertion, missing-object rejection
 
 Synchronization tests cover main-only worker publication, local codec conversion, complete segment verification, interrupted downloads, corrupted cache replacement, equal-record collapse, conflicting-value rejection, k-way order independence, and local v1 reopen after pull.
 
-The existing default, all-feature, no-default, checksum, and compression test and clippy matrix remains required. Remote tests must not add provider SDKs to default local builds.
+The existing default, all-feature, no-default, and compression test and clippy matrix remains required. Remote tests must not add provider SDKs to default local builds.
 
 ## Deferred Work
 

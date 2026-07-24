@@ -2,7 +2,7 @@
 
 ## Scope
 
-This document defines the provider-neutral v1 identity, config, manifest, segment-reference, and ref formats for the future remote repository. The [remote repository design](remote-blob-design.md) defines workflows, and the [implementation plan](remote-implementation.md) defines code boundaries.
+This document defines the provider-neutral v1 identity, config, manifest, segment-reference, and ref formats for the future remote repository. The [remote repository design](00-design.md) defines workflows, and the [implementation plan](02-implementation-plan.md) defines code boundaries.
 
 These formats are independent of local `STORE` and `MANIFEST` v1. Remote support does not migrate or reinterpret existing local catalog bytes.
 
@@ -23,7 +23,7 @@ RemoteStoreIdentityV1 {
 
 `value_len=0` means variable-length values; any non-zero value means fixed-width values. The identity parser applies the same key and value geometry limits as the local store before allocating caller metadata.
 
-Block checksum and value compression do not belong to logical identity. Stores with equal geometry and caller metadata may exchange records even when their local physical codecs differ.
+Value compression does not belong to logical identity. The block checksum is a fixed store-wide constant, so it cannot differ between stores; stores with equal geometry and caller metadata may exchange records even when their local compression codecs differ.
 
 `StoreIdentityId` is the BLAKE3 identity of the complete canonical identity bytes.
 
@@ -35,13 +35,12 @@ One immutable `RemoteRepositoryConfigV1` selects the physical segment codecs for
 RemoteRepositoryConfigV1 {
   format_version: u8
   store_identity_id: [u8; 32]
-  block_checksum_kind: u8
   value_payload_compression_kind: u8
   structural_crc32c: u32
 }
 ```
 
-Unknown codec IDs are rejected. A build that does not contain the selected codec reports an unsupported-config error rather than silently treating the object as absent.
+The block checksum kind is not part of the config: remote segment objects use the same fixed block checksum as local segments. Unknown compression IDs are rejected. A build that does not contain the selected codec reports an unsupported-config error rather than silently treating the object as absent.
 
 The v1 config is immutable after repository creation. Its `RepositoryConfigId` covers the complete canonical config bytes. Config is separate from logical identity so a future explicit migration can rewrite physical objects while retaining the logical namespace.
 

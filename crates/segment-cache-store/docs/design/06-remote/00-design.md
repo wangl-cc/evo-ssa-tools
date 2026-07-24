@@ -4,7 +4,7 @@
 
 This document specifies a future provider-neutral remote repository for `segment-cache-store`. None of this behavior is implemented by the current local store.
 
-Remote support adds a separate catalog and publication protocol. It does not change local `STORE`, `MANIFEST`, or segment v1 bytes. The companion documents define the [remote version format](remote-version-format.md) and the [implementation plan](remote-implementation.md).
+Remote support adds a separate catalog and publication protocol. It does not change local `STORE`, `MANIFEST`, or segment v1 bytes. The companion documents define the [remote version format](01-version-format.md) and the [implementation plan](02-implementation-plan.md).
 
 ## Purpose
 
@@ -27,7 +27,7 @@ Remote state is a phase-boundary exchange format, not the hot execution backend 
 - Keep local and remote catalog wire formats independent.
 - Reuse the existing BLAKE3 `SegmentContentId` for complete segment bytes.
 - Address immutable remote manifests by a BLAKE3 content ID.
-- Keep logical store identity separate from physical checksum and compression policy.
+- Keep logical store identity separate from physical compression policy (the block checksum is a fixed store-wide constant).
 - Require every remote manifest to contain a main-only, sorted, non-overlapping segment set.
 - Collapse equal keys only when value bytes are identical; differing values abort publication.
 - Upload immutable objects before publishing the ref that makes them visible.
@@ -65,11 +65,13 @@ The local catalog is not generalized into a backend-independent catalog. Local p
 
 ## Identity And Physical Policy
 
-`StoreIdentity` answers one question: whether two snapshots represent the same logical cache namespace. It covers key geometry, value layout, and caller metadata. It does not include block checksum or value compression choices.
+`StoreIdentity` answers one question: whether two snapshots represent the same logical cache namespace. It covers key geometry, value layout, and caller metadata. It does not include the value compression choice; the block checksum is a fixed constant and therefore identical in every store.
 
-Each remote root also has one v1 `RepositoryConfig` that selects the physical checksum and compression used for remote segment objects. The config is immutable for v1, but it is not part of logical identity. A future config migration may rewrite physical objects without creating a new logical cache namespace.
+Each remote root also has one v1 `RepositoryConfig` that selects the value-payload compression used for remote segment objects. The config is immutable for v1, but it is not part of logical identity. A future config migration may rewrite physical objects without creating a new logical cache namespace.
 
 Publishing a local store whose codec differs from the repository config requires rebuilding its visible records with the repository config. Reusing complete segment objects is valid only when the bytes already satisfy the target config and their ranges remain non-overlapping in the output.
+
+The trust chain differs between the two paths. Reused objects are verified by length and content ID before they are relied on. Rebuilt records are read through the strict snapshot builder, whose per-block checksum verification is always effective because the block checksum is mandatory; no unverifiable bytes can be laundered into freshly encoded output.
 
 ## Object Model
 
