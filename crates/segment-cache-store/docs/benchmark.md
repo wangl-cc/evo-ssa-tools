@@ -1,4 +1,6 @@
-# Benchmarking
+# Benchmark Suite
+
+The benchmark workloads: what is measured, on what data, against which backends, and how to run it. Measurement results live in [benchmark-baselines/](../benchmark-baselines/README.md); this document intentionally contains no numbers.
 
 ## Purpose
 
@@ -32,9 +34,7 @@ Value profiles are narrow within one namespace:
 
 Each profile currently uses `16,384` records for the standard dataset. The parameter-evolution datasets are separate structured grids that repeatedly change active `x` and `y` axes.
 
-## Baselines
-
-The latest focused read-routing comparison is [relative-key-routing-20260713-m1](../benchmark-baselines/relative-key-routing-20260713-m1/README.md). It compares the finalized v1 format against progressive segment-relative and block-relative lookup, covering trusted open, 16/512-byte key routing, existing ordered workloads, and compressed reads. The preceding [v1-format-20260713-m1](../benchmark-baselines/v1-format-20260713-m1/README.md) baseline isolates the physical-format change itself.
+## Baseline Backends
 
 `fjall3` uses a workload-shaped, no-compression configuration derived from the surrounding project: large cache, higher cached-file limit, point-read-hit expectation, profile-sensitive data block tuning, and key-value separation for large values. Compression is omitted because benchmark values are synthetic bytes and the goal is to measure storage layout rather than compression ratio.
 
@@ -159,129 +159,3 @@ cargo run -p segment-cache-store --example space_usage --offline
 ## Space Metric
 
 Space amplification is treated as a first-class metric. The measurement script lives in [examples/space_usage.rs](../examples/space_usage.rs) and reports logical bytes, directory size, and amplification factor for `segment-cache-store`, `fjall3`, and `redb`.
-
-## Saved Baselines
-
-- [`b093515-m1`](../benchmark-baselines/b093515-m1/README.md): Apple M1 baseline for commit `b093515`, covering all five Criterion targets and the space-usage report.
-- [`9f8b2e6-m1`](../benchmark-baselines/9f8b2e6-m1/README.md): targeted Apple M1 baseline for the read, publication, normalization, and compression optimizations in commit `9f8b2e6`.
-- [`4cdc470-m1-large-blocks`](../benchmark-baselines/4cdc470-m1-large-blocks/README.md): same-run large-profile cross-backend comparison of 16, 256, and 512 KiB segment block policies.
-- [`v1-format-20260713-m1`](../benchmark-baselines/v1-format-20260713-m1/README.md): focused physical-format comparison covering trusted open, prefix-compressed segment bytes, ordered reads, and compressed reads.
-- [`relative-key-routing-20260713-m1`](../benchmark-baselines/relative-key-routing-20260713-m1/README.md): focused comparison after routing progressively strips validated segment and block prefixes.
-- [`segment-sizing-20260713-m1`](../benchmark-baselines/segment-sizing-20260713-m1/README.md): segment flush sweep across tiny, long-key, medium-value, and large-value profiles, covering file layout, open, ordered reads, append publication, and forced-normalization amplification.
-
-## Historical Snapshot
-
-The numbers below are local historical smoke-run results from the prototype benchmark suite before the target rename. They are useful for rough shape and regression awareness, not as publication-grade measurements.
-
-### Ordered fetch
-
-| namespace | segment | fjall3 | redb |
-| --- | ---: | ---: | ---: |
-| small | 1.24-1.27 ms | 6.25-6.31 ms | 3.89-4.27 ms |
-| small_fixed | 1.04-1.05 ms | 6.22-6.46 ms | 3.47-3.48 ms |
-| medium | 4.87-5.11 ms | 6.54-6.58 ms | 5.14-5.18 ms |
-| large | 61.89-63.39 ms | 26.65-27.14 ms | 22.64-25.75 ms |
-
-### Large read baseline before K/V checksum split
-
-Targeted local run after lazy key materialization, before K/V checksum split and before replacing the old evenly-spaced sparse stress case with clustered/random sparse workloads:
-
-```bash
-cargo bench -p segment-cache-store --bench ordered_lookup --offline -- large/ --sample-size 20 --warm-up-time 1 --measurement-time 2 --noplot
-```
-
-| workload | result |
-| --- | ---: |
-| `large/ordered_fetch/default_block` | 47.8 ms |
-| `large/sparse_ordered_fetch/block_16k` | 3.29 ms |
-| `large/sparse_ordered_fetch/block_32k` | 4.82 ms |
-| `large/sparse_ordered_fetch/block_64k` | 8.25 ms |
-| `large/sparse_ordered_fetch/block_256k` | 28.25 ms |
-| `large/large_value_fetch_api/borrowed_block_16k` | 47.0 ms |
-| `large/large_value_fetch_api/owned_block_16k` | 56.8 ms |
-| `large/large_value_fetch_api/borrowed_block_512k` | 35.2 ms |
-| `large/large_value_fetch_api/owned_block_512k` | 49.5 ms |
-| `large/large_value_block_size/block_16k` | 47.5 ms |
-| `large/large_value_block_size/block_64k` | 41.9 ms |
-| `large/large_value_block_size/block_256k` | 36.2 ms |
-| `large/large_value_block_size/block_512k` | 35.6 ms |
-
-### Large sparse after K/V checksum split
-
-Targeted local run after splitting each block checksum into lookup metadata and value-payload checksums. Dense ordered lookup still loads complete blocks; sparse ordered lookup first validates metadata and only loads value payload for blocks that contain at least one matching key.
-
-```bash
-cargo bench -p segment-cache-store --bench ordered_lookup --offline -- large/clustered_sparse_ordered_fetch --sample-size 20 --warm-up-time 1 --measurement-time 2 --noplot
-cargo bench -p segment-cache-store --bench ordered_lookup --offline -- large/random_sparse_ordered_fetch --sample-size 20 --warm-up-time 1 --measurement-time 2 --noplot
-cargo bench -p segment-cache-store --bench ordered_lookup --offline -- large/ordered_fetch/default_block --sample-size 20 --warm-up-time 1 --measurement-time 2 --noplot
-cargo bench -p segment-cache-store --bench comparison --offline -- large/comparison_clustered_sparse_ordered_fetch --sample-size 20 --warm-up-time 1 --measurement-time 2 --noplot
-```
-
-| workload | 16K | 32K | 64K | 256K |
-| --- | ---: | ---: | ---: | ---: |
-| `large/clustered_sparse_ordered_fetch` | 2.84 ms | 3.52 ms | 3.16 ms | 4.69 ms |
-| `large/random_sparse_ordered_fetch` | 3.23 ms | 5.82 ms | 8.93 ms | 20.85 ms |
-
-| workload | result |
-| --- | ---: |
-| `large/ordered_fetch/default_block` | 47.15 ms |
-
-| backend | `large/comparison_clustered_sparse_ordered_fetch` |
-| --- | ---: |
-| segment | 2.86 ms |
-| segment_no_crc | 1.97 ms |
-| fjall3 | 1.24 ms |
-| redb | 0.85 ms |
-
-The old evenly spaced sparse stress case made every selected key land predictably across the key stream. The current clustered workload selects 16 contiguous keys out of each 256-record window, while the random workload uses a seeded 1/16 sample and then preserves sorted lookup order. The split checksum helps most when a loaded block has no matching key, because the reader can validate metadata and skip value-payload IO. It does not avoid payload validation for blocks that contain hits.
-
-### Large reads after process-local verification reuse
-
-Targeted local run after adding process-local per-block verification state. Criterion warmup validates the relevant blocks first, so these numbers represent warm repeated reads in one process, not first-touch cold reads from a fresh open:
-
-```bash
-cargo bench -p segment-cache-store --bench ordered_lookup --offline -- large/ordered_fetch/default_block --sample-size 20 --warm-up-time 1 --measurement-time 2 --noplot
-cargo bench -p segment-cache-store --bench ordered_lookup --offline -- large/clustered_sparse_ordered_fetch --sample-size 20 --warm-up-time 1 --measurement-time 2 --noplot
-cargo bench -p segment-cache-store --bench ordered_lookup --offline -- large/random_sparse_ordered_fetch --sample-size 20 --warm-up-time 1 --measurement-time 2 --noplot
-cargo bench -p segment-cache-store --bench comparison --offline -- large/comparison_clustered_sparse_ordered_fetch --sample-size 20 --warm-up-time 1 --measurement-time 2 --noplot
-```
-
-| workload | result |
-| --- | ---: |
-| `large/ordered_fetch/default_block` | 37.93 ms |
-
-| workload | 16K | 32K | 64K | 256K |
-| --- | ---: | ---: | ---: | ---: |
-| `large/clustered_sparse_ordered_fetch` | 2.44 ms | 3.42 ms | 3.18 ms | 4.38 ms |
-| `large/random_sparse_ordered_fetch` | 2.99 ms | 5.47 ms | 8.29 ms | 18.49 ms |
-
-| backend | `large/comparison_clustered_sparse_ordered_fetch` |
-| --- | ---: |
-| segment | 2.32 ms |
-| segment_no_crc | 3.31 ms |
-| fjall3 | 1.59 ms |
-| redb | 1.24 ms |
-
-The segment-only runs are the cleaner signal: dense large ordered fetch improved by roughly 20%, clustered sparse 16K by roughly 13%, and random sparse 16K by roughly 8%. The comparison run was noisier in this local pass: `segment_no_crc`, `fjall3`, and `redb` all regressed relative to their previous local baselines, so the cross-backend row should be treated as a smoke result rather than a stable ranking.
-
-### Append publish
-
-| namespace | segment sorted | fjall3 | redb |
-| --- | ---: | ---: | ---: |
-| small | 64.29-66.92 ms | 119.88-124.82 ms | 73.79-75.89 ms |
-| small_fixed | 64.63-67.93 ms | 120.10-125.13 ms | 75.41-79.90 ms |
-| medium | 89.38-91.70 ms | 136.55-142.92 ms | 117.88-123.65 ms |
-| large | 819.94-909.09 ms | 1.18-1.29 s | 752.32-816.80 ms |
-
-### Space amplification
-
-| namespace | logical bytes | segment | fixed layout | fjall3 | redb |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| small | 3,145,563 | 1.077x | n/a | 21.336x | 2.679x |
-| small_fixed | 3,145,728 | 1.077x | 1.035x | 21.334x | 2.678x |
-| medium | 18,870,633 | 1.052x | n/a | 3.556x | 1.785x |
-| large | 270,504,438 | 1.037x | n/a | 1.253x | 1.992x |
-
-## Reading Results
-
-The benchmark should be read as a shape test: whether the backend stays in the right performance class, whether it wins on the workload it is designed for, and whether it preserves its space-efficiency advantage. Winning every microbenchmark is less important than keeping ordered cache replay, append publish, corruption-safe reads, and file-level stability coherent in one backend.
