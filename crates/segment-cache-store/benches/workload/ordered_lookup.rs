@@ -336,6 +336,10 @@ impl OverlayStore {
         }
     }
 
+    /// Builds a store with `patch_count` visible patches in disjoint
+    /// normalization components: the one-patch-per-component invariant makes
+    /// stacked patches on one shared component unrepresentable, so main and
+    /// patch entries are committed in the same contiguous key-range chunks.
     fn with_patch_count(
         profile: ValueProfile,
         dataset: &OverlayReadDataset,
@@ -350,7 +354,9 @@ impl OverlayStore {
 
         let tempdir = tempfile::tempdir().expect("tempdir should work");
         let store = create_segment_store(tempdir.path(), profile);
-        fill_segment_store_with_options(&store, &dataset.main_entries, options);
+        for chunk in chunk_by_count(&dataset.main_entries, patch_count) {
+            fill_segment_store_with_options(&store, chunk, options);
+        }
 
         for chunk in chunk_by_count(&dataset.patch_entries, patch_count) {
             let mut batch = segment_cache_store::WriteBatch::new();
