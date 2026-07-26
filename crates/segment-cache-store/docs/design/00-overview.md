@@ -4,7 +4,7 @@
 
 ## Documents
 
-Current design:
+Agreed local target:
 
 - [01 Introduction](01-introduction.md) — workload, core invariants, caller contract, terminology. Read this first.
 - [02 Architecture](02-architecture.md) — module map and process model.
@@ -12,7 +12,7 @@ Current design:
 - [04 Operations](04-operations.md) — open, read, write, and cross-store merge algorithms, with the runtime optimizations of each path.
 - [05 Corruption](05-corruption.md) — corruption-as-miss semantics and the trust boundary.
 
-Agreed future direction (not implemented):
+Agreed remote extension (not implemented):
 
 - [06 Remote](06-remote/00-design.md) — remote repository design, with its [version format](06-remote/01-version-format.md) and [implementation plan](06-remote/02-implementation-plan.md).
 
@@ -22,7 +22,7 @@ Related documents outside this set:
 
 ## Conventions
 
-- The numbered documents describe the agreed design of the current store. Where the v1 implementation has not caught up with it, the delta is marked inline as a "v1 implementation note" at the exact spot an implementer would be misled, and the full delta list is tracked in [TODO.md](../../TODO.md).
-- [06-remote/](06-remote/) is the one exception: it holds the agreed future direction for the remote repository, each document marked as not implemented. When that work lands, its content promotes into the current-design documents in the same pull request as the code.
-- Design changes land in the same pull request as their implementation (or immediately ahead of it). Agreed-but-unimplemented design does not accumulate in the numbered documents ahead of code.
-- Status, phases, task lists, and open decisions live in [TODO.md](../../TODO.md) and pull requests, not in these documents.
+- Documents 01–05 define the agreed local target contract. A behavior that the current implementation has not reached is marked inline as a "current implementation note" at the exact point where reading the target as current behavior would be misleading.
+- [README.md](../../README.md) and public Rust API documentation describe the current implementation. They must not claim an unimplemented target behavior.
+- [06-remote/](06-remote/) defines the future remote repository extension. It is intentionally separate from local v1 bytes and every remote document is marked as unimplemented.
+- The complete implementation delta, validation work, phases, and unresolved numeric policy choices live in [TODO.md](../../TODO.md). A decided invariant belongs in these design documents rather than remaining an open TODO.

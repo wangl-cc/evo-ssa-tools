@@ -2,162 +2,106 @@
 
 ## Status
 
-This document specifies a future provider-neutral remote repository for `segment-cache-store`. None of this behavior is implemented by the current local store.
+This is a future, unimplemented design for provider-neutral remote exchange in `segment-cache-store`. It deliberately revises the pre-release remote-v1 target. The current crate implements only the local store.
 
-Remote support adds a separate catalog and publication protocol. It does not change local `STORE`, `MANIFEST`, or segment v1 bytes. The companion documents define the [remote version format](01-version-format.md) and the [implementation plan](02-implementation-plan.md).
+Remote support is an explicit checkpoint, transfer, restore, and aggregation facility. It does not alter local `STORE` or `MANIFEST` v1 bytes, make a remote provider the hot execution backend, or continuously synchronize LSM state. The companion documents define the [remote version format](01-version-format.md) and [implementation plan](02-implementation-plan.md).
 
-## Purpose
+## HPC Baseline
 
-The local store already publishes immutable segment files through a small manifest. A remote repository preserves that shape: segment and manifest objects are immutable, while small compare-and-swap refs select visible manifests.
+The direct HPC baseline is one durable network-filesystem `Store` root per worker. Multiple workers never write the same root. This is correct without remote support and remains the preferred simple deployment when the filesystem supplies the local store's required positioned I/O, atomic rename, directory durability, and advisory-lock behavior.
 
-The primary workflow is distributed computation caching:
+Node-local scratch is optional performance storage. A worker that uses scratch must checkpoint or publish through `segment-cache-store` before scratch loss matters. Neither the CLI nor a provider adapter receives local paths, raw `MANIFEST` bytes, or local allocation details.
 
-1. Workers commit locally.
-2. Each worker explicitly publishes one normalized main-only snapshot to its worker ref.
-3. An aggregator strictly merges selected worker heads and the current remote head in one k-way pass.
-4. The aggregator publishes one main-only manifest and advances `refs/current` with compare-and-swap.
-5. Readers materialize a selected manifest into a local content cache and use the existing local read engine.
+Checkpoint capture is segment-aware and performed by a high-level public API inside this crate. It captures one local visible snapshot and pins its referenced segment handles against concurrent commit and garbage collection until transfer finishes. A capture cannot observe a mixture of local publication states.
 
-Remote state is a phase-boundary exchange format, not the hot execution backend and not a continuously synchronized LSM level.
+## Snapshot Products
 
-## V1 Decisions
+Remote manifests have an explicit validated `SnapshotKind`; kind is never inferred from a ref path.
 
-- Keep local execution and hot reads in `Store`.
-- Make push, pull, and aggregation explicit operations.
-- Keep local and remote catalog wire formats independent.
-- Reuse the existing BLAKE3 `SegmentContentId` for complete segment bytes.
-- Address immutable remote manifests by a BLAKE3 content ID.
-- Keep logical store identity separate from physical compression policy (the block checksum is a fixed store-wide constant).
-- Require every remote manifest to contain a main-only, sorted, non-overlapping segment set.
-- Collapse equal keys only when value bytes are identical; differing values abort publication.
-- Upload immutable objects before publishing the ref that makes them visible.
-- Use only complete IDs in the v1 API and CLI.
-- Stream segment upload and download through files or readers and writers; do not require whole segments in memory.
-- Let `scs` call only public repository APIs.
+- `WorkerCheckpoint` is a restart product. It may preserve a valid Main component and its owned `PatchSet` components, avoiding whole-segment rewrites before a worker restarts.
+- `AggregateSnapshot` is a distribution product. It contains only Main components, sorted and non-overlapping, and is the only kind permitted at `refs/current`.
 
-## Non-Goals
+`WorkerCheckpoint` references use separate Main and Patch arrays. Each Patch names exactly one Main owner, so tier is represented by the containing field rather than a per-reference discriminant. Main ranges are globally nonoverlapping; each Main-owned PatchSet is sorted, nonoverlapping, contained by its owner, and subject to the same fixed file and byte caps as the local target. `AggregateSnapshot` references remain Main-only and globally sorted and nonoverlapping.
 
-- A general-purpose remote database.
-- Low-latency point reads directly from cold object storage.
-- POSIX filesystem emulation over an object provider.
-- Automatic publication of every local commit.
-- A generic storage trait shared by local rename and remote compare-and-swap.
-- History traversal, parent DAGs, tags, pin leases, rollback, logical diff, abbreviated IDs, or destructive remote garbage collection in v1.
-- Authenticated range reads before a range-authentication format exists.
+Restore validates identity and all kind-specific containment, ordering, range, and budget invariants before materializing local state. Restoring a checkpoint may materialize Main plus Patch components; restoring an aggregate materializes Main-only. Local segment IDs are always allocated locally.
 
-## Architecture
+## Identity And Objects
 
-```text
-application or scs
-        |
-public remote repository API
-        |
-repository protocol: validate, push, pull, aggregate, publish
-        |
-immutable object stream + mutable ref compare-and-swap
-        |
-provider adapter
-```
+`StoreIdentity` identifies a logical cache namespace using key and value geometry plus the same opaque caller metadata used by the local store. That metadata is where the caller encodes schema and semantic namespace versions. Identity does not include platform or build fingerprints by default. A semantic change requires a new identity; acceptable platform-level numerical variation may merge because scientific numerical equivalence is decided above storage.
 
-The provider-neutral repository engine may live in `segment-cache-store` behind an optional `remote-repository` feature so it can reuse private segment readers, writers, and the strict snapshot builder. Provider SDKs and their dependency trees belong in adapter crates.
-
-The local catalog is not generalized into a backend-independent catalog. Local publication owns local IDs, patches, locks, rename, and directory synchronization. Remote publication owns content IDs, immutable objects, and conditional ref updates.
-
-## Identity And Physical Policy
-
-`StoreIdentity` answers one question: whether two snapshots represent the same logical cache namespace. It covers key geometry, value layout, and caller metadata. It does not include the value compression choice; the block checksum is a fixed constant and therefore identical in every store.
-
-Each remote root also has one v1 `RepositoryConfig` that selects the value-payload compression used for remote segment objects. The config is immutable for v1, but it is not part of logical identity. A future config migration may rewrite physical objects without creating a new logical cache namespace.
-
-Publishing a local store whose codec differs from the repository config requires rebuilding its visible records with the repository config. Reusing complete segment objects is valid only when the bytes already satisfy the target config and their ranges remain non-overlapping in the output.
-
-The trust chain differs between the two paths. Reused objects are verified by length and content ID before they are relied on. Rebuilt records are read through the strict snapshot builder, whose per-block checksum verification is always effective because the block checksum is mandatory; no unverifiable bytes can be laundered into freshly encoded output.
-
-## Object Model
-
-The portable object layout is:
+Remote roots contain one immutable logical identity, immutable segment and manifest objects addressed by complete content IDs, and small mutable refs updated by compare-and-swap:
 
 ```text
 <root>/
   store/identity
-  store/config
   refs/current
   refs/workers/<worker-name>
   manifests/<manifest-id>.manifest
   segments/<segment-content-id>.seg
 ```
 
-Identity and config are bounded root metadata. Segment and manifest objects are immutable. Refs are bounded mutable objects updated with provider compare-and-swap tokens.
+Content IDs name complete immutable bytes. A byte sequence found at a content-ID path that does not hash to that ID is corrupt, not an immutable object. Portable v1 operations return a hard error and publish no ref. A provider-specific administrator may conditionally replace or quarantine the bad path out of band; immutability means correct content is not changed, not that corrupt bytes become permanent.
 
-Object listing is not part of visibility, resolution, push, pull, or aggregation. A future maintenance protocol may add listing and deletion without changing ordinary publication semantics.
+V1 has no parent DAG, history traversal, tags, pin leases, listing, or remote garbage collection. Refs are visibility pointers, not history records.
 
-## Worker Publication
+## Architecture
 
-A worker publication:
+```text
+application or scs
+        |
+public capture, checkpoint, restore, and aggregate API
+        |
+repository protocol: validate, plan, transfer, publish
+        |
+immutable object streams + mutable ref compare-and-swap
+        |
+provider adapter
+```
 
-1. Captures one stable local visible snapshot.
-2. Validates logical identity against the remote root.
-3. Normalizes local patches into staged main-only output without mutating the live local root.
-4. Re-encodes output when the local physical policy differs from the repository config.
-5. Streams missing segment objects to immutable storage while checking length and content ID.
-6. Uploads the immutable manifest object.
-7. Advances only that worker's ref with compare-and-swap.
+The provider-neutral engine may live behind an optional `remote-repository` feature so it can reuse private segment readers, writers, capture pins, and strict builders. Provider SDKs belong in adapter crates. The local catalog is not generalized into a backend-independent catalog: local publication owns local IDs, patches, locks, rename, and directory synchronization; remote publication owns content IDs, immutable objects, and conditional refs.
 
-Each worker owns its ref name. Workers do not contend on `refs/current` during normal execution.
+## Planner And Publication
 
-## Aggregation
+The remote planner is driven by the captured local layout. Worker checkpoint preserves every verified segment byte-for-byte and fails on an unsupported segment format or codec. Compression is self-described per segment, so supported codecs may coexist in one remote manifest. Aggregate construction reuses exact verified segments only where precedence and nonoverlap make them complete output ranges; it re-encodes logically affected ranges with `AggregateOptions`. Export never mutates or normalizes the local `Store` merely to make a remote snapshot.
 
-Aggregation captures `refs/current` and all selected worker refs, then performs one strict k-way merge. It emits a bounded sequence of main segments using the repository config and publishes one immutable manifest.
+Publication is resumable, with this order:
 
-The operation follows these rules:
+1. Validate the repository root and capture the input snapshot or refs.
+2. Verify every referenced input object and plan reuse, copy, or re-encoding.
+3. Upload and verify immutable segment objects independently.
+4. Upload the immutable manifest after all of its objects exist.
+5. Optionally compare-and-swap the target ref last.
 
-- Identical records collapse to one output record.
-- Equal keys with different values return a conflict and leave `refs/current` unchanged.
-- Missing, malformed, or hash-mismatched input objects are hard aggregation errors.
-- Existing segment objects are reused only when their complete ranges remain non-overlapping and their physical config matches.
-- Otherwise records are streamed through the same strict snapshot builder used by local cross-store merge.
-- A compare-and-swap conflict causes the aggregator to capture the new current head and recompute logical intent; it never overwrites the new head with a stale candidate.
+Only the ref update is the visibility boundary for latest readers. An interrupted transfer leaves unreachable immutable objects that a later operation may reuse. A failed ref compare-and-swap recaptures the relevant current ref and replans; it never publishes stale logical intent.
 
-V1 manifests are content snapshots and contain no parent list. Exact source provenance belongs in operation logs or a future history object rather than making arbitrary worker fan-in part of the snapshot format.
+## Trust Boundary
+
+Push, checkpoint, import, pull, and aggregate verify every referenced input before use: declared length, `SegmentContentId`, segment structure, range, and self-described codec. Identity, ref, and manifest parsing is likewise strict. A corrupt `refs/current` input is a hard error and is never replaced by a lower-priority worker result.
+
+This strict boundary is distinct from ordinary reads of an already opened local cache store, which retain the local corruption-as-miss behavior. Synchronization must not launder unverified bytes into a new snapshot.
+
+Failed download verification removes the temporary or corrupt local content-cache entry before reporting failure or retrying. A verified immutable object may then be published into that cache atomically; a partially verified file is never exposed as trusted content.
+
+Content IDs detect corruption and substitution but do not authenticate who may publish a ref. Authenticated transport, provider authorization, and any external mechanism that establishes a trusted remote manifest remain deployment responsibilities rather than storage-format claims.
 
 ## Pull And Materialization
 
-A pull:
+Pull resolves a current ref, worker ref, or complete manifest ID; verifies the manifest and every segment into bounded temporary files; then links or copies those exact segment bytes into a new local store and publishes a newly encoded local MANIFEST with fresh local IDs. An unsupported segment format or codec is a hard error. Remote manifest bytes never become local `MANIFEST` bytes. Restoring into an already completed local root is rejected rather than silently replacing or merging its cache; callers use explicit local merge or remote aggregation for union semantics.
 
-1. Resolves `refs/current`, one worker ref, or one complete manifest ID.
-2. Fetches and verifies the immutable manifest.
-3. Streams each missing segment into a temporary local file.
-4. Verifies length, complete `SegmentContentId`, header, footer, and range invariants before atomic cache publication.
-5. Builds or replaces a local root using local v1 publication rules.
+## Aggregation
 
-The remote manifest is never copied into local `MANIFEST`. Local segment IDs and publication state are assigned locally. If the destination's physical options differ from the repository config, pull rebuilds records through the strict snapshot builder instead of linking incompatible segment bytes.
+Aggregation is deterministic but deliberately noncommutative. It captures an ordered list of source `ManifestId`s after strictly validating all selected inputs. `refs/current`, when present, is first; the explicitly supplied duplicate-free worker set follows either in caller order or in lexicographic encoded `WorkerName` order. For each key, the record from the first source in that precedence wins and output contains the key once.
 
-## Concurrency And Visibility
+Source corruption is an error before precedence is applied. Aggregation does not compare differing values for conflicts and does not claim k-way order independence. It produces an `AggregateSnapshot`, using `AggregateOptions` for newly encoded output, then may conditionally advance `refs/current`.
 
-Immutable insertion is idempotent. A manifest becomes discoverable only after all referenced segment objects exist. A ref update is conditional on the exact provider token returned by the preceding ref read.
+## Public Boundary
 
-If compare-and-swap fails, the candidate manifest is not visible through that ref. Its immutable objects remain safe to reuse in a retry and may become collectible when a future maintenance protocol exists.
+The crate exposes high-level capture, checkpoint/push, restore/pull, and ordered aggregate operations. Provider adapters expose only immutable streaming objects and bounded ref compare-and-swap. `scs` uses these public operations and does not inspect local paths or raw local/remote catalog bytes.
 
-## Failure Semantics
+## Non-Goals
 
-Failure handling depends on the operation boundary:
-
-| Boundary | Missing or corrupt segment behavior |
-| --- | --- |
-| Push, pull, aggregation, or publication | Hard error; do not publish a new ref |
-| Verification while filling the local content cache | Remove the temporary or corrupt cache entry and report failure or retry |
-| Ordinary reads from an already opened local cache store | Preserve the existing corruption-as-miss contract; never return unverified bytes |
-
-Malformed identity, config, manifest, or ref bytes are always hard repository errors because they define namespace, interpretation, or visibility.
-
-Content IDs detect accidental corruption and object substitution. They do not authenticate who is allowed to update a ref. Authorization remains the responsibility of authenticated transport and provider access control.
-
-## Deferred Work
-
-- History and source-provenance objects.
-- Tags and retention leases.
-- Rollback and physical or logical diff APIs.
-- Abbreviated ID resolution.
-- Listing-based remote garbage collection and deletion.
-- Async repository APIs.
-- Authenticated range reads and mmap-backed local materialization.
+- A general-purpose remote database or POSIX filesystem emulation.
+- Low-latency remote point reads.
+- Automatic publication after every local commit.
+- A generic trait unifying local rename, locks, and remote provider operations.
+- Parent DAGs, history, tags, rollback, listing, destructive remote GC, abbreviated IDs, or authenticated range reads in v1.

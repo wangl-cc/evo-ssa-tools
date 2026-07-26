@@ -118,6 +118,16 @@ Segment-only parameter-space insertion benchmark. `rebuild_new_store_then_read` 
 
 Segment-only repeated parameter-evolution benchmark. It prints the dry-run rewrite amplification (`output_records / inserted`) so L0 normalization behavior can be tracked without comparing against unrelated database internals.
 
+## Planned PatchSet Regression Matrix
+
+The Main-owned PatchSet target is not implemented yet, so these cases are requirements rather than registered Criterion groups. Each comparison must construct the same logical records and keep store creation, batch construction, and temporary-directory cleanup outside the timed operation.
+
+- Read amplification at 1, 2, 4, and 8 disjoint Patches owned by one Main, for point lookup, ordered sparse lookup, and full scan.
+- Write amplification for repeated inserts into one existing Patch, inserts between retained Patches, and one batch intersecting several Patches.
+- Foreground normalization exactly below, at, and above the Patch files and Patch bytes budgets, verifying that unrelated Main components are not read or rewritten.
+- Destination-biased local merge with source ranges in Main gaps, inside one Patch range, and spanning retained Patch barriers.
+- Sparse one-record gap commits as an explicit non-target measurement, so any future convergence proposal is justified by measured file-count, open-time, and publication costs rather than silently growing into background compaction.
+
 ## Commands
 
 Run the horizontal comparison suite:

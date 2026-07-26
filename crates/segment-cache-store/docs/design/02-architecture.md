@@ -1,71 +1,60 @@
 # Architecture
 
-How the implementation is organized: the module map and the process model. On-disk bytes are specified in [03 Format](03-format.md); per-path algorithms in [04 Operations](04-operations.md).
-
-## Module Map
-
-The implementation separates persistent identity, visibility, immutable bytes, and runtime snapshots.
+The store separates namespace identity, atomic visibility, immutable segment bytes, and runtime snapshots. Format bytes are specified in [03 Format](03-format.md); path behavior is specified in [04 Operations](04-operations.md).
 
 ```mermaid
 flowchart TD
-  Root["Store root"] --> StoreFile["STORE<br/>metadata only"]
-  Root --> Manifest["MANIFEST<br/>key_len, value_layout,<br/>atomic visible snapshot"]
-  Root --> Lock["LOCK<br/>single writer"]
-  Root --> SegmentDir["segments/"]
-
-  Manifest --> MainTier["Main tier (L1)<br/>sorted, non-overlapping ranges"]
-  Manifest --> PatchTier["Patch tier (L0)<br/>one temporary patch per component"]
-
-  MainTier --> RuntimeMain["visible main Segment list"]
-  PatchTier --> RuntimePatch["visible patch Segment list"]
-  SegmentDir --> SegmentFile["segment-N.seg<br/>immutable data file"]
-
-  SegmentFile --> Header["Segment header<br/>self-describing: schema + encoding"]
-  SegmentFile --> Blocks["Data blocks"]
-  SegmentFile --> Footer["Segment footer<br/>prefix-compressed block ranges"]
-
-  Blocks --> Block["Block<br/>physical read unit"]
-  Block --> LookupMetadata["LookupMetadata<br/>KeySection + optional ValueIndexSection"]
-  LookupMetadata --> LookupChecksum["lookup_checksum"]
-  Block --> ValuePayload["ValuePayloadFrame<br/>raw or compressed value bytes"]
-  ValuePayload --> ValueChecksum["value_checksum"]
+  Root["Store root"] --> StoreFile["STORE\nnamespace metadata"]
+  Root --> Manifest["MANIFEST\natomic visible snapshot"]
+  Root --> Lock["LOCK\nsingle cooperating writer"]
+  Root --> Segments["segments/\nimmutable files"]
+  Manifest --> MainSet["Main set\nsorted, nonoverlapping"]
+  MainSet --> Component["Main + owned PatchSet"]
+  Component --> Main["one Main"]
+  Component --> Patches["ordered, nonoverlapping Patches"]
+  Segments --> Segment["header, blocks, footer"]
 ```
 
-The code is organized around the same persistent concepts rather than horizontal technical layers:
+## Persistent Ownership
 
-- `record`: borrowed sorted key/value input shared by block encoders, segment writers, and commit batches.
-- `value`: the store-wide fixed or variable value layout shared by catalog descriptors, write validation, blocks, and segments.
-- `block`: one physical read unit, including layout, checksums, compression, encoding, and borrowed decoding; it does not know segment index entries.
-- `segment`: one immutable sorted file, including content identity, self-describing header/footer/index codecs, complete-file writing, opening, and the process-local verification cache.
-- `catalog`: caller-defined compatibility metadata, persistent store identity, manifest visibility, the selected immutable segment view, atomic publication, lifecycle, and garbage collection.
-- `snapshot`: point, ordered, and range read algorithms over one catalog-selected segment view.
-- `commit`: validated write batches, pure replacement planning, segment production, merge, and atomic transition to a new snapshot.
-- `store`: the public facade and shared state tying catalog, snapshots, and commits together.
-- `error`, `binary`, and `key`: small supporting concepts rather than architectural layers.
+`STORE` is written once at creation and holds caller-defined namespace metadata. `MANIFEST` owns the logical schema and is the only source of visible data. Segment files are immutable; directory enumeration never discovers visible records. A replacing manifest publication is the sole visibility transition.
 
-Each concept exposes its canonical crate-internal types from the module root. Its implementation submodules stay private, so callers can depend on `segment::Segment` or `catalog::StoreManifest` without reaching into `segment::state` or `catalog::manifest`.
+The target MANIFEST represents Main-owned PatchSets canonically: each Main entry directly contains its counted, ordered Patch references. The trusted runtime representation preserves that ownership instead of reconstructing it from parallel tier arrays.
+
+## Runtime Model
+
+Readers take immutable snapshots. A point lookup binary-searches the Main set, then binary-searches the selected Main's PatchSet. It reads at most a healthy Main and one healthy Patch candidate. Range scans concatenate PatchSet segments into one logical ordered patch stream, then two-way merge that stream with the Main stream.
+
+Commits are serialized within a process and by the stable advisory `LOCK` for cooperating processes. Readers of an older snapshot remain valid while a commit creates replacement files and publishes a new manifest. Read-only opens do not take the writer lock and do not mutate the root. Garbage collection is explicit, because deleting retired files can prevent old snapshots from opening their referenced segments.
+
+## Modules
+
+The implementation is organized around persistent concepts rather than horizontal technical layers:
+
+- `record` owns borrowed sorted key/value input shared by block encoders, segment writers, and commit batches.
+- `value` owns the store-wide fixed or variable value layout.
+- `block` owns one physical read unit, including layout, checksums, compression, encoding, and borrowed decoding.
+- `segment` owns one immutable sorted file, including content identity, self-describing header/footer/index codecs, construction, opening, and process-local verification reuse.
+- `catalog` owns caller compatibility metadata, manifest visibility, the selected immutable segment view, atomic publication, lifecycle, and garbage collection.
+- `snapshot` owns point, ordered, and range reads over one catalog-selected view.
+- `commit` owns validated batches, partitioning, replacement planning, normalization, merge, segment production, and one atomic snapshot transition.
+- `store` is the public facade and shared state tying catalog, snapshots, and commits together.
+- `error`, `binary`, and `key` are small supporting concepts.
+
+Each concept exposes its canonical crate-internal types from the module root. Implementation submodules stay private so internal callers depend on concepts such as `segment::Segment` or `catalog::StoreManifest`, not on incidental files.
 
 ## Feature Flags
 
-Value-payload compression kinds remain available in every build so `None` and persisted id `0` keep a stable public and on-disk representation. Compression policy and codec logic are compiled only with `value-compression`, while concrete frame implementations require their corresponding backend feature. Without those capabilities, catalog and segment parsing reject unsupported non-zero compression ids before block decoding, and blocks use raw-payload paths.
+`ValuePayloadCompressionKind::None` and persisted compression ID `0` remain representable in every build. Compression policy and codec orchestration compile only with the `value-compression` capability; concrete frame implementations require their backend features. A build without the required backend rejects a nonzero unsupported compression ID while opening the segment, before block decoding.
 
-Block checksums are not feature-gated: every block carries the fixed unseeded XXH3 128-bit checksum, and CRC32C is used for fixed catalog and segment structural checks. Both are always compiled in.
+Block checksums are not feature-gated. Every block carries fixed unseeded XXH3-128 digests, and CRC32C protects fixed catalog and segment structures. Both algorithms are always compiled.
 
 ## Process Model
 
-Within one process:
+Within one process, `Store` is cheaply cloneable, commits serialize on an internal lock, and readers take immutable snapshots. Segment file I/O for a new commit does not block readers of an older snapshot. Lookup sessions, range cursors, and captured checkpoint snapshots retain their starting segment state and remain valid across later manifest publication.
 
-- `Store` is cheaply cloneable.
-- Readers take immutable runtime snapshots of visible segments.
-- Commits serialize on an internal commit lock.
-- Commits do file IO without blocking existing readers of older snapshots.
-- Lookup sessions and scan cursors remain valid across commits because they hold segment state from their starting snapshot.
+Across processes, multiple read-only opens may coexist. A writable open holds the stable advisory `LOCK` for its lifetime, and a second cooperating writable open fails with `InputError::WriterLocked`. Read-only opens do not acquire the writer lock or mutate the root. External programs that mutate catalog or segment files without the lock and publication protocol are outside the safety contract.
 
-Across processes:
+## Current Implementation Notes
 
-- Multiple read-only opens can coexist.
-- A writable open holds the advisory `LOCK` file for the lifetime of the store handle.
-- A second cooperating writer fails fast with `InputError::WriterLocked`.
-- Read-only opens do not take the writer lock, do not run garbage collection, and never mutate the filesystem.
-- Segment garbage collection is explicit on writable handles; callers should run it only when they accept that older manifest snapshots may no longer be openable.
-- External tools that mutate the root without the lock are outside the safety contract.
+The current pre-release implementation exposes a flat Main tier followed by a Patch tier rather than explicit Main-owned PatchSets. It validates an interval-connected model with at most one patch per component. That wire and runtime model does not yet implement the target ownership, multiple-disjoint-patch, or point-depth contracts.

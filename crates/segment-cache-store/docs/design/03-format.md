@@ -1,53 +1,23 @@
 # Format
 
-On-disk bytes. This is the only chapter a second implementation or a format-version review needs to read exhaustively. Behavior built on top of these bytes is in [04 Operations](04-operations.md).
+This chapter specifies durable bytes and their target logical interpretation. Per-path behavior is in [04 Operations](04-operations.md).
 
-## V1 Implementation Notes
-
-This chapter describes the agreed target model: `STORE` holds only caller metadata, `MANIFEST` owns the logical schema, the block checksum is a fixed store-wide constant, and value-payload compression is a per-segment write-time parameter declared by each segment header. The v1 implementation has not caught up in exactly these places:
-
-- v1 `STORE` additionally persists `key_len`, `value_len`, `block_checksum_id`, and `value_payload_compression_id`; v1 `MANIFEST` persists only `key_len` beside visibility (no `value_len`). The persisted `block_checksum_id` is always the fixed checksum id.
-- v1 segment open compares each header's compression id against the store-level compression from `STORE`, so mixed-compression stores are rejected; the schema-match-plus-fixed-checksum rule in this chapter is the target behavior.
-- v1 `CommitOptions` does not select compression kinds.
-
-Rebuilding experimental stores is the migration strategy when the target model lands.
-
-## Directory Layout
-
-Each store root contains:
+## Directory And Publication Layout
 
 ```text
 root/
   STORE
-  STORE.tmp
   MANIFEST
-  MANIFEST.tmp
   LOCK
   segments/
     segment-0000000000.seg
-    segment-0000000001.seg
-    segment-0000000002.seg.tmp
 ```
 
-Temporary files are sibling files created by adding a `.tmp` extension to the final path. They are part of atomic publication only. Open and read paths never discover visible data by scanning directories.
+Temporary sibling files use a `.tmp` suffix. Writers fsync a temporary file, rename it to its final name, and fsync the parent directory. Segments are visible only after a later atomic MANIFEST publication references them. Orphan and retired final segments are invisible and are removed only by explicit garbage collection. Garbage collection stops at the first deletion error; files deleted before that error remain deleted, while MANIFEST visibility is unchanged.
 
-`LOCK` is stable and is never atomically replaced, so cooperating writers lock the same inode. `segments/` may contain orphan files after a crash or retired files after replacement commits; they are ignored unless referenced by `MANIFEST` and are removed only by explicit garbage collection. A collection pass stops and returns an I/O error on its first failed deletion; files deleted earlier in the pass remain deleted.
+`STORE` is the creation-completion marker and immutable namespace identity. It contains caller metadata encoded as lowercase hex. `MANIFEST` is a CRC32C-protected binary snapshot that owns `key_len`, `value_len` (`0` means variable), `next_segment_id`, and visible segment references. `SegmentContentId` is `BLAKE3("scs-segment-v1\\0" || complete_segment_bytes)`; it is content identity, not an authentication tag.
 
-## Store Creation
-
-Creation writes `MANIFEST` first and `STORE` last. `STORE` is the creation completion marker.
-
-This order gives simple crash semantics:
-
-- If creation crashes before `STORE` is written, `Store::open` rejects the root as missing and `Store::create` can safely recreate it.
-- If creation completes, both `STORE` and `MANIFEST` exist and ordinary open can proceed.
-- A leftover `MANIFEST` from aborted creation is overwritten by the next create attempt.
-
-## Catalog Format
-
-### STORE
-
-`STORE` is line-oriented text, not JSON. Binary metadata is encoded as lowercase hex. It contains only durable namespace identity.
+Creation writes MANIFEST first and STORE last. If creation stops before STORE appears, open rejects the incomplete root and creation may safely recreate it. A completed root has both files. STORE is line-oriented text rather than JSON:
 
 ```text
 segment-cache-store store v1
@@ -55,101 +25,70 @@ version=1
 metadata=<hex>
 ```
 
-`STORE` is the creation completion marker and the namespace identity check. It does not contain schema or encoding information. The logical schema (key length, value layout) is owned by `MANIFEST`. The block checksum is a fixed store-wide constant, and value-payload compression is a write-time parameter declared by each segment's own header.
-
-### MANIFEST
-
-`MANIFEST` is a binary snapshot that owns the logical schema and the visible segment set. Its final CRC32C covers all previous manifest bytes.
+The target MANIFEST envelope is grouped by ownership:
 
 ```text
 magic[4]              # b"SCSM"
 version:u32           # 1
 key_len:u32
-value_len:u32         # 0 = variable, >0 = fixed value length
+value_len:u32
 next_segment_id:u32
-segment_count:u32
-manifest_entries[segment_count]
+component_count:u32
+components[component_count]:
+  main: SegmentRef
+  patch_count:u32
+  patches[patch_count]: SegmentRef
 crc32c:u32
 ```
 
-`key_len` and `value_len` together form the logical schema (`StoreSchema`). They define the addressing contract: all manifest min/max keys have width `key_len`, and all visible values conform to `value_len`. Segment open validates that each segment header's schema matches these values. Physical encoding is not stored in the manifest: the block checksum is a fixed constant shared by every segment, and each segment header declares its own compression.
+Each `SegmentRef` carries `segment_id:u32`, `segment_len:u64`, `segment_content_id[32]`, `min_key[key_len]`, and `max_key[key_len]`. Tier and Patch ownership come from the enclosing component, so they are not duplicated as per-reference fields. A segment filename is `segments/segment-<id>.seg`; filename order does not define key order. Declared length supports cheap truncation and bounds checks.
 
-Each manifest entry is:
+## Target Manifest Semantics
+
+The wire form and canonical logical form both group each Main with its owned PatchSet:
 
 ```text
-segment_id:u32
-tier:u8               # 0 = main, 1 = patch
-segment_len:u64
-segment_content_id[32]
-min_key[key_len]
-max_key[key_len]
+MainComponent {
+  main: SegmentRef,
+  patches: [SegmentRef ordered by min_key],
+}
 ```
 
-`segment_id` derives the opaque file name `segments/segment-<id>.seg`. File names do not define key order. `segment_len` enables cheap truncation and bounds checks. `segment_content_id` is `BLAKE3("scs-segment-v1\0" || complete_segment_bytes)` and gives local and future remote storage one stable content identity; it is not an authentication tag, so a remote manifest still requires authentication by its repository or caller.
+Every referenced range has valid fixed-width inclusive bounds. Components are sorted by Main minimum key, and Main ranges are globally nonoverlapping. Each Patch range is contained in its enclosing Main range; patches of that owner are sorted and nonoverlapping. The parser rejects duplicate or reused segment IDs, duplicate content references, invalid ranges, noncanonical order, and geometry that exceeds format limits. It validates the hard Main cap and per-component PatchSet file and byte budgets before constructing the trusted grouped representation.
 
-Manifest entry order is canonical:
+The numeric Main cap and PatchSet file and byte budgets remain TODO decisions. They are required policy limits, not wire integer-width limits.
 
-- all main-tier entries first, sorted by `min_key`
-- all patch-tier entries after main entries, sorted by `(min_key, segment_id)`
-
-Open rejects malformed manifests, duplicate segment ids, invalid key ranges, overlapping main-tier ranges, more than one patch in an interval-connected normalization component, patch entries before main entries, and `next_segment_id` values that could reuse an existing id.
-
-Referenced segments that are missing, malformed, length-mismatched, or inconsistent with their manifest range are dead entries. They are invisible at open time and dropped at the next manifest publication.
+> Current implementation note: the current implementation stores a flat sequence of all Main entries followed by all Patch entries, ordered by `(min_key, segment_id)`, and validates one patch in an interval-connected component. Because the format is still pre-release, the grouped representation will replace those experimental bytes while retaining target format version `1`; there is no migration path.
 
 ## Segment Format
 
-Each segment file contains:
-
-```text
-SegmentHeaderV1
-DataBlock*
-SegmentFooterV1
-```
-
-```mermaid
-flowchart LR
-  Header["SegmentHeaderV1<br/>20 bytes"] --> Block0["DataBlock 0"]
-  Block0 --> BlockN["DataBlock ..."]
-  BlockN --> Footer["SegmentFooterV1<br/>segment prefix, block ranges, CRC"]
-```
-
-Multi-byte integer fields are little-endian. The first data block starts immediately after the 20-byte header.
-
-The fixed segment header is self-describing: it declares the logical schema and the physical encoding needed to decode the segment. The reader trusts the header after CRC validation and uses its declared values for decoding. The block checksum id is not an encoding choice: it is a fixed discriminant that must name the one store-wide checksum. Only compression varies per segment, and there is no external "expected geometry" comparison for it.
+Each immutable segment contains `SegmentHeaderV1`, one or more data blocks, and `SegmentFooterV1`. Empty record streams do not publish a segment. Multi-byte integers are little-endian. The first data block follows the fixed 20-byte header immediately.
 
 ```text
 magic[4]             # b"SCSG"
 format_version:u8    # 1
-block_checksum_id:u8 # 1 = unseeded xxh3-128; other values unsupported
+block_checksum_id:u8 # 1 = unseeded XXH3-128
 value_payload_compression_id:u8
-reserved:u8          # must be 0 in v1
+reserved:u8          # 0 in v1
 key_len:u32
-value_len:u32        # 0 = variable, >0 = fixed value length
-header_crc32c:u32    # crc32c over previous 16 bytes
+value_len:u32        # 0 = variable; otherwise fixed value length
+header_crc32c:u32    # CRC32C over the previous 16 bytes
 ```
 
-The one-byte version and algorithm identifiers are closed v1 discriminants rather than counters. Unknown identifiers are rejected, and a non-zero reserved byte is invalid. The reserved byte keeps the schema fields on a four-byte boundary and leaves space for a future version to define flags without changing the v1 interpretation.
+The header is self-describing. Its schema must match MANIFEST; its checksum ID must be the fixed ID `1`; and its compression ID must be supported by the reader. A nonzero reserved byte and unknown identifiers are invalid. After validation, downstream decoding uses the header's own compression declaration rather than an external expected compression setting.
 
-Segment open validates the header as follows:
-
-1. Header CRC passes. If not, the segment is treated as absent (cache miss).
-2. Header `key_len` and `value_len` match the manifest's logical schema. If not, the segment is treated as absent.
-3. Header `block_checksum_id` equals the fixed store checksum id (`1`), and the `value_payload_compression_id` is supported by this binary's compiled features. If not, the segment is treated as absent.
-
-After these checks, downstream decoding uses the header's own declared compression. The reader does not compare `value_payload_compression_id` against any external expected value. This enables mixed-compression stores after future codec changes or migrations: each segment is decoded according to its own header.
-
-The footer body is variable length because it stores the maximal segment-wide key prefix once and each sparse block-index entry stores an exact range relative to that prefix. Segment-level `min_key` and `max_key` are not repeated here; the manifest entry is their authoritative persisted representation.
+The footer owns the sparse block index and is the completion marker:
 
 ```text
 segment_prefix_len:u32
 segment_prefix[segment_prefix_len]
 block_count:u32
 block_index_entries[block_count]
-footer_body_len:u32  # excludes this field and the CRC
-footer_crc32c:u32    # crc32c over footer body | footer_body_len
+footer_body_len:u32
+footer_crc32c:u32    # CRC32C over footer body | footer_body_len
 ```
 
-Each block index entry is:
+Each index entry is:
 
 ```text
 extra_prefix_len:u32
@@ -159,36 +98,17 @@ max_suffix[key_len - segment_prefix_len - extra_prefix_len]
 block_offset:u64
 ```
 
-`segment_prefix` is the maximal common prefix of the manifest minimum and maximum keys. `extra_prefix` is the maximal additional common prefix of each block's relative minimum and maximum. The runtime index owns one shared footer backing allocation plus byte ranges for each component, so it does not allocate a complete prefix per block. Point, ordered, and bounded-range routing compare the three key parts directly without reconstructing either bound. Exact maximum keys also identify gaps between blocks without reading a candidate block.
+`segment_prefix` is the maximal common prefix of the manifest segment bounds, and `extra_prefix` is the additional maximal prefix shared by a block's relative bounds. Segment-level minimum and maximum keys are not repeated in the footer. Block lengths derive from adjacent offsets; the final block ends at the footer offset obtained from the trailer. Opening validates prefix canonicality, strict block-range ordering and nonoverlap, manifest-range agreement, and every offset boundary before materializing byte ranges.
 
-Block lengths are derived from adjacent offsets; the final block ends at the footer offset obtained from the file trailer. Opening a segment validates range canonicality, strict ordering and non-overlap, manifest min/max agreement, and offset boundaries before materializing byte ranges. Each decoded block must then match the exact indexed prefix, minimum suffix, and maximum suffix. If the header, footer, or block index is invalid, the whole segment is ignored; if an individual block disagrees with its validated index entry, that block behaves as missing data.
+Each decoded block must agree with its validated index entry's prefix and exact minimum and maximum suffixes. A header, footer, or index failure makes the whole segment absent on an ordinary path; disagreement or corruption confined to one block makes only that block absent. Exact index bounds route gaps without loading a candidate block, and the runtime index shares footer prefix backing rather than allocating complete bounds per block.
 
-Segment encoding is deterministic for the same sorted entries and writer options. This matters for future sync convergence and for stable review of format changes.
+Segment encoding is deterministic for the same canonical record stream and writer options. This supports content-addressed remote reuse and makes format changes reviewable.
 
 ## Block Format
 
-Blocks have no separate envelope header or footer. Their byte ranges come from adjacent segment index offsets, while `record_count` is the first field in the checksummed block metadata and owns the geometry required to decode the rest of the block. Variable-value offsets live after `KeySection`, optional value-payload compression metadata lives at the start of `ValuePayloadFrame`, and checksums immediately follow the bytes they protect. Each checksum is the canonical big-endian 16-byte representation of unseeded XXH3-128.
+Blocks have no envelope: their byte ranges and key ranges come from the footer index. `record_count` is the first field in checksummed lookup metadata and determines the remaining geometry. Lookup metadata and the value-payload frame each end in their own canonical big-endian XXH3-128 digest.
 
-There is no stored `payload_offset` descriptor. The decoder derives the value frame position and decoded payload length from the store value layout:
-
-- `payload_frame_offset = lookup_metadata_len + block_checksum.digest_len`
-- variable values: `decoded_payload_len = value_offsets[record_count]`
-- fixed values: `decoded_payload_len = record_count * value_len`
-
-`LookupMetadata` is intentionally not just key bytes. For variable values, the offset table is part of lookup correctness because a corrupted offset can make a valid key return the wrong value slice. Blocks have no trailing padding in v1, so the encoded payload ends immediately before `value_checksum`.
-
-`ValuePayloadCompressionKind::None` stores no value frame header: the value payload bytes are stored directly. Compression-capable kinds store a one-byte frame header before each block's payload:
-
-```text
-storage:u8           # 0 = raw, 1 = compressed
-payload[...]         # extends to the value checksum
-```
-
-The segment header determines the compression algorithm; the frame records only whether that block used it or fell back to raw storage. The decoder derives the raw length from the value layout and the stored payload length from the block boundary, so the frame does not duplicate either length. Small or poorly compressible blocks use `storage=0` so the writer does not pay space or decode cost for negative compression. `CommitOptions::value_payload_compression_policy` controls the writer-side thresholds for newly written blocks. The default policy attempts compression only when the raw value payload is at least 64 KiB and keeps the compressed frame only if it saves at least 20%.
-
-Each block first strips the footer-owned segment prefix, then stores only the additional common prefix shared by its first and last relative key. Since records are sorted, both prefixes are shared by every key in the block. The suffix table remains fixed-width, so lookup can binary-search by record index without variable-length key decoding or full-key allocation. Read routing strips prefixes progressively at already-validated range boundaries: snapshot routing compares the full key to select a segment, the segment index compares the remaining relative key to select a block, and record lookup compares only the final suffix. Range scans reconstruct only the current full key by copying the segment prefix, block prefix, and suffix directly into reusable cursor scratch; loaded blocks do not allocate or cache a combined prefix.
-
-Variable-value block layout:
+Variable-value blocks encode:
 
 ```text
 record_count:u32
@@ -198,14 +118,14 @@ KeySection:
   key_suffixes[record_count * (key_len - segment_prefix_len - extra_prefix_len)]
 ValueIndexSection:
   value_offsets[record_count + 1]:u32
-lookup_checksum      # selected block checksum over record_count | KeySection | ValueIndexSection
+lookup_checksum      # over record_count | KeySection | ValueIndexSection
 ValuePayloadFrame:
   optional frame header
   values...
-value_checksum       # selected block checksum over ValuePayloadFrame only
+value_checksum       # over ValuePayloadFrame
 ```
 
-Fixed-value block layout:
+Fixed-value blocks encode:
 
 ```text
 record_count:u32
@@ -213,49 +133,47 @@ KeySection:
   extra_prefix_len:u32
   extra_prefix[extra_prefix_len]
   key_suffixes[record_count * (key_len - segment_prefix_len - extra_prefix_len)]
-lookup_checksum      # selected block checksum over record_count | KeySection
+lookup_checksum      # over record_count | KeySection
 ValuePayloadFrame:
   optional frame header
   values[record_count * value_len]
-value_checksum       # selected block checksum over ValuePayloadFrame only
+value_checksum       # over ValuePayloadFrame
 ```
 
-```mermaid
-flowchart LR
-  RecordCount["record_count:u32"] --> PrefixLen["extra_prefix_len:u32"]
-  PrefixLen --> Prefix["extra_prefix"]
-  Prefix --> Suffixes["key_suffixes[]"]
-  Suffixes --> Metadata["LookupMetadata"]
-  Metadata --> Layout{"value layout"}
-  Layout -->|variable| Offsets["ValueIndexSection<br/>value_offsets[record_count + 1]"]
-  Layout -->|fixed| NoOffsets["no ValueIndexSection"]
-  Offsets --> LookupChecksum["lookup_checksum"]
-  NoOffsets --> LookupChecksum
-  LookupChecksum --> Payload["ValuePayloadFrame"]
-  Payload --> FrameKind{"compression policy"}
-  FrameKind -->|none| RawPayload["decoded value payload"]
-  FrameKind -->|lz4/zstd| PayloadHeader["frame header<br/>raw or compressed"]
-  PayloadHeader --> EncodedPayload["encoded payload"]
-  RawPayload --> ValueChecksum
-  EncodedPayload --> ValueChecksum
+For variable values, `value_offsets[i]..value_offsets[i + 1]` selects value `i`, and the final offset is the decoded payload length. For fixed values, value `i` starts at `i * value_len`. Lookup metadata includes the variable-value offset table because corrupt offsets could otherwise return a wrong slice for a valid key.
+
+There is no stored payload offset or payload length. The decoder derives:
+
+```text
+payload_frame_offset = lookup_metadata_len + 16
+decoded_payload_len  = value_offsets[record_count]       # variable values
+decoded_payload_len  = record_count * value_len          # fixed values
+encoded_frame_len    = block_len - payload_frame_offset - 16
 ```
 
-For variable values, value `i` is `value_offsets[i]..value_offsets[i + 1]` in the decoded value payload; the last offset is the decoded payload length, so the last value needs no special branch. For fixed values, value `i` starts at `i * value_len` in the decoded value payload.
+Every derivation uses checked arithmetic and must consume the complete block; v1 permits no trailing padding.
 
-Block sizing is a writer policy:
+The segment header chooses the compression algorithm. `None` stores raw payload bytes without a frame header. A compression-capable segment uses:
 
-- `target_block_size` is a logical split target used while grouping records into blocks
-- physical block length is the actual encoded length after metadata, optional compression, and checksums
-- existing segments remain readable if future commits use a different target block size because physical block lengths are stored in the block index
+```text
+storage:u8   # 0 = raw fallback, 1 = compressed with the segment-header codec
+payload[...] # extends to value_checksum
+```
 
-## Format Limits
+The block boundary gives the encoded size and the value layout gives the decoded size. Writers may use raw fallback for small or incompressible blocks. The frame does not repeat an algorithm ID, raw length, or encoded length.
 
-Wire integer widths are not allocation budgets. V1 uses compact `u32` fields where appropriate, while the implementation validates stricter limits before allocating or decompressing untrusted lengths:
+Structural validation requires a nonzero `record_count`; an `extra_prefix` that fits the remaining fixed key width; strictly increasing suffixes; exact first and last keys matching the footer index; and, for variable values, an offset table that starts at zero, is monotonic, and ends at the decoded payload length. A raw frame must have exactly the derived decoded length. A compressed frame must decode to exactly that length without trailing frame bytes. These checks run even when checksum verification is disabled.
 
-- `key_len` is non-zero and at most 64 KiB.
-- One value and one decoded block value payload are each at most 64 MiB.
-- One encoded block is at most 128 MiB.
-- One footer is at most 64 MiB and one segment has at most 1,048,576 blocks.
-- One manifest is at most 256 MiB.
+Each block strips the footer-owned segment prefix and stores only the additional common prefix shared by its first and last relative keys. Sorted order makes both prefixes common to every block key. This layout preserves raw-block views: readers load a complete block in one positioned read, validate derived ranges over that one backing buffer, binary-search fixed-width suffixes, and avoid decompression for a miss-only probe. Ordered cursors reconstruct only the current full key in reusable scratch; visitors borrow raw or decoded value slices rather than allocating each value.
 
-Manifest, footer, and block geometry use checked arithmetic, bounded reads, complete-consumption checks, and fallible reservation. These limits are implementation safety boundaries rather than intended operating targets.
+## Block Sizing And Compression Policy
+
+`target_block_size` is a logical grouping target, not a minimum physical size. Encoded sizes include metadata, optional compression, and checksums, and existing segments remain readable when later commits choose a different target. Compression policy is a write-time choice below the caller codec and above raw block payload bytes; it does not alter keys or value indexes. The v1 default attempts compression only for raw payloads of at least 64 KiB and retains it only when it saves at least 20%.
+
+## Format Safety Limits
+
+Wire widths are not allocation budgets. v1 bounds key length to 64 KiB, one value and decoded block payload to 64 MiB, an encoded block to 128 MiB, a footer to 64 MiB, a segment to 1,048,576 blocks, and a manifest to 256 MiB. Manifest, footer, block, compression-frame, and transfer geometry use checked arithmetic, bounded reads, complete-consumption checks, and fallible reservation before allocation or decompression.
+
+## Current Implementation Notes
+
+The current pre-release implementation additionally persists schema and encoding fields in `STORE`, persists only `key_len` in `MANIFEST`, compares each segment compression ID with a store-level setting, and does not yet select compression through `CommitOptions`. Rebuilding an experimental cache is the migration path when these target format semantics land.

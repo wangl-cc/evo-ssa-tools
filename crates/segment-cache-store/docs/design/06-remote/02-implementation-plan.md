@@ -2,156 +2,41 @@
 
 ## Scope
 
-This plan adds the minimum provider-neutral infrastructure required for explicit worker push, pull, and strict aggregation. It does not implement a provider SDK and does not change the public local `Store` API or local v1 formats.
+This plan describes future, unimplemented provider-neutral remote support. It adds an optional capture/checkpoint API, restore/pull, and ordered aggregation without changing existing local operation semantics or local v1 bytes. The [remote repository design](00-design.md) is the behavioral contract and the [remote version format](01-version-format.md) defines persistent bytes.
 
-The [remote repository design](00-design.md) defines behavior. The [remote version format](01-version-format.md) defines persistent bytes and identities.
-
-## Existing Assets
-
-The current crate already provides the difficult local primitives:
-
-- deterministic immutable segment writing
-- an unconditional domain-separated BLAKE3 `SegmentContentId`
-- complete segment verification at an external trust boundary
-- validated header, footer, block, and key-range decoding
-- strict cross-store merge with unique-key conflict semantics
-- bounded main-segment output through the snapshot builder
-- atomic local manifest publication
-
-Remote implementation should reuse these concepts directly. It must not add another segment hash, another winner policy, or a generic catalog framework around the local store.
+The direct HPC baseline remains one durable network-filesystem local store per worker, with no shared-writer root. Remote support is needed only when a checkpoint, transfer, or aggregate exchange is desired. Node-local scratch is optional performance storage and depends on checkpoint recovery, not on a provider-visible local path.
 
 ## Crate Boundary
 
-The provider-neutral engine initially lives under a private `remote` module behind an optional `remote-repository` feature. Only the domain types and provider capabilities needed by adapter crates become public.
+The provider-neutral engine belongs in `segment-cache-store` behind an optional `remote-repository` feature so it can capture and pin local snapshots, validate segment structure, and materialize local components without exposing raw local `MANIFEST` bytes or paths. Provider SDKs, credentials, retries, async runtimes, and transport configuration belong in adapter crates.
 
-Provider SDKs, credentials, retry middleware, async runtimes, and transport configuration live in separate adapter crates. The first repository API is synchronous, matching `Store` and `scs`.
-
-Do not refactor the local catalog into generic `CatalogHead<I>`, `MainSegmentSet<I>`, `CatalogTransition<I>`, or `SegmentMaterializer<I>` abstractions. There is no second implementation with equivalent local allocation and publication semantics. Add concrete remote types and extract shared code only where local merge and remote aggregation execute the same strict snapshot-building algorithm.
-
-## Internal Modules
-
-The initial module boundary is:
+The initial internal boundary is:
 
 ```text
 remote/
-  identity.rs     logical identity and repository config
-  manifest.rs     concrete remote segment set and canonical manifest codec
-  reference.rs    validated worker names, ref codec, and CAS transition rules
-  object.rs       typed object IDs and derived object names
-  materialize.rs  streamed download, verification, and local cache publication
-  publish.rs      immutable-object ordering and ref CAS
-  sync.rs         push, pull, and worker aggregation orchestration
-  provider.rs     narrow provider capabilities
+  identity.rs     logical store identity
+  manifest.rs     snapshot kind, component layout, and canonical codecs
+  capture.rs      local visible snapshot capture and segment-handle pins
+  object.rs       typed IDs and derived object names
+  provider.rs     immutable streams and bounded ref CAS
+  publish.rs      resumable uploads, verification, and publication order
+  restore.rs      verified transfer and local materialization
+  aggregate.rs    ordered source capture and aggregate construction
 ```
 
-Keep codecs next to the validated types they construct. Fields remain private. Parsing validates external bytes once; downstream code receives trusted identity, config, manifest, ref, and object-name values.
+Do not generalize the local catalog into a backend trait. Extract only the segment-set builder that accepts an already validated, sorted, unique record stream and emits bounded staged segments. Local normalization, remote re-encoding, and aggregate construction own different input error and winner policies upstream of that shared physical writer.
 
-## Concrete Domain Types
+## Domain Types And API
 
-The remote domain needs concrete types rather than generic backend identity parameters:
+Validated private domain types include `SnapshotKind`, `RemoteManifest`, `AggregateSnapshot`, `WorkerCheckpoint`, `RemoteSegmentRef`, `WorkerPatchRef`, and `CurrentThenWorkers`. The kinds have separate validated payloads rather than optional tier fields on one ambiguous segment set.
+
+The public API exposes operations, not paths or raw catalog bytes:
 
 ```rust
-struct RemoteSegmentRef {
-    content_id: SegmentContentId,
-    segment_len: u64,
-    min_key: Vec<u8>,
-    max_key: Vec<u8>,
-}
-
-struct RemoteManifest {
-    store_identity_id: StoreIdentityId,
-    repository_config_id: RepositoryConfigId,
-    segments: Vec<RemoteSegmentRef>,
-}
-```
-
-`RemoteManifest::parse` validates canonical order, unique content IDs, range geometry, count limits, and complete input consumption. `RemoteManifestBuilder` accepts verified output artifacts from the strict snapshot builder and emits canonical references. The parser rejects duplicates; only the builder may deduplicate an exact reference before encoding.
-
-The segment writer already returns the facts publication needs through its existing result and manifest entry path. Do not add a speculative `SegmentWriteSummary` carrying an unused aggregate record count.
-
-## Shared Snapshot Builder
-
-Local normalization, `Store::merge_from`, worker push that requires re-encoding, remote aggregation, and pull into a differently configured local root all need the same operation:
-
-```text
-strict sorted input cursors
-  -> reject malformed input and conflicting values
-  -> collapse byte-identical records
-  -> write bounded main segments with target options
-  -> return staged verified artifacts
-```
-
-This is one real shared concept and should remain independent of local or remote publication. It accepts target segment options explicitly and produces staged files plus content IDs and key ranges. The caller decides whether those files receive local segment IDs or remote object names.
-
-Read cursors used by this builder are strict. Corruption aborts synchronization; they do not inherit the ordinary cache-read policy that may degrade a corrupt block to a miss.
-
-## Verified Artifact Boundary
-
-Bytes entering from a remote provider are untrusted until one operation has:
-
-1. streamed them into a temporary file with a maximum length
-2. compared the actual length with the manifest reference
-3. recomputed the complete `SegmentContentId`
-4. validated segment header, footer, config, structure, and exact key range
-5. synchronized and atomically published the file into the local content cache
-
-An internal `VerifiedSegmentArtifact` may carry the resulting path and validated reference between verification and publication. It is short-lived and consumable, not a persistent trust marker and not a public token.
-
-Ordinary local open continues to trust files already published under the local store contract. Remote verification does not add a full-file rescan to every open.
-
-## Provider Capabilities
-
-Segment transfer must be streaming. A provider adapter must not require `Vec<u8>` for a complete segment:
-
-```rust
-use std::io::{Read, Write};
-
-pub trait ImmutableObjects {
-    type Error: std::error::Error + Send + Sync + 'static;
-
-    fn get_to(
-        &self,
-        id: &ObjectId,
-        sink: &mut dyn Write,
-    ) -> Result<GetResult, Self::Error>;
-
-    fn put_if_absent_from(
-        &self,
-        id: &ObjectId,
-        len: u64,
-        source: &mut dyn Read,
-    ) -> Result<PutResult, Self::Error>;
-}
-
-pub trait MutableRefs {
-    type Error: std::error::Error + Send + Sync + 'static;
-
-    fn get(&self, name: &RefName) -> Result<Option<RefRead>, Self::Error>;
-
-    fn compare_and_set(
-        &self,
-        name: &RefName,
-        expected: Option<&RefToken>,
-        next: &[u8],
-    ) -> Result<RefUpdate, Self::Error>;
-}
-```
-
-`get_to` writes into a repository-owned bounded temporary file. `put_if_absent_from` reads from a verified local file. If an adapter retries after a partial transfer, it must request a newly opened source from repository orchestration rather than assuming a consumed reader can rewind.
-
-Ref payloads are intentionally bounded and may be held in memory. Immutable insertion is idempotent, ref conflict is distinct from transport failure, and listing or deletion is not required by either v1 trait.
-
-Do not introduce one `StorageBackend` trait containing local locks, rename, directory sync, object streaming, listing, compare-and-swap, and deletion. Those operations do not share semantics.
-
-## Public API
-
-The first public API exposes synchronization intent rather than wire structs or object paths:
-
-```rust
-pub struct StoreIdentityId(...);
-pub struct RepositoryConfigId(...);
-pub struct ManifestId(...);
-pub struct WorkerName(...);
+pub struct WorkerName(/* private */);
+pub struct ManifestId(/* private */);
+pub struct CapturedSnapshot(/* private */);
+pub struct WorkerOrder(/* private */);
 
 pub enum RemoteVersion {
     Current,
@@ -159,131 +44,144 @@ pub enum RemoteVersion {
     Manifest(ManifestId),
 }
 
-pub struct RemoteRepository<B> { /* private */ }
-```
+impl Store {
+    pub fn capture_checkpoint(&self) -> Result<CapturedSnapshot, Error>;
+}
 
-Representative operations are:
-
-```rust
 impl<B> RemoteRepository<B> {
-    pub fn status(&self) -> Result<RemoteStatus, RepositoryError>;
-    pub fn resolve(&self, version: &RemoteVersion) -> Result<ManifestInfo, RepositoryError>;
-    pub fn push_worker(
+    pub fn checkpoint_worker(
         &self,
         worker: &WorkerName,
-        source: &Store,
-        options: &RemoteWriteOptions,
+        snapshot: &CapturedSnapshot,
+        options: &CheckpointOptions,
     ) -> Result<PublishOutcome, RepositoryError>;
-    pub fn aggregate_workers(
+    pub fn aggregate(
         &self,
-        workers: &[WorkerName],
-        options: &RemoteWriteOptions,
+        workers: &WorkerOrder,
+        options: &AggregateOptions,
     ) -> Result<PublishOutcome, RepositoryError>;
-    pub fn pull_to(
+    pub fn restore_to(
         &self,
         version: &RemoteVersion,
         destination: &std::path::Path,
-        options: &PullOptions,
+        options: &RestoreOptions,
     ) -> Result<Store, RepositoryError>;
 }
 ```
 
-Only complete `ManifestId` values are accepted. `ManifestInfo` reports logical identity, physical config, segment count, physical bytes, and overall key bounds without exposing raw wire structs.
+`CapturedSnapshot` is created only by `Store::capture_checkpoint` and owns its immutable runtime snapshot plus segment pins until dropped. The checkpoint method accepts only that type and can publish only a `WorkerCheckpoint` to the named worker ref. `WorkerOrder` has validated constructors for caller order and canonical lexicographic order of a supplied worker set; it rejects duplicate names. `aggregate` captures `refs/current` itself, prepends it when present, then resolves workers in the validated order into the private `CurrentThenWorkers` plan. It produces only an `AggregateSnapshot` and may update only `refs/current`. These types make invalid kind/ref and current-precedence states unnatural. The CLI uses them without enumerating segment paths or parsing local manifests.
 
-The repository implementation may access private `Store` internals because it lives in the same crate. It must not add public segment-path enumeration or raw manifest accessors merely for synchronization.
+Provider adapters need only streaming immutable objects and bounded mutable refs. Immutable insertion is idempotent, ref conflict is distinct from transport failure, and listing or deletion is not a v1 requirement.
 
-## Publication Order
+```rust
+use std::io::{Read, Write};
 
-Every publication follows one order:
+pub trait ImmutableObjects {
+    type Error: std::error::Error + Send + Sync + 'static;
 
-1. Resolve and validate the target ref and repository root.
-2. Capture source snapshots.
-3. Produce or reuse verified main-only segment artifacts.
-4. Stream every absent segment object to immutable storage.
-5. Encode and upload the immutable manifest object.
-6. Encode the next ref revision.
-7. Compare-and-swap the target ref.
+    fn get_to(&self, id: &ObjectId, sink: &mut dyn Write) -> Result<GetResult, Self::Error>;
+    fn put_if_absent_from(&self, id: &ObjectId, len: u64, source: &mut dyn Read) -> Result<PutResult, Self::Error>;
+}
 
-A failure before step 7 leaves the old ref visible. A compare-and-swap conflict also leaves the old candidate invisible. Uploaded immutable objects may be reused by a recomputed candidate.
+pub trait MutableRefs {
+    type Error: std::error::Error + Send + Sync + 'static;
 
-Repository code must not publish a ref until it has confirmed that every referenced segment and the manifest object exist under their expected IDs.
-
-## Worker Push
-
-`push_worker` captures one stable local snapshot. If patches exist or the local codecs differ from repository config, it builds staged main-only output through the strict snapshot builder. Otherwise it may reuse complete existing main segments after verifying their bytes while streaming them across the trust boundary.
-
-The worker ref is read once before candidate construction and updated with its exact provider token. One worker name has one logical writer; compare-and-swap still protects retries and accidental concurrent ownership.
-
-## Aggregation
-
-`aggregate_workers` resolves all requested worker refs and the current ref, then opens strict cursors over their manifests. It performs one k-way merge and one publication. It does not invoke pairwise `merge_from` repeatedly.
-
-If the current ref changes before publication, aggregation resolves the new current head and rebuilds the logical union. It may reuse already uploaded segment objects, but it must rerun conflict detection against the new current snapshot.
-
-The v1 manifest records only output content. Worker IDs and captured source manifest IDs are returned in `PublishOutcome` and may be logged by the caller; they are not persisted as an unbounded parent list.
-
-## Pull
-
-`pull_to` materializes the selected exact manifest into the local content cache. Creating a new local root may link or copy compatible verified segment bytes and assign fresh local segment IDs. Pulling into an existing root, or into different physical options, uses the strict snapshot builder and one atomic local publication.
-
-Remote ref and manifest bytes never become local `MANIFEST` bytes. Local IDs, allocation state, and any temporary patch state remain local concerns.
-
-## CLI
-
-`scs` uses only public repository APIs. The initial commands are:
-
-```text
-scs remote status <remote>
-scs remote push-worker <local-root> <remote> --worker <name>
-scs remote aggregate <remote> --worker <name>...
-scs remote pull <remote> <local-root> [--current | --worker <name> | --manifest <full-id>]
+    fn get(&self, name: &RefName) -> Result<Option<RefRead>, Self::Error>;
+    fn compare_and_set(&self, name: &RefName, expected: Option<&RefToken>, next: &[u8]) -> Result<RefUpdate, Self::Error>;
+}
 ```
 
-Mutating commands print the captured base ref revision, candidate manifest ID, and publication outcome. Compare-and-swap conflicts are distinct errors. No command parses remote catalog bytes or constructs provider object paths.
+Repository orchestration creates and owns a bounded temporary sink, then passes it to `get_to`; the provider only streams bytes into that caller-owned sink. Retries create a fresh sink and open a new source rather than assuming a partially consumed stream can rewind. Do not combine local locks, rename, directory synchronization, object streaming, listing, and CAS in one generic backend trait.
+
+## Verified Artifact Boundary
+
+Provider bytes remain untrusted until repository orchestration has:
+
+1. Streamed them into a bounded temporary file.
+2. Compared actual and declared lengths.
+3. Recomputed the complete `SegmentContentId`.
+4. Validated header, footer, logical geometry, block structure, self-described compression frames, and exact range.
+5. Synchronized and atomically published the verified file into the local content cache.
+
+An internal consumable `VerifiedSegmentArtifact` carries the temporary path and validated reference between verification and publication. It is not a durable trust marker or public capability. A failed verification removes the temporary or corrupt cache entry. Ordinary local open remains lazy only after this strict boundary has published the file.
+
+## Capture, Planning, And Restore
+
+Capture obtains one visible local layout while preventing commit and garbage collection from invalidating its segment handles. A worker checkpoint retains valid Main and PatchSet components and uploads their exact verified bytes; an unsupported format or codec is a hard error rather than an implicit migration. Aggregate planning reuses an exact verified segment only when source precedence and range nonoverlap make the complete segment valid output, and re-encodes only logically affected ranges. Neither operation normalizes or mutates the source local store merely to export.
+
+All synchronization inputs are strict. Transfer verifies bounded length, complete `SegmentContentId`, segment structure, physical codec, and exact key range before an object is trusted. Corrupt root metadata, manifests, refs, or segments are errors. A corrupt current aggregate cannot be bypassed with a worker source.
+
+Restoring a `WorkerCheckpoint` validates Main nonoverlap, Patch ownership and containment, PatchSet ordering, and fixed file and byte budgets before materializing Main plus Patch components. Restoring an `AggregateSnapshot` validates and materializes Main-only components. Both paths allocate local IDs locally.
+
+Creating a new local root may link or copy compatible verified segment artifacts before publishing a newly encoded local MANIFEST. `restore_to` rejects an already completed destination root; combining remote data with an existing cache is an explicit local merge or remote aggregate operation, not an implicit restore mode. Remote refs and manifests never become local catalog bytes.
+
+The shared segment-set builder receives only a canonical sorted, unique record stream, writes bounded Main segments using target options, and returns staged verified artifacts. Local normalization supplies an ordinary corruption-as-absence stream. Remote re-encoding and aggregate construction first strictly verify every source, then apply explicit source precedence, and only then feed the builder. This keeps trust and winner policy at the boundary that owns them instead of hiding them inside a generic writer.
+
+## Publication And Aggregation
+
+Publication is resumable rather than globally atomic:
+
+1. Validate the remote root and capture the local snapshot or source refs.
+2. Verify all referenced inputs and create a reuse/copy/re-encode plan.
+3. Upload and verify each immutable segment independently.
+4. Upload the immutable manifest only after every referenced object exists.
+5. Compare-and-swap the optional target ref last.
+
+Only the ref is a latest-reader visibility boundary. Failed transfers leave unreachable immutable objects reusable by retries. If compare-and-swap fails, capture the relevant current ref again and replan rather than publishing a stale aggregate.
+
+Aggregate construction validates every captured source before precedence. `CurrentThenWorkers` fixes current first, followed by caller order or lexicographic order of the explicitly supplied workers. It streams records left-biased: the first record for a key wins, later values are ignored, and output is unique. This operation is deterministic for its captured priority but noncommutative; it neither rejects differing values nor claims order independence. It produces a Main-only aggregate and uses `AggregateOptions` only for newly encoded segments.
+
+When an immutable content-ID path contains incorrect bytes, v1 returns a hard `CorruptExistingObject` error and does not publish a ref. Automatic replacement and quarantine are outside the portable provider traits; an administrator or provider-specific repair tool may conditionally repair the path out of band, but only with bytes whose hash is the expected ID. Correct content remains immutable.
 
 ## Implementation Phases
 
-### Phase 1: Domain And Provider Boundary
+### Phase 1: Format And Provider Boundary
 
-- Add identity, config, manifest, ref, and object-name validated types.
-- Add canonical codecs and content-ID derivation.
-- Add streaming immutable-object and bounded mutable-ref capabilities.
-- Add an in-memory provider for deterministic protocol tests.
-- Keep all existing local behavior unchanged.
+- Add identity, explicit `SnapshotKind`, manifest, component, ref, and typed-object codecs.
+- Enforce kind-specific containment, overlap, ordering, and budget validation.
+- Add a deterministic in-memory provider with immutable streams and ref CAS.
 
-### Phase 2: Materialization And Worker Push
+### Phase 2: Local Capture And Checkpoint
 
-- Add streamed temporary download and verified local cache publication.
-- Add worker push with main-only normalization and codec conversion.
-- Add pull into a new local root.
+- Add high-level capture with commit/GC-safe segment pins.
+- Add worker checkpoint planning, resumable object upload, and optional worker-ref publication.
+- Preserve Main-plus-Patch checkpoint layouts when valid.
 
-### Phase 3: Aggregation
+### Phase 3: Restore And Aggregate
 
-- Reuse the strict snapshot builder for k-way aggregation.
-- Add pull or merge into an existing local root.
-- Test compare-and-swap rebasing and conflict atomicity.
+- Add strict verified restore for both snapshot kinds.
+- Add ordered left-biased aggregation to bounded Main-only output.
+- Replan aggregation on current-ref compare-and-swap failure.
 
 ### Phase 4: Public API And CLI
 
-- Stabilize only the minimal synchronization API.
-- Add the four initial `scs remote` commands.
-- Verify that `scs` imports no private format, catalog, segment, or path modules.
+- Stabilize the narrow capture, checkpoint/push, restore/pull, and ordered aggregate API.
+- Add `scs remote` commands solely through that public API.
+- Verify that adapters and CLI do not depend on local paths or raw local catalog bytes.
+
+The initial CLI shape is:
+
+```text
+scs remote status <remote>
+scs remote checkpoint <local-root> <remote> --worker <name>
+scs remote aggregate <remote> --worker <name>...
+scs remote restore <remote> <local-root> [--current | --worker <name> | --manifest <full-id>]
+```
+
+Mutating commands report the captured base revision, candidate manifest ID, and publication outcome. A compare-and-swap conflict is a distinct error, not a transport retry.
 
 ## Validation
 
-Domain and codec tests cover deterministic canonical encoding, exact round trips, malformed lengths, unknown IDs, duplicate references, invalid ranges, noncanonical order, trailing bytes, CRC failures, content-ID changes, and allocation limits.
+Format and domain tests cover canonical encoding, mixed supported segment codecs, unsupported codecs, unknown kinds, kind mismatch at a ref boundary, malformed limits, and checkpoint Main/Patch containment, overlap, and budget failures.
 
-Publication tests cover idempotent immutable insertion, missing-object rejection, upload-before-ref ordering, compare-and-swap conflicts, retry reuse, ref revision monotonicity, and failure atomicity.
+Capture and publication tests cover snapshot pins surviving concurrent commit or GC, interrupted checkpoint resume, independent immutable upload verification, manifest-after-objects ordering, hard failure on a corrupt existing object, and unreachable-object reuse.
 
-Synchronization tests cover main-only worker publication, local codec conversion, complete segment verification, interrupted downloads, corrupted cache replacement, equal-record collapse, conflicting-value rejection, k-way order independence, and local v1 reopen after pull.
+Synchronization tests cover strict corrupt-current failure, checkpoint and aggregate restoration shape, destination-biased differing values, current-first and validated worker priority, unique aggregate output, mixed-codec segment reuse, exact checkpoint/restore bytes, aggregate re-encoding only for logically affected ranges, and no source-store normalization during export.
 
-The existing default, all-feature, no-default, and compression test and clippy matrix remains required. Remote tests must not add provider SDKs to default local builds.
+Concurrency tests cover compare-and-swap failure followed by current recapture and replan. The existing default, all-feature, no-default, compression, test, and clippy matrix remains required; remote support must not add provider SDKs to default local builds.
 
 ## Deferred Work
 
-- History, parent DAGs, provenance objects, tags, pins, rollback, and diff.
-- Listing, retention policy, garbage-collection planning, and deletion.
-- Abbreviated IDs.
-- Provider SDK crates and credential configuration.
-- Async APIs and cancellation semantics.
-- Authenticated range reads and mmap-backed content-cache reads.
+- Parent DAGs, history, provenance objects, tags, pins, rollback, and diff.
+- Listing, retention policy, remote garbage collection, and deletion.
+- Provider SDK crates, credential configuration, async APIs, cancellation, authenticated range reads, and mmap-backed cache reads.

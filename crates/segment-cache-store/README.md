@@ -14,6 +14,10 @@ This crate is intentionally narrower than a general-purpose database. It does no
 
 The crate currently supports Unix targets only. Its positioned reads, directory durability, and advisory writer lock semantics rely on Unix filesystem APIs.
 
+## Design Status
+
+This README and the public Rust API documentation describe the current implementation. The numbered [design documents](docs/design/00-overview.md) define the agreed pre-release target, and [TODO.md](TODO.md) records the implementation delta. In particular, the current code still permits one Patch per interval-connected component, reports `KeyConflict` for differing bytes under one key, and uses strict cursors in several ordinary write and merge paths; the target replaces those behaviors with Main-owned PatchSets, destination-biased first-healthy-winner semantics, and corruption-as-absence across ordinary cache operations.
+
 ## Basic Use
 
 ```rust,no_run
@@ -40,7 +44,7 @@ One store root has one fixed key length, one value layout, one value-payload com
 
 Internal design and evaluation notes live in:
 
-- [docs/design/](docs/design/00-overview.md) — current design (00–05: introduction, architecture, format, operations, corruption semantics) plus the agreed future remote direction (06-remote/, not implemented)
+- [docs/design/](docs/design/00-overview.md) — agreed local target (00–05: introduction, architecture, format, operations, corruption semantics) plus the future remote extension (06-remote/, not implemented)
 - [docs/benchmark.md](docs/benchmark.md) — benchmark suite and workload definitions; results live in [benchmark-baselines/](benchmark-baselines/README.md)
 
 Useful commands:

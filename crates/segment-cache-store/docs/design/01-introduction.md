@@ -1,102 +1,61 @@
 # Introduction
 
-Workload, core invariants, caller contract, and terminology. Everything else in this design set assumes the definitions here.
+`segment-cache-store` is a narrow persistent backend for recomputable computation caches with fixed-width ordered keys and opaque serialized values. It is batch-first and insert-only; it is not a general-purpose database.
 
-## Purpose
+## Purpose And Scope
 
-`segment-cache-store` is a persistent backend for computation caches with fixed-width ordered keys and opaque serialized values. It is not a general-purpose database.
+The normal workflow is to look up a sorted batch, compute its misses, and publish the new records for later reuse. The store protects the stored byte mapping, not the scientific correctness of those bytes. Scientific equivalence, numerical tolerance, and platform-dependent numerical variation belong above this layer. A semantic model change requires caller metadata or a key-namespace version; a checksum-valid but scientifically wrong entry requires rebuilding that namespace. There is no per-key invalidation or repair API.
 
-The target workload is demand-driven cache filling: callers query a sorted batch of structured inputs, compute cache misses, and publish the newly computed results for later reuse. Values are allowed to be forgotten on crash or corruption because they are recomputable, but the store must never return silently corrupted data as a valid hit.
+The design is optimized for fixed-width keys whose lexicographic byte order is the desired query order, ordered batch lookup, complete ordered iteration for export and analysis, immutable segment files as synchronization units, and batch publication rather than individual durable writes.
 
-The implementation is optimized for:
+The target deliberately excludes transactions, deletes, tombstones, update-in-place, concurrent writers, a WAL, background compaction, general query features, and arbitrary tiny durable commits. One cooperating logical writer publishes batches; sparse single-record gap writes that create tiny Main files are explicitly non-target until a separate convergence policy is defined.
 
-- fixed-width byte keys whose lexicographic order is the caller's desired query order
-- ordered batch lookup as the primary read path
-- full ordered iteration for export, migration, and analysis
-- immutable segment files as the file-level sync unit
-- batch publication instead of individual durable writes
-- corruption-as-miss semantics
+Values are recomputable, so classified data corruption is logically absent in ordinary cache paths. The store must never return corrupted bytes as a valid hit.
 
-The implementation intentionally does not provide:
+The crate and format remain experimental. Until a format is released with a compatibility promise, rebuilding the cache from recomputable source data is the migration strategy.
 
-- transactions
-- deletes or tombstones
-- update-in-place
-- concurrent writers
-- WAL recovery
-- background compaction of cold ranges
-- query features beyond point lookup, ordered batch lookup, and ordered range iteration
+## Logical Model
 
-## Scope
+A visible logical component is exactly one `Main` segment plus its ordered `PatchSet`.
 
-This crate is experimental. The on-disk format may change without migration support; rebuilding the cache from recomputable source data is the migration strategy.
+- Main segments are globally sorted, nonoverlapping, and hard bounded by the Main format cap.
+- Each Patch belongs to exactly one Main and has a key range contained in that Main's range.
+- Patches in one PatchSet are sorted and nonoverlapping. A key has point depth at most one: one healthy Main candidate and at most one healthy Patch candidate.
+- Multiple disjoint patches for a Main are allowed. Patch count still affects open, manifest, and scan costs even though point depth is one.
+- A visible key has one value. Normal publication never creates duplicates.
 
-The store is an insert-only logical map backed by a non-overlapping main tier and a bounded temporary patch tier. Patch is a write-amortization mechanism, not another durable level or an update history.
+There is no interval-connected or transitive normalization-component model in the target.
 
-## Core Invariants
+## Batch And Duplicate Contracts
 
-- One store root represents one cache namespace with one caller metadata value.
-- `STORE` owns only durable namespace identity (caller metadata) and is written once during creation.
-- `MANIFEST` owns the logical schema (key length, value layout) and is the only source of visible data.
-- Segment files are immutable after publication.
-- Each segment header is self-describing: it declares the logical schema and physical encoding needed to decode that segment. The reader trusts the header after CRC validation.
-- Segment open validates that the header's logical schema (key_len, value_layout) matches the manifest's schema. The header's block checksum id must be the one fixed store checksum; unknown ids are unsupported and the segment is treated as absent. Value-payload compression is not compared — the reader uses whatever the header declares.
-- Segment files not referenced by `MANIFEST` are invisible.
-- Every visible logical key has exactly one value.
-- Main-tier segment ranges are sorted and globally non-overlapping.
-- A patch segment may overlap main ranges, but one connected normalization component contains at most one patch segment.
-- Patch records never duplicate keys already visible in main or another patch.
-- Missing, malformed, or corrupted data is treated as absent, never as valid output.
-- Writes are serialized by one logical writer.
-- Every block carries the same fixed block checksum (unseeded XXH3 128-bit); it is a store-wide constant, not a per-store or per-segment choice. Value-payload compression is a write-time parameter, not persistent store identity; each segment's header declares its own.
+`WriteBatch` input is sorted and contains no duplicate keys. Duplicate keys inside one batch are invalid input. During normal publication, a healthy, already-visible destination key wins; an incoming record with that key is skipped without comparing value bytes. Therefore a normal commit never reports `KeyConflict` for a differing incoming value.
+
+An abnormal duplicate in persisted data is handled deterministically: a healthy Main value wins ordinary reads and normalization, and explicit verification reports `DuplicateVisibleKey`. If the Main is absent or corrupt, a healthy Patch may supply the key. This preserves cache availability without turning tier order into a caller-facing conflict policy.
+
+Cross-store and remote aggregation use the same storage-level principle with explicit source precedence: the first healthy source wins and later values are not compared. This tolerates scientifically acceptable cross-platform or cross-version numerical differences without making storage responsible for numerical equivalence. Callers that need distinct stochastic results must encode the seed, replicate, or other logical identity in the key.
 
 ## Caller Contract
 
-The store validates key length, fixed value length, manifest structure, segment structure, and block checksums; every block in every store carries the same fixed block checksum. The store cannot validate the caller's logical encoding and cache semantics.
-
-- **Stable key encoding.** The caller must encode each logical input into the same fixed-width key bytes wherever the cache is used. The store compares keys lexicographically and does not understand their internal structure.
-- **Stable value for one key.** Recommitting the exact same key/value bytes is an idempotent no-op. Reusing one key for different value bytes is a contract violation and fails before publication. Stochastic computations must therefore include their seed or replicate identity in the key.
-- **Single logical writer.** Only one writer may mutate a root at a time. The implementation enforces this for cooperating processes with an advisory lock.
-- **Immutable files while open.** Segment files must not be externally modified while a `Store` handle is open. The runtime may skip repeated checksum work for block parts that were already verified in the same process.
+- **Stable key encoding.** The same logical input must produce the same fixed-width key bytes wherever the namespace is used. The store compares bytes lexicographically and does not understand the key's internal fields.
+- **Semantic namespace versioning.** Caller metadata or the encoded key namespace must change when a scientific or serialization change makes old results semantically invalid. Storage checksums cannot detect a checksum-valid but scientifically wrong result.
+- **Validated batches.** A batch must contain keys of the store's fixed width, values compatible with its value layout, and no duplicate keys. The store may sort an unsorted batch before preparing it, but the internal publication boundary receives a canonical sorted, duplicate-free representation.
+- **Single logical writer.** One cooperating writer mutates a root at a time. The advisory lock rejects a second cooperating writable open; read-only handles may coexist.
+- **Managed immutable files.** Published segment files must not be externally modified while handles or captured snapshots use them. External mutation without the writer protocol is outside the local safety contract.
 
 ## Terminology
 
-### Logical Data
+- `Key`: a fixed-width byte string ordered lexicographically.
+- `Value`: opaque serialized bytes associated with a key.
+- `Entry`: a caller-provided key/value pair before persistence.
+- `Record`: a key/value pair returned from storage.
+- `Main`: an immutable, sorted segment in the globally nonoverlapping Main set.
+- `Patch`: an immutable, sorted segment owned by one Main and contained in that Main's range.
+- `PatchSet`: the ordered, nonoverlapping patches owned by one Main.
+- `Normalization`: foreground replacement of one Main and its PatchSet with bounded Main segments.
+- `STORE`: immutable namespace identity and caller metadata.
+- `MANIFEST`: the atomic snapshot of visible Main-owned PatchSets and logical schema.
+- `SegmentContentId`: BLAKE3 identity of a complete segment file for a trust-boundary crossing.
 
-- `Key`: fixed-width byte string used for ordering and lookup.
-- `Value`: opaque serialized byte string associated with one key.
-- `Entry`: caller-provided key/value pair before it is encoded into a segment.
-- `Record`: key/value pair decoded from visible storage and returned by reads or scans.
-- `Conflict`: two records with the same key and different value bytes. A conflict is rejected rather than resolved by arrival order or an arbitrary byte-order winner.
+## Implementation Status
 
-`Entry` means write input. `Record` means read output. Other entry-like structures should be qualified, such as `Manifest entry` or `Block index entry`.
-
-### Tiers
-
-- `Main tier (L1)`: sorted, globally non-overlapping segment set.
-- `Patch tier (L0)`: bounded temporary overlay for one small interleaving batch. A patch may overlap main ranges but does not contain keys already visible elsewhere.
-- `Normalization component`: the interval-connected set obtained by starting from a patch or incoming batch and repeatedly including every main or patch segment whose range intersects the current bounds.
-- `Normalization`: replacing commit that streams one or more normalization components into new main-tier segments while retaining every unaffected main segment unchanged.
-- `Cross-store merge`: strict streaming union of source and destination snapshots that rewrites only the destination components intersecting the source's key ranges and publishes one replacement snapshot.
-
-### Catalog
-
-- `Store root`: directory containing one cache namespace.
-- `Metadata`: caller-defined compatibility bytes persisted in `STORE`.
-- `STORE`: stable namespace identity descriptor containing only caller metadata.
-- `MANIFEST`: atomic visible-data snapshot that also owns the logical schema (key length, value layout).
-- `Manifest entry`: one visible segment reference plus tier and key range.
-- `StoreSchema`: the logical data contract (key_len, value_layout) owned by the manifest and redundantly declared in each segment header.
-- `SegmentEncoding`: the physical encoding choices declared by each segment header. The block checksum is a fixed store-wide constant; only value-payload compression is a write-time parameter, not persistent store identity.
-
-### Physical Layout
-
-- `Segment`: immutable file containing sorted records.
-- `Segment header`: fixed-size self-describing prefix that declares the logical schema and physical encoding needed to decode the segment.
-- `Segment footer`: variable-size suffix that is the segment completion marker and owns the sparse block index.
-- `Block`: physical read unit inside a segment.
-- `Block index`: segment-footer table with one entry per block.
-- `KeySection`: block-local key metadata. It follows the block's `record_count:u32`, starts with `extra_prefix_len:u32`, then stores the additional prefix after the segment-owned prefix and the fixed-width suffix table.
-- `ValueIndexSection`: variable-value offset table with `record_count + 1` offsets. Fixed-value blocks do not have this section.
-- `ValuePayloadFrame`: raw or compressed packed user value bytes for one block.
-- `LookupMetadata`: the bytes needed to prove key membership and locate values in a block. It is `KeySection` plus `ValueIndexSection` for variable-value blocks, and just `KeySection` for fixed-value blocks.
+This design specifies the target v1 contract. The current pre-release implementation retains a flat main-then-patch manifest and permits one patch per interval-connected component. Its publication, read, and normalization behavior is called out in current implementation notes where later chapters identify a difference; the target remains format version `1` because no format has been released.

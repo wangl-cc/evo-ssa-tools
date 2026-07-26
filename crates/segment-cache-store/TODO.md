@@ -1,51 +1,75 @@
 # segment-cache-store TODO
 
-Open design decisions and planned work. The design documents under [docs/design/](docs/design/00-overview.md) describe the agreed current design; everything not yet implemented or not yet decided is tracked here. Items leave this file as they land. Once this work is upstreamed, this file may be replaced by the repository issue tracker.
+Implementation deltas, validation work, and genuinely open choices. The documents under [docs/design/](docs/design/00-overview.md) define the agreed target; [README.md](README.md) and public Rust documentation describe the current implementation. Items leave this file when the code and its independent contract tests land.
 
-## 1. Merge Barrier-Aware Output Splitting (P0, designed)
+## 1. Main-Owned PatchSet Model (P0, designed)
 
-v1 cuts merge output chunks by the record and byte thresholds only, so output straddling a retained destination segment fails loudly at manifest validation (`SegmentOverlap`, or `MultiplePatchesInComponent` across two retained patches). The failure is atomic and never corrupts the destination snapshot, but merge is unusable in that shape. The agreed fix is the third split trigger in [04-operations.md](docs/design/04-operations.md): barriers are the ranges of retained destination segments (main and patch, sorted by `(min_key, segment_id)`), and a non-empty chunk flushes before it would straddle a barrier.
+Replace the current interval-connected, one-Patch runtime with the component model in [01-introduction.md](docs/design/01-introduction.md): one bounded Main owns a sorted, nonoverlapping PatchSet, and point depth remains Main plus at most one Patch.
 
-- [ ] Implement barrier splitting in `StoreMergeRecords::push_next_into` (src/commit/merge.rs), with the barrier set built from the plan's retained segments after `retire_components_for_ranges`.
-- [ ] Regression test: destination main segment sitting in a source gap (previously `SegmentOverlap`).
-- [ ] Regression test: merge output spanning two retained patches (previously `MultiplePatchesInComponent`).
-- [ ] Regression test: merge followed by explicit `Store::normalize`.
+- [ ] Choose concrete hard Main size, Patch files-per-Main, and Patch bytes-per-Main limits. These are fixed safety and amplification bounds, not per-manifest self-declared values.
+- [ ] Encode the grouped target MANIFEST, with each Main followed by its counted Patch references, and construct a validated grouped runtime representation.
+- [ ] Partition commits by Main ownership, gaps, and retained Patch barriers. Gap runs create Main output; in-Main gaps create Patch output; only intersected Patches are rewritten.
+- [ ] Split new Patch and merge output before retained Patch or retained Main barriers so no output range crosses an unaffected segment.
+- [ ] When a PatchSet would exceed either budget, synchronously normalize only that Main and PatchSet into bounded Main segments. Do not add background compaction or cross-component convergence.
+- [ ] Keep sparse one-record gap commits as an explicit non-target rather than silently rewriting adjacent Main segments to improve occupancy.
 
-## 2. Source-Segment Adoption (future, decision open)
+Required tests cover multiple disjoint Patches under one Main, repeated inserts into the same Patch range, an insert between retained Patches, a write spanning several Patch ranges, exact budget boundaries, budget-triggered one-component normalization, a destination Main in a merge-source gap, merge output spanning retained Patches, and point/scan equivalence at Patch counts 1, 2, 4, and 8.
 
-Source main-tier segments disjoint from all destination ranges and untouched by source patches are pure inserts, so they are eligible for byte-level adoption instead of transcoding: reflink copy where supported, streamed copy otherwise, with a fresh destination `segment_id`, the copied `content_id`, and the source entry's key range.
+## 2. Destination-Biased Duplicate Semantics (P0, designed)
 
-- [ ] Decide whether adopted bytes are trusted like locally published files or verified through the full single-segment path (`SegmentContentId` recomputation plus per-block checks), then implement.
+Replace storage-level value conflicts with deterministic first-healthy-winner semantics. A healthy visible destination key makes a commit record a no-op without comparing value bytes. An abnormal healthy Main/Patch duplicate resolves to Main on ordinary paths and is reported as `DuplicateVisibleKey` only by explicit verification.
 
-## 3. Write-Path Corruption-As-Miss (P0, decision open)
+- [ ] Remove `InputError::KeyConflict` from normal commit and local merge paths while retaining duplicate-key rejection inside one `WriteBatch`.
+- [ ] Make local merge a left-biased union: destination first, then sources in explicit stable order. Later values for an existing healthy key are skipped without comparison.
+- [ ] Ensure a corrupt or absent higher-priority value does not win; the next healthy source may supply the key only after its complete payload verifies.
+- [ ] Add integration tests for differing bytes under one key, platform-sized floating-point differences, fixed source precedence, idempotence, associativity under fixed precedence, noncommutativity, and abnormal Main/Patch duplicates.
 
-Three administrative read sites run strict and abort the whole operation on a corrupted block: the idempotency/conflict check before publication, the normalization input stream, and the merge destination input stream. A key whose old value sits in a corrupted block reads as a miss but cannot be written back, and every commit overlapping the component fails: the range is wedged for writes. The only recovery is manual segment deletion, which forgets healthy records too. See [05-corruption.md](docs/design/05-corruption.md).
+Scientific equivalence and numerical tolerance remain caller concerns. Semantic model or serialization changes require a new caller-metadata or key-namespace version; there is no per-key invalidation or repair API.
 
-Proposal A: block-granular forgetting on administrative reads, a `corruption_detected` signal on commit stats, and healing through immediate or scheduled normalization. The merge **source** stream stays strict regardless. Documented trade-off: `KeyConflict` protection is forfeited for keys inside corrupted blocks.
+## 3. Ordinary Corruption-As-Absence (P0, designed)
 
-- [ ] Decide between A with an opt-out flag and A with automatic healing normalization (A+B).
-- [ ] Implement the chosen variant.
-- [ ] Add a "block corruption -> write -> recover" integration test chain (current recovery tests cover only missing files).
+Current fetch paths degrade classified block corruption to a miss, but commit filtering, normalization, and merge still use strict cursors and can wedge a damaged range. Align every ordinary local cache path with [05-corruption.md](docs/design/05-corruption.md); reserve strict behavior for explicit verify and trust-boundary operations.
 
-## 4. Open Design Decisions
+- [ ] Make commit idempotence filtering, normalization, merge destination, and merge sources skip classified missing, format-failed, checksum-failed, or decompression-failed records at block granularity.
+- [ ] Keep ordinary I/O, `STORE`, and `MANIFEST` failures hard.
+- [ ] Require complete value-payload verification before an existing key or higher-priority merge source wins.
+- [ ] Preserve healthy Main data while a corrupt block is refilled through Patch, then let foreground normalization remove the damaged representation. Do not add `BlockRepair`, tombstones, or per-key repair metadata.
+- [ ] Add end-to-end corruption chains for metadata checksum, payload checksum, decompression, missing segment, malformed segment index, refill, normalization, and local merge. Explicit verify, import, export, checkpoint, and remote aggregation must fail on the same damaged inputs.
 
-- [ ] Global patch/component budget: disjoint components may each retain one patch, so many small disjoint interleaving batches accumulate patches without bound (scan fan-in, open cost, manifest size). Decide whether this is an accepted workload assumption or needs a global threshold that forces normalization.
-- [ ] Verification-failure caching: only successful verifications are recorded today, so a corrupted block is re-read and re-checked on every probe until its segment is retired. Deterministic failures (checksum, layout) can be cached safely under the immutability contract; transient IO errors must not be. Would add a failed state to `BlockVerification` in src/segment/state.rs.
-- [ ] Pin the GC vs fresh-opener race semantics in the docs: a reader that loaded `MANIFEST` before a concurrent commit + GC observes misses (not errors) for collected segments, and deleting open files behaves differently on Windows than on Unix.
+## 4. Pre-Release Format Deltas (P0)
 
-## 5. Format Target-Model Deltas
+The exact target is in [03-format.md](docs/design/03-format.md). Experimental stores are rebuilt rather than migrated.
 
-The v1 implementation notes in [03-format.md](docs/design/03-format.md) track these; rebuilding experimental stores is the migration strategy.
+- [ ] Make `STORE` persist only opaque caller metadata; move `key_len` and `value_len` ownership to MANIFEST.
+- [ ] Replace the flat Main-then-Patch MANIFEST with grouped Main-owned PatchSets and validate format-wide Main/PatchSet limits before allocation.
+- [ ] Let `CommitOptions` select compression for newly written segments and allow one manifest to reference self-describing segments with different supported compression IDs.
+- [ ] Pin grouped MANIFEST canonical bytes, segment-header bytes, XXH3-128 known-answer vectors, prefix-compressed footer ranges, raw/compressed frame derivation, and parser safety limits with golden tests.
 
-- [ ] `STORE` persists only caller metadata (drop `key_len`, `value_len`, `block_checksum_id`, `value_payload_compression_id`).
-- [ ] `MANIFEST` owns `value_len`.
-- [ ] `CommitOptions` selects the value-payload compression kind.
-- [ ] Open allows mixed-compression segment sets.
+## 5. Remote Checkpoint And Aggregate (future, designed)
 
-## 6. Small Hardening And Contract Fixes
+Implement [06-remote/](docs/design/06-remote/00-design.md) only after the local component and corruption contracts are stable.
 
-- [ ] `STORE` read size limit (mirroring the 256 MiB manifest bound), and report non-UTF-8 `STORE` as `CatalogError::StoreParse` instead of `Error::Io` so callers classifying failures by error type do not misjudge.
-- [ ] Define `Store::range(start, end)` behavior for `start > end` (prefer an input error over a silently empty result).
-- [ ] Fuse the `RangeCursor` iterator after an error so callers that ignore errors do not get an infinite error stream.
-- [ ] Cleanups: duplicate `#[cfg]` in frame.rs, header written before the empty check in writer.rs, `_ => continue` in open.rs, dev-dep `redb` pinned via the workspace.
-- [ ] Test gaps: concurrency stress (commit vs concurrent readers, GC vs readers — the process model promises this but nothing verifies it) and property/fuzz coverage of the write routing space (direct/patch/normalize x dead entry x multiple components).
+- [ ] Add provider-neutral identity, typed content IDs, explicit `SnapshotKind`, grouped `WorkerCheckpoint`, Main-only `AggregateSnapshot`, and kind-constrained refs.
+- [ ] Add public local snapshot capture that pins segment handles against commit and garbage collection for the transfer lifetime.
+- [ ] Checkpoint Main plus valid PatchSets by uploading exact verified self-describing segment bytes without mutating or normalizing the source; unsupported formats or codecs fail. Aggregate re-encodes only logically affected ranges.
+- [ ] Stream and strictly verify every remote object through a bounded temporary artifact before local publication; upload immutable segments independently, then the manifest, then optionally compare-and-swap the ref.
+- [ ] Make aggregate capture `refs/current` internally, then apply caller-specified or canonical lexicographic order to an explicitly supplied duplicate-free worker set. Use first-source-winner semantics and Main-only output; a compare-and-swap conflict recaptures current and replans.
+- [ ] Keep the direct HPC baseline as one independent durable network-filesystem Store per worker. Scratch is optional and safe only with explicit checkpoint completion before loss.
+
+## 6. Optional Source-Segment Adoption
+
+A source Main segment disjoint from all destination ranges and untouched by source Patch data is eligible for byte-level adoption instead of transcoding: reflink where available, streamed copy otherwise, with a fresh local segment ID and the existing content ID and range.
+
+- [ ] Decide whether local adoption always crosses the strict complete-file verification boundary or may trust a separately managed local root. Remote adoption is always strict.
+- [ ] Benchmark the gain before adding filesystem-specific complexity.
+
+## 7. Hardening And Validation
+
+- [ ] Decide whether deterministic verification failures should be cached for an immutable segment. Successful verification is cached today; transient I/O errors must never become cached corruption.
+- [ ] Add a `STORE` read-size limit and classify non-UTF-8 STORE bytes as `CatalogError::StoreParse`, not generic I/O.
+- [ ] Make `Store::range(start, end)` and `visit_range` reject `start > end` before segment I/O, and fuse `RangeCursor` after its first error.
+- [ ] Preserve explicit garbage collection semantics across platforms: it may make an older manifest snapshot no longer openable, but commit and open never collect automatically. Checkpoint capture requires in-process segment pins.
+- [ ] Remove the duplicate `#[cfg]` in `frame.rs`, avoid writing a segment header before the empty-input check in `writer.rs`, replace the catch-all `_ => continue` in `open.rs`, and use the workspace `redb` dev-dependency.
+- [ ] Add concurrency stress for commit versus existing readers, commit versus fresh read-only open, explicit garbage collection versus openers, and captured checkpoint pins.
+- [ ] Add property or model-based coverage for batch routing across Main gaps, Patch barriers, dead segments, corruption, budget thresholds, and several components.
+- [ ] Extend parameter-evolution benchmarks with repeated middle inserts, Patch counts 1, 2, 4, and 8, writes touching one versus several Patches, PatchSet budget normalization, and the intentionally unsupported sparse one-record gap case.

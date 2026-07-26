@@ -2,11 +2,9 @@
 
 ## Scope
 
-This document defines the provider-neutral v1 identity, config, manifest, segment-reference, and ref formats for the future remote repository. The [remote repository design](00-design.md) defines workflows, and the [implementation plan](02-implementation-plan.md) defines code boundaries.
+This document defines the future provider-neutral remote-v1 bytes. The format is not implemented and is independent of local `STORE` and `MANIFEST` v1. It reflects the pre-release decision to support both worker checkpoints and aggregate snapshots. The [remote repository design](00-design.md) defines behavior; the [implementation plan](02-implementation-plan.md) defines code boundaries.
 
-These formats are independent of local `STORE` and `MANIFEST` v1. Remote support does not migrate or reinterpret existing local catalog bytes.
-
-## Logical Store Identity
+## Store Identity
 
 `RemoteStoreIdentityV1` identifies one logical cache namespace:
 
@@ -21,32 +19,13 @@ RemoteStoreIdentityV1 {
 }
 ```
 
-`value_len=0` means variable-length values; any non-zero value means fixed-width values. The identity parser applies the same key and value geometry limits as the local store before allocating caller metadata.
+`value_len = 0` denotes variable-length values; a nonzero value denotes fixed-width values. `caller_metadata` is the same opaque compatibility value used by the local store; the caller encodes schema and semantic namespace versions in it. Platform and build fingerprints are not identity fields by default. Parsers enforce local geometry and bounded-length limits before allocation.
 
-Value compression does not belong to logical identity. The block checksum is a fixed store-wide constant, so it cannot differ between stores; stores with equal geometry and caller metadata may exchange records even when their local compression codecs differ.
-
-`StoreIdentityId` is the BLAKE3 identity of the complete canonical identity bytes.
-
-## Repository Config
-
-One immutable `RemoteRepositoryConfigV1` selects the physical segment codecs for a v1 remote root:
-
-```text
-RemoteRepositoryConfigV1 {
-  format_version: u8
-  store_identity_id: [u8; 32]
-  value_payload_compression_kind: u8
-  structural_crc32c: u32
-}
-```
-
-The block checksum kind is not part of the config: remote segment objects use the same fixed block checksum as local segments. Unknown compression IDs are rejected. A build that does not contain the selected codec reports an unsupported-config error rather than silently treating the object as absent.
-
-The v1 config is immutable after repository creation. Its `RepositoryConfigId` covers the complete canonical config bytes. Config is separate from logical identity so a future explicit migration can rewrite physical objects while retaining the logical namespace.
+Compression and other writer tuning do not belong to remote identity. Each segment header self-describes its physical codec; supported codecs may coexist in one manifest, and a binary without a referenced codec reports an unsupported-segment error. The block checksum is the fixed local format constant. `AggregateOptions` selects physical policy only for newly encoded aggregate ranges; checkpoint and restore preserve verified segment bytes.
 
 ## Segment References
 
-Remote manifests contain concrete remote segment references:
+Every referenced object is one local-format segment file identified by its complete domain-separated `SegmentContentId`.
 
 ```text
 RemoteSegmentRefV1 {
@@ -57,144 +36,94 @@ RemoteSegmentRefV1 {
 }
 ```
 
-The referenced object is exactly one existing local-format segment file. `content_id` is the existing domain-separated `SegmentContentId` over the complete segment bytes.
+The declared range must equal the verified segment range. The verified header must match logical identity geometry, the fixed checksum ID, and a codec supported by the current operation.
 
-A validated segment set guarantees:
+`AggregateSnapshot` stores a counted, sorted `main_segments` array of these references. Ranges are strictly non-overlapping, content IDs are unique, and the total count and encoded bound bytes are bounded.
 
-- every range has the identity's key length
-- every range has `min_key <= max_key`
-- references are sorted by `min_key`
-- ranges are strictly non-overlapping
-- content IDs are unique
-- segment lengths and total encoded key-bound bytes stay within implementation limits
-- every verified segment header matches the repository config
-- every verified segment's actual range equals its manifest range
+`WorkerCheckpoint` preserves local layout with explicit components:
 
-The canonical parser rejects duplicate references. A manifest builder may deduplicate exact references before encoding, but canonical bytes never rely on parser-side collapsing.
+```text
+WorkerCheckpointV1 {
+  main_count: u32
+  main_segments[main_count]: RemoteSegmentRefV1
+  patch_count: u32
+  patches[patch_count]:
+    owner_main_index: u32
+    segment: RemoteSegmentRefV1
+}
+```
 
-Range non-overlap is a catalog invariant. Logical key uniqueness is established by the strict snapshot builder that creates the manifest, not inferred solely from range metadata.
+Main segments are sorted and strictly non-overlapping. Patch references are canonically sorted by `(owner_main_index, min_key, content_id)`. Each Patch names an existing Main index and its range is contained by that Main range. Each Main-owned PatchSet is strictly non-overlapping. Fixed parser limits and the repository's agreed local-layout policy cap total references, Patch files per Main, Patch bytes per Main, and encoded bound bytes before allocation; a manifest cannot choose or weaken those limits. No parser derives tier or ownership from object paths or ref names.
+
+The canonical parser rejects duplicate segment references and duplicate content IDs. A trusted builder may collapse an exact duplicate before encoding, but canonical bytes never depend on parser-side deduplication.
 
 ## Manifest Snapshot
 
-`RemoteManifestV1` is one immutable content snapshot:
+`RemoteManifestV1` is one immutable content snapshot with an explicit discriminant:
 
 ```text
 RemoteManifestV1 {
   format_version: u8
   store_identity_id: [u8; 32]
-  repository_config_id: [u8; 32]
-  segment_count: u32
-  segments: [RemoteSegmentRefV1; segment_count]
+  snapshot_kind: u8 // WorkerCheckpoint = 1, AggregateSnapshot = 2
+  payload: kind-specific canonical fields
   structural_crc32c: u32
 }
 ```
 
-`ManifestId` is the BLAKE3 identity of the complete canonical manifest bytes. The manifest does not store its own ID.
+For `WorkerCheckpoint`, the payload is `WorkerCheckpointV1`. For `AggregateSnapshot`, it encodes only a counted sorted Main reference array. Unknown kinds are errors. Variant-specific structural validation occurs while parsing and exact length, codec, range, and byte-budget validation occurs again after segment-object verification.
 
-The snapshot contains no timestamp, writer ID, parent list, local segment ID, patch tier, allocation counter, provider token, or object path. Those fields either make equivalent content unnecessarily distinct or belong to publication state rather than visible cache content.
-
-An empty manifest is valid and represents an empty cache snapshot.
+`ManifestId` is the BLAKE3 ID of complete canonical manifest bytes. Empty aggregate snapshots are valid. A checkpoint's layout, including its valid Main-plus-Patch structure, is content-addressed; it contains no local IDs, provider tokens, or paths.
 
 ## Mutable Refs
-
-`RemoteRefV1` is a bounded mutable pointer:
 
 ```text
 RemoteRefV1 {
   format_version: u8
   store_identity_id: [u8; 32]
-  repository_config_id: [u8; 32]
   revision: u64
   manifest_id: [u8; 32]
   structural_crc32c: u32
 }
 ```
 
-V1 defines two ref classes:
+`refs/current` must name an `AggregateSnapshot`, and `refs/workers/<worker-name>` must name a `WorkerCheckpoint`. The manifest discriminant controls decoding; the ref class supplies an additional expected-kind check rather than an implicit decoder choice. A complete manifest ID may address either kind directly. Provider compare-and-swap tokens are not portable bytes.
 
-- `refs/current` selects the shared aggregate snapshot.
-- `refs/workers/<worker-name>` selects one worker-owned snapshot.
+The first publication of a ref uses revision `1`; each replacement uses the checked successor of the previous revision. The number supports diagnostics and rejects malformed logical transitions, but the provider token returned by the preceding ref read remains the compare-and-swap authority.
 
-`revision` increases by one for each successful update to one ref name. It aids diagnostics and rejects malformed logical transitions, but the provider's conditional-write token remains the authority for compare-and-swap. Provider tokens never appear in portable bytes.
+Worker names use a restricted ASCII grammar and bounded length. Paths are derived from validated names and complete lowercase hexadecimal IDs.
 
-Worker names use one restricted ASCII grammar and a bounded encoded length. Path construction is performed from a validated `WorkerName`; callers cannot supply arbitrary object paths.
-
-## Object Layout
+## Object Layout And IDs
 
 ```text
 <root>/
   store/identity
-  store/config
   refs/current
   refs/workers/<worker-name>
   manifests/<manifest-id>.manifest
   segments/<segment-content-id>.seg
 ```
 
-Manifest and segment paths are derived from complete lowercase hexadecimal IDs. IDs and derived paths are not duplicated inside object payloads.
-
-V1 accepts only complete IDs. Abbreviated-ID resolution would require listing or an index and is deferred.
-
-## Content IDs
-
-All immutable IDs are domain-separated BLAKE3 values:
+Manifest and segment paths are derived from complete lowercase hexadecimal IDs and are not duplicated inside object payloads. V1 accepts complete IDs only.
 
 ```text
 StoreIdentityId    = BLAKE3("scs-store-identity-v1\0" || canonical_identity_bytes)
-RepositoryConfigId = BLAKE3("scs-repository-config-v1\0" || canonical_config_bytes)
 SegmentContentId   = BLAKE3("scs-segment-v1\0" || complete_segment_bytes)
 ManifestId         = BLAKE3("scs-manifest-v1\0" || canonical_manifest_bytes)
 ```
 
-The local implementation already computes and stores `SegmentContentId`; remote support reuses it rather than introducing another segment fingerprint.
+CRC32C is a structural check for bounded catalog payloads. Content IDs identify complete immutable bytes and are recomputed at the remote trust boundary.
 
-Structural CRC32C and content IDs have different ownership. CRC32C gives each catalog payload a fixed local structural check. A content ID identifies complete immutable bytes and is recomputed when bytes cross the remote trust boundary.
+## Encoding And Validation
 
-## Canonical Encoding
+Every format has explicit magic, one version, little-endian integers, fixed field order, bounded lengths, complete input consumption, and trailing CRC32C. Wire widths are not allocation budgets. Unknown versions, kinds, and codec IDs are hard errors.
 
-Every remote catalog format uses:
+Resolving a ref parses and validates the ref, verifies root identity, fetches and rehashes the named manifest, validates its kind-specific structure, then streams every referenced segment to verify length, content ID, structure, self-described codec support, and exact range. Bytes at a content-ID path that fail rehashing are corrupt.
 
-- an explicit magic before the fields shown above
-- one v1 format version
-- little-endian integers
-- fixed field order
-- bounded lengths checked before allocation
-- complete input consumption
-- no ignored extension bytes
-- canonical segment order
-- a trailing CRC32C over all preceding bytes
+Validation order is ref parse and root-identity comparison; manifest fetch, rehash, parse, and identity comparison; then streamed segment length, content-ID, structure, codec, and range verification. Ordinary local reads retain their existing lazy validation only after a verified snapshot has been locally published.
 
-Unknown versions and IDs are hard errors. Parsers validate external bytes once and construct types with private fields; internal repository code relies on those validated invariants.
-
-## Validation Order
-
-When resolving a ref, the repository validates in this order:
-
-1. Parse and structurally validate the bounded ref bytes.
-2. Compare identity and config IDs with the opened repository root.
-3. Fetch the exact manifest object named by `manifest_id`.
-4. Recompute `ManifestId`, then parse and validate the manifest.
-5. Compare manifest identity and config IDs with the ref and root.
-6. Materialize each required segment and recompute its length and `SegmentContentId`.
-7. Validate segment structure, physical config, and exact key range before using it for strict synchronization.
-
-Ordinary local reads retain their existing lazy block validation and corruption-as-miss behavior after a verified snapshot has been published locally.
-
-## Parser Limits
-
-The implementation defines explicit limits for:
-
-- key and fixed-value lengths
-- caller metadata bytes
-- worker-name bytes
-- segment count per manifest
-- manifest bytes
-- total encoded key-bound bytes
-- individual segment bytes
-- ref bytes
-
-Wire integer widths are not allocation budgets. Limits are checked with checked arithmetic before reserving memory or starting an object transfer.
+The implementation defines explicit limits for key and fixed-value lengths, caller metadata bytes, worker-name bytes, refs, manifests, total references per manifest, Patch files and bytes per Main, total encoded key-bound bytes, individual segment bytes, and streamed temporary files. Checked arithmetic enforces those limits before reservation, allocation, decompression, or transfer.
 
 ## Deferred Formats
 
-History commits, parent relationships, operation provenance, tags, pin leases, retention policies, and GC plans are not part of v1. They may be added as separate objects without changing the content-snapshot manifest.
+V1 has no parent relationships, history, provenance objects, tags, pin leases, listing, retention policy, GC plan, or abbreviated-ID index.
