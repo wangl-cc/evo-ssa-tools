@@ -52,7 +52,9 @@ impl OpenedSegment {
     ///
     /// Returns `Ok(None)` when the file is missing, malformed, corrupt, or
     /// does not match the expected store geometry: a referenced segment that
-    /// fails to open is miss space, not an error.
+    /// fails to open is miss space, not an error. An unsupported compression
+    /// codec remains a hard error because this binary cannot classify the
+    /// referenced segment's logical contents.
     pub(crate) fn open(path: PathBuf, options: SegmentOpenOptions<'_>) -> Result<Option<Self>> {
         let file = match File::open(&path) {
             Ok(file) => file,
@@ -152,7 +154,7 @@ impl Segment {
 fn read_header(file: &File) -> Result<SegmentHeader> {
     let mut bytes = [0u8; SEGMENT_HEADER_LEN];
     read_exact_at(file, 0, &mut bytes)?;
-    Ok(SegmentHeader::from_bytes(&bytes)?)
+    SegmentHeader::from_bytes(&bytes)
 }
 
 fn read_footer(

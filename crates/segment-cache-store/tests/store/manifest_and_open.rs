@@ -1,5 +1,6 @@
 use std::fs;
 
+use crc32c::crc32c;
 use segment_cache_store::{
     CatalogError, CatalogMismatch, CommitOptions, Error, OpenOptions as StoreOpenOptions, Result,
     Store, StoreMetadata, ValueLayout,
@@ -221,12 +222,44 @@ fn unsupported_store_value_payload_compression_is_rejected() -> Result<()> {
         Ok(_) => panic!("unsupported value payload compression id should reject open"),
         Err(error) => error,
     };
-    assert!(matches!(
-        error,
-        Error::Catalog(CatalogError::Mismatch(
-            CatalogMismatch::UnsupportedValuePayloadCompression { format_id: 255 }
-        ))
-    ));
+    assert!(matches!(error, Error::UnsupportedCompressionCodec {
+        format_id: 255
+    }));
+    Ok(())
+}
+
+#[test]
+fn unsupported_segment_compression_codec_is_a_hard_error() -> Result<()> {
+    let tempdir = tempfile::tempdir()?;
+    let store = create_store(&tempdir)?;
+    commit_entries(&store, &[(make_key(1, 0, 0), make_value(1, 32))])?;
+    drop(store);
+
+    replace_first_segment_compression_id(tempdir.path(), 255)?;
+
+    let error = match Store::open(tempdir.path(), open_options()) {
+        Ok(_) => panic!("unsupported segment codec should reject open"),
+        Err(error) => error,
+    };
+    assert!(matches!(error, Error::UnsupportedCompressionCodec {
+        format_id: 255
+    }));
+    Ok(())
+}
+
+#[cfg(feature = "value-compression-lz4")]
+#[test]
+fn supported_segment_compression_mismatch_is_a_cache_miss() -> Result<()> {
+    let tempdir = tempfile::tempdir()?;
+    let store = create_store(&tempdir)?;
+    let key = make_key(1, 0, 0);
+    commit_entries(&store, &[(key.clone(), make_value(1, 32))])?;
+    drop(store);
+
+    replace_first_segment_compression_id(tempdir.path(), 1)?;
+
+    let reopened = Store::open(tempdir.path(), open_options())?;
+    assert_eq!(reopened.fetch_one(&key)?, None);
     Ok(())
 }
 
@@ -363,4 +396,18 @@ fn refresh_manifest_checksum(manifest: &mut [u8]) {
         .expect("test MANIFEST contains its XXH3-128 checksum");
     let checksum = xxhash_rust::xxh3::xxh3_128(&manifest[..checksum_offset]).to_be_bytes();
     manifest[checksum_offset..].copy_from_slice(&checksum);
+}
+
+fn replace_first_segment_compression_id(root: &std::path::Path, format_id: u8) -> Result<()> {
+    const COMPRESSION_ID_OFFSET: usize = 5;
+    const HEADER_BODY_LEN: usize = 14;
+    const HEADER_LEN: usize = 18;
+
+    let segment_path = first_segment_path(root)?;
+    let mut segment = fs::read(&segment_path)?;
+    segment[COMPRESSION_ID_OFFSET] = format_id;
+    let header_crc = crc32c(&segment[..HEADER_BODY_LEN]);
+    segment[HEADER_BODY_LEN..HEADER_LEN].copy_from_slice(&header_crc.to_le_bytes());
+    fs::write(segment_path, segment)?;
+    Ok(())
 }

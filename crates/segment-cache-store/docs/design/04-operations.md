@@ -16,7 +16,7 @@ flowchart TD
   Group --> Snapshot["publish runtime snapshot"]
 ```
 
-Segment opening checks file length, header CRC, schema, supported compression, the fixed version-1 footer checksum, sparse ranges, and index offsets. It does not rescan a locally published complete segment to recompute `SegmentContentId`; that full verification belongs to a trust-boundary operation. Writable opens may remove stale catalog temporary files but do not discover data by scanning `segments/`. Read-only opens never take the writer lock, run garbage collection, or mutate the filesystem.
+Segment opening checks file length, header CRC, schema, compression support, the fixed version-1 footer checksum, sparse ranges, and index offsets. An unsupported compression codec aborts the store open because it is a reader capability failure, not corrupt cache data; a supported codec that disagrees with STORE geometry makes only that segment absent. Open does not rescan a locally published complete segment to recompute `SegmentContentId`; that full verification belongs to a trust-boundary operation. Writable opens may remove stale catalog temporary files but do not discover data by scanning `segments/`. Read-only opens never take the writer lock, run garbage collection, or mutate the filesystem.
 
 For a point lookup, binary-search the globally sorted Main ranges. If a Main owns the key range, binary-search its contained PatchSet. At most one healthy Patch and the healthy Main are candidates. A hit exists only after the candidate value payload has fully verified. A healthy Patch supplies a key only where a healthy Main does not; if both abnormally contain it, Main wins.
 

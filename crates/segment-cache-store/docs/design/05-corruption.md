@@ -6,11 +6,11 @@ Classified missing data, format failure, checksum failure, and decompression fai
 
 The classified scope is explicit:
 
-- A missing referenced segment, invalid segment length, bad header CRC or footer checksum, incompatible schema or codec, malformed sparse index, or segment-range disagreement makes the complete segment absent.
+- A missing referenced segment, invalid segment length, bad header CRC or footer checksum, incompatible schema, disagreement with a supported codec, malformed sparse index, or segment-range disagreement makes the complete segment absent.
 - A bad block lookup digest, malformed block geometry, disagreement with the validated block-index range, bad value-frame digest, or decompression failure makes only that block absent.
 - An abandoned temporary file or a final segment not referenced by MANIFEST is invisible rather than data.
 
-Ordinary I/O failures are hard errors. `STORE` and `MANIFEST` failures are also hard errors because they define namespace identity and visible membership. Final segment files not referenced by MANIFEST and abandoned `.tmp` files are invisible; explicit garbage collection may later remove them.
+Ordinary I/O failures are hard errors. `STORE` and `MANIFEST` failures are also hard errors because they define namespace identity and visible membership. An unsupported compression codec is likewise a hard error: the reader lacks a capability needed to classify potentially healthy data, so treating it as absent would silently discard cache contents. Final segment files not referenced by MANIFEST and abandoned `.tmp` files are invisible; explicit garbage collection may later remove them.
 
 ## Strict Boundaries
 

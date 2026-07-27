@@ -8,7 +8,7 @@ use super::{
 };
 use crate::{
     block::ValuePayloadCompressionKind,
-    error::{OptionsError, Result},
+    error::{Error, OptionsError, Result},
     segment::{Segment, SegmentEncoding, SegmentGeometry, SegmentOpenOptions, StoreSchema},
     value::ValueLayout,
 };
@@ -178,9 +178,10 @@ impl Catalog {
     /// Builds the shared runtime state from validated catalog data, opening every
     /// referenced segment file.
     ///
-    /// A referenced segment that fails to open (missing, corrupt, or mismatched
-    /// with its manifest identity) is a dead entry: invisible now, dropped at
-    /// the next manifest publication.
+    /// A referenced segment that is missing, corrupt, or mismatched with its
+    /// manifest identity is a dead entry: invisible now, dropped at the next
+    /// manifest publication. An unsupported segment codec aborts the open
+    /// because it is a reader capability failure rather than corrupt cache data.
     fn build_inner(
         paths: StorePaths,
         descriptor: StoreDescriptor,
@@ -234,5 +235,5 @@ impl Catalog {
 
 fn resolve_value_payload_compression(format_id: u8) -> Result<ValuePayloadCompressionKind> {
     ValuePayloadCompressionKind::from_format_id(format_id)
-        .ok_or(CatalogMismatch::UnsupportedValuePayloadCompression { format_id }.into())
+        .ok_or(Error::UnsupportedCompressionCodec { format_id })
 }

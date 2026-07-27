@@ -13,7 +13,7 @@ use crate::{
     binary::{BinaryCursor, format_u32},
     block::{BLOCK_METADATA_HEADER_LEN, ValuePayloadCompressionKind},
     checksum,
-    error::{CorruptionError, FormatError},
+    error::{CorruptionError, Error, FormatError, Result},
     limits::{MAX_BLOCK_COUNT, MAX_FOOTER_LEN},
     value::ValueLayout,
 };
@@ -31,10 +31,9 @@ const HEADER_MAGIC: &[u8; 4] = b"SCSG";
 /// Parsed fixed-size segment header.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct SegmentHeader {
-    version: u8,
     key_len: u32,
     value_layout: ValueLayout,
-    value_payload_compression_id: u8,
+    value_payload_compression: ValuePayloadCompressionKind,
 }
 
 impl SegmentHeader {
@@ -44,17 +43,16 @@ impl SegmentHeader {
         value_payload_compression: ValuePayloadCompressionKind,
     ) -> Result<Self, FormatError> {
         Ok(Self {
-            version: SEGMENT_FORMAT_VERSION,
             key_len: u32::try_from(key_len)
                 .map_err(|_| FormatError::limit("segment key length"))?,
             value_layout,
-            value_payload_compression_id: value_payload_compression.format_id(),
+            value_payload_compression,
         })
     }
 
-    pub(crate) fn from_bytes(bytes: &[u8]) -> Result<Self, CorruptionError> {
+    pub(crate) fn from_bytes(bytes: &[u8]) -> Result<Self> {
         if bytes.len() != SEGMENT_HEADER_LEN || &bytes[..4] != HEADER_MAGIC {
-            return Err(CorruptionError::SegmentFormat);
+            return Err(CorruptionError::SegmentFormat.into());
         }
         let stored_crc = u32::from_le_bytes(
             bytes[SEGMENT_HEADER_BODY_LEN..SEGMENT_HEADER_LEN]
@@ -62,25 +60,36 @@ impl SegmentHeader {
                 .map_err(|_| CorruptionError::SegmentFormat)?,
         );
         if crc32c(&bytes[..SEGMENT_HEADER_BODY_LEN]) != stored_crc {
-            return Err(CorruptionError::SegmentFormat);
+            return Err(CorruptionError::SegmentFormat.into());
         }
         let version = bytes[4];
+        if version != SEGMENT_FORMAT_VERSION {
+            return Err(CorruptionError::SegmentFormat.into());
+        }
         let value_payload_compression_id = bytes[5];
+        let value_payload_compression = ValuePayloadCompressionKind::from_format_id(
+            value_payload_compression_id,
+        )
+        .ok_or(Error::UnsupportedCompressionCodec {
+            format_id: value_payload_compression_id,
+        })?;
         let mut cursor = BinaryCursor::at(bytes, 6);
         let key_len = cursor.read::<u32>().ok_or(CorruptionError::SegmentFormat)?;
         let value_len = cursor.read::<u32>().ok_or(CorruptionError::SegmentFormat)?;
         Ok(Self {
-            version,
             key_len,
             value_layout: ValueLayout::from_u32(value_len),
-            value_payload_compression_id,
+            value_payload_compression,
         })
     }
 
     pub(crate) fn into_bytes(self, buffer: &mut Vec<u8>) {
         let start = buffer.len();
         buffer.extend_from_slice(HEADER_MAGIC);
-        buffer.extend_from_slice(&[self.version, self.value_payload_compression_id]);
+        buffer.extend_from_slice(&[
+            SEGMENT_FORMAT_VERSION,
+            self.value_payload_compression.format_id(),
+        ]);
         buffer.extend_from_slice(&self.key_len.to_le_bytes());
         buffer.extend_from_slice(&self.value_layout.to_u32().to_le_bytes());
         let crc = crc32c(&buffer[start..start + SEGMENT_HEADER_BODY_LEN]);
@@ -93,10 +102,9 @@ impl SegmentHeader {
         expected_value_layout: ValueLayout,
         expected_value_payload_compression: ValuePayloadCompressionKind,
     ) -> bool {
-        self.version == SEGMENT_FORMAT_VERSION
-            && self.key_len as usize == expected_key_len
+        self.key_len as usize == expected_key_len
             && self.value_layout == expected_value_layout
-            && self.value_payload_compression_id == expected_value_payload_compression.format_id()
+            && self.value_payload_compression == expected_value_payload_compression
     }
 }
 

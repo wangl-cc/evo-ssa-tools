@@ -32,6 +32,9 @@ pub enum Error {
     #[error(transparent)]
     Catalog(#[from] CatalogError),
 
+    #[error("unsupported value-payload compression codec: format id {format_id}")]
+    UnsupportedCompressionCodec { format_id: u8 },
+
     #[error(transparent)]
     Format(#[from] FormatError),
 
