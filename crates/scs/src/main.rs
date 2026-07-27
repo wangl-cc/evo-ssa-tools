@@ -118,7 +118,6 @@ impl StoreRoot {
         println!("metadata: {}", MetadataView(store.metadata()));
         println!("key_len: {}", store.key_len());
         println!("value_layout: {}", ValueLayoutView(&store));
-        println!("block_checksum: {}", store.block_checksum().name());
         println!(
             "value_payload_compression: {}",
             store.value_payload_compression().name()

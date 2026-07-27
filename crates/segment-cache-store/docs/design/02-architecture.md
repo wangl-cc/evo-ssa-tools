@@ -47,7 +47,7 @@ Each concept exposes its canonical crate-internal types from the module root. Im
 
 `ValuePayloadCompressionKind::None` and persisted compression ID `0` remain representable in every build. Compression policy and codec orchestration compile only with the `value-compression` capability; concrete frame implementations require their backend features. A build without the required backend rejects a nonzero unsupported compression ID while opening the segment, before block decoding.
 
-Block checksums are not feature-gated. Every block carries fixed unseeded XXH3-128 digests, and CRC32C protects fixed catalog and segment structures. Both algorithms are always compiled.
+Checksums are not feature-gated. MANIFEST, segment footer, and every block section carry fixed unseeded XXH3-128 digests, while CRC32C protects only the short fixed segment header. Both algorithms are always compiled.
 
 ## Process Model
 

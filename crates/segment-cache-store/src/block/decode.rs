@@ -9,13 +9,13 @@ use std::cmp::Ordering;
 #[cfg(feature = "value-compression")]
 use super::ValuePayloadDecoder;
 use super::{
-    BlockChecksumKind, ValuePayloadCompressionKind,
+    ValuePayloadCompressionKind,
     layout::{
         BLOCK_METADATA_HEADER_LEN, BlockLookupLayout, BlockValueRegion, read_stored_checksum,
     },
 };
 use crate::{
-    error::CorruptionError, key::BlockRelativeKey, limits::MAX_VALUE_PAYLOAD_LEN,
+    checksum, error::CorruptionError, key::BlockRelativeKey, limits::MAX_VALUE_PAYLOAD_LEN,
     value::ValueLayout,
 };
 
@@ -42,7 +42,6 @@ pub(crate) struct DecodedBlock {
     payload_is_borrowable: bool,
     #[cfg(feature = "value-compression")]
     value_payload_compression: ValuePayloadCompressionKind,
-    block_checksum: BlockChecksumKind,
     value_region: BlockValueRegion,
 }
 
@@ -65,7 +64,6 @@ pub(crate) struct BlockDecodeOptions<'a> {
     pub(crate) expected_key_range: BlockKeyRangeRef<'a>,
     pub(crate) key_len: usize,
     pub(crate) value_layout: ValueLayout,
-    pub(crate) block_checksum: BlockChecksumKind,
     pub(crate) value_payload_compression: ValuePayloadCompressionKind,
     pub(crate) verify_lookup_checksum: bool,
 }
@@ -80,7 +78,6 @@ impl DecodedBlock {
             options.key_len,
             options.expected_key_range.segment_prefix.len(),
             options.value_layout,
-            options.block_checksum,
             options.value_payload_compression,
         )?;
         if options.verify_lookup_checksum {
@@ -110,7 +107,6 @@ impl DecodedBlock {
             payload_is_borrowable: layout.payload_is_borrowable,
             #[cfg(feature = "value-compression")]
             value_payload_compression: layout.value_payload_compression,
-            block_checksum: layout.block_checksum,
             value_region: layout.value_region,
         };
         block.value_region.validate(block.metadata())?;
@@ -138,13 +134,12 @@ impl DecodedBlock {
     }
 
     pub(crate) fn verify_payload_checksum(&self) -> Result<(), CorruptionError> {
-        let stored_checksum =
-            read_stored_checksum(&self.bytes, self.value_checksum_offset, self.block_checksum)?;
+        let stored_checksum = read_stored_checksum(&self.bytes, self.value_checksum_offset)?;
         let checked = self
             .bytes
             .get(self.payload_offset..self.value_checksum_offset)
             .ok_or(CorruptionError::Block)?;
-        if !self.block_checksum.verify(checked, stored_checksum) {
+        if !checksum::verify(checked, stored_checksum) {
             return Err(CorruptionError::Block);
         }
         Ok(())
@@ -362,7 +357,6 @@ struct BlockLayout {
     #[cfg(feature = "value-compression")]
     payload_is_borrowable: bool,
     value_checksum_offset: usize,
-    block_checksum: BlockChecksumKind,
     #[cfg(feature = "value-compression")]
     value_payload_compression: ValuePayloadCompressionKind,
     value_region: BlockValueRegion,
@@ -375,7 +369,6 @@ impl BlockLayout {
         key_len: usize,
         segment_prefix_len: usize,
         value_layout: ValueLayout,
-        block_checksum: BlockChecksumKind,
         value_payload_compression: ValuePayloadCompressionKind,
     ) -> Result<Self, CorruptionError> {
         let mut layout = Self::from_metadata_prefix(
@@ -383,7 +376,6 @@ impl BlockLayout {
             key_len,
             segment_prefix_len,
             value_layout,
-            block_checksum,
             value_payload_compression,
         )?;
         #[cfg(feature = "value-compression")]
@@ -398,7 +390,6 @@ impl BlockLayout {
         key_len: usize,
         segment_prefix_len: usize,
         value_layout: ValueLayout,
-        block_checksum: BlockChecksumKind,
         value_payload_compression: ValuePayloadCompressionKind,
     ) -> Result<Self, CorruptionError> {
         let record_count = BlockLookupLayout::read_record_count(bytes)?;
@@ -416,7 +407,7 @@ impl BlockLayout {
             extra_prefix_len,
         )?;
         let lookup_metadata_len = lookup.lookup_metadata_len;
-        let metadata_with_checksum_len = lookup.metadata_with_checksum_len(block_checksum)?;
+        let metadata_with_checksum_len = lookup.metadata_with_checksum_len()?;
         if metadata_with_checksum_len > bytes.len() {
             return Err(CorruptionError::Block);
         }
@@ -460,7 +451,6 @@ impl BlockLayout {
             #[cfg(feature = "value-compression")]
             payload_is_borrowable: value_payload_compression == ValuePayloadCompressionKind::None,
             value_checksum_offset: payload_offset,
-            block_checksum,
             #[cfg(feature = "value-compression")]
             value_payload_compression,
             value_region,
@@ -472,7 +462,7 @@ impl BlockLayout {
     fn read_payload_frame(&mut self, bytes: &[u8]) -> Result<(), CorruptionError> {
         let value_checksum_offset = self
             .block_len
-            .checked_sub(self.block_checksum.digest_len())
+            .checked_sub(checksum::DIGEST_LEN)
             .ok_or(CorruptionError::Block)?;
         let frame_bytes = bytes
             .get(self.payload_offset..value_checksum_offset)
@@ -500,7 +490,7 @@ impl BlockLayout {
             .ok_or(CorruptionError::Block)?;
         let block_end = self
             .value_checksum_offset
-            .checked_add(self.block_checksum.digest_len())
+            .checked_add(checksum::DIGEST_LEN)
             .ok_or(CorruptionError::Block)?;
         if block_end != self.block_len {
             return Err(CorruptionError::Block);
@@ -509,12 +499,11 @@ impl BlockLayout {
     }
 
     fn verify_lookup_checksum(&self, bytes: &[u8]) -> Result<(), CorruptionError> {
-        let stored_checksum =
-            read_stored_checksum(bytes, self.lookup_metadata_len, self.block_checksum)?;
+        let stored_checksum = read_stored_checksum(bytes, self.lookup_metadata_len)?;
         let checked = bytes
             .get(..self.lookup_metadata_len)
             .ok_or(CorruptionError::Block)?;
-        if !self.block_checksum.verify(checked, stored_checksum) {
+        if !checksum::verify(checked, stored_checksum) {
             return Err(CorruptionError::Block);
         }
         Ok(())
@@ -534,7 +523,7 @@ mod tests {
     #[cfg(feature = "value-compression")]
     use crate::block::{ValuePayloadCompressionPolicy, ValuePayloadEncoder};
     use crate::{
-        block::{BlockBuilder, BlockChecksumKind},
+        block::BlockBuilder,
         record::{EntryRef, EntrySource},
     };
 
@@ -558,7 +547,6 @@ mod tests {
         entries: &'a Entries<'a>,
         key_len: usize,
         value_layout: ValueLayout,
-        checksum: BlockChecksumKind,
         compression: ValuePayloadCompressionKind,
     ) -> BlockBuilder<'a, Entries<'a>> {
         BlockBuilder::new(
@@ -566,7 +554,6 @@ mod tests {
             key_len,
             0,
             value_layout,
-            checksum,
             compression,
             ValuePayloadCompressionPolicy::DEFAULT,
         )
@@ -577,10 +564,9 @@ mod tests {
         entries: &'a Entries<'a>,
         key_len: usize,
         value_layout: ValueLayout,
-        checksum: BlockChecksumKind,
         compression: ValuePayloadCompressionKind,
     ) -> BlockBuilder<'a, Entries<'a>> {
-        BlockBuilder::new(entries, key_len, 0, value_layout, checksum, compression)
+        BlockBuilder::new(entries, key_len, 0, value_layout, compression)
     }
 
     #[cfg(feature = "value-compression")]
@@ -628,10 +614,9 @@ mod tests {
             let entries = Entries {
                 entries: &[(b"aa01", b"first"), (b"aa02", b"second")],
             };
-            let checksum = BlockChecksumKind::Xxh3_128;
             let compression = ValuePayloadCompressionKind::None;
             let block = encode_block(
-                block_builder(&entries, 4, ValueLayout::VARIABLE, checksum, compression),
+                block_builder(&entries, 4, ValueLayout::VARIABLE, compression),
                 compression,
             );
             assert_eq!(
@@ -649,7 +634,6 @@ mod tests {
                 expected_key_range: key_range(b"aa01", b"aa02"),
                 key_len: 4,
                 value_layout: ValueLayout::VARIABLE,
-                block_checksum: checksum,
                 value_payload_compression: compression,
                 verify_lookup_checksum: true,
             })
@@ -686,7 +670,6 @@ mod tests {
             let entries = Entries {
                 entries: &entry_data,
             };
-            let checksum = BlockChecksumKind::Xxh3_128;
             let compression = ValuePayloadCompressionKind::None;
             #[cfg(feature = "value-compression")]
             let builder = BlockBuilder::new(
@@ -694,19 +677,11 @@ mod tests {
                 512,
                 510,
                 ValueLayout::VARIABLE,
-                checksum,
                 compression,
                 ValuePayloadCompressionPolicy::DEFAULT,
             );
             #[cfg(not(feature = "value-compression"))]
-            let builder = BlockBuilder::new(
-                &entries,
-                512,
-                510,
-                ValueLayout::VARIABLE,
-                checksum,
-                compression,
-            );
+            let builder = BlockBuilder::new(&entries, 512, 510, ValueLayout::VARIABLE, compression);
             let block = encode_block(builder, compression);
 
             assert_eq!(
@@ -725,7 +700,6 @@ mod tests {
                 },
                 key_len: 512,
                 value_layout: ValueLayout::VARIABLE,
-                block_checksum: checksum,
                 value_payload_compression: compression,
                 verify_lookup_checksum: true,
             })
@@ -742,17 +716,15 @@ mod tests {
             let entries = Entries {
                 entries: &[(b"aa01", b"only")],
             };
-            let checksum = BlockChecksumKind::Xxh3_128;
             let compression = ValuePayloadCompressionKind::None;
             let block = encode_block(
-                block_builder(&entries, 4, ValueLayout::VARIABLE, checksum, compression),
+                block_builder(&entries, 4, ValueLayout::VARIABLE, compression),
                 compression,
             );
             let decoded = DecodedBlock::decode(block, BlockDecodeOptions {
                 expected_key_range: key_range(b"aa01", b"aa01"),
                 key_len: 4,
                 value_layout: ValueLayout::VARIABLE,
-                block_checksum: checksum,
                 value_payload_compression: compression,
                 verify_lookup_checksum: true,
             })
@@ -777,17 +749,15 @@ mod tests {
             let entries = Entries {
                 entries: &[(b"aa01", b"first"), (b"aa02", b"second")],
             };
-            let checksum = BlockChecksumKind::Xxh3_128;
             let compression = ValuePayloadCompressionKind::None;
             let block = encode_block(
-                block_builder(&entries, 4, ValueLayout::VARIABLE, checksum, compression),
+                block_builder(&entries, 4, ValueLayout::VARIABLE, compression),
                 compression,
             );
             let short_range = DecodedBlock::decode(block.clone(), BlockDecodeOptions {
                 expected_key_range: key_range(b"aa01", b"aa01"),
                 key_len: 4,
                 value_layout: ValueLayout::VARIABLE,
-                block_checksum: checksum,
                 value_payload_compression: compression,
                 verify_lookup_checksum: true,
             });
@@ -797,7 +767,6 @@ mod tests {
                 expected_key_range: key_range(b"aa01", b"aa03"),
                 key_len: 4,
                 value_layout: ValueLayout::VARIABLE,
-                block_checksum: checksum,
                 value_payload_compression: compression,
                 verify_lookup_checksum: true,
             });
@@ -813,10 +782,9 @@ mod tests {
             let entries = Entries {
                 entries: &[(b"key1", b"value")],
             };
-            let checksum = BlockChecksumKind::Xxh3_128;
             let compression = ValuePayloadCompressionKind::None;
             let mut block = encode_block(
-                block_builder(&entries, 4, ValueLayout::VARIABLE, checksum, compression),
+                block_builder(&entries, 4, ValueLayout::VARIABLE, compression),
                 compression,
             );
             block[..4].copy_from_slice(&0u32.to_le_bytes());
@@ -826,7 +794,6 @@ mod tests {
                     expected_key_range: key_range(b"key1", b"key1"),
                     key_len: 4,
                     value_layout: ValueLayout::VARIABLE,
-                    block_checksum: checksum,
                     value_payload_compression: compression,
                     verify_lookup_checksum: true,
                 }),
@@ -843,10 +810,9 @@ mod tests {
             let entries = Entries {
                 entries: &[(b"aa01", b"first"), (b"aa02", b"second")],
             };
-            let checksum = test_checksum();
             let compression = ValuePayloadCompressionKind::None;
             let mut bytes = encode_block(
-                block_builder(&entries, 4, ValueLayout::VARIABLE, checksum, compression),
+                block_builder(&entries, 4, ValueLayout::VARIABLE, compression),
                 compression,
             );
             let payload_checksum_byte = bytes
@@ -858,7 +824,6 @@ mod tests {
                 expected_key_range: key_range(b"aa01", b"aa02"),
                 key_len: 4,
                 value_layout: ValueLayout::VARIABLE,
-                block_checksum: checksum,
                 value_payload_compression: compression,
                 verify_lookup_checksum: true,
             })
@@ -868,10 +833,6 @@ mod tests {
                 decoded.verify_payload_checksum(),
                 Err(CorruptionError::Block)
             ));
-        }
-
-        fn test_checksum() -> BlockChecksumKind {
-            BlockChecksumKind::Xxh3_128
         }
     }
 
@@ -898,26 +859,17 @@ mod tests {
             let entries = Entries {
                 entries: &entries_data,
             };
-            let checksum = BlockChecksumKind::Xxh3_128;
             let policy =
                 ValuePayloadCompressionPolicy::new(0, 1).expect("compression policy is valid");
             let mut encoder = ValuePayloadEncoder::new(compression);
-            let block = BlockBuilder::new(
-                &entries,
-                4,
-                0,
-                ValueLayout::VARIABLE,
-                checksum,
-                compression,
-                policy,
-            )
-            .encode(&mut encoder)
-            .expect("block should encode");
+            let block =
+                BlockBuilder::new(&entries, 4, 0, ValueLayout::VARIABLE, compression, policy)
+                    .encode(&mut encoder)
+                    .expect("block should encode");
             let decoded = DecodedBlock::decode(block, BlockDecodeOptions {
                 expected_key_range: key_range(b"aa01", b"aa01"),
                 key_len: 4,
                 value_layout: ValueLayout::VARIABLE,
-                block_checksum: checksum,
                 value_payload_compression: compression,
                 verify_lookup_checksum: true,
             })

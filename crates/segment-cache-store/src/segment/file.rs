@@ -70,7 +70,6 @@ impl OpenedSegment {
         if !header.matches_geometry(
             options.geometry.schema.key_len,
             options.geometry.schema.value_layout,
-            options.geometry.encoding.block_checksum,
             options.geometry.encoding.value_payload_compression,
         ) {
             return Ok(None);
@@ -247,7 +246,6 @@ pub(super) fn read_block_reusing(
         },
         key_len: options.geometry.schema.key_len,
         value_layout: options.geometry.schema.value_layout,
-        block_checksum: options.geometry.encoding.block_checksum,
         value_payload_compression: options.geometry.encoding.value_payload_compression,
         verify_lookup_checksum: options.verify_lookup_checksum,
     })?)
@@ -261,7 +259,7 @@ mod tests {
     #[cfg(feature = "value-compression")]
     use crate::block::ValuePayloadCompressionPolicy;
     use crate::{
-        block::{BlockChecksumKind, ValuePayloadCompressionKind},
+        block::ValuePayloadCompressionKind,
         record::{EntryRef, EntrySource},
         segment::{SegmentEncoding, SegmentWriter, StoreSchema},
         value::ValueLayout,
@@ -290,7 +288,6 @@ mod tests {
                 value_layout: ValueLayout::VARIABLE,
             },
             encoding: SegmentEncoding {
-                block_checksum: BlockChecksumKind::Xxh3_128,
                 value_payload_compression: ValuePayloadCompressionKind::None,
             },
         };

@@ -84,7 +84,6 @@ impl SegmentWriter {
         SegmentHeader::new(
             self.geometry.schema.key_len,
             self.geometry.schema.value_layout,
-            self.geometry.encoding.block_checksum,
             self.geometry.encoding.value_payload_compression,
         )?
         .into_bytes(&mut header);
@@ -173,7 +172,6 @@ impl SegmentWriter {
             self.geometry.schema.key_len,
             segment_prefix_len,
             self.geometry.schema.value_layout,
-            self.geometry.encoding.block_checksum,
             self.geometry.encoding.value_payload_compression,
             self.value_payload_compression_policy,
         )
@@ -190,7 +188,6 @@ impl SegmentWriter {
             self.geometry.schema.key_len,
             segment_prefix_len,
             self.geometry.schema.value_layout,
-            self.geometry.encoding.block_checksum,
             self.geometry.encoding.value_payload_compression,
         )
     }
@@ -227,11 +224,11 @@ impl SegmentWriter {
             };
             let prospective_len = key_region_len
                 + value_index_len
-                + self.geometry.encoding.block_checksum.digest_len()
+                + crate::checksum::DIGEST_LEN
                 + payload_frame_header_len
                 + payload_len
                 + entry.value().len()
-                + self.geometry.encoding.block_checksum.digest_len();
+                + crate::checksum::DIGEST_LEN;
             if end > start && prospective_len > self.target_block_size {
                 break;
             }

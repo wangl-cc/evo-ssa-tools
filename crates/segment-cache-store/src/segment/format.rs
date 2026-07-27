@@ -11,16 +11,19 @@ use crc32c::crc32c;
 use super::index::{EncodedBlockIndexEntry, SegmentIndex};
 use crate::{
     binary::{BinaryCursor, format_u32},
-    block::{BLOCK_METADATA_HEADER_LEN, BlockChecksumKind, ValuePayloadCompressionKind},
+    block::{BLOCK_METADATA_HEADER_LEN, ValuePayloadCompressionKind},
+    checksum,
     error::{CorruptionError, FormatError},
     limits::{MAX_BLOCK_COUNT, MAX_FOOTER_LEN},
     value::ValueLayout,
 };
 
 const SEGMENT_FORMAT_VERSION: u8 = 1;
-const SEGMENT_HEADER_BODY_LEN: usize = 16;
-pub(crate) const SEGMENT_HEADER_LEN: usize = 20;
-pub(crate) const SEGMENT_FOOTER_TRAILER_LEN: usize = 8;
+const SEGMENT_HEADER_BODY_LEN: usize = 14;
+pub(super) const SEGMENT_HEADER_LEN: usize = 18;
+const FOOTER_BODY_LEN_FIELD_LEN: usize = size_of::<u32>();
+pub(super) const SEGMENT_FOOTER_TRAILER_LEN: usize =
+    FOOTER_BODY_LEN_FIELD_LEN + checksum::DIGEST_LEN;
 const HEADER_MAGIC: &[u8; 4] = b"SCSG";
 
 // Segment header.
@@ -31,7 +34,6 @@ pub(crate) struct SegmentHeader {
     version: u8,
     key_len: u32,
     value_layout: ValueLayout,
-    block_checksum_id: u8,
     value_payload_compression_id: u8,
 }
 
@@ -39,7 +41,6 @@ impl SegmentHeader {
     pub(crate) fn new(
         key_len: usize,
         value_layout: ValueLayout,
-        block_checksum: BlockChecksumKind,
         value_payload_compression: ValuePayloadCompressionKind,
     ) -> Result<Self, FormatError> {
         Ok(Self {
@@ -47,7 +48,6 @@ impl SegmentHeader {
             key_len: u32::try_from(key_len)
                 .map_err(|_| FormatError::limit("segment key length"))?,
             value_layout,
-            block_checksum_id: block_checksum.format_id(),
             value_payload_compression_id: value_payload_compression.format_id(),
         })
     }
@@ -65,19 +65,14 @@ impl SegmentHeader {
             return Err(CorruptionError::SegmentFormat);
         }
         let version = bytes[4];
-        let block_checksum_id = bytes[5];
-        let value_payload_compression_id = bytes[6];
-        if bytes[7] != 0 {
-            return Err(CorruptionError::SegmentFormat);
-        }
-        let mut cursor = BinaryCursor::at(bytes, 8);
+        let value_payload_compression_id = bytes[5];
+        let mut cursor = BinaryCursor::at(bytes, 6);
         let key_len = cursor.read::<u32>().ok_or(CorruptionError::SegmentFormat)?;
         let value_len = cursor.read::<u32>().ok_or(CorruptionError::SegmentFormat)?;
         Ok(Self {
             version,
             key_len,
             value_layout: ValueLayout::from_u32(value_len),
-            block_checksum_id,
             value_payload_compression_id,
         })
     }
@@ -85,12 +80,7 @@ impl SegmentHeader {
     pub(crate) fn into_bytes(self, buffer: &mut Vec<u8>) {
         let start = buffer.len();
         buffer.extend_from_slice(HEADER_MAGIC);
-        buffer.extend_from_slice(&[
-            self.version,
-            self.block_checksum_id,
-            self.value_payload_compression_id,
-            0,
-        ]);
+        buffer.extend_from_slice(&[self.version, self.value_payload_compression_id]);
         buffer.extend_from_slice(&self.key_len.to_le_bytes());
         buffer.extend_from_slice(&self.value_layout.to_u32().to_le_bytes());
         let crc = crc32c(&buffer[start..start + SEGMENT_HEADER_BODY_LEN]);
@@ -101,13 +91,11 @@ impl SegmentHeader {
         self,
         expected_key_len: usize,
         expected_value_layout: ValueLayout,
-        expected_block_checksum: BlockChecksumKind,
         expected_value_payload_compression: ValuePayloadCompressionKind,
     ) -> bool {
         self.version == SEGMENT_FORMAT_VERSION
             && self.key_len as usize == expected_key_len
             && self.value_layout == expected_value_layout
-            && self.block_checksum_id == expected_block_checksum.format_id()
             && self.value_payload_compression_id == expected_value_payload_compression.format_id()
     }
 }
@@ -138,14 +126,14 @@ impl SegmentFooter {
             return Err(FormatError::limit("segment footer length"));
         }
         buffer.extend_from_slice(&footer_body_len.to_le_bytes());
-        let crc = crc32c(&buffer[footer_body_start..]);
-        buffer.extend_from_slice(&crc.to_le_bytes());
+        let digest = checksum::digest(&buffer[footer_body_start..]);
+        buffer.extend_from_slice(&digest);
         Ok(())
     }
 
-    /// Decodes a footer from the final `footer_body_len + 8` bytes of a
-    /// segment file. `data_end` is the absolute file offset where the footer
-    /// starts (the end of the data blocks), used to validate the block index.
+    /// Decodes a footer from the final body-length-delimited bytes of a segment
+    /// file. `data_end` is the absolute file offset where the footer starts
+    /// (the end of the data blocks), used to validate the block index.
     pub(crate) fn from_bytes(
         bytes: Vec<u8>,
         key_len: usize,
@@ -157,7 +145,7 @@ impl SegmentFooter {
             return Err(CorruptionError::SegmentFormat);
         }
         let footer_body_len_offset = bytes.len() - SEGMENT_FOOTER_TRAILER_LEN;
-        let crc_offset = footer_body_len_offset + 4;
+        let digest_offset = footer_body_len_offset + FOOTER_BODY_LEN_FIELD_LEN;
         let mut trailer_cursor = BinaryCursor::at(&bytes, footer_body_len_offset);
         let footer_body_len = trailer_cursor
             .read::<u32>()
@@ -165,11 +153,10 @@ impl SegmentFooter {
         if footer_body_len != footer_body_len_offset {
             return Err(CorruptionError::SegmentFormat);
         }
-        trailer_cursor.seek(crc_offset);
-        let stored_crc = trailer_cursor
-            .read::<u32>()
+        let stored_digest = bytes
+            .get(digest_offset..)
             .ok_or(CorruptionError::SegmentFormat)?;
-        if crc32c(&bytes[..crc_offset]) != stored_crc {
+        if !checksum::verify(&bytes[..digest_offset], stored_digest) {
             return Err(CorruptionError::SegmentFormat);
         }
 
@@ -320,10 +307,7 @@ impl BlockIndexCodec {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        block::{BlockChecksumKind, ValuePayloadCompressionKind},
-        segment::index::SegmentIndexBuilder,
-    };
+    use crate::{block::ValuePayloadCompressionKind, segment::index::SegmentIndexBuilder};
 
     mod header {
         use super::*;
@@ -334,7 +318,6 @@ mod tests {
             SegmentHeader::new(
                 16,
                 ValueLayout::fixed(std::num::NonZeroU32::new(32).expect("non-zero")),
-                BlockChecksumKind::Xxh3_128,
                 ValuePayloadCompressionKind::None,
             )
             .expect("header should encode")
@@ -343,42 +326,19 @@ mod tests {
             assert_eq!(bytes.len(), SEGMENT_HEADER_LEN);
             assert_eq!(&bytes[..4], HEADER_MAGIC);
             assert_eq!(bytes[4], SEGMENT_FORMAT_VERSION);
-            assert_eq!(bytes[5], BlockChecksumKind::Xxh3_128.format_id());
-            assert_eq!(bytes[6], ValuePayloadCompressionKind::None.format_id());
-            assert_eq!(bytes[7], 0);
+            assert_eq!(bytes[5], ValuePayloadCompressionKind::None.format_id());
             assert_eq!(
-                u32::from_le_bytes(bytes[8..12].try_into().expect("key len")),
+                u32::from_le_bytes(bytes[6..10].try_into().expect("key len")),
                 16
             );
             assert_eq!(
-                u32::from_le_bytes(bytes[12..16].try_into().expect("value len")),
+                u32::from_le_bytes(bytes[10..14].try_into().expect("value len")),
                 32
             );
             assert_eq!(
-                u32::from_le_bytes(bytes[16..20].try_into().expect("header crc")),
+                u32::from_le_bytes(bytes[14..18].try_into().expect("header crc")),
                 crc32c(&bytes[..SEGMENT_HEADER_BODY_LEN])
             );
-        }
-
-        #[test]
-        fn rejects_nonzero_reserved_byte() {
-            let mut bytes = Vec::new();
-            SegmentHeader::new(
-                16,
-                ValueLayout::VARIABLE,
-                BlockChecksumKind::Xxh3_128,
-                ValuePayloadCompressionKind::None,
-            )
-            .expect("header should encode")
-            .into_bytes(&mut bytes);
-            bytes[7] = 1;
-            let crc = crc32c(&bytes[..SEGMENT_HEADER_BODY_LEN]);
-            bytes[SEGMENT_HEADER_BODY_LEN..].copy_from_slice(&crc.to_le_bytes());
-
-            assert!(matches!(
-                SegmentHeader::from_bytes(&bytes),
-                Err(CorruptionError::SegmentFormat)
-            ));
         }
     }
 
@@ -401,7 +361,15 @@ mod tests {
             footer
                 .write_to(2, &mut bytes)
                 .expect("footer should encode");
-            assert_eq!(bytes.len(), 4 + 4 + 2 * (4 + 1 + 1 + 1 + 8) + 8);
+            assert_eq!(
+                bytes.len(),
+                4 + 4 + 2 * (4 + 1 + 1 + 1 + 8) + 4 + checksum::DIGEST_LEN
+            );
+            let digest_offset = bytes.len() - checksum::DIGEST_LEN;
+            assert_eq!(
+                &bytes[digest_offset..],
+                checksum::digest(&bytes[..digest_offset]).as_slice()
+            );
 
             let decoded = SegmentFooter::from_bytes(bytes, 2, 64, b"a0", b"b9")
                 .expect("footer offsets should define valid ranges");
@@ -419,11 +387,32 @@ mod tests {
             bytes.extend_from_slice(&u32::MAX.to_le_bytes());
             let footer_body_len = u32::try_from(bytes.len()).expect("small test footer");
             bytes.extend_from_slice(&footer_body_len.to_le_bytes());
-            let crc = crc32c(&bytes);
-            bytes.extend_from_slice(&crc.to_le_bytes());
+            let digest = checksum::digest(&bytes);
+            bytes.extend_from_slice(&digest);
 
             assert!(matches!(
                 SegmentFooter::from_bytes(bytes, 2, SEGMENT_HEADER_LEN as u64, b"a0", b"a0"),
+                Err(CorruptionError::SegmentFormat)
+            ));
+        }
+
+        #[test]
+        fn rejects_changed_index_bytes() {
+            let mut builder = SegmentIndexBuilder::new(b"a0", b"a9").expect("valid range");
+            builder
+                .push(b"a0", b"a9", SEGMENT_HEADER_LEN as u64..64)
+                .expect("valid block");
+            let footer = SegmentFooter {
+                block_index: builder.finish(),
+            };
+            let mut bytes = Vec::new();
+            footer
+                .write_to(2, &mut bytes)
+                .expect("footer should encode");
+            bytes[0] ^= 1;
+
+            assert!(matches!(
+                SegmentFooter::from_bytes(bytes, 2, 64, b"a0", b"a9"),
                 Err(CorruptionError::SegmentFormat)
             ));
         }

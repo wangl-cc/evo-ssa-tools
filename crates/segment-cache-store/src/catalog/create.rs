@@ -7,7 +7,7 @@ use super::{
     metadata::StoreMetadata,
 };
 use crate::{
-    block::{BLOCK_CHECKSUM, BlockChecksumKind, ValuePayloadCompressionKind},
+    block::ValuePayloadCompressionKind,
     error::{InputError, OptionsError, Result},
     limits::{MAX_KEY_LEN, MAX_VALUE_LEN},
     value::ValueLayout,
@@ -25,8 +25,6 @@ pub struct CreateOptions {
     key_len: usize,
     /// Value layout shared by all visible segments.
     value_layout: ValueLayout,
-    /// Block checksum kind persisted for all visible segments.
-    block_checksum: BlockChecksumKind,
     /// Value-payload compression kind persisted for all visible segments.
     value_payload_compression: ValuePayloadCompressionKind,
     /// Opaque caller compatibility metadata for this namespace.
@@ -35,10 +33,6 @@ pub struct CreateOptions {
 
 impl CreateOptions {
     /// Creates options for a store with fixed-width keys.
-    ///
-    /// Every store uses the same fixed block checksum; the checksum is not a
-    /// per-store choice.
-    ///
     /// # Errors
     ///
     /// Returns [`OptionsError::KeyLenZero`] when `key_len` is zero or
@@ -53,7 +47,6 @@ impl CreateOptions {
         Ok(Self {
             key_len,
             value_layout: ValueLayout::VARIABLE,
-            block_checksum: BLOCK_CHECKSUM,
             value_payload_compression: ValuePayloadCompressionKind::DEFAULT,
             metadata,
         })
@@ -109,7 +102,6 @@ impl Catalog {
             options.metadata.clone(),
             options.key_len,
             options.value_layout,
-            options.block_checksum.format_id(),
             options.value_payload_compression.format_id(),
         );
         // Write `MANIFEST` first and `STORE` last. A crash between the two leaves

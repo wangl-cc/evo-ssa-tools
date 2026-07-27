@@ -17,7 +17,7 @@ use std::{
 pub(crate) use state::StoreInner;
 
 use crate::{
-    block::{BlockChecksumKind, ValuePayloadCompressionKind},
+    block::ValuePayloadCompressionKind,
     catalog::{
         Catalog, CreateOptions, OpenOptions, OpenedStore, StoreInfo, StoreMetadata,
         StoreStorageStats,
@@ -96,12 +96,6 @@ impl Store {
         self.inner.geometry.schema.value_layout
     }
 
-    /// Returns the block checksum implementation used by this store.
-    #[must_use]
-    pub fn block_checksum(&self) -> BlockChecksumKind {
-        self.inner.geometry.encoding.block_checksum
-    }
-
     /// Returns the value-payload compression kind used by this store.
     #[must_use]
     pub fn value_payload_compression(&self) -> ValuePayloadCompressionKind {
@@ -174,9 +168,8 @@ impl Store {
     ///
     /// The destination handle is modified; `source` is only read. Both stores
     /// must have the same caller metadata, key length, and value layout. The
-    /// source may use different physical block checksum or value-payload
-    /// compression settings because records are decoded and re-written into
-    /// the destination format.
+    /// source may use different value-payload compression settings because
+    /// records are decoded and re-written into the destination format.
     ///
     /// Equal keys with byte-identical values are emitted once. Equal keys with
     /// different values fail with [`InputError::KeyConflict`]. Only destination

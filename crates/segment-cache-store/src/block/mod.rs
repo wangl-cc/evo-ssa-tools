@@ -11,17 +11,13 @@
 //! - [`layout`]: byte-layout math shared by both directions
 //! - [`encode`]: sorted entries in, block bytes out
 //! - [`decode`]: block bytes in, borrowed record views out
-//! - [`checksum`]: persisted checksum identity and optional digest calculation
 //! - [`compression`]: persisted compression identity and optional policy, frame, and codec logic
 
-mod checksum;
 mod compression;
 mod decode;
 mod encode;
 mod layout;
 
-pub(crate) use checksum::BLOCK_CHECKSUM;
-pub use checksum::BlockChecksumKind;
 pub use compression::ValuePayloadCompressionKind;
 #[cfg(feature = "value-compression")]
 pub use compression::{CompressionPolicyError, ValuePayloadCompressionPolicy};

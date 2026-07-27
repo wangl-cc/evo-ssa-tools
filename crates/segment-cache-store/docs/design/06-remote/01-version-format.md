@@ -21,7 +21,7 @@ RemoteStoreIdentityV1 {
 
 `value_len = 0` denotes variable-length values; a nonzero value denotes fixed-width values. `caller_metadata` is the same opaque compatibility value used by the local store; the caller encodes schema and semantic namespace versions in it. Platform and build fingerprints are not identity fields by default. Parsers enforce local geometry and bounded-length limits before allocation.
 
-Compression and other writer tuning do not belong to remote identity. Each segment header self-describes its physical codec; supported codecs may coexist in one manifest, and a binary without a referenced codec reports an unsupported-segment error. The block checksum is the fixed local format constant. `AggregateOptions` selects physical policy only for newly encoded aggregate ranges; checkpoint and restore preserve verified segment bytes.
+Compression and other writer tuning do not belong to remote identity. Each segment header self-describes its local format version, schema, and compression codec; supported codecs may coexist in one manifest, and a binary without a referenced codec reports an unsupported-segment error. The local format version fixes the checksum algorithm for Footer and block sections. `AggregateOptions` selects physical policy only for newly encoded aggregate ranges; checkpoint and restore preserve verified segment bytes.
 
 ## Segment References
 
@@ -36,7 +36,7 @@ RemoteSegmentRefV1 {
 }
 ```
 
-The declared range must equal the verified segment range. The verified header must match logical identity geometry, the fixed checksum ID, and a codec supported by the current operation.
+The declared range must equal the verified segment range. The verified header must match logical identity geometry and name a codec supported by the current operation; its format version determines the fixed checksum semantics.
 
 `AggregateSnapshot` stores a counted, sorted `main_segments` array of these references. Ranges are strictly non-overlapping, content IDs are unique, and the total count and encoded bound bytes are bounded.
 

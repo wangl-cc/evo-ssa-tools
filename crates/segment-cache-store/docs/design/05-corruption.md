@@ -6,7 +6,7 @@ Classified missing data, format failure, checksum failure, and decompression fai
 
 The classified scope is explicit:
 
-- A missing referenced segment, invalid segment length, bad header or footer CRC, incompatible schema or codec, malformed sparse index, or segment-range disagreement makes the complete segment absent.
+- A missing referenced segment, invalid segment length, bad header CRC or footer checksum, incompatible schema or codec, malformed sparse index, or segment-range disagreement makes the complete segment absent.
 - A bad block lookup digest, malformed block geometry, disagreement with the validated block-index range, bad value-frame digest, or decompression failure makes only that block absent.
 - An abandoned temporary file or a final segment not referenced by MANIFEST is invisible rather than data.
 
@@ -24,7 +24,9 @@ Normal publication does not introduce duplicates. If an abnormal Main/Patch dupl
 
 | Bytes | Integrity check | Role |
 | --- | --- | --- |
-| Catalog and fixed structure: MANIFEST, header, footer | CRC32C | Detect structural corruption |
+| Complete local MANIFEST snapshot | Fixed unseeded XXH3-128 | Detect corruption of visible membership and schema |
+| Segment footer sparse index | Fixed unseeded XXH3-128 | Detect corruption of block routing metadata |
+| Short fixed segment header | CRC32C | Detect structural corruption |
 | Block lookup metadata and value payload | Fixed unseeded XXH3-128 | Verify lookup routing and returned payload bytes |
 | Complete segment crossing a trust boundary | BLAKE3 `SegmentContentId` | Cryptographic content identity |
 
@@ -34,13 +36,13 @@ Externally materialized bytes are untrusted. Import, restore, checkpoint ingesti
 
 `SegmentContentId` is mandatory for trust-boundary crossings but is not itself an authentication policy. The repository or caller must authenticate remote manifests and authority separately.
 
-## Fixed Mandatory Block Checksum
+## Fixed Mandatory Version-1 Checksums
 
-Every block carries unseeded XXH3-128 over its lookup metadata and over its value-payload frame. Format ID `1` fixes both the algorithm and its canonical big-endian 16-byte representation. It is not a create-time option and has no `None` kind. An unknown ID is unsupported, so an algorithm change needs a new format ID rather than silently changing persisted semantics. Known-answer tests over empty, short, and long inputs pin cross-platform output and prevent a dependency update from silently changing persistent bytes.
+Local format version 1 fixes unseeded XXH3-128 and its canonical big-endian 16-byte representation for MANIFEST, the segment Footer, block lookup metadata, and block value-payload frames. It is not a create-time option, has no `None` mode, and has no separate kind or ID. Changing the algorithm, seed, width, byte order, or covered bytes requires a new format version. Known-answer tests over empty, short, and long inputs pin cross-platform output and prevent a dependency update from silently changing persistent bytes.
 
-The fixed checksum is mandatory because a checksum-less cache cannot later establish that an exported or merged input was intact. Split block digests amortize the cost: metadata verifies when first needed, payload verifies only for a returned value or scan, and successful checks reuse process-local state. CRC32C remains appropriate for short fixed structures where its algebraic guarantees are useful; for large random block payloads, XXH3-128 provides a much wider probabilistic floor than a 32-bit CRC at only 16 additional bytes per block pair compared with two 64-bit digests. `SegmentContentId` supplies the cryptographic check required when complete bytes cross a trust boundary.
+The fixed checksum is mandatory because a checksum-less cache cannot later establish that an exported or merged input was intact. Split block digests amortize the cost: metadata verifies when first needed, payload verifies only for a returned value or scan, and successful checks reuse process-local state. The variable-length Footer is read and verified as one bounded structure. CRC32C remains appropriate for the 14-byte fixed Header body where its algebraic guarantees are useful; XXH3-128 gives the larger Footer and block sections a much wider probabilistic floor. `SegmentContentId` supplies the cryptographic check required when complete bytes cross a trust boundary.
 
-Checksum verification may be disabled only on a read-only handle for benchmarking. That explicitly weakens the cache-safe hit guarantee. Writable handles verify checksums so a foreground normalization or local merge cannot transcode unchecked bytes into new segments.
+Lazy block checksum verification may be disabled only on a read-only handle for benchmarking. That explicitly weakens the cache-safe hit guarantee; MANIFEST and Footer verification remain mandatory. Writable handles verify block checksums so a foreground normalization or local merge cannot transcode unchecked bytes into new segments.
 
 ## Current Implementation Notes
 

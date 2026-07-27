@@ -7,11 +7,10 @@
 
 use std::collections::BTreeSet;
 
-use crc32c::crc32c;
-
 use super::{CatalogError, CatalogMismatch};
 use crate::{
     binary::BinaryCursor,
+    checksum,
     limits::{MAX_KEY_LEN, MAX_MANIFEST_LEN},
     segment::{SEGMENT_CONTENT_ID_LEN, SegmentContentId},
 };
@@ -20,7 +19,7 @@ const MANIFEST_VERSION: u32 = 1;
 
 const MANIFEST_MAGIC: &[u8; 4] = b"SCSM";
 const MANIFEST_HEADER_LEN: usize = 20;
-const MANIFEST_TRAILER_LEN: usize = 4;
+const MANIFEST_CHECKSUM_LEN: usize = checksum::DIGEST_LEN;
 const MANIFEST_ENTRY_FIXED_LEN: usize = 4 + 1 + 8 + SEGMENT_CONTENT_ID_LEN;
 
 /// Encoding would exceed the v1 binary `MANIFEST` envelope.
@@ -184,7 +183,7 @@ impl StoreManifest {
                     .checked_mul(entry_len)
                     .ok_or(ManifestEncodeError::Length)?,
             )
-            .and_then(|len| len.checked_add(MANIFEST_TRAILER_LEN))
+            .and_then(|len| len.checked_add(MANIFEST_CHECKSUM_LEN))
             .ok_or(ManifestEncodeError::Length)?;
         if capacity > MAX_MANIFEST_LEN {
             return Err(ManifestEncodeError::TooLarge);
@@ -211,8 +210,8 @@ impl StoreManifest {
             out.extend_from_slice(&entry.min_key);
             out.extend_from_slice(&entry.max_key);
         }
-        let checksum = crc32c(&out);
-        out.extend_from_slice(&checksum.to_le_bytes());
+        let digest = checksum::digest(&out);
+        out.extend_from_slice(&digest);
         Ok(out)
     }
 
@@ -342,18 +341,15 @@ impl<'a> ManifestParser<'a> {
         if self.input.len() > MAX_MANIFEST_LEN {
             return Err(ManifestParseError::TooLarge);
         }
-        if self.input.len() < MANIFEST_HEADER_LEN + MANIFEST_TRAILER_LEN {
+        if self.input.len() < MANIFEST_HEADER_LEN + MANIFEST_CHECKSUM_LEN {
             return Err(ManifestParseError::TooShort);
         }
-        let checksum_offset = self.input.len() - MANIFEST_TRAILER_LEN;
-        self.cursor.seek(checksum_offset);
-        let expected_checksum = self.read_u32("checksum")?;
-        let actual_checksum = crc32c(&self.input[..checksum_offset]);
-        if actual_checksum != expected_checksum {
+        let checksum_offset = self.input.len() - MANIFEST_CHECKSUM_LEN;
+        let expected_checksum = &self.input[checksum_offset..];
+        if !checksum::verify(&self.input[..checksum_offset], expected_checksum) {
             return Err(ManifestParseError::ChecksumMismatch);
         }
 
-        self.cursor.seek(0);
         let magic = self.read_vec("magic", MANIFEST_MAGIC.len())?;
         if magic.as_slice() != MANIFEST_MAGIC {
             return Err(ManifestParseError::UnsupportedMagic);
@@ -373,7 +369,7 @@ impl<'a> ManifestParser<'a> {
                     .checked_mul(entry_len)
                     .ok_or(ManifestParseError::LengthOverflow)?,
             )
-            .and_then(|len| len.checked_add(MANIFEST_TRAILER_LEN))
+            .and_then(|len| len.checked_add(MANIFEST_CHECKSUM_LEN))
             .ok_or(ManifestParseError::LengthOverflow)?;
         if self.input.len() != expected_len {
             return Err(ManifestParseError::LengthMismatch);
@@ -530,11 +526,23 @@ mod tests {
 
             assert_eq!(
                 bytes.len(),
-                MANIFEST_HEADER_LEN + MANIFEST_ENTRY_FIXED_LEN + 32 + MANIFEST_TRAILER_LEN
+                MANIFEST_HEADER_LEN + MANIFEST_ENTRY_FIXED_LEN + 32 + MANIFEST_CHECKSUM_LEN
             );
             assert_eq!(
                 &bytes[entry_start + 13..entry_start + 45],
                 content_id(7).as_bytes()
+            );
+        }
+
+        #[test]
+        fn appends_canonical_xxh3_128_checksum() {
+            let manifest = manifest_with_segments(vec![entry(7, 0, 1)]);
+            let bytes = manifest.encode().expect("manifest should encode");
+            let checksum_offset = bytes.len() - MANIFEST_CHECKSUM_LEN;
+
+            assert_eq!(
+                &bytes[checksum_offset..],
+                checksum::digest(&bytes[..checksum_offset]).as_slice()
             );
         }
 

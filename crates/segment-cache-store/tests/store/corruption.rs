@@ -1,7 +1,7 @@
 use std::{
     fs,
     fs::OpenOptions as FsOpenOptions,
-    io::{Seek, SeekFrom, Write},
+    io::{Read, Seek, SeekFrom, Write},
     num::NonZeroUsize,
 };
 
@@ -98,7 +98,7 @@ fn sparse_ordered_lookup_corrupted_payload_becomes_miss() -> Result<()> {
 }
 
 #[test]
-fn xxh3_128_block_checksum_round_trips() -> Result<()> {
+fn xxh3_128_checksum_round_trips() -> Result<()> {
     let tempdir = tempfile::tempdir()?;
     let store = create_store_with(&tempdir, create_options())?;
     let entries = vec![
@@ -776,8 +776,12 @@ fn corrupted_footer_hides_whole_segment() -> Result<()> {
     commit_entries(&store, &[(key.clone(), make_value(9, 16))])?;
     let path = first_segment_path(tempdir.path())?;
     let mut file = FsOpenOptions::new().read(true).write(true).open(path)?;
-    file.seek(SeekFrom::End(-4))?;
-    file.write_all(&0u32.to_le_bytes())?;
+    file.seek(SeekFrom::End(-1))?;
+    let mut byte = [0u8; 1];
+    file.read_exact(&mut byte)?;
+    byte[0] ^= 1;
+    file.seek(SeekFrom::End(-1))?;
+    file.write_all(&byte)?;
     file.sync_all()?;
 
     let reopened = reopen_store_read_only(&tempdir)?;

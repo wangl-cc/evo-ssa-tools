@@ -2,9 +2,9 @@
 
 use std::ops::Range;
 
-use super::BlockChecksumKind;
 use crate::{
     binary::{BinaryCursor, format_u32},
+    checksum,
     error::{CorruptionError, FormatError},
     record::EntrySource,
     value::ValueLayout,
@@ -75,12 +75,9 @@ impl BlockLookupLayout {
         Ok(cursor.read::<u32>().ok_or(CorruptionError::Block)? as usize)
     }
 
-    pub(crate) fn metadata_with_checksum_len(
-        self,
-        block_checksum: BlockChecksumKind,
-    ) -> Result<usize, CorruptionError> {
+    pub(crate) fn metadata_with_checksum_len(self) -> Result<usize, CorruptionError> {
         self.lookup_metadata_len
-            .checked_add(block_checksum.digest_len())
+            .checked_add(checksum::DIGEST_LEN)
             .ok_or(CorruptionError::Block)
     }
 }
@@ -294,13 +291,9 @@ impl ValueIndex {
     }
 }
 
-pub(super) fn read_stored_checksum(
-    bytes: &[u8],
-    offset: usize,
-    block_checksum: BlockChecksumKind,
-) -> Result<&[u8], CorruptionError> {
+pub(super) fn read_stored_checksum(bytes: &[u8], offset: usize) -> Result<&[u8], CorruptionError> {
     let end = offset
-        .checked_add(block_checksum.digest_len())
+        .checked_add(checksum::DIGEST_LEN)
         .ok_or(CorruptionError::Block)?;
     bytes.get(offset..end).ok_or(CorruptionError::Block)
 }

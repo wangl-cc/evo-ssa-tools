@@ -7,7 +7,7 @@ use super::{
     descriptor::StoreDescriptor, metadata::StoreMetadata,
 };
 use crate::{
-    block::{BlockChecksumKind, ValuePayloadCompressionKind},
+    block::ValuePayloadCompressionKind,
     error::{OptionsError, Result},
     segment::{Segment, SegmentEncoding, SegmentGeometry, SegmentOpenOptions, StoreSchema},
     value::ValueLayout,
@@ -41,8 +41,6 @@ pub struct StoreInfo {
     pub key_len: usize,
     /// Value layout shared by all visible segments.
     pub value_layout: ValueLayout,
-    /// Block checksum kind persisted for all visible segments.
-    pub block_checksum: BlockChecksumKind,
     /// Value-payload compression kind persisted for all visible segments.
     pub value_payload_compression: ValuePayloadCompressionKind,
 }
@@ -106,7 +104,6 @@ impl StoreInfo {
             metadata: descriptor.metadata,
             key_len: descriptor.key_len,
             value_layout: descriptor.value_layout,
-            block_checksum: resolve_block_checksum(descriptor.block_checksum_id)?,
             value_payload_compression: resolve_value_payload_compression(
                 descriptor.value_payload_compression_id,
             )?,
@@ -141,7 +138,6 @@ impl Catalog {
         if descriptor.metadata != options.expected_metadata {
             return Err(CatalogMismatch::Metadata.into());
         }
-        let block_checksum = resolve_block_checksum(descriptor.block_checksum_id)?;
         let value_payload_compression =
             resolve_value_payload_compression(descriptor.value_payload_compression_id)?;
 
@@ -173,7 +169,6 @@ impl Catalog {
             paths,
             descriptor,
             manifest,
-            block_checksum,
             value_payload_compression,
             options.verify_block_checksums,
             writer_lock,
@@ -190,7 +185,6 @@ impl Catalog {
         paths: StorePaths,
         descriptor: StoreDescriptor,
         manifest: StoreManifest,
-        block_checksum: BlockChecksumKind,
         value_payload_compression: ValuePayloadCompressionKind,
         verify_block_checksums: bool,
         writer_lock: Option<WriterLock>,
@@ -201,7 +195,6 @@ impl Catalog {
                 value_layout: descriptor.value_layout,
             },
             encoding: SegmentEncoding {
-                block_checksum,
                 value_payload_compression,
             },
         };
@@ -237,11 +230,6 @@ impl Catalog {
             writer_lock,
         })
     }
-}
-
-fn resolve_block_checksum(format_id: u8) -> Result<BlockChecksumKind> {
-    BlockChecksumKind::from_format_id(format_id)
-        .ok_or(CatalogMismatch::UnsupportedBlockChecksum { format_id }.into())
 }
 
 fn resolve_value_payload_compression(format_id: u8) -> Result<ValuePayloadCompressionKind> {

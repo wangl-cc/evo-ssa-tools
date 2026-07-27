@@ -4,14 +4,10 @@
 //!
 //! - [`StoreSchema`]: the logical data contract (key width, value layout). Two stores must share
 //!   the same schema for any inter-store operation.
-//! - [`SegmentEncoding`]: the physical byte-level encoding choices (block checksum, value-payload
-//!   compression). These may differ between stores; a merge across different encodings transcodes
-//!   rather than copying files.
+//! - [`SegmentEncoding`]: the physical value-payload compression choice. This may differ between
+//!   stores; a merge across different encodings transcodes rather than copying files.
 
-use crate::{
-    block::{BlockChecksumKind, ValuePayloadCompressionKind},
-    value::ValueLayout,
-};
+use crate::{block::ValuePayloadCompressionKind, value::ValueLayout};
 
 /// Logical data contract shared by every record in one store.
 ///
@@ -27,7 +23,6 @@ pub(crate) struct StoreSchema {
 /// These may differ between stores without affecting logical compatibility.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct SegmentEncoding {
-    pub(crate) block_checksum: BlockChecksumKind,
     pub(crate) value_payload_compression: ValuePayloadCompressionKind,
 }
 

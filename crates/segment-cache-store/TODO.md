@@ -43,7 +43,7 @@ The exact target is in [03-format.md](docs/design/03-format.md). Experimental st
 - [ ] Make `STORE` persist only opaque caller metadata; move `key_len` and `value_len` ownership to MANIFEST.
 - [ ] Replace the flat Main-then-Patch MANIFEST with grouped Main-owned PatchSets and validate format-wide Main/PatchSet limits before allocation.
 - [ ] Let `CommitOptions` select compression for newly written segments and allow one manifest to reference self-describing segments with different supported compression IDs.
-- [ ] Pin grouped MANIFEST canonical bytes, segment-header bytes, XXH3-128 known-answer vectors, prefix-compressed footer ranges, raw/compressed frame derivation, and parser safety limits with golden tests.
+- [ ] Pin grouped MANIFEST canonical bytes and its XXH3-128 trailer, segment-header bytes, the segment Footer XXH3-128 trailer and prefix-compressed ranges, XXH3-128 known-answer vectors, raw/compressed frame derivation, and parser safety limits with golden tests.
 
 ## 5. Remote Checkpoint And Aggregate (future, designed)
 

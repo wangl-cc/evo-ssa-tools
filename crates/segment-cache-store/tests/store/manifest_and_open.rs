@@ -1,6 +1,5 @@
 use std::fs;
 
-use crc32c::crc32c;
 use segment_cache_store::{
     CatalogError, CatalogMismatch, CommitOptions, Error, OpenOptions as StoreOpenOptions, Result,
     Store, StoreMetadata, ValueLayout,
@@ -8,9 +7,8 @@ use segment_cache_store::{
 
 use crate::support::{
     api::{
-        block_checksum_format_id, commit_entries, commit_entries_with_options, create_store,
-        make_key, make_value, metadata, open_options, reopen_store, reopen_store_read_only,
-        test_block_checksum,
+        commit_entries, commit_entries_with_options, create_store, make_key, make_value, metadata,
+        open_options, reopen_store, reopen_store_read_only,
     },
     segment_file::first_segment_path,
 };
@@ -71,10 +69,6 @@ fn manifest_is_binary_v1_snapshot() -> Result<()> {
     assert!(store_file.contains("metadata=7365676d656e742d63616368652d73746f72652d74657374\n"));
     assert!(store_file.contains("key_len=16\n"));
     assert!(store_file.contains("value_len=0\n"));
-    assert!(store_file.contains(&format!(
-        "block_checksum_id={}\n",
-        block_checksum_format_id(test_block_checksum())
-    )));
     assert!(store_file.contains("value_payload_compression_id=0\n"));
     assert!(!store_file.contains('{'));
 
@@ -95,7 +89,14 @@ fn manifest_is_binary_v1_snapshot() -> Result<()> {
         u32::from_le_bytes(manifest[16..20].try_into().expect("segment count")),
         1
     );
-    assert_eq!(manifest.len(), 20 + 4 + 1 + 8 + 32 + 16 + 16 + 4);
+    let checksum_offset = manifest.len() - 16;
+    assert_eq!(manifest.len(), 20 + 4 + 1 + 8 + 32 + 16 + 16 + 16);
+    assert_eq!(
+        &manifest[checksum_offset..],
+        xxhash_rust::xxh3::xxh3_128(&manifest[..checksum_offset])
+            .to_be_bytes()
+            .as_slice()
+    );
     Ok(())
 }
 
@@ -109,7 +110,6 @@ fn inspect_reads_store_identity() -> Result<()> {
     assert_eq!(info.metadata, metadata());
     assert_eq!(info.key_len, 16);
     assert_eq!(info.value_layout, ValueLayout::VARIABLE);
-    assert_eq!(info.block_checksum, test_block_checksum());
     assert_eq!(
         info.value_payload_compression,
         segment_cache_store::ValuePayloadCompressionKind::None
@@ -187,9 +187,7 @@ fn exhausted_segment_ids_fail_before_publication() -> Result<()> {
     let manifest_path = tempdir.path().join("MANIFEST");
     let mut manifest = fs::read(&manifest_path)?;
     manifest[12..16].copy_from_slice(&u32::MAX.to_le_bytes());
-    let crc_offset = manifest.len() - 4;
-    let checksum = crc32c(&manifest[..crc_offset]);
-    manifest[crc_offset..].copy_from_slice(&checksum.to_le_bytes());
+    refresh_manifest_checksum(&mut manifest);
     fs::write(&manifest_path, &manifest)?;
 
     let store = reopen_store(&tempdir)?;
@@ -202,36 +200,6 @@ fn exhausted_segment_ids_fail_before_publication() -> Result<()> {
     assert_eq!(store.iter_all()?.count(), 0);
     assert_eq!(fs::read_dir(tempdir.path().join("segments"))?.count(), 0);
     assert_eq!(fs::read(manifest_path)?, manifest);
-    Ok(())
-}
-
-#[test]
-fn unsupported_store_block_checksum_is_rejected() -> Result<()> {
-    let tempdir = tempfile::tempdir()?;
-    let store = create_store(&tempdir)?;
-    drop(store);
-
-    let store_path = tempdir.path().join("STORE");
-    let mut store_file = fs::read_to_string(&store_path)?;
-    store_file = store_file.replace(
-        &format!(
-            "block_checksum_id={}\n",
-            block_checksum_format_id(test_block_checksum())
-        ),
-        "block_checksum_id=255\n",
-    );
-    fs::write(store_path, store_file)?;
-
-    let error = match Store::open(tempdir.path(), open_options()) {
-        Ok(_) => panic!("unsupported checksum id should reject open"),
-        Err(error) => error,
-    };
-    assert!(matches!(
-        error,
-        Error::Catalog(CatalogError::Mismatch(
-            CatalogMismatch::UnsupportedBlockChecksum { format_id: 255 }
-        ))
-    ));
     Ok(())
 }
 
@@ -352,9 +320,7 @@ fn manifest_rejects_reused_next_segment_id() -> Result<()> {
     let manifest_path = tempdir.path().join("MANIFEST");
     let mut manifest = fs::read(&manifest_path)?;
     manifest[12..16].copy_from_slice(&0u32.to_le_bytes());
-    let crc_offset = manifest.len() - 4;
-    let crc = crc32c(&manifest[..crc_offset]);
-    manifest[crc_offset..].copy_from_slice(&crc.to_le_bytes());
+    refresh_manifest_checksum(&mut manifest);
     fs::write(&manifest_path, manifest)?;
 
     let error = match Store::open(tempdir.path(), open_options()) {
@@ -388,4 +354,13 @@ fn manifest_footer_mismatch_hides_wrong_segment_file() -> Result<()> {
     assert_eq!(reopened.fetch_one(&key_a)?, None);
     assert_eq!(reopened.fetch_one(&key_b)?, None);
     Ok(())
+}
+
+fn refresh_manifest_checksum(manifest: &mut [u8]) {
+    let checksum_offset = manifest
+        .len()
+        .checked_sub(16)
+        .expect("test MANIFEST contains its XXH3-128 checksum");
+    let checksum = xxhash_rust::xxh3::xxh3_128(&manifest[..checksum_offset]).to_be_bytes();
+    manifest[checksum_offset..].copy_from_slice(&checksum);
 }

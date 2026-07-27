@@ -52,9 +52,6 @@ pub enum CatalogMismatch {
     #[error("STORE fixed value length exceeds the implementation limit")]
     StoreValueLenTooLarge,
 
-    #[error("STORE block checksum algorithm is unsupported: format id {format_id}")]
-    UnsupportedBlockChecksum { format_id: u8 },
-
     #[error("STORE value payload compression is unsupported: format id {format_id}")]
     UnsupportedValuePayloadCompression { format_id: u8 },
 

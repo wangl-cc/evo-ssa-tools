@@ -1,35 +1,10 @@
 use segment_cache_store::{
-    BlockChecksumKind, CommitOptions, CommitStats, CreateOptions, OpenOptions as StoreOpenOptions,
-    Result, Store, StoreMetadata, WriteBatch,
+    CommitOptions, CommitStats, CreateOptions, OpenOptions as StoreOpenOptions, Result, Store,
+    StoreMetadata, WriteBatch,
 };
 
 pub(crate) fn metadata() -> StoreMetadata {
     StoreMetadata::from_text("segment-cache-store-test")
-}
-
-pub(crate) fn test_block_checksum() -> BlockChecksumKind {
-    BlockChecksumKind::Xxh3_128
-}
-
-pub(crate) fn block_checksum_format_id(checksum: BlockChecksumKind) -> u8 {
-    match checksum {
-        BlockChecksumKind::Xxh3_128 => 1,
-        _ => unreachable!("test fixture does not know this checksum kind"),
-    }
-}
-
-pub(crate) fn block_checksum_digest_len(checksum: BlockChecksumKind) -> usize {
-    match checksum {
-        BlockChecksumKind::Xxh3_128 => 16,
-        _ => unreachable!("test fixture does not know this checksum kind"),
-    }
-}
-
-pub(crate) fn block_checksum_from_format_id(format_id: u8) -> Option<BlockChecksumKind> {
-    match format_id {
-        1 => Some(BlockChecksumKind::Xxh3_128),
-        _ => None,
-    }
 }
 
 pub(crate) fn create_options_with_key_len(key_len: usize) -> CreateOptions {

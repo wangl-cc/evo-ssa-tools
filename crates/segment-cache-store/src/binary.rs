@@ -15,10 +15,6 @@ impl<'a> BinaryCursor<'a> {
         Self { bytes, position }
     }
 
-    pub(crate) fn seek(&mut self, position: usize) {
-        self.position = position;
-    }
-
     #[inline]
     pub(crate) fn read<T: LittleEndianValue>(&mut self) -> Option<T> {
         // `first_chunk::<WIDTH>` carries the length in the return type, so the

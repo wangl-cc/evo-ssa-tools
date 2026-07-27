@@ -15,7 +15,7 @@ root/
 
 Temporary sibling files use a `.tmp` suffix. Writers fsync a temporary file, rename it to its final name, and fsync the parent directory. Segments are visible only after a later atomic MANIFEST publication references them. Orphan and retired final segments are invisible and are removed only by explicit garbage collection. Garbage collection stops at the first deletion error; files deleted before that error remain deleted, while MANIFEST visibility is unchanged.
 
-`STORE` is the creation-completion marker and immutable namespace identity. It contains caller metadata encoded as lowercase hex. `MANIFEST` is a CRC32C-protected binary snapshot that owns `key_len`, `value_len` (`0` means variable), `next_segment_id`, and visible segment references. `SegmentContentId` is `BLAKE3("scs-segment-v1\\0" || complete_segment_bytes)`; it is content identity, not an authentication tag.
+`STORE` is the creation-completion marker and immutable namespace identity. It contains caller metadata encoded as lowercase hex. `MANIFEST` is an XXH3-128-protected binary snapshot that owns `key_len`, `value_len` (`0` means variable), `next_segment_id`, and visible segment references. `SegmentContentId` is `BLAKE3("scs-segment-v1\\0" || complete_segment_bytes)`; it is content identity, not an authentication tag.
 
 Creation writes MANIFEST first and STORE last. If creation stops before STORE appears, open rejects the incomplete root and creation may safely recreate it. A completed root has both files. STORE is line-oriented text rather than JSON:
 
@@ -23,6 +23,9 @@ Creation writes MANIFEST first and STORE last. If creation stops before STORE ap
 segment-cache-store store v1
 version=1
 metadata=<hex>
+key_len=<u32>
+value_len=<u32> # 0 = variable
+value_payload_compression_id=<u8>
 ```
 
 The target MANIFEST envelope is grouped by ownership:
@@ -38,7 +41,7 @@ components[component_count]:
   main: SegmentRef
   patch_count:u32
   patches[patch_count]: SegmentRef
-crc32c:u32
+manifest_checksum[16] # canonical big-endian unseeded XXH3-128 over all preceding bytes
 ```
 
 Each `SegmentRef` carries `segment_id:u32`, `segment_len:u64`, `segment_content_id[32]`, `min_key[key_len]`, and `max_key[key_len]`. Tier and Patch ownership come from the enclosing component, so they are not duplicated as per-reference fields. A segment filename is `segments/segment-<id>.seg`; filename order does not define key order. Declared length supports cheap truncation and bounds checks.
@@ -54,7 +57,7 @@ MainComponent {
 }
 ```
 
-Every referenced range has valid fixed-width inclusive bounds. Components are sorted by Main minimum key, and Main ranges are globally nonoverlapping. Each Patch range is contained in its enclosing Main range; patches of that owner are sorted and nonoverlapping. The parser rejects duplicate or reused segment IDs, duplicate content references, invalid ranges, noncanonical order, and geometry that exceeds format limits. It validates the hard Main cap and per-component PatchSet file and byte budgets before constructing the trusted grouped representation.
+Every referenced range has valid fixed-width inclusive bounds. Components are sorted by Main minimum key, and Main ranges are globally nonoverlapping. Each Patch range is contained in its enclosing Main range; patches of that owner are sorted and nonoverlapping. The parser checks the bounded file length and complete MANIFEST checksum before trusting header counts or allocating entries, then rejects duplicate or reused segment IDs, duplicate content references, invalid ranges, noncanonical order, and geometry that exceeds format limits. It validates the hard Main cap and per-component PatchSet file and byte budgets before constructing the trusted grouped representation. The whole-file checksum already covers the MANIFEST header, so the unchunked format has no separate header checksum.
 
 The numeric Main cap and PatchSet file and byte budgets remain TODO decisions. They are required policy limits, not wire integer-width limits.
 
@@ -62,20 +65,18 @@ The numeric Main cap and PatchSet file and byte budgets remain TODO decisions. T
 
 ## Segment Format
 
-Each immutable segment contains `SegmentHeaderV1`, one or more data blocks, and `SegmentFooterV1`. Empty record streams do not publish a segment. Multi-byte integers are little-endian. The first data block follows the fixed 20-byte header immediately.
+Each immutable segment contains `SegmentHeaderV1`, one or more data blocks, and `SegmentFooterV1`. Empty record streams do not publish a segment. Multi-byte integers are little-endian. The first data block follows the fixed 18-byte header immediately.
 
 ```text
 magic[4]             # b"SCSG"
 format_version:u8    # 1
-block_checksum_id:u8 # 1 = unseeded XXH3-128
 value_payload_compression_id:u8
-reserved:u8          # 0 in v1
 key_len:u32
 value_len:u32        # 0 = variable; otherwise fixed value length
-header_crc32c:u32    # CRC32C over the previous 16 bytes
+header_crc32c:u32    # CRC32C over the previous 14 bytes
 ```
 
-The header is self-describing. Its schema must match MANIFEST; its checksum ID must be the fixed ID `1`; and its compression ID must be supported by the reader. A nonzero reserved byte and unknown identifiers are invalid. After validation, downstream decoding uses the header's own compression declaration rather than an external expected compression setting.
+The header is self-describing. Its schema must match MANIFEST, and its compression ID must be supported by the reader. Format version 1 itself fixes canonical big-endian unseeded XXH3-128 for the Footer and block sections; there is no independent checksum ID. After validation, downstream decoding uses the header's own compression declaration rather than an external expected compression setting.
 
 The footer owns the sparse block index and is the completion marker:
 
@@ -85,10 +86,10 @@ segment_prefix[segment_prefix_len]
 block_count:u32
 block_index_entries[block_count]
 footer_body_len:u32
-footer_crc32c:u32    # CRC32C over footer body | footer_body_len
+footer_checksum[16]  # canonical big-endian XXH3-128 over footer body | footer_body_len
 ```
 
-Each index entry is:
+The Footer is one bounded, unchunked structure and is always read in full, so it has one checksum and no separate header checksum. Each index entry is:
 
 ```text
 extra_prefix_len:u32

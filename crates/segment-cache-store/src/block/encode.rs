@@ -1,14 +1,14 @@
 //! Block encoder: sorted entries in, on-disk block bytes out.
 
 use super::{
-    BlockChecksumKind, ValuePayloadCompressionKind,
+    ValuePayloadCompressionKind,
     layout::{BlockLookupLayout, BlockValueRegion},
 };
 #[cfg(feature = "value-compression")]
 use super::{ValuePayloadCompressionPolicy, ValuePayloadEncoder};
 use crate::{
-    binary::format_u32, error::FormatError, key::common_prefix_len, limits::MAX_VALUE_PAYLOAD_LEN,
-    record::EntrySource, value::ValueLayout,
+    binary::format_u32, checksum, error::FormatError, key::common_prefix_len,
+    limits::MAX_VALUE_PAYLOAD_LEN, record::EntrySource, value::ValueLayout,
 };
 
 /// Encodes one sorted run of key/value entries into the on-disk block layout.
@@ -17,7 +17,6 @@ pub(crate) struct BlockBuilder<'a, S: EntrySource + ?Sized> {
     key_len: usize,
     segment_prefix_len: usize,
     value_layout: ValueLayout,
-    block_checksum: BlockChecksumKind,
     #[cfg(feature = "value-compression")]
     value_payload_compression: ValuePayloadCompressionKind,
     #[cfg(feature = "value-compression")]
@@ -31,7 +30,6 @@ impl<'a, S: EntrySource + ?Sized> BlockBuilder<'a, S> {
         key_len: usize,
         segment_prefix_len: usize,
         value_layout: ValueLayout,
-        block_checksum: BlockChecksumKind,
         value_payload_compression: ValuePayloadCompressionKind,
         value_payload_compression_policy: ValuePayloadCompressionPolicy,
     ) -> Self {
@@ -40,7 +38,6 @@ impl<'a, S: EntrySource + ?Sized> BlockBuilder<'a, S> {
             key_len,
             segment_prefix_len,
             value_layout,
-            block_checksum,
             value_payload_compression,
             value_payload_compression_policy,
         }
@@ -52,7 +49,6 @@ impl<'a, S: EntrySource + ?Sized> BlockBuilder<'a, S> {
         key_len: usize,
         segment_prefix_len: usize,
         value_layout: ValueLayout,
-        block_checksum: BlockChecksumKind,
         _value_payload_compression: ValuePayloadCompressionKind,
     ) -> Self {
         Self {
@@ -60,7 +56,6 @@ impl<'a, S: EntrySource + ?Sized> BlockBuilder<'a, S> {
             key_len,
             segment_prefix_len,
             value_layout,
-            block_checksum,
         }
     }
 
@@ -85,7 +80,7 @@ impl<'a, S: EntrySource + ?Sized> BlockBuilder<'a, S> {
             return Err(FormatError::limit("block value payload length"));
         }
         let payload_offset = lookup_layout
-            .metadata_with_checksum_len(self.block_checksum)
+            .metadata_with_checksum_len()
             .map_err(|_| FormatError::limit("block payload offset"))?;
         let value_region = BlockValueRegion::for_write(
             self.value_layout,
@@ -104,16 +99,14 @@ impl<'a, S: EntrySource + ?Sized> BlockBuilder<'a, S> {
         let capacity_len = value_region
             .payload_offset()
             .checked_add(payload_frame_len)
-            .and_then(|len| len.checked_add(self.block_checksum.digest_len()))
+            .and_then(|len| len.checked_add(checksum::DIGEST_LEN))
             .ok_or(FormatError::limit("block length"))?;
         let mut block = Vec::with_capacity(capacity_len);
         block.extend_from_slice(&format_u32(record_count, "block record count")?.to_le_bytes());
         self.write_keys(&mut block, extra_prefix_len);
         value_region.write_index(self.entries, &mut block)?;
         debug_assert_eq!(block.len(), lookup_layout.lookup_metadata_len);
-        let digest = self
-            .block_checksum
-            .digest(&block[..lookup_layout.lookup_metadata_len]);
+        let digest = checksum::digest(&block[..lookup_layout.lookup_metadata_len]);
         block.extend_from_slice(digest.as_ref());
         debug_assert_eq!(block.len(), value_region.payload_offset());
         let payload_start = block.len();
@@ -130,7 +123,7 @@ impl<'a, S: EntrySource + ?Sized> BlockBuilder<'a, S> {
         }
         #[cfg(not(feature = "value-compression"))]
         self.write_values(&mut block);
-        let digest = self.block_checksum.digest(&block[payload_start..]);
+        let digest = checksum::digest(&block[payload_start..]);
         block.extend_from_slice(digest.as_ref());
         Ok(block)
     }
