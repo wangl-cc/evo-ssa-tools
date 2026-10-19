@@ -12,7 +12,6 @@ blake3 = { workspace = true }
 canonical-input-encoding = { workspace = true }
 parking_lot = { workspace = true }
 rand = { workspace = true }
-rayon = { workspace = true }
 thiserror = { workspace = true }
 
 [lints]

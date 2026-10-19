@@ -96,7 +96,7 @@ impl<'s, K: Kernel> Stage<'s, K> {
             parent: Parent::Owned(Box::new(roots)),
             params: Params::Pairs(items),
             keys,
-            exec: Exec::current(),
+            exec: Exec::default(),
         }
     }
 
@@ -117,7 +117,7 @@ impl<'s, K: Kernel> Stage<'s, K> {
             parent: Parent::Owned(Box::new(roots)),
             params: Params::SharedRef(param),
             keys,
-            exec: Exec::current(),
+            exec: Exec::default(),
         }
     }
 
@@ -134,7 +134,7 @@ impl<'s, K: Kernel> Stage<'s, K> {
             parent: Parent::Borrowed(upstream),
             params: Params::Shared(param),
             keys,
-            exec: Exec::current(),
+            exec: Exec::default(),
         })
     }
 
@@ -154,7 +154,7 @@ impl<'s, K: Kernel> Stage<'s, K> {
             parent: Parent::Borrowed(upstream),
             params: Params::Fan(params, upstream.keys().len()),
             keys,
-            exec: Exec::current(),
+            exec: Exec::default(),
         })
     }
 

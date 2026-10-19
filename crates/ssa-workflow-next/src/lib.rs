@@ -2,7 +2,8 @@
 //!
 //! This crate only checks the *shape* of the design in
 //! `designs/ssa-workflow-rewrite-api.md`: one generic `materialize` per stage, demand-first
-//! lookups, borrowed upstream values, per-request execution resources, and a worker-state pool.
+//! lookups, borrowed upstream values, per-request worker counts on our own threads, and a
+//! worker-state pool.
 //! It uses an in-memory store and is not meant for production use.
 
 mod block;

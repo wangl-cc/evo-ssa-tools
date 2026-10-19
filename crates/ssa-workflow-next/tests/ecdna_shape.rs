@@ -194,20 +194,13 @@ fn stages<'s>(store: &'s dyn Store, log: &Log) -> Stages<'s> {
     }
 }
 
-fn pool(threads: usize) -> rayon::ThreadPool {
-    rayon::ThreadPoolBuilder::new()
-        .num_threads(threads)
-        .build()
-        .expect("pool builds")
-}
-
 /// The caller-driven loop from the design: the caller picks block size and per-stage pools.
 fn run_final(
     st: &Stages<'_>,
     reps: std::ops::Range<u64>,
     block: usize,
-    ssa: Exec<'_>,
-    ode: Exec<'_>,
+    ssa: Exec,
+    ode: Exec,
 ) -> Result<Vec<Vec<f64>>> {
     let requests: Vec<(u32, u64)> = reps.map(|rep| (50u32, rep)).collect();
     let mut out = Vec::new();
@@ -226,9 +219,7 @@ fn cold_run_is_stage_by_stage_within_each_block() -> Result<()> {
     let store = MemoryStore::default();
     let log = Log::default();
     let st = stages(&store, &log);
-    let (ssa, ode) = (pool(4), pool(2));
-
-    let finals = run_final(&st, 0..8, 4, Exec::pool(&ssa), Exec::pool(&ode))?;
+    let finals = run_final(&st, 0..8, 4, Exec::threads(4), Exec::threads(2))?;
     assert_eq!(finals.len(), 8);
 
     // Within each block of 4: all early, then all top, then all surgery, then all regrowth.
@@ -261,14 +252,14 @@ fn all_hit_rerun_never_touches_upstream() -> Result<()> {
         &stages(&store, &log),
         0..8,
         4,
-        Exec::current(),
-        Exec::current(),
+        Exec::default(),
+        Exec::default(),
     )?;
     log.lock().clear();
     let contains_before = store.contains_calls.load(Ordering::Relaxed);
 
     let st = stages(&store, &log);
-    let second = run_final(&st, 0..8, 4, Exec::current(), Exec::current())?;
+    let second = run_final(&st, 0..8, 4, Exec::default(), Exec::default())?;
 
     assert_eq!(first, second);
     assert!(log.lock().is_empty(), "nothing recomputed");
@@ -296,12 +287,12 @@ fn extending_repetitions_computes_only_new_items() -> Result<()> {
         &stages(&store, &log),
         0..4,
         4,
-        Exec::current(),
-        Exec::current(),
+        Exec::default(),
+        Exec::default(),
     )?;
 
     let st = stages(&store, &log);
-    run_final(&st, 0..8, 8, Exec::current(), Exec::current())?;
+    run_final(&st, 0..8, 8, Exec::default(), Exec::default())?;
     assert_eq!(
         st.regrow.stats(),
         ssa_workflow_next::StageStats {
@@ -321,22 +312,21 @@ fn extending_repetitions_computes_only_new_items() -> Result<()> {
 
 #[test]
 fn results_do_not_depend_on_block_size_or_threads() -> Result<()> {
-    let (one, many) = (pool(1), pool(4));
     let store_a = MemoryStore::default();
     let a = run_final(
         &stages(&store_a, &Log::default()),
         0..16,
         1,
-        Exec::pool(&one),
-        Exec::pool(&one),
+        Exec::serial(),
+        Exec::serial(),
     )?;
     let store_b = MemoryStore::default();
     let b = run_final(
         &stages(&store_b, &Log::default()),
         0..16,
         16,
-        Exec::pool(&many),
-        Exec::pool(&many),
+        Exec::threads(4),
+        Exec::threads(4),
     )?;
     assert_eq!(a, b);
     Ok(())
@@ -346,14 +336,13 @@ fn results_do_not_depend_on_block_size_or_threads() -> Result<()> {
 fn worker_state_survives_across_blocks() -> Result<()> {
     let store = MemoryStore::default();
     let st = stages(&store, &Log::default());
-    let ode = pool(2);
-    run_final(&st, 0..32, 4, Exec::current(), Exec::pool(&ode))?;
-    // 32 items in 8 blocks, but the operator is assembled at most once per pooled state, and
-    // the pool never holds more states than concurrent splits.
+    run_final(&st, 0..32, 4, Exec::default(), Exec::threads(2))?;
+    // 32 items in 8 blocks, but never more states than workers (a late worker may reuse a state
+    // an early one already returned), and the operator is assembled at most once per state.
     let builds = st.top.kernel().builds.load(Ordering::Relaxed);
     let states = st.top.stats().states;
     assert!(
-        builds <= states && states <= 4,
+        (1..=2).contains(&states) && builds <= states,
         "builds={builds}, states={states}"
     );
     Ok(())
@@ -374,7 +363,7 @@ fn staged_bundle_borrows_every_stage() -> Result<()> {
     assert_eq!((e.len(), t.len(), r.len(), f.len()), (4, 4, 4, 4));
     assert_eq!(log.lock().len(), 16);
     // Same keys and values as the demand-driven chain.
-    let finals = run_final(&st, 0..4, 4, Exec::current(), Exec::current())?;
+    let finals = run_final(&st, 0..4, 4, Exec::default(), Exec::default())?;
     assert_eq!(f.into_values(), finals);
     Ok(())
 }
@@ -460,4 +449,74 @@ fn adding_a_parameter_computes_only_its_items() -> Result<()> {
         "early read once per item for the new parameter only"
     );
     Ok(())
+}
+
+/// Tracks how many items run at once and fails on one chosen item.
+#[derive(Default)]
+struct Probe {
+    running: AtomicUsize,
+    peak: AtomicUsize,
+    fail_on: Option<u32>,
+}
+
+impl Kernel for Probe {
+    const ID: &'static str = "probe-v1";
+    type Param = u32;
+    type Input = ();
+    type Output = u64;
+    type State = ();
+
+    fn compute(&self, cx: &mut Cx<'_>, _: &mut (), param: &u32, _: &()) -> Result<u64> {
+        let now = self.running.fetch_add(1, Ordering::SeqCst) + 1;
+        self.peak.fetch_max(now, Ordering::SeqCst);
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        self.running.fetch_sub(1, Ordering::SeqCst);
+        if Some(*param) == self.fail_on {
+            return Err(Error::Kernel {
+                path: Self::ID.into(),
+                message: format!("item {param} failed"),
+            });
+        }
+        Ok(cx.rng().random())
+    }
+}
+
+#[test]
+fn at_most_n_items_in_flight() -> Result<()> {
+    let store = MemoryStore::default();
+    let stage = Stage::root(Probe::default(), &store);
+    let items: Vec<(u32, u64)> = (0..24).map(|rep| (0, rep)).collect();
+    stage
+        .request_root(&items)
+        .on(Exec::threads(3))
+        .materialize()?;
+    let peak = stage.kernel().peak.load(Ordering::SeqCst);
+    assert!((1..=3).contains(&peak), "peak={peak}");
+    assert!(stage.stats().states <= 3);
+    Ok(())
+}
+
+#[test]
+fn kernel_error_stops_the_block() {
+    let store = MemoryStore::default();
+    let stage = Stage::root(
+        Probe {
+            fail_on: Some(5),
+            ..Probe::default()
+        },
+        &store,
+    );
+    let items: Vec<(u32, u64)> = (0..64).map(|param| (param, 0)).collect();
+    match stage
+        .request_root(&items)
+        .on(Exec::threads(4))
+        .materialize()
+    {
+        Err(Error::Kernel { message, .. }) => assert_eq!(message, "item 5 failed"),
+        other => panic!("expected kernel error, got {:?}", other.map(|b| b.len())),
+    }
+    assert!(
+        store.puts.load(Ordering::Relaxed) < 64,
+        "workers stopped early"
+    );
 }

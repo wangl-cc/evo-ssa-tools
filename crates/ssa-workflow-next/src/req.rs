@@ -1,8 +1,5 @@
 use std::sync::atomic::Ordering;
 
-use parking_lot::Mutex;
-use rayon::prelude::*;
-
 use crate::{Block, Cx, Error, Exec, Kernel, Keys, Path, Result, Stage, Value};
 
 /// Anything that can hand a stage the upstream values for some of its items: a request (which
@@ -126,7 +123,7 @@ pub struct Req<'a, K: Kernel> {
     pub(crate) parent: Parent<'a, K::Input>,
     pub(crate) params: Params<'a, K::Param>,
     pub(crate) keys: Keys,
-    pub(crate) exec: Exec<'a>,
+    pub(crate) exec: Exec,
 }
 
 impl<'a, K: Kernel> Req<'a, K> {
@@ -136,8 +133,8 @@ impl<'a, K: Kernel> Req<'a, K> {
         item % self.parent.get().keys().len()
     }
 
-    /// Run this stage's missing items on `exec`.
-    pub fn on(mut self, exec: Exec<'a>) -> Self {
+    /// Compute this stage's missing items with `exec` (how many workers run at once).
+    pub fn on(mut self, exec: Exec) -> Self {
         self.exec = exec;
         self
     }
@@ -200,18 +197,25 @@ impl<'a, K: Kernel> Req<'a, K> {
             })
         };
 
-        let decoded: Vec<Option<K::Output>> = self.exec.install(|| {
-            raw.par_iter()
-                .map(|bytes| bytes.as_ref().map(decode).transpose())
-                .collect::<Result<_>>()
-        })?;
+        let hits: Vec<usize> = (0..count).filter(|&local| raw[local].is_some()).collect();
+        let mut decoded: Vec<Option<K::Output>> =
+            std::iter::repeat_with(|| None).take(count).collect();
+        let values = self.exec.map(
+            hits.len(),
+            || (),
+            |()| (),
+            |(), position| decode(raw[hits[position]].as_ref().expect("hit has bytes")),
+        )?;
+        for (&local, value) in hits.iter().zip(values) {
+            decoded[local] = Some(value);
+        }
         drop(raw);
 
         let computed: Vec<K::Output> = if misses.is_empty() {
             Vec::new()
         } else {
-            // Only now ask upstream, and only for the missing items. This runs outside this
-            // stage's pool, so the upstream stage finishes on its own pool before ours starts.
+            // Only now ask upstream, and only for the missing items. This runs before this
+            // stage's workers start, so the upstream stage finishes with its own workers first.
             // Under fan-out several misses share one upstream item; ask for each once.
             let mut wanted: Vec<usize> = misses
                 .iter()
@@ -228,29 +232,26 @@ impl<'a, K: Kernel> Req<'a, K> {
                 })
                 .collect();
             let upstream = self.parent.get().provide(&wanted)?;
-            self.exec.install(|| {
-                misses
-                    .par_iter()
-                    .enumerate()
-                    .map_init(
-                        || StateGuard::checkout(&stage.states),
-                        |state, (miss, &local)| {
-                            let item = items[local];
-                            let mut cx = Cx::new(&stage.seed, self.keys.get(item));
-                            let output = stage.kernel.compute(
-                                &mut cx,
-                                state.get(),
-                                self.params.get(item),
-                                upstream.get(positions[miss]),
-                            )?;
-                            let mut bytes = Vec::new();
-                            output.encode(&mut bytes);
-                            stage.store.put(&store_keys[local], bytes);
-                            Ok(output)
-                        },
-                    )
-                    .collect::<Result<_>>()
-            })?
+            self.exec.map(
+                misses.len(),
+                || stage.states.lock().pop().unwrap_or_default(),
+                |state| stage.states.lock().push(state),
+                |state, miss| {
+                    let local = misses[miss];
+                    let item = items[local];
+                    let mut cx = Cx::new(&stage.seed, self.keys.get(item));
+                    let output = stage.kernel.compute(
+                        &mut cx,
+                        state,
+                        self.params.get(item),
+                        upstream.get(positions[miss]),
+                    )?;
+                    let mut bytes = Vec::new();
+                    output.encode(&mut bytes);
+                    stage.store.put(&store_keys[local], bytes);
+                    Ok(output)
+                },
+            )?
             // `upstream` is dropped here: an owned upstream block lives only while this stage
             // computes.
         };
@@ -286,34 +287,5 @@ impl<K: Kernel> Upstream<K::Output> for Req<'_, K> {
 
     fn provide(&self, items: &[usize]) -> Result<Provided<'_, K::Output>> {
         self.materialize_items(items).map(Provided::Owned)
-    }
-}
-
-/// Worker state checked out of the stage's pool for one Rayon split and returned on drop, so
-/// expensive state (an assembled operator) survives across splits and blocks.
-struct StateGuard<'a, S> {
-    pool: &'a Mutex<Vec<S>>,
-    state: Option<S>,
-}
-
-impl<'a, S: Default> StateGuard<'a, S> {
-    fn checkout(pool: &'a Mutex<Vec<S>>) -> Self {
-        let state = pool.lock().pop().unwrap_or_default();
-        Self {
-            pool,
-            state: Some(state),
-        }
-    }
-
-    fn get(&mut self) -> &mut S {
-        self.state.as_mut().expect("state is present until drop")
-    }
-}
-
-impl<S> Drop for StateGuard<'_, S> {
-    fn drop(&mut self) {
-        if let Some(state) = self.state.take() {
-            self.pool.lock().push(state);
-        }
     }
 }

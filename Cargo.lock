@@ -1121,7 +1121,6 @@ dependencies = [
  "canonical-input-encoding",
  "parking_lot",
  "rand",
- "rayon",
  "thiserror",
 ]
 
