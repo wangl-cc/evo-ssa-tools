@@ -138,24 +138,21 @@ impl<'s, K: Kernel> Stage<'s, K> {
         })
     }
 
-    /// Request one item per upstream item, with one parameter per item.
-    pub fn request_each<'a>(
+    /// Fan out: every upstream item under every parameter, `params.len() × upstream.len()`
+    /// items in parameter-major order. Item `p * n + u` is upstream item `u` under `params[p]`,
+    /// so `values().chunks(n)` gives one chunk per parameter. Each upstream item is pulled at
+    /// most once per materialization, however many parameters need it.
+    pub fn request_fan<'a>(
         &'a self,
         upstream: &'a dyn Upstream<K::Input>,
-        params: Vec<K::Param>,
+        params: &'a [K::Param],
     ) -> Result<Req<'a, K>> {
         self.check_upstream(upstream)?;
-        if params.len() != upstream.keys().len() {
-            return Err(Error::ParamCount {
-                expected: upstream.keys().len(),
-                actual: params.len(),
-            });
-        }
-        let keys = derive_keys(&params, upstream.keys());
+        let keys = derive_keys(params, upstream.keys());
         Ok(Req {
             stage: self,
             parent: Parent::Borrowed(upstream),
-            params: Params::Each(params),
+            params: Params::Fan(params, upstream.keys().len()),
             keys,
             exec: Exec::current(),
         })
@@ -172,19 +169,16 @@ impl<'s, K: Kernel> Stage<'s, K> {
     }
 }
 
-/// Key of item `i` = canonical(param_i) ++ upstream key_i. With one shared parameter, it is
-/// encoded once.
+/// Item `p * n + u` gets key canonical(params[p]) ++ upstream key u. Each parameter is encoded
+/// once.
 fn derive_keys<P: CanonicalEncode>(params: &[P], upstream: &Keys) -> Keys {
     let mut buffer = CanonicalBuffer::<P>::new();
-    let mut keys = Keys::with_capacity(upstream.len(), upstream.len() * P::SIZE);
-    if let [shared] = params {
-        let head = buffer.encode(shared).to_vec();
+    let items = params.len() * upstream.len();
+    let mut keys = Keys::with_capacity(items, items * P::SIZE);
+    for param in params {
+        let head = buffer.encode(param);
         for index in 0..upstream.len() {
-            keys.push_parts(&head, upstream.get(index));
-        }
-    } else {
-        for (index, param) in params.iter().enumerate() {
-            keys.push_parts(buffer.encode(param), upstream.get(index));
+            keys.push_parts(head, upstream.get(index));
         }
     }
     keys

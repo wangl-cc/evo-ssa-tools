@@ -103,8 +103,9 @@ impl<U> Parent<'_, U> {
 pub(crate) enum Params<'a, P> {
     Shared(P),
     SharedRef(&'a P),
-    Each(Vec<P>),
     Pairs(&'a [(P, u64)]),
+    /// Fan-out over `n` upstream items: item `j` uses parameter `j / n`.
+    Fan(&'a [P], usize),
 }
 
 impl<P> Params<'_, P> {
@@ -112,8 +113,8 @@ impl<P> Params<'_, P> {
         match self {
             Self::Shared(param) => param,
             Self::SharedRef(param) => param,
-            Self::Each(params) => &params[index],
             Self::Pairs(items) => &items[index].0,
+            Self::Fan(params, n) => &params[index / n],
         }
     }
 }
@@ -129,6 +130,12 @@ pub struct Req<'a, K: Kernel> {
 }
 
 impl<'a, K: Kernel> Req<'a, K> {
+    /// Upstream item behind item `item`. Every request is a fan-out over its upstream; without
+    /// fan-out there is one parameter and this is the identity.
+    fn upstream_of(&self, item: usize) -> usize {
+        item % self.parent.get().keys().len()
+    }
+
     /// Run this stage's missing items on `exec`.
     pub fn on(mut self, exec: Exec<'a>) -> Self {
         self.exec = exec;
@@ -205,22 +212,36 @@ impl<'a, K: Kernel> Req<'a, K> {
         } else {
             // Only now ask upstream, and only for the missing items. This runs outside this
             // stage's pool, so the upstream stage finishes on its own pool before ours starts.
-            let upstream_items: Vec<usize> = misses.iter().map(|&local| items[local]).collect();
-            let upstream = self.parent.get().provide(&upstream_items)?;
+            // Under fan-out several misses share one upstream item; ask for each once.
+            let mut wanted: Vec<usize> = misses
+                .iter()
+                .map(|&local| self.upstream_of(items[local]))
+                .collect();
+            wanted.sort_unstable();
+            wanted.dedup();
+            let positions: Vec<usize> = misses
+                .iter()
+                .map(|&local| {
+                    wanted
+                        .binary_search(&self.upstream_of(items[local]))
+                        .expect("wanted holds every needed upstream item")
+                })
+                .collect();
+            let upstream = self.parent.get().provide(&wanted)?;
             self.exec.install(|| {
                 misses
                     .par_iter()
                     .enumerate()
                     .map_init(
                         || StateGuard::checkout(&stage.states),
-                        |state, (position, &local)| {
+                        |state, (miss, &local)| {
                             let item = items[local];
                             let mut cx = Cx::new(&stage.seed, self.keys.get(item));
                             let output = stage.kernel.compute(
                                 &mut cx,
                                 state.get(),
                                 self.params.get(item),
-                                upstream.get(position),
+                                upstream.get(positions[miss]),
                             )?;
                             let mut bytes = Vec::new();
                             output.encode(&mut bytes);

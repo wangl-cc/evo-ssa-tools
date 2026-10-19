@@ -411,3 +411,53 @@ fn upstream_from_another_stage_is_rejected() -> Result<()> {
         Ok(_) => panic!("wrong upstream accepted"),
     }
 }
+
+#[test]
+fn fan_out_pulls_each_upstream_item_once() -> Result<()> {
+    let store = MemoryStore::default();
+    let log = Log::default();
+    let st = stages(&store, &log);
+    let targets = [1e5, 1e6, 1e7];
+
+    // One simulation chunk analysed under three parameters, never materializing early.
+    let e = st.early.request_repeated(&50, 0..4);
+    let t = st.top.request_fan(&e, &targets)?;
+    let r = st.surgery.request(&t, 200)?;
+    let f = st.regrow.request(&r, 1e9)?.materialize()?;
+
+    assert_eq!(f.len(), 12);
+    assert_eq!(st.early.stats().computed, 4, "early asked once per item");
+    assert_eq!(st.top.stats().computed, 12);
+
+    // Parameter-major: chunk p holds every replicate under targets[p], with the same keys and
+    // values as a separate request per parameter.
+    let fresh = MemoryStore::default();
+    let alone = stages(&fresh, &Log::default());
+    for (target, chunk) in targets.iter().zip(f.values().chunks(4)) {
+        let e = alone.early.request_repeated(&50, 0..4);
+        let t = alone.top.request(&e, *target)?;
+        let r = alone.surgery.request(&t, 200)?;
+        let f = alone.regrow.request(&r, 1e9)?.materialize()?;
+        assert_eq!(f.values(), chunk);
+    }
+    Ok(())
+}
+
+#[test]
+fn adding_a_parameter_computes_only_its_items() -> Result<()> {
+    let store = MemoryStore::default();
+    let st = stages(&store, &Log::default());
+    let e = st.early.request_repeated(&50, 0..4);
+    st.top.request_fan(&e, &[1e5, 1e6])?.materialize()?;
+
+    let st = stages(&store, &Log::default());
+    let e = st.early.request_repeated(&50, 0..4);
+    st.top.request_fan(&e, &[1e5, 1e6, 1e7])?.materialize()?;
+    assert_eq!((st.top.stats().computed, st.top.stats().loaded), (4, 8));
+    assert_eq!(
+        (st.early.stats().computed, st.early.stats().loaded),
+        (0, 4),
+        "early read once per item for the new parameter only"
+    );
+    Ok(())
+}
