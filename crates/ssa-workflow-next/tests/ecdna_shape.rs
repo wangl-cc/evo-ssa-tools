@@ -212,7 +212,7 @@ fn run_final(
     let requests: Vec<(u32, u64)> = reps.map(|rep| (50u32, rep)).collect();
     let mut out = Vec::new();
     for chunk in requests.chunks(block) {
-        let e = st.early.request_root(chunk.iter().copied()).on(ssa);
+        let e = st.early.request_root(chunk).on(ssa);
         let t = st.top.request(&e, 1e6)?.on(ode);
         let r = st.surgery.request(&t, 200)?;
         let f = st.regrow.request(&r, 1e9)?.on(ode);
@@ -365,10 +365,7 @@ fn staged_bundle_borrows_every_stage() -> Result<()> {
     let log = Log::default();
     let st = stages(&store, &log);
 
-    let e: Block<Vec<u64>> = st
-        .early
-        .request_root((0..4).map(|rep| (50u32, rep)))
-        .materialize()?;
+    let e: Block<Vec<u64>> = st.early.request_repeated(&50, 0..4).materialize()?;
     let t = st.top.request(&e, 1e6)?.materialize()?;
     let r = st.surgery.request(&t, 200)?.materialize()?;
     let f = st.regrow.request(&r, 1e9)?.materialize()?;
@@ -387,10 +384,7 @@ fn two_branches_share_one_early_block() -> Result<()> {
     let store = MemoryStore::default();
     let log = Log::default();
     let st = stages(&store, &log);
-    let e = st
-        .early
-        .request_root((0..4).map(|rep| (50u32, rep)))
-        .materialize()?;
+    let e = st.early.request_repeated(&50, 0..4).materialize()?;
 
     let small = st.top.request(&e, 1e5)?.materialize()?;
     let large = st.top.request(&e, 1e7)?.materialize()?;
@@ -408,7 +402,7 @@ fn upstream_from_another_stage_is_rejected() -> Result<()> {
     let store = MemoryStore::default();
     let st = stages(&store, &Log::default());
     let other = Stage::root(OtherRoot, &store);
-    let wrong = other.request_root([(50u32, 0)]).materialize()?;
+    let wrong = other.request_repeated(&50, 0..1).materialize()?;
 
     // Same Rust type (Block<Vec<u64>>), different computation path.
     match st.top.request(&wrong, 1e6) {

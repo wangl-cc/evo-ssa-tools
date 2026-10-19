@@ -80,21 +80,42 @@ impl<'s, K: Kernel> Stage<'s, K> {
         }
     }
 
-    /// Request a block of root items.
-    pub fn request_root<'a>(
+    /// Request a block of root items `(param, repetition_index)`, borrowing the caller's slice.
+    pub fn request_root<'a>(&'a self, items: &'a [(K::Param, u64)]) -> Req<'a, K>
+    where
+        K: Kernel<Input = ()>,
+    {
+        let roots = Roots::new(items.iter().map(|(_, rep)| *rep));
+        let mut buffer = CanonicalBuffer::<K::Param>::new();
+        let mut keys = Keys::with_capacity(items.len(), items.len() * (K::Param::SIZE + 8));
+        for (index, (param, _)) in items.iter().enumerate() {
+            keys.push_parts(buffer.encode(param), roots.keys().get(index));
+        }
+        Req {
+            stage: self,
+            parent: Parent::Owned(Box::new(roots)),
+            params: Params::Pairs(items),
+            keys,
+            exec: Exec::current(),
+        }
+    }
+
+    /// Request repetitions `reps` of one borrowed root parameter, the common
+    /// "same parameter, many replicates" case. Nothing is copied per item.
+    pub fn request_repeated<'a>(
         &'a self,
-        items: impl IntoIterator<Item = (K::Param, u64)>,
+        param: &'a K::Param,
+        reps: std::ops::Range<u64>,
     ) -> Req<'a, K>
     where
         K: Kernel<Input = ()>,
     {
-        let (params, reps): (Vec<_>, Vec<_>) = items.into_iter().unzip();
-        let roots = Roots::new(&reps);
-        let keys = derive_keys(&params, roots.keys());
+        let roots = Roots::new(reps);
+        let keys = derive_keys(std::slice::from_ref(param), roots.keys());
         Req {
             stage: self,
             parent: Parent::Owned(Box::new(roots)),
-            params: Params::Each(params),
+            params: Params::SharedRef(param),
             keys,
             exec: Exec::current(),
         }

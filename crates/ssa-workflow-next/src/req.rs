@@ -57,15 +57,15 @@ pub(crate) struct Roots {
 }
 
 impl Roots {
-    pub(crate) fn new(reps: &[u64]) -> Self {
-        let mut keys = Keys::with_capacity(reps.len(), reps.len() * 8);
+    pub(crate) fn new(reps: impl Iterator<Item = u64>) -> Self {
+        let mut keys = Keys::default();
         for rep in reps {
             keys.push_parts(&rep.to_be_bytes(), &[]);
         }
         let unit = Block {
             path: Path::roots(),
             keys: keys.clone(),
-            values: vec![(); reps.len()],
+            values: vec![(); keys.len()],
         };
         Self { keys, unit }
     }
@@ -99,16 +99,21 @@ impl<U> Parent<'_, U> {
     }
 }
 
-pub(crate) enum Params<P> {
+/// Parameters of a request. Root requests borrow the caller's items instead of copying them.
+pub(crate) enum Params<'a, P> {
     Shared(P),
+    SharedRef(&'a P),
     Each(Vec<P>),
+    Pairs(&'a [(P, u64)]),
 }
 
-impl<P> Params<P> {
+impl<P> Params<'_, P> {
     fn get(&self, index: usize) -> &P {
         match self {
             Self::Shared(param) => param,
+            Self::SharedRef(param) => param,
             Self::Each(params) => &params[index],
+            Self::Pairs(items) => &items[index].0,
         }
     }
 }
@@ -118,7 +123,7 @@ impl<P> Params<P> {
 pub struct Req<'a, K: Kernel> {
     pub(crate) stage: &'a Stage<'a, K>,
     pub(crate) parent: Parent<'a, K::Input>,
-    pub(crate) params: Params<K::Param>,
+    pub(crate) params: Params<'a, K::Param>,
     pub(crate) keys: Keys,
     pub(crate) exec: Exec<'a>,
 }
