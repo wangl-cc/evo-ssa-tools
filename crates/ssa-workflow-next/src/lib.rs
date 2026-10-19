@@ -19,7 +19,7 @@ mod value;
 
 pub use block::Block;
 pub use error::{Error, Result};
-pub use exec::{Exec, Hooks};
+pub use exec::Exec;
 pub use kernel::{Cx, Kernel};
 pub use key::Keys;
 pub use path::Path;
