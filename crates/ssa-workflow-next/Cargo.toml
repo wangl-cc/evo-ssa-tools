@@ -1,0 +1,19 @@
+[package]
+name = "ssa-workflow-next"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+description = "Prototype of the caller-driven ssa-workflow API (shape check only)"
+
+[dependencies]
+blake3 = { workspace = true }
+canonical-input-encoding = { workspace = true }
+parking_lot = { workspace = true }
+rand = { workspace = true }
+rayon = { workspace = true }
+thiserror = { workspace = true }
+
+[lints]
+workspace = true

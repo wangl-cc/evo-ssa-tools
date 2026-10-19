@@ -1114,6 +1114,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "ssa-workflow-next"
+version = "0.0.0"
+dependencies = [
+ "blake3",
+ "canonical-input-encoding",
+ "parking_lot",
+ "rand",
+ "rayon",
+ "thiserror",
+]
+
+[[package]]
 name = "syn"
 version = "2.0.117"
 source = "registry+https://github.com/rust-lang/crates.io-index"

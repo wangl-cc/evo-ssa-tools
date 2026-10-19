@@ -1,0 +1,170 @@
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+use canonical_input_encoding::{CanonicalBuffer, CanonicalEncode};
+use parking_lot::Mutex;
+
+use crate::{
+    Error, Exec, Kernel, Keys, Path, Req, Result, Store, Upstream,
+    req::{Params, Parent, Roots},
+};
+
+/// A kernel bound to a store and to its position in a chain.
+///
+/// Holds the computation path, the namespace prefix, the seed material, and a pool of worker
+/// states that survives across blocks. Create it once per run and reuse it for every block.
+pub struct Stage<'s, K: Kernel> {
+    pub(crate) kernel: K,
+    pub(crate) store: &'s dyn Store,
+    pub(crate) path: Path,
+    pub(crate) parent_path: Path,
+    pub(crate) namespace: [u8; 16],
+    pub(crate) seed: [u8; 32],
+    pub(crate) states: Mutex<Vec<K::State>>,
+    pub(crate) computed: AtomicUsize,
+    pub(crate) loaded: AtomicUsize,
+}
+
+/// Counters for tests and progress.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StageStats {
+    pub computed: usize,
+    pub loaded: usize,
+    pub states: usize,
+}
+
+impl<'s, K: Kernel> Stage<'s, K> {
+    fn new(kernel: K, store: &'s dyn Store, parent_path: Path) -> Self {
+        let path = parent_path.child(K::ID);
+        Self {
+            kernel,
+            store,
+            namespace: path.namespace(),
+            seed: path.seed(),
+            path,
+            parent_path,
+            states: Mutex::new(Vec::new()),
+            computed: AtomicUsize::new(0),
+            loaded: AtomicUsize::new(0),
+        }
+    }
+
+    /// Bind a root stage. Its inputs come from requests: `(param, repetition_index)`.
+    pub fn root(kernel: K, store: &'s dyn Store) -> Self
+    where
+        K: Kernel<Input = ()>,
+    {
+        Self::new(kernel, store, Path::roots())
+    }
+
+    /// Bind a stage after `parent`. The output type of `parent` must be this kernel's input.
+    pub fn after<P>(kernel: K, store: &'s dyn Store, parent: &Stage<'_, P>) -> Self
+    where
+        P: Kernel<Output = K::Input>,
+    {
+        Self::new(kernel, store, parent.path.clone())
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    pub fn kernel(&self) -> &K {
+        &self.kernel
+    }
+
+    pub fn stats(&self) -> StageStats {
+        StageStats {
+            computed: self.computed.load(Ordering::Relaxed),
+            loaded: self.loaded.load(Ordering::Relaxed),
+            states: self.states.lock().len(),
+        }
+    }
+
+    /// Request a block of root items.
+    pub fn request_root<'a>(
+        &'a self,
+        items: impl IntoIterator<Item = (K::Param, u64)>,
+    ) -> Req<'a, K>
+    where
+        K: Kernel<Input = ()>,
+    {
+        let (params, reps): (Vec<_>, Vec<_>) = items.into_iter().unzip();
+        let roots = Roots::new(&reps);
+        let keys = derive_keys(&params, roots.keys());
+        Req {
+            stage: self,
+            parent: Parent::Owned(Box::new(roots)),
+            params: Params::Each(params),
+            keys,
+            exec: Exec::current(),
+        }
+    }
+
+    /// Request one item per upstream item, all with the same parameter.
+    pub fn request<'a>(
+        &'a self,
+        upstream: &'a dyn Upstream<K::Input>,
+        param: K::Param,
+    ) -> Result<Req<'a, K>> {
+        self.check_upstream(upstream)?;
+        let keys = derive_keys(std::slice::from_ref(&param), upstream.keys());
+        Ok(Req {
+            stage: self,
+            parent: Parent::Borrowed(upstream),
+            params: Params::Shared(param),
+            keys,
+            exec: Exec::current(),
+        })
+    }
+
+    /// Request one item per upstream item, with one parameter per item.
+    pub fn request_each<'a>(
+        &'a self,
+        upstream: &'a dyn Upstream<K::Input>,
+        params: Vec<K::Param>,
+    ) -> Result<Req<'a, K>> {
+        self.check_upstream(upstream)?;
+        if params.len() != upstream.keys().len() {
+            return Err(Error::ParamCount {
+                expected: upstream.keys().len(),
+                actual: params.len(),
+            });
+        }
+        let keys = derive_keys(&params, upstream.keys());
+        Ok(Req {
+            stage: self,
+            parent: Parent::Borrowed(upstream),
+            params: Params::Each(params),
+            keys,
+            exec: Exec::current(),
+        })
+    }
+
+    fn check_upstream(&self, upstream: &dyn Upstream<K::Input>) -> Result<()> {
+        if upstream.path() != &self.parent_path {
+            return Err(Error::WrongUpstream {
+                expected: self.parent_path.to_string(),
+                actual: upstream.path().to_string(),
+            });
+        }
+        Ok(())
+    }
+}
+
+/// Key of item `i` = canonical(param_i) ++ upstream key_i. With one shared parameter, it is
+/// encoded once.
+fn derive_keys<P: CanonicalEncode>(params: &[P], upstream: &Keys) -> Keys {
+    let mut buffer = CanonicalBuffer::<P>::new();
+    let mut keys = Keys::with_capacity(upstream.len(), upstream.len() * P::SIZE);
+    if let [shared] = params {
+        let head = buffer.encode(shared).to_vec();
+        for index in 0..upstream.len() {
+            keys.push_parts(&head, upstream.get(index));
+        }
+    } else {
+        for (index, param) in params.iter().enumerate() {
+            keys.push_parts(buffer.encode(param), upstream.get(index));
+        }
+    }
+    keys
+}
