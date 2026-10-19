@@ -10,7 +10,7 @@ use std::sync::{
 
 use parking_lot::Mutex;
 use rand::RngExt;
-use ssa_workflow_next::{Block, Cx, Error, Exec, Kernel, MemoryStore, Result, Stage, Store};
+use ssa_workflow_next::{Block, Cx, Error, Exec, Hooks, Kernel, MemoryStore, Result, Stage, Store};
 
 type Log = Arc<Mutex<Vec<&'static str>>>;
 
@@ -519,4 +519,83 @@ fn kernel_error_stops_the_block() {
         store.puts.load(Ordering::Relaxed) < 64,
         "workers stopped early"
     );
+}
+
+/// Records hook calls into the shared log.
+struct Recorder(Log);
+
+impl Hooks for Recorder {
+    fn before_stage(&self) {
+        self.0.lock().push("before");
+    }
+    fn after_stage(&self) {
+        self.0.lock().push("after");
+    }
+    fn worker_start(&self) {
+        self.0.lock().push("start");
+    }
+    fn worker_stop(&self) {
+        self.0.lock().push("stop");
+    }
+}
+
+#[test]
+fn hooks_wrap_only_this_stage_after_upstream() -> Result<()> {
+    let store = MemoryStore::default();
+    let log = Log::default();
+    let st = stages(&store, &log);
+    let recorder = Recorder(log.clone());
+
+    let e = st.early.request_repeated(&50, 0..4).on(Exec::threads(2));
+    let t = st
+        .top
+        .request(&e, 1e6)?
+        .on(Exec::threads(3).hooks(&recorder));
+    t.materialize()?;
+
+    let log_handle = log.clone();
+    let log = std::mem::take(&mut *log.lock());
+    let count = |id: &str| log.iter().filter(|entry| **entry == id).count();
+    // Upstream finished before this stage's hooks ran; the stage closed after its last item.
+    assert_eq!(
+        log[..5],
+        ["early-ssa-v1"; 4]
+            .iter()
+            .copied()
+            .chain(["before"])
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(log.last(), Some(&"after"));
+    assert_eq!(
+        (count("start"), count("stop"), count("top-ode-v1")),
+        (3, 3, 4)
+    );
+
+    // An all-hit rerun computes nothing, so no hook runs.
+    t.materialize()?;
+    assert!(log_handle.lock().is_empty(), "no hook or kernel ran");
+    Ok(())
+}
+
+#[test]
+fn after_stage_runs_on_error() {
+    let store = MemoryStore::default();
+    let log = Log::default();
+    let recorder = Recorder(log.clone());
+    let stage = Stage::root(
+        Probe {
+            fail_on: Some(0),
+            ..Probe::default()
+        },
+        &store,
+    );
+    let items: Vec<(u32, u64)> = (0..8).map(|param| (param, 0)).collect();
+    let result = stage
+        .request_root(&items)
+        .on(Exec::threads(2).hooks(&recorder))
+        .materialize();
+    assert!(result.is_err());
+    let log = log.lock();
+    assert_eq!(log.first(), Some(&"before"));
+    assert_eq!(log.last(), Some(&"after"));
 }

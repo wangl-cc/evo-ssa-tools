@@ -123,7 +123,7 @@ pub struct Req<'a, K: Kernel> {
     pub(crate) parent: Parent<'a, K::Input>,
     pub(crate) params: Params<'a, K::Param>,
     pub(crate) keys: Keys,
-    pub(crate) exec: Exec,
+    pub(crate) exec: Exec<'a>,
 }
 
 impl<'a, K: Kernel> Req<'a, K> {
@@ -134,7 +134,7 @@ impl<'a, K: Kernel> Req<'a, K> {
     }
 
     /// Compute this stage's missing items with `exec` (how many workers run at once).
-    pub fn on(mut self, exec: Exec) -> Self {
+    pub fn on(mut self, exec: Exec<'a>) -> Self {
         self.exec = exec;
         self
     }
@@ -202,6 +202,7 @@ impl<'a, K: Kernel> Req<'a, K> {
             std::iter::repeat_with(|| None).take(count).collect();
         let values = self.exec.map(
             hits.len(),
+            None,
             || (),
             |()| (),
             |(), position| decode(raw[hits[position]].as_ref().expect("hit has bytes")),
@@ -234,6 +235,7 @@ impl<'a, K: Kernel> Req<'a, K> {
             let upstream = self.parent.get().provide(&wanted)?;
             self.exec.map(
                 misses.len(),
+                self.exec.hooks,
                 || stage.states.lock().pop().unwrap_or_default(),
                 |state| stage.states.lock().push(state),
                 |state, miss| {

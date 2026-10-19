@@ -11,4 +11,5 @@ What it demonstrates (see `tests/ecdna_shape.rs`):
 - `req.materialize()` does one ordered lookup, loads hits, asks upstream only for misses, computes misses with the request's `Exec` workers, and writes them. A chain therefore runs stage by stage within a block, and an all-hit rerun never touches upstream.
 - A materialized `Block` can be lent to downstream requests (staged outputs, shared branches).
 - `Exec::threads(n)` runs a stage on `n` scoped worker threads of our own (no Rayon). Workers claim items from a shared counter, so at most `n` items are in flight, and there is no work stealing to nest into a kernel's own Rayon pool.
+- `Exec::threads(n).hooks(&h)` runs `Hooks` around one stage's computation: `before_stage`/`after_stage` on the calling thread (process-wide settings such as the OpenBLAS thread count) and `worker_start`/`worker_stop` on each worker (thread-local settings).
 - Worker state (for example an assembled operator) is checked out once per worker thread from a per-stage pool and survives across blocks.
