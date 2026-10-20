@@ -4,7 +4,7 @@ Shape check for the caller-driven `ssa-workflow` redesign. Not for production: i
 
 What it demonstrates (see `tests/ecdna_shape.rs`):
 
-- `Kernel` with associated types: callers never annotate types; RNG is requested lazily through `Cx`, so there is no deterministic/stochastic split.
+- `Kernel` with associated types: callers never annotate types; random streams are requested lazily through `Streams`, so there is no deterministic/stochastic split.
 - `Stage::root` / `Stage::after` bind a kernel to a store and a parent path once per run.
 - `stage.request(&upstream, param)` builds a `Req` whose keys are `canonical(param) ++ upstream key`. The parent is erased as `&dyn Upstream<U>`, so types do not nest.
 - `stage.request_fan(&upstream, &params)` fans out: every upstream item under every parameter, parameter-major. Keys match one `request` per parameter, and each upstream item is pulled at most once.

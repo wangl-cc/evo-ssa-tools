@@ -1,6 +1,6 @@
 use std::sync::atomic::Ordering;
 
-use crate::{Block, Cx, Error, Exec, Kernel, Keys, Path, Result, Stage, Store, Value};
+use crate::{Block, Error, Exec, Kernel, Keys, Path, Result, Stage, Store, Streams, Value};
 
 /// Anything that can hand a stage the upstream values for some of its items: a request (which
 /// materializes them on demand) or an already materialized block (which lends them).
@@ -239,9 +239,9 @@ impl<'a, K: Kernel, S: Store> Req<'a, K, S> {
                 |state, miss| {
                     let local = misses[miss];
                     let item = items[local];
-                    let mut cx = Cx::new(&stage.seed, self.keys.get(item));
+                    let mut streams = Streams::new(&stage.seed, self.keys.get(item));
                     let output = stage.kernel.compute(
-                        &mut cx,
+                        &mut streams,
                         state,
                         self.params.get(item),
                         upstream.get(positions[miss]),

@@ -22,22 +22,22 @@ pub trait Kernel: Sync {
 
     fn compute(
         &self,
-        cx: &mut Cx<'_>,
+        streams: &mut Streams<'_>,
         state: &mut Self::State,
         param: &Self::Param,
         input: &Self::Input,
     ) -> Result<Self::Output>;
 }
 
-/// Per-item context. Random streams are derived lazily from (path, label, key), so a
-/// deterministic kernel simply never asks for one.
-pub struct Cx<'a> {
+/// Random streams of one item, derived lazily from (stage path, label, item key). A
+/// deterministic kernel ignores it, and then no stream is ever created.
+pub struct Streams<'a> {
     seed: &'a [u8; 32],
     key: &'a [u8],
     streams: Vec<(&'static str, Xoshiro256PlusPlus)>,
 }
 
-impl<'a> Cx<'a> {
+impl<'a> Streams<'a> {
     pub(crate) fn new(seed: &'a [u8; 32], key: &'a [u8]) -> Self {
         Self {
             seed,
@@ -67,10 +67,5 @@ impl<'a> Cx<'a> {
             }
         };
         &mut self.streams[index].1
-    }
-
-    /// Canonical key of this item (without namespace).
-    pub fn key(&self) -> &[u8] {
-        self.key
     }
 }

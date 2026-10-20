@@ -20,7 +20,7 @@ mod value;
 pub use block::Block;
 pub use error::{Error, Result};
 pub use exec::Exec;
-pub use kernel::{Cx, Kernel};
+pub use kernel::{Kernel, Streams};
 pub use key::Keys;
 pub use path::Path;
 pub use req::{Provided, Req, Upstream};
