@@ -10,7 +10,7 @@ use std::sync::{
 
 use parking_lot::Mutex;
 use rand::RngExt;
-use ssa_workflow_next::{Block, Cx, Error, Exec, Kernel, MemoryStore, Result, Stage, Store};
+use ssa_workflow_next::{Block, Cx, Error, Exec, Kernel, MemoryStore, Result, Stage};
 
 type Log = Arc<Mutex<Vec<&'static str>>>;
 
@@ -161,13 +161,13 @@ impl Kernel for RegrowOde {
 }
 
 struct Stages<'s> {
-    early: Stage<'s, EarlySsa>,
-    top: Stage<'s, TopOde>,
-    surgery: Stage<'s, Surgery>,
-    regrow: Stage<'s, RegrowOde>,
+    early: Stage<'s, EarlySsa, MemoryStore>,
+    top: Stage<'s, TopOde, MemoryStore>,
+    surgery: Stage<'s, Surgery, MemoryStore>,
+    regrow: Stage<'s, RegrowOde, MemoryStore>,
 }
 
-fn stages<'s>(store: &'s dyn Store, log: &Log) -> Stages<'s> {
+fn stages<'s>(store: &'s MemoryStore, log: &Log) -> Stages<'s> {
     let early = Stage::root(EarlySsa(log.clone()), store);
     let top = Stage::after(
         TopOde {

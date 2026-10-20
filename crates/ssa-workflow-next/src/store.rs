@@ -11,9 +11,15 @@ use crate::Result;
 
 /// Subset of the segment store (PR #68) used by the workflow. Keys passed to the ordered calls
 /// are sorted ascending; namespaces are byte prefixes.
+///
+/// Stages are generic over the store, so the visitor is a generic closure the store can inline
+/// into its lookup loop, not a trait object.
 pub trait Store: Sync {
     fn contains_many_ordered(&self, keys: &[&[u8]]) -> Vec<bool>;
-    fn visit_many_ordered(&self, keys: &[&[u8]], visitor: &mut dyn FnMut(usize, Option<&[u8]>));
+    /// Calls `visitor(i, value)` for each key in order. The slice is valid only during the call.
+    fn visit_many_ordered<F>(&self, keys: &[&[u8]], visitor: F)
+    where
+        F: FnMut(usize, Option<&[u8]>);
     /// Insert-only: an existing value wins.
     fn put(&self, key: &[u8], value: Vec<u8>);
     /// Durability barrier.
@@ -54,7 +60,10 @@ impl Store for MemoryStore {
         keys.iter().map(|key| map.contains_key(*key)).collect()
     }
 
-    fn visit_many_ordered(&self, keys: &[&[u8]], visitor: &mut dyn FnMut(usize, Option<&[u8]>)) {
+    fn visit_many_ordered<F>(&self, keys: &[&[u8]], mut visitor: F)
+    where
+        F: FnMut(usize, Option<&[u8]>),
+    {
         assert_sorted(keys);
         self.visit_calls.fetch_add(1, Ordering::Relaxed);
         let map = self.map.read();

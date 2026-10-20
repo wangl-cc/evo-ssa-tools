@@ -12,9 +12,9 @@ use crate::{
 ///
 /// Holds the computation path, the namespace prefix, the seed material, and a pool of worker
 /// states that survives across blocks. Create it once per run and reuse it for every block.
-pub struct Stage<'s, K: Kernel> {
+pub struct Stage<'s, K: Kernel, S: Store> {
     pub(crate) kernel: K,
-    pub(crate) store: &'s dyn Store,
+    pub(crate) store: &'s S,
     pub(crate) path: Path,
     pub(crate) parent_path: Path,
     pub(crate) namespace: [u8; 16],
@@ -32,8 +32,8 @@ pub struct StageStats {
     pub states: usize,
 }
 
-impl<'s, K: Kernel> Stage<'s, K> {
-    fn new(kernel: K, store: &'s dyn Store, parent_path: Path) -> Self {
+impl<'s, K: Kernel, S: Store> Stage<'s, K, S> {
+    fn new(kernel: K, store: &'s S, parent_path: Path) -> Self {
         let path = parent_path.child(K::ID);
         Self {
             kernel,
@@ -49,7 +49,7 @@ impl<'s, K: Kernel> Stage<'s, K> {
     }
 
     /// Bind a root stage. Its inputs come from requests: `(param, repetition_index)`.
-    pub fn root(kernel: K, store: &'s dyn Store) -> Self
+    pub fn root(kernel: K, store: &'s S) -> Self
     where
         K: Kernel<Input = ()>,
     {
@@ -57,7 +57,7 @@ impl<'s, K: Kernel> Stage<'s, K> {
     }
 
     /// Bind a stage after `parent`. The output type of `parent` must be this kernel's input.
-    pub fn after<P>(kernel: K, store: &'s dyn Store, parent: &Stage<'_, P>) -> Self
+    pub fn after<P>(kernel: K, store: &'s S, parent: &Stage<'_, P, S>) -> Self
     where
         P: Kernel<Output = K::Input>,
     {
@@ -81,7 +81,7 @@ impl<'s, K: Kernel> Stage<'s, K> {
     }
 
     /// Request a block of root items `(param, repetition_index)`, borrowing the caller's slice.
-    pub fn request_root<'a>(&'a self, items: &'a [(K::Param, u64)]) -> Req<'a, K>
+    pub fn request_root<'a>(&'a self, items: &'a [(K::Param, u64)]) -> Req<'a, K, S>
     where
         K: Kernel<Input = ()>,
     {
@@ -106,7 +106,7 @@ impl<'s, K: Kernel> Stage<'s, K> {
         &'a self,
         param: &'a K::Param,
         reps: std::ops::Range<u64>,
-    ) -> Req<'a, K>
+    ) -> Req<'a, K, S>
     where
         K: Kernel<Input = ()>,
     {
@@ -126,7 +126,7 @@ impl<'s, K: Kernel> Stage<'s, K> {
         &'a self,
         upstream: &'a dyn Upstream<K::Input>,
         param: K::Param,
-    ) -> Result<Req<'a, K>> {
+    ) -> Result<Req<'a, K, S>> {
         self.check_upstream(upstream)?;
         let keys = derive_keys(std::slice::from_ref(&param), upstream.keys());
         Ok(Req {
@@ -146,7 +146,7 @@ impl<'s, K: Kernel> Stage<'s, K> {
         &'a self,
         upstream: &'a dyn Upstream<K::Input>,
         params: &'a [K::Param],
-    ) -> Result<Req<'a, K>> {
+    ) -> Result<Req<'a, K, S>> {
         self.check_upstream(upstream)?;
         let keys = derive_keys(params, upstream.keys());
         Ok(Req {

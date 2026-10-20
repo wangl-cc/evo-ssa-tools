@@ -1,6 +1,6 @@
 use std::sync::atomic::Ordering;
 
-use crate::{Block, Cx, Error, Exec, Kernel, Keys, Path, Result, Stage, Value};
+use crate::{Block, Cx, Error, Exec, Kernel, Keys, Path, Result, Stage, Store, Value};
 
 /// Anything that can hand a stage the upstream values for some of its items: a request (which
 /// materializes them on demand) or an already materialized block (which lends them).
@@ -118,15 +118,15 @@ impl<P> Params<'_, P> {
 
 /// A block of requested items for one stage. It knows its parent, so materializing it pulls
 /// only the missing items from upstream.
-pub struct Req<'a, K: Kernel> {
-    pub(crate) stage: &'a Stage<'a, K>,
+pub struct Req<'a, K: Kernel, S: Store> {
+    pub(crate) stage: &'a Stage<'a, K, S>,
     pub(crate) parent: Parent<'a, K::Input>,
     pub(crate) params: Params<'a, K::Param>,
     pub(crate) keys: Keys,
     pub(crate) exec: Exec,
 }
 
-impl<'a, K: Kernel> Req<'a, K> {
+impl<'a, K: Kernel, S: Store> Req<'a, K, S> {
     /// Upstream item behind item `item`. Every request is a fan-out over its upstream; without
     /// fan-out there is one parameter and this is the identity.
     fn upstream_of(&self, item: usize) -> usize {
@@ -189,7 +189,7 @@ impl<'a, K: Kernel> Req<'a, K> {
                 .collect();
             stage
                 .store
-                .visit_many_ordered(&hit_keys, &mut |position, bytes| {
+                .visit_many_ordered(&hit_keys, |position, bytes| {
                     let Some(bytes) = bytes else { return };
                     if decode_error.is_some() {
                         return;
@@ -277,7 +277,7 @@ impl<'a, K: Kernel> Req<'a, K> {
     }
 }
 
-impl<K: Kernel> Upstream<K::Output> for Req<'_, K> {
+impl<K: Kernel, S: Store> Upstream<K::Output> for Req<'_, K, S> {
     fn path(&self) -> &Path {
         &self.stage.path
     }
