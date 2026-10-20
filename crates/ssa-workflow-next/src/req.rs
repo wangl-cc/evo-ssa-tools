@@ -176,7 +176,12 @@ impl<'a, K: Kernel> Req<'a, K> {
             .filter(|(_, hit)| **hit)
             .map(|(local, _)| *local)
             .collect();
-        let mut raw: Vec<Option<Vec<u8>>> = vec![None; count];
+        // Decode inside the visit: the store hands out each value once, already decompressed,
+        // and decoding is a single pass over it, so there is nothing to gain from copying the
+        // bytes out to decode them in parallel later.
+        let mut decoded: Vec<Option<K::Output>> =
+            std::iter::repeat_with(|| None).take(count).collect();
+        let mut decode_error = None;
         if !hit_locals.is_empty() {
             let hit_keys: Vec<&[u8]> = hit_locals
                 .iter()
@@ -185,31 +190,27 @@ impl<'a, K: Kernel> Req<'a, K> {
             stage
                 .store
                 .visit_many_ordered(&hit_keys, &mut |position, bytes| {
-                    raw[hit_locals[position]] = bytes.map(<[u8]>::to_vec);
+                    let Some(bytes) = bytes else { return };
+                    if decode_error.is_some() {
+                        return;
+                    }
+                    match K::Output::decode(bytes) {
+                        Ok(value) => decoded[hit_locals[position]] = Some(value),
+                        Err(message) => {
+                            decode_error = Some(Error::Decode {
+                                path: stage.path.to_string(),
+                                message,
+                            });
+                        }
+                    }
                 });
         }
-
-        let misses: Vec<usize> = (0..count).filter(|&local| raw[local].is_none()).collect();
-        let decode = |bytes: &Vec<u8>| {
-            K::Output::decode(bytes).map_err(|message| Error::Decode {
-                path: stage.path.to_string(),
-                message,
-            })
-        };
-
-        let hits: Vec<usize> = (0..count).filter(|&local| raw[local].is_some()).collect();
-        let mut decoded: Vec<Option<K::Output>> =
-            std::iter::repeat_with(|| None).take(count).collect();
-        let values = self.exec.map(
-            hits.len(),
-            || (),
-            |()| (),
-            |(), position| decode(raw[hits[position]].as_ref().expect("hit has bytes")),
-        )?;
-        for (&local, value) in hits.iter().zip(values) {
-            decoded[local] = Some(value);
+        if let Some(error) = decode_error {
+            return Err(error);
         }
-        drop(raw);
+        let misses: Vec<usize> = (0..count)
+            .filter(|&local| decoded[local].is_none())
+            .collect();
 
         let computed: Vec<K::Output> = if misses.is_empty() {
             Vec::new()
