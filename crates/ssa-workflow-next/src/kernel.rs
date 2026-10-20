@@ -22,50 +22,40 @@ pub trait Kernel: Sync {
 
     fn compute(
         &self,
-        streams: &mut Streams<'_>,
+        streams: Streams<'_>,
         state: &mut Self::State,
         param: &Self::Param,
         input: &Self::Input,
     ) -> Result<Self::Output>;
 }
 
-/// Random streams of one item, derived lazily from (stage path, label, item key). A
-/// deterministic kernel ignores it, and then no stream is ever created.
+/// Random streams of one item. Each stream is derived from (stage path, label, item key) only
+/// when asked for, so a deterministic kernel that ignores this costs nothing: it is two
+/// references, with no allocation and no hashing.
+#[derive(Clone, Copy)]
 pub struct Streams<'a> {
     seed: &'a [u8; 32],
     key: &'a [u8],
-    streams: Vec<(&'static str, Xoshiro256PlusPlus)>,
 }
 
 impl<'a> Streams<'a> {
     pub(crate) fn new(seed: &'a [u8; 32], key: &'a [u8]) -> Self {
-        Self {
-            seed,
-            key,
-            streams: Vec::new(),
-        }
+        Self { seed, key }
     }
 
     /// The default random stream.
-    pub fn rng(&mut self) -> &mut Xoshiro256PlusPlus {
+    pub fn rng(self) -> Xoshiro256PlusPlus {
         self.stream("")
     }
 
-    /// A named random stream. Asking for the same label twice returns the same stream.
-    pub fn stream(&mut self, label: &'static str) -> &mut Xoshiro256PlusPlus {
-        let index = match self.streams.iter().position(|(name, _)| *name == label) {
-            Some(index) => index,
-            None => {
-                let mut hasher = blake3::Hasher::new_keyed(self.seed);
-                hasher
-                    .update(label.as_bytes())
-                    .update(b"\0")
-                    .update(self.key);
-                let rng = Xoshiro256PlusPlus::from_seed(hasher.finalize().into());
-                self.streams.push((label, rng));
-                self.streams.len() - 1
-            }
-        };
-        &mut self.streams[index].1
+    /// A named random stream, independent of every other label. Each call starts the stream
+    /// from its beginning, so take it once and keep it.
+    pub fn stream(self, label: &str) -> Xoshiro256PlusPlus {
+        let mut hasher = blake3::Hasher::new_keyed(self.seed);
+        hasher
+            .update(label.as_bytes())
+            .update(b"\0")
+            .update(self.key);
+        Xoshiro256PlusPlus::from_seed(hasher.finalize().into())
     }
 }

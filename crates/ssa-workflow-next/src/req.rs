@@ -239,9 +239,9 @@ impl<'a, K: Kernel, S: Store> Req<'a, K, S> {
                 |state, miss| {
                     let local = misses[miss];
                     let item = items[local];
-                    let mut streams = Streams::new(&stage.seed, self.keys.get(item));
+                    let streams = Streams::new(&stage.seed, self.keys.get(item));
                     let output = stage.kernel.compute(
-                        &mut streams,
+                        streams,
                         state,
                         self.params.get(item),
                         upstream.get(positions[miss]),

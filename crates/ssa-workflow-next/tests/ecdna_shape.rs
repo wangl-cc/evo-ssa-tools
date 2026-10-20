@@ -24,15 +24,9 @@ impl Kernel for EarlySsa {
     type Output = Vec<u64>;
     type State = ();
 
-    fn compute(
-        &self,
-        streams: &mut Streams<'_>,
-        _: &mut (),
-        cells: &u32,
-        _: &(),
-    ) -> Result<Vec<u64>> {
+    fn compute(&self, streams: Streams<'_>, _: &mut (), cells: &u32, _: &()) -> Result<Vec<u64>> {
         self.0.lock().push(Self::ID);
-        let rng = streams.rng();
+        let mut rng = streams.rng();
         Ok((0..6)
             .map(|_| rng.random_range(0..=u64::from(*cells)))
             .collect())
@@ -49,7 +43,7 @@ impl Kernel for OtherRoot {
     type Output = Vec<u64>;
     type State = ();
 
-    fn compute(&self, _: &mut Streams<'_>, _: &mut (), cells: &u32, _: &()) -> Result<Vec<u64>> {
+    fn compute(&self, _: Streams<'_>, _: &mut (), cells: &u32, _: &()) -> Result<Vec<u64>> {
         Ok(vec![u64::from(*cells)])
     }
 }
@@ -86,7 +80,7 @@ impl Kernel for TopOde {
 
     fn compute(
         &self,
-        _: &mut Streams<'_>,
+        _: Streams<'_>,
         ws: &mut OdeWorkspace,
         target: &f64,
         early: &Vec<u64>,
@@ -114,14 +108,14 @@ impl Kernel for Surgery {
 
     fn compute(
         &self,
-        streams: &mut Streams<'_>,
+        streams: Streams<'_>,
         _: &mut (),
         residual: &u32,
         top: &Vec<f64>,
     ) -> Result<Vec<u64>> {
         self.0.lock().push(Self::ID);
         let total: f64 = top.iter().sum();
-        let rng = streams.rng();
+        let mut rng = streams.rng();
         let mut counts = vec![0u64; top.len()];
         for _ in 0..*residual {
             let mut u = rng.random::<f64>() * total;
@@ -150,7 +144,7 @@ impl Kernel for RegrowOde {
 
     fn compute(
         &self,
-        _: &mut Streams<'_>,
+        _: Streams<'_>,
         ws: &mut OdeWorkspace,
         target: &f64,
         residual: &Vec<u64>,
@@ -472,7 +466,7 @@ impl Kernel for Probe {
     type Output = u64;
     type State = ();
 
-    fn compute(&self, streams: &mut Streams<'_>, _: &mut (), param: &u32, _: &()) -> Result<u64> {
+    fn compute(&self, streams: Streams<'_>, _: &mut (), param: &u32, _: &()) -> Result<u64> {
         let now = self.running.fetch_add(1, Ordering::SeqCst) + 1;
         self.peak.fetch_max(now, Ordering::SeqCst);
         std::thread::sleep(std::time::Duration::from_millis(5));
