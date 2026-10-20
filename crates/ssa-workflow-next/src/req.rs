@@ -127,12 +127,6 @@ pub struct Req<'a, K: Kernel, S: Store> {
 }
 
 impl<'a, K: Kernel, S: Store> Req<'a, K, S> {
-    /// Upstream item behind item `item`. Every request is a fan-out over its upstream; without
-    /// fan-out there is one parameter and this is the identity.
-    fn upstream_of(&self, item: usize) -> usize {
-        item % self.parent.get().keys().len()
-    }
-
     /// Compute this stage's missing items with `exec` (how many workers run at once).
     pub fn on(mut self, exec: Exec) -> Self {
         self.exec = exec;
@@ -217,10 +211,15 @@ impl<'a, K: Kernel, S: Store> Req<'a, K, S> {
         } else {
             // Only now ask upstream, and only for the missing items. This runs before this
             // stage's workers start, so the upstream stage finishes with its own workers first.
-            // Under fan-out several misses share one upstream item; ask for each once.
+            // Item `j` comes from upstream item `j % n` (fan-out is parameter-major; without
+            // fan-out this is the identity). Several misses may share one upstream item under
+            // fan-out; ask for each once. One dynamic call for the length, not one per item.
+            let parent = self.parent.get();
+            let n = parent.keys().len();
+            let upstream_of = |item: usize| item % n;
             let mut wanted: Vec<usize> = misses
                 .iter()
-                .map(|&local| self.upstream_of(items[local]))
+                .map(|&local| upstream_of(items[local]))
                 .collect();
             wanted.sort_unstable();
             wanted.dedup();
@@ -228,11 +227,11 @@ impl<'a, K: Kernel, S: Store> Req<'a, K, S> {
                 .iter()
                 .map(|&local| {
                     wanted
-                        .binary_search(&self.upstream_of(items[local]))
+                        .binary_search(&upstream_of(items[local]))
                         .expect("wanted holds every needed upstream item")
                 })
                 .collect();
-            let upstream = self.parent.get().provide(&wanted)?;
+            let upstream = parent.provide(&wanted)?;
             self.exec.map(
                 misses.len(),
                 || stage.states.lock().pop().unwrap_or_default(),
