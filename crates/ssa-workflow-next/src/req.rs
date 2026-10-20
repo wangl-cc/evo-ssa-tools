@@ -1,6 +1,6 @@
 use std::sync::atomic::Ordering;
 
-use crate::{Block, Error, Exec, Kernel, Keys, Path, Result, Stage, Store, Streams, Value};
+use crate::{Block, Error, Exec, Kernel, Keys, Path, Result, Stage, State, Store, Streams, Value};
 
 /// Anything that can hand a stage the upstream values for some of its items: a request (which
 /// materializes them on demand) or an already materialized block (which lends them).
@@ -234,7 +234,10 @@ impl<'a, K: Kernel, S: Store> Req<'a, K, S> {
             let upstream = parent.provide(&wanted)?;
             self.exec.map(
                 misses.len(),
-                || stage.states.lock().pop().unwrap_or_default(),
+                || {
+                    let reused = stage.states.lock().pop();
+                    reused.unwrap_or_else(|| <K::State as State<K>>::new(&stage.kernel))
+                },
                 |state| stage.states.lock().push(state),
                 |state, miss| {
                     let local = misses[miss];

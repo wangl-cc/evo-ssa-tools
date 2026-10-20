@@ -10,7 +10,7 @@ use std::sync::{
 
 use parking_lot::Mutex;
 use rand::RngExt;
-use ssa_workflow_next::{Block, Error, Exec, Kernel, MemoryStore, Result, Stage, Streams};
+use ssa_workflow_next::{Block, Error, Exec, Kernel, MemoryStore, Result, Stage, State, Streams};
 
 type Log = Arc<Mutex<Vec<&'static str>>>;
 
@@ -519,4 +519,44 @@ fn kernel_error_stops_the_block() {
         store.puts.load(Ordering::Relaxed) < 64,
         "workers stopped early"
     );
+}
+
+/// A kernel whose worker state is built from a kernel field, not `Default`.
+struct ScratchKernel(usize);
+
+/// Scratch sized by the kernel. Deliberately not `Default`.
+struct Scratch(Vec<f64>);
+
+impl State<ScratchKernel> for Scratch {
+    fn new(kernel: &ScratchKernel) -> Self {
+        Self(vec![0.0; kernel.0])
+    }
+}
+
+impl Kernel for ScratchKernel {
+    const ID: &'static str = "sized-v1";
+    type Param = u32;
+    type Input = ();
+    type Output = u64;
+    type State = Scratch;
+
+    fn compute(&self, _: Streams<'_>, scratch: &mut Scratch, param: &u32, _: &()) -> Result<u64> {
+        assert_eq!(scratch.0.len(), self.0, "state built from the kernel");
+        scratch.0.fill(f64::from(*param));
+        Ok(scratch.0.iter().sum::<f64>() as u64)
+    }
+}
+
+#[test]
+fn state_can_be_built_from_the_kernel() -> Result<()> {
+    let store = MemoryStore::default();
+    let stage = Stage::root(ScratchKernel(3), &store);
+    let items: Vec<(u32, u64)> = (0..8).map(|param| (param, 0)).collect();
+    let block = stage
+        .request_root(&items)
+        .on(Exec::threads(2))
+        .materialize()?;
+    assert_eq!(block.values(), &[0, 3, 6, 9, 12, 15, 18, 21]);
+    assert!(stage.stats().states <= 2);
+    Ok(())
 }

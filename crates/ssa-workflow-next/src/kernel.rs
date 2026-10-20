@@ -17,8 +17,9 @@ pub trait Kernel: Sync {
     type Input: Sync;
     /// Output stored in the cache.
     type Output: Value;
-    /// Per-worker reusable state such as scratch buffers or an assembled operator.
-    type State: Default + Send;
+    /// Per-worker reusable state such as scratch buffers or an assembled operator. Any
+    /// `Default` type works as is; implement [`State`] to build it from the kernel instead.
+    type State: State<Self>;
 
     fn compute(
         &self,
@@ -27,6 +28,24 @@ pub trait Kernel: Sync {
         param: &Self::Param,
         input: &Self::Input,
     ) -> Result<Self::Output>;
+}
+
+/// How a worker state is built. Each worker builds (or reuses) one when it starts.
+///
+/// Every `Default + Send` type implements this by calling `Default::default`. A state that needs
+/// the kernel to build itself (for example to size a thread pool from a kernel field) does not
+/// implement `Default` and implements `State<MyKernel>` instead.
+///
+/// A state is only a cache or scratch space: results must be the same as with a freshly built
+/// state, whatever the worker computed before.
+pub trait State<K: ?Sized>: Send + Sized {
+    fn new(kernel: &K) -> Self;
+}
+
+impl<K: ?Sized, T: Default + Send> State<K> for T {
+    fn new(_: &K) -> Self {
+        T::default()
+    }
 }
 
 /// Random streams of one item. Each stream is derived from (stage path, label, item key) only
