@@ -51,11 +51,17 @@ impl<'a> Streams<'a> {
     /// A named random stream, independent of every other label. Each call starts the stream
     /// from its beginning, so take it once and keep it.
     pub fn stream(self, label: &str) -> Xoshiro256PlusPlus {
+        Xoshiro256PlusPlus::from_seed(self.seed(label))
+    }
+
+    /// The seed behind `stream(label)`, for kernels that bring their own generator. The
+    /// framework only derives seeds; the kernel owns and advances its generators.
+    pub fn seed(self, label: &str) -> [u8; 32] {
         let mut hasher = blake3::Hasher::new_keyed(self.seed);
         hasher
             .update(label.as_bytes())
             .update(b"\0")
             .update(self.key);
-        Xoshiro256PlusPlus::from_seed(hasher.finalize().into())
+        hasher.finalize().into()
     }
 }
